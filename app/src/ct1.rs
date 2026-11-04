@@ -105,8 +105,15 @@ pub struct MachineTech {
     pub y_gap: Option<f64>,
     /// B352: default pierce radius, mm (read and shown, not used yet).
     pub pierce_radius: Option<f64>,
-    /// A058: default cutting speed (read and shown; times use `cnc::cut_speed`).
+    /// A058: default cutting speed, mm/min (or the section's Z003): the
+    /// "active" speed of the time calculation (CTM8).
     pub cut_speed: Option<f64>,
+    /// A051: rapid speed, mm/min (CTM3).
+    pub rapid_speed: Option<f64>,
+    /// A063: marking speed of the cutting head, mm/min (CTM9).
+    pub mark_speed: Option<f64>,
+    /// The machine's time settings and technology table (`.TM1` / `.TT1`, TT1).
+    pub speed_files: Arc<crate::techtable::SpeedFiles>,
     /// A093: the machine marks one section per material and thickness as the
     /// default technology (MTL5).
     pub default_rule: bool,
@@ -178,6 +185,9 @@ impl Default for MachineTech {
             y_gap: None,
             pierce_radius: None,
             cut_speed: None,
+            rapid_speed: None,
+            mark_speed: None,
+            speed_files: Arc::new(Default::default()),
             default_rule: false,
             file: Arc::new(MachineFile::default()),
             section: None,
@@ -634,6 +644,7 @@ impl MachineTech {
                 let mut t = MachineTech::from_codes(&codes_with_section(&self.file.globals, &self.file.sections[i]));
                 t.file = self.file.clone();
                 t.source = self.source.clone();
+                t.speed_files = self.speed_files.clone();
                 t.section = Some(i);
                 t
             }
@@ -645,6 +656,18 @@ impl MachineTech {
             t.sizes_override = Some(o);
         }
         t
+    }
+
+    /// The cut quality the applied section's size bands give a contour of
+    /// equivalent radius `r` mm (MTL10, TT8): none when the section has no
+    /// bands or the first starts above `r`; else the first band with
+    /// from ≤ r < to, its technology index turned into a quality.
+    pub fn band_quality(&self, r: f64) -> Option<usize> {
+        let bands = &self.applied()?.hole_bands;
+        if bands.first().is_none_or(|b| b.0 > r) {
+            return None;
+        }
+        bands.iter().find(|b| b.0 <= r && r < b.1).map(|b| crate::techtable::quality_of_index(b.2))
     }
 
     /// The section the values came from.
@@ -748,6 +771,9 @@ impl MachineTech {
             y_gap: if m.get("B096").is_some_and(|v| v == "ON") { num("B097") } else { None },
             pierce_radius: num("B352"),
             cut_speed: num("A058"),
+            rapid_speed: num("A051"),
+            mark_speed: num("A063"),
+            speed_files: d.speed_files.clone(),
             default_rule: m.get("A093").is_some_and(|v| v == "ON"),
             file: d.file.clone(),
             section: None,
@@ -779,7 +805,16 @@ impl MachineTech {
         }
         let dir = if lantek_dir.is_empty() { crate::settings::lantek_default_dir() } else { lantek_dir.to_string() };
         tries.push(Path::new(&dir).join("MchFiles").join("PstAdi06.CT1"));
-        tries.iter().find(|p| p.is_file()).and_then(|p| MachineTech::load(p)).unwrap_or_default()
+        let found = tries.iter().find(|p| p.is_file());
+        let mut t = found.and_then(|p| MachineTech::load(p)).unwrap_or_default();
+        // The machine's CF file names its technology table and time settings
+        // (TT1): the BLM post's .CF1, else a .CF<n> post library.
+        let cf = [&m.blm_cf1, &m.post_lib].into_iter().filter(|p| !p.is_empty()).map(PathBuf::from).find(|p| {
+            let e = p.extension().map(|e| e.to_string_lossy().to_uppercase()).unwrap_or_default();
+            e.starts_with("CF") && e != "CFF" && p.is_file()
+        });
+        t.speed_files = Arc::new(crate::techtable::SpeedFiles::find(found.map(|p| p.as_path()), cf.as_deref(), m.gas_id));
+        t
     }
 
     /// Joints for a medium-sized part contour of length `per` at one per

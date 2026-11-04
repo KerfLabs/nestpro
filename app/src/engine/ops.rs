@@ -225,7 +225,7 @@ pub static OPS: &[Op] = &[
         Arg { name: "mode", ty: Ty::Str, required: true, help: "auto or delete", choices: &["auto", "delete"] }, PARTS,
         a("every", Ty::Num, "auto: one joint per this many mm of each contour (default: the machine's maximum distance for the part's quality)"),
     ] },
-    Op { name: "machine-tech", group: "Technology", kind: Kind::Read, help: "Which material × thickness section of the machine's technology file applies to the job (or to another material/thickness), and the values it gives: lead and joint tables, joint gap, pierce and loop radius, kerf, part gap and margins (compare with the sheet's; take them with set-sheet machine_spacing=true).", args: &[
+    Op { name: "machine-tech", group: "Technology", kind: Kind::Read, help: "Which material × thickness section of the machine's technology file applies to the job (or to another material/thickness), and the values it gives: lead and joint tables, joint gap, pierce and loop radius, kerf, part gap and margins (compare with the sheet's; take them with set-sheet machine_spacing=true), and the cutting speeds, pierce times and time settings that time the job (from the machine's technology table and time file).", args: &[
         a("material", Ty::Str, "Look at this material instead of the job's (name or number)"), a("thickness", Ty::Num, "Look at this thickness instead of the job's, mm"),
     ] },
     Op { name: "compensation", group: "Machining", kind: Kind::Write, help: "Kerf compensation: how the beam is kept half a kerf on the scrap side of each cut — control (the program writes G41/G42 and the corrector number, the CNC offsets) and/or system (the program carries the already-offset path). Shows the machine's settings, the job's choice and, per contour of a sheet, its side, corrector and radius, plus the contours system compensation can't cut (holes no bigger than the kerf, slots narrower than it). control/system set the job's choice (on, off, or machine = the machine file's).", args: &[
@@ -604,6 +604,7 @@ pub fn info(job: &JobFile, ctx: &Ctx, detail_sheet: Option<usize>) -> Value {
             let mut v = json!({
                 "sheet": k + 1, "parts": s.len(), "usage_pct": r1(u), "usage_to_remnant_pct": r1(ur), "used_up_to_x": r1(cx),
                 "cut_len_mm": r1(pl.cut_len), "mark_len_mm": r1(pl.mark_len), "rapid_len_mm": r1(pl.rapid_len), "pierces": pl.pierces, "time_s": r1(pl.seconds),
+                "times_s": times_json(&pl.times),
                 "manual_cuts": job.manual_cuts.get(k).map_or(0, |v| v.len()), "cut_lines": job.cuts(k).len(),
                 "remnant": remnant_info(&job.parts, s, &f, job.cuts(k), crate::kerf::kerf_mm(&job.spec_at(k))).map(|(w, h, a)| json!({"w": r1(w), "h": r1(h), "area_m2": (a / 1e4).round() / 100.0})),
                 "size": [r1(f.w), r1(f.h)], "stock_ref": (!f.stock_ref.is_empty()).then(|| f.stock_ref.clone()), "is_remnant": f.remnant, "area_m2": (f.area_mm2() / 1e4).round() / 100.0,
@@ -670,8 +671,13 @@ fn part_info(job: &JobFile, i: usize) -> Value {
         "technology": tech_json(&p.tech),
         "verify_part": crate::drawing::verify_part(p),
         "verify_machining": crate::drawing::verify_machining(&plan),
-        "machining": { "cut_len_mm": r1(plan.cut_len), "pierces": plan.pierces, "time_s": r1(plan.seconds) },
+        "machining": { "cut_len_mm": r1(plan.cut_len), "pierces": plan.pierces, "time_s": r1(plan.seconds), "times_s": times_json(&plan.times), "speeds": plan.timing.speeds.label() },
     })
+}
+
+/// A sheet's time by kind (CTM15), seconds.
+fn times_json(t: &cnc::TimeSplit) -> Value {
+    json!({"cut": r1(t.cut), "mark": r1(t.mark), "rapid": r1(t.rapid), "pierce": r1(t.pierce), "head": r1(t.head)})
 }
 
 fn catalog() -> Value {
@@ -726,6 +732,7 @@ fn machine_tech_report(spec: &SheetSpec, job: &SheetSpec) -> (String, Value) {
         "joints": { "gap": t.joint_gap, "lead": t.joint_lead, "lead_out": t.joint_lead_out, "angle": t.joint_angle, "every": t.joint_every, "fewest": t.joint_min, "most": t.joint_max },
         "loop_radius": t.loop_radius, "pierce_radius": opt(t.pierce_radius),
         "cutter_radius": opt(t.cutter_radius), "kerf": opt(t.cutter_radius.map(|r| 2.0 * r)), "cut_speed": opt(t.cut_speed),
+        "speeds": speeds_json(spec, &t),
         "compensation": crate::kerf::status_line(spec),
         "spacing": {
             "machine_gap": opt(t.part_gap), "machine_margins": t.margins.map(|m| json!({"bottom": m[0], "top": m[1], "left": m[2], "right": m[3]})),
@@ -734,6 +741,22 @@ fn machine_tech_report(spec: &SheetSpec, job: &SheetSpec) -> (String, Value) {
         },
     });
     (msg, data)
+}
+
+/// Where a sheet's speeds and times come from (TT1–TT10, CTM8–CTM16): the
+/// machine's table record, speeds by quality, pierce times, the time file.
+fn speeds_json(spec: &crate::nest::SheetSpec, t: &crate::ct1::MachineTech) -> Value {
+    let tm = cnc::Timing::for_spec(spec, t);
+    let sp = &tm.speeds;
+    let f = &t.speed_files;
+    let name = |p: &Option<std::path::PathBuf>| p.as_ref().map(|p| p.display().to_string());
+    json!({
+        "source": sp.label(), "time_settings": tm.settings.label(),
+        "table_file": f.table.as_ref().and_then(|t| name(&t.source)), "time_file": name(&f.time.source), "gas": f.gas,
+        "cut_mm_min_by_quality": (1..=12).map(|q| r1(sp.cut_for(q))).collect::<Vec<_>>(),
+        "pierce_s_by_quality": (1..=12).map(|q| (sp.pierce_for(q) * 1000.0).round() / 1000.0).collect::<Vec<_>>(),
+        "mark_mm_min": r1(sp.mark), "rapid_mm_min": r1(sp.rapid),
+    })
 }
 
 /// The job's kerf compensation (KC1–KC6, KC18): the machine's settings, the
@@ -2257,7 +2280,7 @@ pub const GUI_MAP: &[(&str, &str)] = &[
     ("Standard shapes/Recognise\nshapes", "part-info"),
     ("Contours/Contours", "part-info"),
     ("Contours/Cycles", "todo: [MAC-11] punch/milling cycles (greyed out in the app too)"),
-    ("Settings/Options", "todo: [MAC-1] speed rates, postprocessor words (greyed out in the app too)"),
+    ("Settings/Options", "todo: [MAC-1] the Feed rates dialog and postprocessor words (greyed out in the app too); the speeds themselves come from the machine's files: machine-tech shows them"),
     ("Compensation/Kerf", "compensation"),
     ("Settings/Extraction", "todo: [MAC-6] component extraction (greyed out in the app too)"),
     ("View/Current\nstatus", "part-info"),

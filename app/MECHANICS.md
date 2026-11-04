@@ -82,8 +82,10 @@ How the rebuild uses them:
 - The cutting plan and machine program use it. Lead-in and lead-out lengths are applied (holes
   are capped to stay inside). **Micro-joints** are spread evenly along the outer contour, where
   the beam switches off (`M08 ( MICRO-JOINT )`), jumps across with `G0`, and switches on again
-  (`M07`). The joint widths are subtracted from cut length. The feed is the material speed ×
-  quality factor (Rough 1.2, Normal 1.0, Fine 0.7: estimated).
+  (`M07`). The joint widths are subtracted from cut length. The feed is the machine's speed for the
+  contour's quality (see "Machining time and speeds"); only when the machine file gives no
+  speed at all is it our typical laser speed × a quality factor (Rough 1.2, Normal 1.0, Fine
+  0.7: estimated).
 - **T1–T3**: changing the shape or size of a part with technology opens "Part with
   technology" with **Edit a copy** (T2 answer 0), **Edit this part (remove technology)**
   (answer 1) and **Cancel**, plus "Use this answer for the rest of this session" (answer 2).
@@ -122,7 +124,7 @@ How the rebuild uses them:
 - **Layers (D5)**: a drawing with more than one layer opens "Drawing layers". Every layer
   starts as **Cut** (code 13) and can be set to **Mark** or **Leave out**. Marking lines show
   dashed on the part, are done before the part is cut (`M10 ( MARK ON )` … `M11`), and count
-  toward time at twice the cutting speed (the speed factor is estimated). The sample plate
+  toward time at the machine's marking speed (CTM9). The sample plate
   has a MARK layer.
 - **Export DXF (D1)**: Part Properties → Export DXF writes `<part>.dxf` (outline and holes on
   layer CUT, marking on MARK, `$INSUNITS` = mm) and a one-line `<part>.txt` beside it. The
@@ -707,8 +709,9 @@ How ours compared, and what the rebuild now does:
   its colour, the head's X / Y, the **cutter radius 0.150** (half the 0.3 mm cut width — the
   value observed in the original) and **1 head**.
 - The status bar shows the sheet's CNC name (`CNC: <JOB>X<sheet>`).
-- Times come from the plan: cuts at the part's feed plus a pierce time, rapids at 60 000 mm/min,
-  markings at twice the cut speed, punch hits 0.25 s.
+- Each step takes the plan's time for it ("Machining time and speeds": rapids, markings, and
+  per contour its pierces, cut, head moves); punch hits 0.25 s. The whole run lasts as long as
+  the sheet's time on the times card.
 - Not imitated: Subjobs, Applications and the contextual Selection tab, multi-head machines,
   tool changes, sheet repositioning and clamps, ISN position / Program stepping.
 
@@ -1866,7 +1869,7 @@ that falls between two ranges keeps the machine's own values. `ct1.rs` (`parse_f
 | MTL7 | A fitting section replaces the **automatic lead tables of every quality** and the **micro-joint table** as a whole. What the section leaves out takes the built-in table values (our laser lead table; joint distance 100 mm), not the machine's. A quality with no lead table of its own copies quality 1. | Observed (replacement); the built-in fallbacks are inferred |
 | MTL8 | Code mapping. **Y n = E n** (lead tables of qualities 2–12 and their extras, same numbers). Quality 1's lead table is in Z: **Z n = B (n + 146)** for n = 54–124 (B200–B270), **Z132 = B271** (hole zone), **Z305 = B294** (pierce radius), **Z306 = B295** (shortest lead). **X n = F n** for 0–118 and 129–197 (joint records, size classes, distances by quality), but **X122 = F121** (fewest joints), **X123 = F122** (most) and **X125–X128 = F123–F126**; X119/X120 are not read. | Observed |
 | MTL9 | Single values a section replaces: Z003 cutting speed (A058), Z004 **cutter radius** = half the kerf (B002), Z005 sheet margin (A256, and it fills the other three first), Z007/Z008/Z009 top/left/right margins (A257–A259), Z130 remnant margin (A260), Z006 **part gap** (B056), Z335/Z336 a different Y gap (B096/B097), Z026–Z053 = B150–B177 (manual leads, overlap, **loop radius** Z033 = B157, joint leads and **joint width** Z034–Z040 = B158–B164, angle tolerances), Z125 corner rounding (B178), Z126–Z129 kill sharp edges (B179–B182), Z131 default **pierce radius** (B352), Z301 loop limit angle (B292). A value the section doesn't give keeps the machine's. | Observed (mapping); keeping the machine's value for a missing line is our estimate |
-| MTL10 | Z010/Z011/Z012 triples (one per hole-size band: from, to, technology index) pick a cutting technology for small holes by size. Read and counted, not used yet (FEATURES TEC-12). | Observed (read) |
+| MTL10 | Z010/Z011/Z012 triples (one per size band: from, to, technology index) pick the cut quality of a contour by its size: the contour's equivalent radius (the radius of a circle of the same area) against the bands, the first band with from ≤ r < to, none when the first band starts above r. The index becomes a quality by TT8. The app applies it to contours of parts that leave the quality to the machine (no size ranges of their own, quality Normal); the quality then drives the lead table, the kerf table and the speed. | Observed (bands, index → quality); radius rather than diameter, outsides included, and which parts it applies to are our estimates |
 | MTL11 | Conditional groups (Z308 on → Z309–Z312 and X124; Z313 on → Z314–Z323; Z337 on → Z338; X125–X128 only when ≥ 0) carry values the app doesn't use; they are not carried over. | Observed (rule); not used |
 | MTL12 | V lines fill the per-class micro-joint records inside a section. No known file has them; not carried over (FEATURES TEC-14). | Observed (rule); not used |
 
@@ -1893,8 +1896,9 @@ that falls between two ranges keeps the machine's own values. `ct1.rs` (`parse_f
   `machine-tech` and take them with `set-sheet machine_spacing=true`. The sheet has one
   margin, so it takes the widest of the machine's four. Design choice (FEATURES TEC-11).
 - **Kerf** (Z004 / B002) and the section's corrector numbers (Z024 / Z025 = B124 / B125)
-  drive the kerf compensation (see "Kerf compensation" below). **Cutting speed, pierce
-  radius, Y gap** are read and shown only (`machine-tech`); times use the app's speed table.
+  drive the kerf compensation (see "Kerf compensation" below). The section's **cutting
+  speed** (Z003) is the "active" speed of the time calculation ("Machining time and speeds");
+  **pierce radius, Y gap** are read and shown only (`machine-tech`).
 - The applied section shows on the Sheet tab (under the material) and in the Part view's
   status line: "Machine table 0010 mild steel 2.2–3.2 mm", or "global".
 
@@ -1953,3 +1957,50 @@ the same path.
   edge) and its info card has "Kerf 0.30 mm · control (G41/G42, D1/D2)" or "… · system offset
   (round corners)"; the sheet's cut path view draws the offset path too; programs carry a
   `( KERF … )` comment.
+
+## Machining time and speeds
+
+How long a sheet takes, and how fast each contour is cut, the way the original works it out.
+Every machine has, next to its machine files, a **technology table** (`.TT1`: cutting speed
+and pierce time per material, thickness, gas and cut quality, one marking speed) and a
+**time file** (`.TM1`: where speeds come from, how pierces are timed, accelerations, head
+moves). The time is the machine program replayed move by move. `techtable.rs` (table, record
+choice, speeds), `cuttime.rs` (time file, moves, corners), `cnc.rs` (`Timing`, `beam_runs`,
+the plan's time by kind), `sheetsim.rs` (the simulation uses the same times). Agents:
+`machine-tech` → `speeds`; `info` / `part-info` → `times_s` per sheet.
+
+### Finding the files and the record
+
+| ID | Rule (our words) | Observed / estimated |
+|---|---|---|
+| TT1 | The machine's post file (CF) names the table (A019) and the time file (A026); `xxxxxxxx.xxx` means none. The names are looked for beside the CF file, then beside the technology file. Without a CF file the files have the technology file's name with `TT` / `TM` and its own number (`PSTADI02.CT1` → `.TT1`, `.TM1`). A missing table leaves no table speeds; a missing time file leaves the defaults of CTM16. | Observed (codes, naming in the shipped files); the folders searched are our estimate |
+| TT2 | Table layout: `W000 3` opens the laser's block (other machine types' blocks are skipped). Each `A000` (material reference, as MTL2) starts a record running to the next one: A001/A002 thickness from/to (A001 sets both), A003 lens, A004 power, A005 gas number, A006/A007 bevel angle, A008 = 1 the default record for its material and thickness, A009 configuration alias; then B, C and D lines. | Observed |
+| TT3 | Per cut quality q = 1…12 the record's fields are D(50·(q−1) + n): n = 7 **cutting speed** (mm/min), n = 10 **pierce time** (s), n = 11 a second pierce-time term, n = 15 the pierce types used. | Observed (speed, pierce terms); the other fields are unknown |
+| TT4 | The CF file's `Tnnn "label" ON/OFF` lines say which fields the machine uses: T412 the second pierce term, T408 the pierce types. Without a CF file every field counts. | Estimated (that these flags gate the values) |
+| TT5 | Pierce time from the table for quality q = its pierce time + its second term + for each pierce type k = 1…5 present in the pierce-type field (its decimal digits: ten-thousands = type 1 … units = type 5, non-zero = present) the time B(100·(k−1)+1). | Observed |
+| TT6 | Cutting speed = the quality's field; marking speed = C009, the same for every quality. An empty field (≤ 0.001) means no speed. | Observed |
+| TT7 | Corner feed reductions (L601–L612: quality, angle range, acceleration, time) apply only when the time file asks for them (CTM8 mode 3). Not built (FEATURES MAC-22). | Observed (format) |
+| TT8 | A technology index becomes a cut quality: 1 → 2, 2 → 3, 10–12 → 4–6, 100–102 → 7–9, 110–112 → 10–12, anything else → 1. | Observed |
+| TT9 | The record for a job: the first, in file order, whose material, thickness (from − 0.005 ≤ t ≤ to + 0.005, never the nearest range), gas (equal, or the record's is 0 = any), lens, power, angle and alias fit; else the **last** default record (A008) for the material and thickness; else none. Our jobs carry the machine's gas (Settings → Machines) and no lens, power, angle or alias, which fit any record. | Observed (order and fallbacks); the keys our jobs don't carry are our choice (like TEC-10) |
+| TT10 | No record, or a quality without a speed: the original would time those cuts as almost instant; the app uses the machine's default cutting speed instead (A058, or the section's Z003), and says so on the times card. | Our choice (FEATURES MAC-20) |
+
+### The time file and the calculation
+
+| ID | Rule (our words) | Observed / estimated |
+|---|---|---|
+| CTM1 | The time is the program replayed: per contour the head goes down, then each beam run (pierce, cut, beam off) with jumps over micro-joints between runs, then the head goes up; markings before their part; rapids between. | Observed (replay, instruction kinds); keeping the head down over micro-joints is our estimate |
+| CTM2 | A move's time: each axis ramps up to its share of the feed (capped at the axis's top speed), cruises and ramps down, entering at the previous move's exit speed; a move too short to reach full speed peaks and comes straight down. The slowest axis sets the time. When the exit speed can't be reached, the next move starts slower. | Observed |
+| CTM3 | Rapids: at the machine's rapid speed (A051, 40 000 mm/min in the shipped template), from rest to rest, with the rapid accelerations. With A001 ON (the default) they run straight; OFF, each axis on its own: a 45° move over the shorter axis, then straight on. | Observed (A051 from the file's own description) |
+| CTM4 | Cuts: straight moves use the cut accelerations (P), arcs their own (Q, else P). | Observed; our contours are polylines, so every move uses P (FEATURES MAC-21) |
+| CTM5 | Corners: the last move of a run stops; where the path turns by α the head slows to v90 · √((s/(1−s)) / (sin 45°/(1−sin 45°))) with s = sin(90° − α/2), never above the feed (v90 = D168, the speed through a 90° corner). A vertex turning by 20° or less counts as part of a curve and keeps the feed. | Observed (formula, v90); the 20° curve limit is our estimate |
+| CTM6 | Acceleration records `O`/`P`/`Q nnn` = thickness from, to, acceleration X, Y, deceleration X, Y (mm/s²), top speed X, Y (mm/min); the first whose range holds the plate's thickness. None = no limit. | Observed |
+| CTM7 | S001 > 0 asks for jerk-limited (S-curve) moves. Timed with plain ramps here (FEATURES MAC-21). | Observed (switch); not built |
+| CTM8 | Cutting speed source D018: 1 = the machine's default speed (A058, or the section's Z003) for every contour; 2 = the table's speed for the contour's quality; 3 = the table with corner reductions (TT7, not built: as 2). | Observed |
+| CTM9 | Marking speed source D017: 1 = the machine's marking speed (A063, the cutting head's); else the table's (TT6). | Observed (switch); A063 for laser marking is our estimate |
+| CTM10 | Pierce time D014: 1 = D016 seconds; 2 = D015 seconds per mm of plate; 3 = the table's (TT5). Every beam-on counts, joint re-pierces included. | Observed (modes); counting every re-pierce is our estimate |
+| CTM11 | Beam off: D001 seconds when D169 = 1 (a laser's; the table's value is a waterjet's). | Observed |
+| CTM12 | Head: H006 seconds up, H007 down, once each per contour and per marking. | Observed (codes); once per marking is our estimate |
+| CTM13 | Technology-change and quality-change times (D002–D013, a 12 × 12 table) and start/end-of-program times (L, M) are not counted (all 0 in the shipped template; FEATURES MAC-23). | Observed (codes); not built |
+| CTM14 | Kinds of time kept: cutting, marking, rapids, pierces, head up/down and beam off; the sheet's time is their sum. Factors N001 (rapids), N002 (cutting), N007 (marking), N008 (pierces) scale them. | Observed (factors exist); which factor is which kind is our estimate |
+| CTM15 | The times card shows the machine time split into those kinds, where the speeds came from (table record, machine default speed, or estimate) and which time file applies. | Ours |
+| CTM16 | No time file: speeds are the machine's default ones (A058/Z003, marking A063), no accelerations (moves take length ÷ speed), 1 s per mm of plate per pierce, no head times. No machine speed either: our typical laser speeds (estimate). | Observed (the original's defaults); the last fallback is ours |

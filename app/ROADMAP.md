@@ -72,7 +72,7 @@ is **`FEATURES.md`** at the top of the repo; keep both in step.
 | Delete instructions (current, by selection, from-to) | Part — undo pick / clear | ★ |
 | **Component extraction** (stop, trap, lift; assign boxes) | Missing | ★ |
 | Avoid holes already cut (head rapids) | Missing | ★★ |
-| Speed rates, CN/system compensation, postprocessor words | Part — the post library (.CFF/.CF1) shapes the G-code, BLM LC5 output; **kerf compensation built** (side from the cutting direction, G41/G42 + corrector, system offset path, job toggles; MECHANICS KC1–KC18); no speed tables (FEATURES MAC-1, MAC-13–MAC-19) | ★★★ |
+| Speed rates, CN/system compensation, postprocessor words | Part — the post library (.CFF/.CF1) shapes the G-code, BLM LC5 output; **kerf compensation built** (side from the cutting direction, G41/G42 + corrector, system offset path, job toggles; MECHANICS KC1–KC18); **speeds and times from the machine's technology table and time file** (speed and pierce time per material, thickness, gas and quality; accelerations, corners, head times; MECHANICS TT1–TT10, CTM1–CTM16); postprocessor words and the Feed rates dialog missing (FEATURES MAC-1, MAC-13–MAC-27) | ★★ |
 | Cycles, pockets, nibbling, punch macros | Missing (punch / milling) | ★ |
 | Clamps and work zone, sheet reposition, multihead | Missing | ★ |
 | Verify machining, verify unstable contours | Part — Verify Machining with safe distance; unstable contours not yet | ★ |
@@ -81,7 +81,7 @@ is **`FEATURES.md`** at the top of the repo; keep both in step.
 
 | Original | Rebuild | Pri |
 |---|---|---|
-| **Simulation** (run / step / next tool / reposition / extraction) | Part — the Simulation tab plays the program; next tool / reposition / extraction not yet | ★ |
+| **Simulation** (run / step / next tool / reposition / extraction) | Part — the Simulation tab plays the program in the machine's own times (accelerations, corners, pierces, head); next tool / reposition / extraction not yet | ★ |
 | Panels: explorer, viewers, lists, machining window, restore panels | Have (dockable panes) | |
 | Zoom all / window / previous / scale, full screen | Part — zoom, fit | ★ |
 | Part drawing (Drafting): lines, arcs, circles, slots, polygons, fillets, offset, trim, union/subtract, dimension notes | Part — the Drawing module's tabs, look, Verify Part, measuring, machining check and simulation are in; drafting commands are shown greyed out | ★★ |
@@ -113,7 +113,8 @@ For day-to-day laser work the most valuable gaps are, in order:
 1. ~~Saving jobs~~ — done (`.snjob` + Library).
 2. ~~Sheet stock and remnants~~ — done (see MECHANICS.md "Sheet stock and remnants").
 3. ~~True-shape nesting~~ — done (strip profiles, on stock sheets and inside remnant outlines too); free rotation angles still to do.
-4. **A real machine post-processor** — speeds per material and the machine's own G-code dialect.
+4. ~~Speeds per material~~ — done (the machine's technology table and time file; check them against
+   the shop's own BLM files, FEATURES MAC-25). Still to do for the post-processor: postprocessor words.
 5. **Common cut and bridges**, then **Simulation** and **reports/labels**.
 
 Punching, bevel, duct and 3D unfolding are other products' work and can wait.
