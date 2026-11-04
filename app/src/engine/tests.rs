@@ -150,6 +150,53 @@ fn placing_by_hand_follows_the_sheet_rules() {
 }
 
 #[test]
+fn renesting_a_sheet_keeps_its_parts_and_leaves_the_others_alone() {
+    // RN1, RN2
+    let d = dir("renest");
+    let job = d.join("r.snjob");
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 200, "h": 100, "qty": 3}));
+    // Two parts spread out on sheet 1, one on a second sheet: all three would
+    // fit on one sheet, so a whole-job nest would empty sheet 2.
+    call(&mut s, "place", None, json!({"part": 1, "x": 300, "y": 300}));
+    call(&mut s, "place", None, json!({"part": 1, "x": 700, "y": 50}));
+    call(&mut s, "place", None, json!({"part": 1, "sheet": "new", "x": 400, "y": 200}));
+    let r = call(&mut s, "renest-sheet", None, json!({"sheet": 1}));
+    assert!(r["message"].as_str().unwrap().contains("Sheet 1 nested again"), "{r}");
+    let j = jobfile::load(&job).unwrap();
+    assert_eq!(j.sheets.len(), 2, "the second sheet stays");
+    assert_eq!(j.sheets[0].len(), 2);
+    assert!(j.sheets[0].iter().all(|p| p.x < 300.0), "packed to the left: {:?}", j.sheets[0]);
+    assert_eq!((j.sheets[1].len(), j.sheets[1][0].x, j.sheets[1][0].y), (1, 400.0, 200.0), "sheet 2 untouched");
+    assert!(err(&mut s, "renest-sheet", json!({"sheet": 3})).contains("no sheet 3"));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn renesting_a_sheet_keeps_each_group_in_its_zone() {
+    // RN3
+    let d = dir("renest-groups");
+    let job = d.join("g.snjob");
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 150, "h": 100, "qty": 2, "group": "Acme"}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 150, "h": 100, "qty": 2, "group": "Demo"}));
+    // Mixed up by hand: Demo parts left of Acme parts.
+    call(&mut s, "place", None, json!({"part": 2, "x": 10, "y": 10}));
+    call(&mut s, "place", None, json!({"part": 1, "x": 200, "y": 10}));
+    call(&mut s, "place", None, json!({"part": 2, "x": 400, "y": 10}));
+    call(&mut s, "place", None, json!({"part": 1, "x": 600, "y": 10}));
+    call(&mut s, "renest-sheet", None, json!({"sheet": 1, "group": true}));
+    let j = jobfile::load(&job).unwrap();
+    assert_eq!(j.sheets[0].len(), 4);
+    let acme_end = j.sheets[0].iter().filter(|p| p.part == 0).map(|p| p.x + p.w).fold(0.0, f64::max);
+    let demo_start = j.sheets[0].iter().filter(|p| p.part == 1).map(|p| p.x).fold(f64::MAX, f64::min);
+    assert!(demo_start > acme_end, "Demo's zone after Acme's: {:?}", j.sheets[0]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn every_op_has_a_schema_and_mcp_lists_them() {
     let mut s = Session::new(Ctx::builtin());
     let init = crate::mcp::handle(&mut s, &json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-03-26"}})).unwrap();
@@ -304,6 +351,35 @@ fn do_all_takes_sheets_from_stock_and_booking_stores_the_remnants() {
     assert_eq!(st4.get("BIG").unwrap().qty, 1);
     assert_eq!(st4.get("S1").unwrap().qty, 2);
     assert!(!st4.items.iter().any(|x| x.kind.is_remnant()), "the unused remnant is taken out again");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn undoing_a_booked_sheet_renest_brings_its_remnant_back() {
+    // RN4, RN6: book → re-nest (its remnant is replaced) → undo.
+    let d = dir("renest_book");
+    let jp = d.join("demo.snjob");
+    let jp = jp.to_str().unwrap();
+    let ctx = stock_ctx(&d);
+    let lib = ctx.library_dir.clone();
+    let mut s = Session::new(ctx);
+    call(&mut s, "new", Some(jp), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "S1", "w": 2000, "h": 1000, "thickness": 3, "qty": 2}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 300, "h": 200, "qty": 6}));
+    call(&mut s, "nest", None, json!({}));
+    call(&mut s, "remnant", None, json!({"mode": "auto", "sheet": 1}));
+    call(&mut s, "stock-book", None, json!({"mode": "book"}));
+    let remnants = || crate::stock::Stock::load(&lib).unwrap().items.into_iter().filter(|x| x.kind.is_remnant()).map(|x| x.reference).collect::<Vec<_>>();
+    let made = jobfile::load(Path::new(jp)).unwrap().formats[0].made.clone();
+    assert!(!made.is_empty());
+    assert_eq!(remnants(), made);
+    // Re-nesting drops the remnant line, so the stored remnant goes.
+    call(&mut s, "renest-sheet", None, json!({"sheet": 1}));
+    assert!(remnants().is_empty(), "replaced by nothing: no line now");
+    call(&mut s, "undo", None, json!({}));
+    let j = jobfile::load(Path::new(jp)).unwrap();
+    assert!(!j.formats[0].made.is_empty(), "the restored sheet has its remnant again");
+    assert_eq!(remnants(), j.formats[0].made, "in stock, and nothing left behind");
     let _ = std::fs::remove_dir_all(&d);
 }
 

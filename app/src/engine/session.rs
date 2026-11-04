@@ -179,6 +179,12 @@ impl Session {
             None => (false, Default::default(), vec![]),
         };
         let note = if prev.booked {
+            // Remnants the undone change replaced: the restored sheets take
+            // over their replacements, to be rebuilt (RN6).
+            if let Ok(stock) = crate::stock::Stock::load(&self.ctx.library_dir) {
+                prev.normalise_formats();
+                stockflow::follow_stock(&stock, &mut prev.formats);
+            }
             // Remnants the undone change stored go out of stock again.
             let mut gone: Vec<SheetFormat> = formats.into_iter().filter(|f| f.made.iter().any(|r| !prev.formats.iter().any(|p| p.made.contains(r)))).collect();
             for f in gone.iter_mut() {

@@ -3875,6 +3875,43 @@
   "group": "quick ring",
   "value": "programs written, with a warning naming sheet and parts",
   "source": "MECHANICS QR6"
+ },
+ {
+  "name": "Nest sheet: parts nested",
+  "group": "nesting one sheet again",
+  "value": "only those already on the current sheet, back onto the same sheet; other sheets unchanged",
+  "source": "MECHANICS RN1; estimate",
+  "estimated": true
+ },
+ {
+  "name": "Nest sheet when they don't all fit",
+  "group": "nesting one sheet again",
+  "value": "sheet left as it was",
+  "source": "MECHANICS RN2"
+ },
+ {
+  "name": "Nest sheet with groups",
+  "group": "nesting one sheet again",
+  "value": "each group in its own zone, no compaction; refused on a remnant or when the zones don't fit",
+  "source": "MECHANICS RN3"
+ },
+ {
+  "name": "stored remnant out of date when",
+  "group": "nesting one sheet again",
+  "value": "its remnant lines change, or (no remnant line) its parts move; always after Nest sheet",
+  "source": "MECHANICS RN4"
+ },
+ {
+  "name": "undo restores cut lines",
+  "group": "nesting one sheet again",
+  "value": true,
+  "source": "MECHANICS RN5"
+ },
+ {
+  "name": "undo past a store",
+  "group": "nesting one sheet again",
+  "value": "a restored sheet follows the stock's record of what replaced its remnants, takes those over (out of date) and they are rebuilt; hand-deleted remnants are not remade",
+  "source": "MECHANICS RN6"
  }
 ]
 }

@@ -310,6 +310,47 @@ pub fn nest_all(parts: &[Part], spec: &SheetSpec, group_nest: bool, stock: Optio
     r
 }
 
+/// Re-nest one sheet (RN1): only the parts already on it, onto the same sheet
+/// (same format, remnant outline included), by the same automatic level as
+/// Nest all, then compacted against the real contours on a rectangular sheet.
+/// With grouping on and several groups on the sheet, each group gets its own
+/// zone as in Nest all (RN3; no compaction, so the zones stay apart). The
+/// other sheets are not touched. `Err` (and nothing changes, RN2) when the
+/// nester can't fit them all back on that one sheet.
+pub fn renest_sheet(parts: &[Part], spec: &SheetSpec, sheet: &[Placed], f: &SheetFormat, group_nest: bool) -> Result<Vec<Placed>, String> {
+    if sheet.is_empty() {
+        return Err("That sheet has no parts to nest.".into());
+    }
+    // The job's parts with each quantity = how many of it are on this sheet,
+    // so placements keep the job's part numbers.
+    let mut only: Vec<Part> = parts.to_vec();
+    for (i, p) in only.iter_mut().enumerate() {
+        p.qty = sheet.iter().filter(|c| c.part == i).count() as u32;
+    }
+    let on_sheet: Vec<Part> = only.iter().filter(|p| p.qty > 0).cloned().collect();
+    let zoned = group_nest && nest::part_groups(&on_sheet).len() > 1;
+    let mut out = if zoned {
+        if f.outline.is_some() {
+            return Err("This remnant holds parts of several groups — groups are nested in zones on whole sheets only. Turn Group by attribute off, or move them by hand.".into());
+        }
+        let mt = crate::ct1::active();
+        let r = nest::nest_grouped(&only, &spec.for_format(f), if mt.group_zones { mt.zone_gap } else { 0.0 });
+        if r.sheets.len() > 1 {
+            return Err("With each group in its own zone the sheet's parts don't all fit back on it — the sheet was left as it was.".into());
+        }
+        r.sheets.into_iter().next().unwrap_or_default()
+    } else {
+        nest::nest_plan(&only, spec, &[nest::FormatSlot { format: f.clone(), qty: Some(1) }]).sheets.into_iter().next().unwrap_or_default()
+    };
+    if out.len() < sheet.len() {
+        return Err(format!("Only {} of the sheet's {} parts fit when nested again — the sheet was left as it was.", out.len(), sheet.len()));
+    }
+    if !zoned && f.outline.is_none() {
+        nest::compact_contours(parts, &mut out, &spec.for_format(f));
+    }
+    Ok(out)
+}
+
 /// Is a part inside a sheet of this format: within its margin and, on a
 /// remnant, inside its real shape?
 pub fn fits_format(spec: &SheetSpec, f: &SheetFormat, c: &Placed) -> bool {

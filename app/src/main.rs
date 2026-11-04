@@ -357,6 +357,10 @@ pub struct Snapshot {
     result: NestResult,
     cur_sheet: usize,
     stale: bool,
+    /// Each sheet's cut lines and hand-picked cut order, so undoing a nest
+    /// brings back the lines that went with the old layout.
+    cut_lines: Vec<Vec<cutoff::CutLine>>,
+    manual_cuts: Vec<Vec<cnc::ManualCut>>,
 }
 
 fn demo_parts() -> Vec<Part> {
@@ -1194,6 +1198,8 @@ impl App {
             result: self.result.clone(),
             cur_sheet: self.cur_sheet,
             stale: self.stale,
+            cut_lines: self.cut_lines.clone(),
+            manual_cuts: self.manual_cuts.clone(),
         }
     }
 
@@ -1221,11 +1227,24 @@ impl App {
     }
 
     fn restore(&mut self, s: Snapshot) {
+        let mut result = s.result;
+        // Remnants stored since are not rolled back: follow the stock (RN6).
+        if result.formats.iter().any(|f| !f.made.is_empty()) {
+            if let Ok(stock) = crate::stock::Stock::load(&self.library_dir()) {
+                engine::stockflow::follow_stock(&stock, &mut result.formats);
+            }
+        }
         self.parts = s.parts;
         self.spec = s.spec;
-        self.result = s.result;
+        self.result = result;
         self.cur_sheet = s.cur_sheet;
         self.stale = s.stale;
+        if self.cut_lines != s.cut_lines || self.manual_cuts != s.manual_cuts {
+            self.mark_cam_changed();
+        }
+        self.cut_lines = s.cut_lines;
+        self.manual_cuts = s.manual_cuts;
+        self.sel_cut = None;
         self.sel_placed = None;
         self.drag = None;
         if self.sel_part.is_some_and(|i| i >= self.parts.len()) {
@@ -1368,6 +1387,52 @@ impl App {
         } else {
             format!("{} of {} parts nested — some are larger than the sheet.", placed, need)
         };
+    }
+
+    /// Nest only the sheet on screen again (RN1): the parts already on it, on
+    /// the same sheet; the other sheets keep their layout. Refused, sheet
+    /// unchanged, when they don't all fit back (RN2).
+    pub fn renest_sheet(&mut self) {
+        let ci = self.cur_sheet;
+        if ci >= self.result.sheets.len() {
+            return;
+        }
+        let f = self.result.format(ci, &self.spec);
+        match engine::renest_sheet(&self.parts, &self.spec, &self.result.sheets[ci], &f, self.group_nest) {
+            Ok(placed) => {
+                self.checkpoint();
+                self.anim_pending = true;
+                let before = self.sheet_usage(ci).2;
+                self.result.sheets[ci] = placed;
+                self.result.normalise(&self.spec);
+                engine::stockflow::remnants_outdated(&mut self.result.formats[ci]);
+                if let Some(l) = self.cut_lines.get_mut(ci) {
+                    l.clear();
+                }
+                if let Some(m) = self.manual_cuts.get_mut(ci) {
+                    m.clear();
+                }
+                self.ssim = None;
+                self.sel_cut = None;
+                self.sel_placed = None;
+                self.drag = None;
+                if self.cfg.stock.lines_after_nesting {
+                    self.auto_lines_sheet(ci);
+                }
+                self.mark_cam_changed();
+                self.refresh();
+                let (usage, _, after) = self.sheet_usage(ci);
+                self.status = format!(
+                    "Sheet {} nested again: its {} parts, usage {:.1} %, remnant from X {:.0} mm (was {:.0}). Other sheets unchanged.",
+                    ci + 1,
+                    self.result.sheets[ci].len(),
+                    usage,
+                    after,
+                    before
+                );
+            }
+            Err(e) => self.status = e,
+        }
     }
 
     pub fn total_placed(&self) -> usize {

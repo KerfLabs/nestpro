@@ -373,6 +373,53 @@ mod jobtree_tests {
     }
 
     #[test]
+    fn undoing_a_sheet_renest_brings_back_its_layout_and_cut_lines() {
+        // RN1, RN5
+        let mut a = App::new(None);
+        a.cur_sheet = 0;
+        let before = a.result.sheets[0].clone();
+        let line = vec![crate::cutoff::CutLine { pts: vec![[1990.0, 0.0], [1990.0, 1000.0]], kind: crate::cutoff::CutKind::Free }];
+        a.cut_lines = vec![line.clone()];
+        let others: Vec<_> = a.result.sheets[1..].to_vec();
+        a.renest_sheet();
+        assert!(a.status.contains("nested again"), "{}", a.status);
+        assert!(!a.cut_lines.first().is_some_and(|l| l.contains(&line[0])), "the sheet's cut lines go");
+        assert_eq!(a.result.sheets[1..].to_vec(), others, "other sheets untouched");
+        a.undo();
+        assert_eq!(a.result.sheets[0], before);
+        assert_eq!(a.cut_lines[0], line, "undo brings the cut lines back too");
+        // A cut line drawn by hand is its own undo step.
+        a.cut_lines.clear();
+        assert!(a.add_cut_line(crate::cutoff::CutLine { pts: vec![[1995.0, 0.0], [1995.0, 1000.0]], kind: crate::cutoff::CutKind::Free }));
+        a.undo();
+        assert!(a.cut_lines.iter().all(|l| l.is_empty()));
+        assert_eq!(a.result.sheets[0], before, "only the line was undone");
+    }
+
+    #[test]
+    fn manual_cut_picks_are_undo_steps_of_their_own() {
+        // RN5: a line, then a pick; undo takes back only the pick, and a new
+        // pick after an undo ends redo.
+        let mut a = App::new(None);
+        a.cur_sheet = 0;
+        let line = crate::cutoff::CutLine { pts: vec![[1995.0, 0.0], [1995.0, 1000.0]], kind: crate::cutoff::CutKind::Free };
+        a.cut_lines.clear();
+        assert!(a.add_cut_line(line.clone()));
+        let c = a.result.sheets[0][0];
+        a.manual_pick([c.x, c.y + c.h / 2.0], 3.0);
+        assert_eq!(a.manual_cuts.first().map_or(0, |m| m.len()), 1, "{}", a.status);
+        a.undo();
+        assert!(a.manual_cuts.first().is_none_or(|m| m.is_empty()), "the pick is undone");
+        assert_eq!(a.cut_lines[0], vec![line.clone()], "the line drawn before it stays");
+        assert!(!a.redo.is_empty());
+        a.manual_pick([c.x, c.y + c.h / 2.0], 3.0);
+        assert!(a.redo.is_empty(), "a new pick ends redo");
+        a.manual_undo();
+        a.undo();
+        assert_eq!(a.manual_cuts[0].len(), 1, "removing the last pick is undone too");
+    }
+
+    #[test]
     fn nesting_change_dates_read_plainly() {
         assert_eq!(cam_date_label(None), "—");
         // 2026-11-01 08:00 UTC = 1793520000 s.

@@ -194,6 +194,9 @@ pub static OPS: &[Op] = &[
     Op { name: "sheet-delete", group: "Nesting", kind: Kind::Write, help: "Delete a nested sheet; its parts are no longer nested.", args: &[r("sheet", Ty::Int, "Sheet number, from 1")] },
     Op { name: "clear-sheets", group: "Nesting", kind: Kind::Write, help: "Take every part off the sheets.", args: &[] },
     Op { name: "compact", group: "Nesting", kind: Kind::Write, help: "Slide every part on a sheet left, then down, along the real contours, to leave one big remnant.", args: &[SHEET] },
+    Op { name: "renest-sheet", group: "Nesting", kind: Kind::Write, help: "Nest one sheet again: only the parts already on it, on the same sheet (or remnant), by the job's automatic level; the other sheets stay as they are. Its cut lines and hand-picked cut order go (the automatic remnant line comes back if \"generate remnants after nesting\" is on). Refused, with the sheet unchanged, if they don't all fit back on it. Use nest to re-nest the whole job.", args: &[
+        SHEET, a("group", Ty::Bool, "Nest each part group on the sheet in its own zone (default: the machine's CT1 setting, as nest)"),
+    ] },
     Op { name: "place", group: "Nesting", kind: Kind::Write, help: "Place one copy of a part on a sheet: at x,y (lower-left of its box), or without x,y at the first free spot (lowest, then leftmost). Beyond the ordered quantity the order grows by one.", args: &[
         PART, a("sheet", Ty::Str, "Sheet number from 1, or \"new\" (default: sheet 1, a new one if there is none)"), a("x", Ty::Num, "X of the box's lower-left corner, mm"), a("y", Ty::Num, "Y, mm"),
         a("angle", Ty::Int, "0, 90, 180 or 270"), a("mirror", Ty::Bool, "Mirrored"),
@@ -1626,6 +1629,9 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                                 if st.get(r).is_some() || refs[..k].contains(r) {
                                     return Err(format!("refs: '{r}' is already taken"));
                                 }
+                                if st.reserved(r) {
+                                    return Err(format!("refs: '{r}' was a remnant that has since been replaced — it is kept for undo; pick another reference"));
+                                }
                             }
                             Some(rows.iter().zip(refs).map(|(row, r)| ((row.sheet, row.piece), r)).collect())
                         }
@@ -1659,6 +1665,27 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             job.sheet_changed(s);
             let after = sheet_usage(&job.parts, &job.sheets[s], &job.spec, &f).2;
             Ok(Outcome::msg(format!("Compacted sheet {} — remnant now starts at X {after:.0} mm ({:.0} mm gained).", s + 1, (before - after).max(0.0))))
+        }
+        "renest-sheet" => {
+            let s = sheet_idx(job, &a)?;
+            let f = job.format(s);
+            let group = a.bool("group")?.unwrap_or_else(|| crate::ct1::active().group_parts);
+            let placed = renest_sheet(&job.parts, &job.spec, &job.sheets[s], &f, group)?;
+            let before = sheet_usage(&job.parts, &job.sheets[s], &job.spec, &f).2;
+            job.sheets[s] = placed;
+            job.normalise_formats();
+            stockflow::remnants_outdated(&mut job.formats[s]);
+            job.cuts_mut(s).clear();
+            job.sheet_changed(s);
+            if ctx.cfg.stock.lines_after_nesting {
+                if let Some(lines) = auto_remnant_lines(&job.parts, &job.sheets[s], &job.spec_at(s), &ctx.cfg.stock.line) {
+                    job.cuts_mut(s).extend(lines);
+                }
+            }
+            let after = sheet_usage(&job.parts, &job.sheets[s], &job.spec, &f);
+            let mut o = Outcome::msg(format!("Sheet {} nested again: its {} parts, usage {:.1} %, remnant from X {:.0} mm (was {before:.0} mm). The other sheets are unchanged.", s + 1, job.sheets[s].len(), after.0, after.2));
+            o.data = json!({ "sheet": s + 1, "parts": job.sheets[s].len(), "usage_pct": r1(after.0), "remnant_from_x": r1(after.2) });
+            Ok(o)
         }
         "place" => {
             let pi = one_part(job, &a)?;
@@ -2203,6 +2230,7 @@ pub const GUI_MAP: &[(&str, &str)] = &[
     ("Sheets/Next\nsheet", "view: sheets are named by number"),
     ("Sheets/Sheet\nstock", "stock"),
     ("Insert/Nest\nall", "nest"),
+    ("Insert/Nest\nsheet", "renest-sheet"),
     ("Insert/Add\npart", "add-shape"),
     ("Insert/Open\npart", "part-info"),
     ("Insert/Import\nDXF", "import-dxf"),
