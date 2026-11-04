@@ -1,0 +1,133 @@
+# What the original has that the rebuild doesn't (yet)
+
+Full survey of the original's features: its three ribbons (jobs manager, nesting &
+machining, part drawing), the helper programs it ships (DNC links, program importers,
+technology tables…) and the behaviour recorded in MECHANICS.md.
+
+**Have** = working in the rebuild · **Part** = a simpler version exists · **Missing**.
+Priority: ★★★ needed for real daily laser work · ★★ valuable · ★ niche / other machine types.
+
+The item-by-item to-do list (with IDs, estimates to check, and what agents can't reach yet)
+is **`FEATURES.md`** at the top of the repo; keep both in step.
+
+## Jobs manager (Home / Manage / Utilities / View)
+
+| Original | Rebuild | Pri |
+|---|---|---|
+| Job Explorer, Product List, Product view, Sheet list, Sheet View | Have (Jobs screen) | |
+| Save jobs to disk / database (New, Connect, Information) | Have — `.snjob` files and the Library (jobs and products on disk, shareable folder); Lantek SQL database is read-only (Windows) | |
+| Parts from database, Import parts (DXF/DWG/MEC/IGES/GEO…) | Part — DXF only (the original also imports DWG, MEC, IGES, GEO…) | ★★★ |
+| Rectangles (quick rectangular parts) | Part — built-in shapes | |
+| Sheets stock manager (sizes, quantities, remnants) | Have — Sheet stock window: list/criteria, quantities, priority, locking, create, what the open job uses; nesting takes sheets from stock (best sheet format / combination searches, time limit) | |
+| **Materials** and **Consumables** (gas, nozzles) | Part — fixed material list | ★★ |
+| Machine setup (several machines) | Part — several machines in Settings (post library, BLM, CT1), one active at a time | ★★ |
+| Kits From Database, Kit Explorer | Missing | ★★ |
+| Quotation (save quote, Quotation Jobs) | Missing | ★★ |
+| Element Search (search jobs by type, name, date, status) | Part — simple search | ★ |
+| Export / Import nestings, database backup | Part — program + CSV export | ★★ |
+| Punches, turrets, multitools, dies, drills | Missing (punch machines) | ★ |
+| Flex3D unfolding / bending, 3D importer (SolidWorks, Inventor…) | Missing | ★ |
+| Duct parts module, Processes, Parametric editor | Missing (Part — 8 shapes with width/height) | ★ |
+| Masterlink / Oseon ERP connectors | Different systems — the rebuild has its own ERP / MES link with a **Fulcrum** connector: Settings → ERP / MES + Jobs → ERP / MES (see below) | |
+
+## Nesting screen — Home tab
+
+| Original | Rebuild | Pri |
+|---|---|---|
+| Sheets: New, Delete (current / subjob / job), Previous/Next/Go to, Change quantity, Change data, Unblock | Part — a stock sheet or remnant on the current sheet (Sheet stock window), previous/next, clear sheets; agents also have New / Change / Delete sheet (`sheet-add`, `sheet-change`, `sheet-delete`) | ★★ |
+| Nesting: Do All (on selected sheets / filling sheets), Active subjob, One Sheet (redo), Delete | Part — Nest all with 5 levels | |
+| **One Window** (nest only inside a window you draw) | Missing | ★★ |
+| **Place** / **Semi-Automatic** (one part at a time) | **Have** — Parts View ghost drop, Enter = auto-place one | |
+| Unitary / Grid (part onto a sheet of matching size) | Missing | ★ |
+| Collisions, Copy, Move | Have | |
+| **Advanced Copy** (arrays of a part), **Place Near**, **Expand**, **Fit** to borders | Part — Compact to left, approach snap while dropping | ★★ |
+| **Nesting for common cut** (shared edges) | Missing | ★★ |
+| Margins toggle | Have (sheet margin) | |
+| Remnants: create (auto / semi-auto), draw edge, exact edge, rotate, reference | Have — nine automatic line shapes, semi-automatic (3 types), saved into stock on save, rotate/flip; reference points and marks missing | ★ |
+| Time and cost, Export data | Have | |
+| Snap points (end, mid, centre, intersection, tangent…), Distance & Angle, Orthogonal | Missing | ★★ |
+| Macros (record) | Missing | ★ |
+| **True-shape nesting** (parts interlock by outline) | Have — strip (band) profiles like the original's: parts hook into notches and drop into holes at every level, best method per sheet, on stock sheets and inside a remnant's real outline too (`bands.rs`, `nest::nest_plan`, MECHANICS "True-shape strip nesting"). Quarter turns only; free angles (A014/B058 steps) still missing | ★★ |
+
+## Technology tab (nesting and part drawing)
+
+| Original | Rebuild | Pri |
+|---|---|---|
+| Lead-in/outs: Automatic, Semi-automatic, Delete, 16 lead types, dynamic, custom, move point, lead-out like lead-in, bisector | Part — automatic leads from the machine's CT1 tables by contour class and quality (types 1–13, zones, corner rules, round-hole clipping, collision test; `leads.rs`, MECHANICS AL1–AL11); types 14–16, force placement, dynamic/custom leads missing | ★★ |
+| Micro-joints: Automatic, Semi-auto, 6 types, corner lead-in, nano-joints, move point, to geometry | Part — Lantek's automatic count (ceil P/F150, size-class min/max, even), holes too, centred on elements, corner joints straddle corners, joint leads (`joints.rs`, MECHANICS AM1–AM6); material-file joint records, zone modes, nano-joints missing | ★ |
+| Loops (2 types), Round angles | Part — loops | ★ |
+| **Bridges** (join parts so they cut as one) | Missing | ★★ |
+| Standard bevel, 3D bevel | Missing (bevel heads) | ★ |
+| Cut technology: Marking, No cut, Clean cut, Cutting, Micro-joint, Dynamic, Hatch, Bending lines | Part — cut quality per part, marking texts | ★★ |
+| Texts: Marked, Written, **QR codes**, Templates, Vectorize | Part — marked/note/special texts, curved | ★★ |
+
+## Machining tab
+
+| Original | Rebuild | Pri |
+|---|---|---|
+| Machine All / Automatic / Regenerate | Have (automatic cut order + program) | |
+| Manual contours, two points, between micro-joints, continuous contours | Part — manual contour picking | ★★ |
+| **Common-cut / continuous cut**, flying cut in holes, hole destruction | Missing | ★★ |
+| **Order machining**, change cutting direction, contour ordering | Part — manual order, reverse | ★★ |
+| Delete instructions (current, by selection, from-to) | Part — undo pick / clear | ★ |
+| **Component extraction** (stop, trap, lift; assign boxes) | Missing | ★ |
+| Avoid holes already cut (head rapids) | Missing | ★★ |
+| Speed rates, CN/system compensation, postprocessor words | Part — the post library (.CFF/.CF1) shapes the G-code, BLM LC5 output; no speed tables or compensation (FEATURES MAC-1) | ★★★ |
+| Cycles, pockets, nibbling, punch macros | Missing (punch / milling) | ★ |
+| Clamps and work zone, sheet reposition, multihead | Missing | ★ |
+| Verify machining, verify unstable contours | Part — Verify Machining with safe distance; unstable contours not yet | ★ |
+
+## Simulation, View and helpers
+
+| Original | Rebuild | Pri |
+|---|---|---|
+| **Simulation** (run / step / next tool / reposition / extraction) | Part — the Simulation tab plays the program; next tool / reposition / extraction not yet | ★ |
+| Panels: explorer, viewers, lists, machining window, restore panels | Have (dockable panes) | |
+| Zoom all / window / previous / scale, full screen | Part — zoom, fit | ★ |
+| Part drawing (Drafting): lines, arcs, circles, slots, polygons, fillets, offset, trim, union/subtract, dimension notes | Part — the Drawing module's tabs, look, Verify Part, measuring, machining check and simulation are in; drafting commands are shown greyed out | ★★ |
+| **Reports / labels** (`Reports\*.rpt`: sheet lists, part labels, cost lists) | Part — CSV report | ★★ |
+| **DNC — sending programs to the machine** (one link per control maker) | Missing | ★★ |
+| Importing other CAM programs (Amada, Trumpf, Messer…) and other makers' tech tables | Missing | ★ |
+| Pallet / suction-cup unloading | Missing | ★ |
+
+## Agents and scripts (command line + MCP)
+
+| Feature | Rebuild | Pri |
+|---|---|---|
+| Headless engine shared by the window, CLI and MCP (`src/engine/`) | Have | |
+| Operations: job, parts (shapes, DXF + layer roles, library), sheet, nest, place/move/rotate/copy, technology (leads, element leads, joints, loops, cut quality, texts), cut order, remnants/cut lines, verify, program, export, sheet stock | Have — 45 operations (`nestpro ops`) | |
+| Pictures for the agent (sheet/part PNG or SVG, numbered elements) | Have | |
+| Every ribbon command mapped to an operation, test-enforced (`nestpro ops --gui`) | Have | |
+| Window notices when an agent changed the open job file: reloads it, or asks when both changed | Have (`filewatch.rs`, once a second) | |
+| Each open job keeps its own file (Save no longer writes into the previous job's file) | Have | |
+| Lantek import XML (`import-xml`, one job file per material and thickness) and BLM program set back into a job (`import-program`) | Have — same rules as the window (`engine/imports.rs`) | |
+| Lantek database browser for agents | Missing (`todo:` in GUI_MAP; needs a Lantek SQL Server connection, Windows) | ★ |
+| Sheet stock / remnant stock operations | Have — `stock`, `stock-book` (with `refs=` for new remnants' names; changed remnant lines remake unused remnants), `sheet-add`, `sheet-change`, `sheet-delete`; `nest` takes from stock through the window's code, with the best sheet format / combination searches when the window's options are on (`engine/stockflow.rs`, MECHANICS SA1–SA6, BN6–BN8) | |
+| Semi-automatic remnant and rotate/flip remnant sheet for agents | Missing (`todo:` in GUI_MAP) | ★ |
+| True-shape nesting, automatic leads and micro-joints for agents | Have — `nest`, `leads` (default type: the machine's tables), `joints` (`every=`) run the window's code (`nest::nest_plan`, `engine::TechEdit`, `cnc::plan`); the joint size classes are the machine's (FEATURES TEC-9) | |
+
+## What this means for the next steps
+
+For day-to-day laser work the most valuable gaps are, in order:
+
+1. ~~Saving jobs~~ — done (`.snjob` + Library).
+2. ~~Sheet stock and remnants~~ — done (see MECHANICS.md "Sheet stock and remnants").
+3. ~~True-shape nesting~~ — done (strip profiles, on stock sheets and inside remnant outlines too); free rotation angles still to do.
+4. **A real machine post-processor** — speeds per material and the machine's own G-code dialect.
+5. **Common cut and bridges**, then **Simulation** and **reports/labels**.
+
+Punching, bevel, duct and 3D unfolding are other products' work and can wait.
+
+## ERP / MES integrations (the rebuild's own; MECHANICS "ERP / MES integrations")
+
+| Feature | Rebuild | Pri |
+|---|---|---|
+| Integration layer: one `Connector` per system, shared settings page, window and job links | Have (`src/integrations/`, `src/erpui.rs`) | |
+| **Fulcrum**: token (DPAPI on Windows), Test connection | Have | |
+| Fulcrum: list work waiting to be nested (material + operation groups, search, filters) | Have | |
+| Fulcrum: import job operations as a job (cut list, DXF download, units, material, thickness, quantities per order) | Have | |
+| Fulcrum: send the nest back (work order, sheets × count, parts per sheet, quantity per job operation, unplaced parts) | Have — **not yet tried against the live API** | ★★★ |
+| Fulcrum: sheet stock item matched automatically (material shape + sheet size) | Part — item number typed per job | ★★ |
+| Fulcrum: report sheets cut / scrap back (completion tracking) | Missing | ★★ |
+| Fulcrum: remnants as inventory | Missing (after the sheet stock manager) | ★ |
+| Other systems (Masterlink, Oseon, others) | Missing — add a connector | ★ |

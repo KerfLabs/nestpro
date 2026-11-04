@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Refuse a commit that would publish research evidence, shop data or an
+# unreviewed image. Installed by tools/install-hooks.sh.
+exec "$(git rev-parse --show-toplevel)/tools/public-check.sh" --staged

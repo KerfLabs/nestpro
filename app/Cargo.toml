@@ -1,0 +1,29 @@
+[package]
+name = "nestpro"
+version = "0.1.0"
+edition = "2024"
+description = "Sheet-nesting CAM for laser, plasma, oxyfuel and waterjet cutting"
+license = "MIT"
+repository = "https://github.com/KerfLabs/nestpro"
+
+[dependencies]
+eframe = "0.37.0"
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+rfd = "0.17.2"
+miniz_oxide = "0.8.9"
+crc32fast = "1.5.4"
+serde = { version = "1.0.229", features = ["derive", "rc"] }
+serde_json = { version = "1.0.154", features = ["float_roundtrip"] }
+tiny-skia = "0.11.4"
+geo = { version = "0.33", default-features = false }
+
+# HTTPS for ERP/MES integrations (integrations/http.rs): Windows' own TLS
+# (schannel, uses the Windows certificate store) there; rustls elsewhere.
+[target.'cfg(windows)'.dependencies]
+ureq = { version = "3.5.1", default-features = false, features = ["native-tls"] }
+[target.'cfg(not(windows))'.dependencies]
+ureq = { version = "3.5.1", default-features = false, features = ["rustls"] }
+
+[build-dependencies]
+embed-resource = "3.0.12"
+image = { version = "0.25.10", default-features = false, features = ["png"] }

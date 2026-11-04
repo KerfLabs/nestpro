@@ -1,0 +1,3096 @@
+{
+ "version": 1,
+ "values": [
+  {
+   "name": "sheet list order",
+   "group": "sheet list",
+   "value": "NOrder ascending",
+   "source": "MECHANICS Mechanics read from the original #1"
+  },
+  {
+   "name": "identical sheet copies folded",
+   "group": "sheet list",
+   "value": true,
+   "source": "MECHANICS Mechanics read from the original #4"
+  },
+  {
+   "name": "usage field",
+   "group": "sheet list",
+   "value": "SProfit",
+   "source": "MECHANICS Mechanics read from the original #2"
+  },
+  {
+   "name": "remnant usage field",
+   "group": "sheet list",
+   "value": "SProfitS",
+   "source": "MECHANICS Mechanics read from the original #2"
+  },
+  {
+   "name": "max used X/Y fields",
+   "group": "sheet list",
+   "value": "SXMax/SYMax",
+   "source": "MECHANICS Mechanics read from the original #2"
+  },
+  {
+   "name": "usage formula",
+   "group": "sheet list",
+   "value": "part area / sheet area",
+   "estimated": true
+  },
+  {
+   "name": "remnant usage formula",
+   "group": "sheet list",
+   "value": "part area / area left of remnant cut",
+   "estimated": true
+  },
+  {
+   "name": "remnant cut position",
+   "group": "sheet list",
+   "value": "max part X + part gap",
+   "estimated": true
+  },
+  {
+   "name": "modified nesting thumbnail marked",
+   "group": "sheet view",
+   "value": true,
+   "source": "MECHANICS Mechanics read from the original #5"
+  },
+  {
+   "name": "nesting status format",
+   "group": "status line",
+   "value": "%s / %d / %s (%s) / %s / %1.4f",
+   "source": "MECHANICS Mechanics read from the original #6"
+  },
+  {
+   "name": "product status format",
+   "group": "status line",
+   "value": "%s / %d / %s / %s / %1.4f",
+   "source": "MECHANICS Mechanics read from the original #7"
+  },
+  {
+   "name": "labor ticket suffix",
+   "group": "status line",
+   "value": " / %ld",
+   "source": "MECHANICS Mechanics read from the original #7"
+  },
+  {
+   "name": "labor ticket suffix shown by default",
+   "group": "status line",
+   "value": false,
+   "estimated": true
+  },
+  {
+   "name": "thickness decimals in status",
+   "group": "status line",
+   "value": 4,
+   "source": "MECHANICS Mechanics read from the original #6, #7"
+  },
+  {
+   "name": "unit factor",
+   "group": "status line",
+   "value": 1.0,
+   "estimated": true
+  },
+  {
+   "name": "title format",
+   "group": "window",
+   "value": "%s - [%s] - %s",
+   "source": "MECHANICS Mechanics read from the original #8"
+  },
+  {
+   "name": "duplicate name format",
+   "group": "jobs",
+   "value": "%s (%d)",
+   "source": "MECHANICS Mechanics read from the original #9"
+  },
+  {
+   "name": "duplicate name max suffix",
+   "group": "jobs",
+   "value": 9,
+   "source": "MECHANICS Mechanics read from the original #9"
+  },
+  {
+   "name": "job name max length",
+   "group": "jobs",
+   "value": 250,
+   "source": "MECHANICS Mechanics read from the original #9"
+  },
+  {
+   "name": "helper poll interval",
+   "group": "launch",
+   "value": 50,
+   "unit": "ms",
+   "source": "MECHANICS Mechanics read from the original #12"
+  },
+  {
+   "name": "default sheet length",
+   "group": "sheet",
+   "value": 2000,
+   "unit": "mm",
+   "source": "MECHANICS How the rebuild uses them; observed: the original's Jobs screen"
+  },
+  {
+   "name": "default sheet width",
+   "group": "sheet",
+   "value": 1000,
+   "unit": "mm",
+   "source": "MECHANICS How the rebuild uses them; observed: the original's Jobs screen"
+  },
+  {
+   "name": "edge margin",
+   "group": "sheet",
+   "value": 5,
+   "unit": "mm",
+   "estimated": true
+  },
+  {
+   "name": "part gap",
+   "group": "nesting",
+   "value": 5,
+   "unit": "mm",
+   "estimated": true
+  },
+  {
+   "name": "rotation step",
+   "group": "nesting",
+   "value": 90,
+   "unit": "deg",
+   "estimated": true
+  },
+  {
+   "name": "machine name",
+   "group": "jobs",
+   "value": "Laser 01",
+   "source": "MECHANICS How the rebuild uses them; observed: the original's Jobs screen"
+  },
+  {
+   "name": "first labor ticket",
+   "group": "jobs",
+   "value": 101,
+   "source": "MECHANICS How the rebuild uses them; observed: the original's Jobs screen"
+  },
+  {
+   "name": "default priority",
+   "group": "jobs",
+   "value": 0,
+   "source": "MECHANICS How the rebuild uses them; observed: the original's Jobs screen"
+  },
+  {
+   "name": "cut speed mild steel 3 mm",
+   "group": "costing",
+   "value": 5000,
+   "unit": "mm/min",
+   "estimated": true
+  },
+  {
+   "name": "rapid speed",
+   "group": "costing",
+   "value": 60000,
+   "unit": "mm/min",
+   "estimated": true
+  },
+  {
+   "name": "warn before changing a part with technology",
+   "group": "part technology",
+   "value": true,
+   "source": "MECHANICS T1 (Part technology); default estimate"
+  },
+  {
+   "name": "tech edit choice: copy keeps original",
+   "group": "part technology",
+   "value": "copy",
+   "source": "MECHANICS T2 (Part technology)"
+  },
+  {
+   "name": "tech edit choice: apply to all remaining",
+   "group": "part technology",
+   "value": true,
+   "source": "MECHANICS T2 (Part technology)"
+  },
+  {
+   "name": "nested part material change: remove nestings frees sheets",
+   "group": "part technology",
+   "value": true,
+   "source": "MECHANICS T4 (Part technology)"
+  },
+  {
+   "name": "nested part change question asked once per batch",
+   "group": "part technology",
+   "value": true,
+   "source": "MECHANICS T4 (Part technology)"
+  },
+  {
+   "name": "automatic lead-in",
+   "group": "part technology",
+   "value": 5,
+   "unit": "mm",
+   "estimated": true
+  },
+  {
+   "name": "default part lead-out",
+   "group": "part technology",
+   "value": 2,
+   "unit": "mm",
+   "estimated": true
+  },
+  {
+   "name": "default joint width",
+   "group": "part technology",
+   "value": 0.5,
+   "unit": "mm",
+   "estimated": true
+  },
+  {
+   "name": "quality speed factor rough",
+   "group": "part technology",
+   "value": 1.2,
+   "estimated": true
+  },
+  {
+   "name": "quality speed factor fine",
+   "group": "part technology",
+   "value": 0.7,
+   "estimated": true
+  },
+  {
+   "name": "default micro-joints",
+   "group": "part technology",
+   "value": 0,
+   "source": "MECHANICS A3"
+  },
+  {
+   "name": "lead angle",
+   "group": "part technology",
+   "value": 45,
+   "unit": "deg",
+   "source": "MECHANICS A2"
+  },
+  {
+   "name": "DXF joining tolerance",
+   "group": "dxf",
+   "value": 0.01,
+   "unit": "mm",
+   "source": "MECHANICS D4 (DXF drawings); role inferred"
+  },
+  {
+   "name": "DXF arc smoothness (chord error)",
+   "group": "dxf",
+   "value": 0.1,
+   "unit": "mm",
+   "source": "MECHANICS D4 (DXF drawings); role inferred"
+  },
+  {
+   "name": "DXF default layer role",
+   "group": "dxf",
+   "value": "cut (code 13)",
+   "source": "MECHANICS D5 (DXF drawings)"
+  },
+  {
+   "name": "DXF text font",
+   "group": "dxf",
+   "value": "arial",
+   "source": "MECHANICS D5 (DXF drawings)"
+  },
+  {
+   "name": "part DXF export writes .txt beside .dxf",
+   "group": "dxf",
+   "value": true,
+   "source": "MECHANICS D1 (DXF drawings)"
+  },
+  {
+   "name": "bend hand-off requires matching material and thickness",
+   "group": "dxf",
+   "value": true,
+   "source": "MECHANICS D2 (DXF drawings)"
+  },
+  {
+   "name": "marking speed factor",
+   "group": "dxf",
+   "value": 2.0,
+   "estimated": true
+  },
+  {
+   "name": "automatic lead: nearest valid corner to position",
+   "group": "part technology",
+   "value": true,
+   "source": "MECHANICS P2"
+  },
+  {
+   "name": "corner lead on bisector",
+   "group": "part technology",
+   "value": true,
+   "source": "MECHANICS P4"
+  },
+  {
+   "name": "round hole lead from centre",
+   "group": "part technology",
+   "value": true,
+   "source": "MECHANICS P5; centre start inferred"
+  },
+  {
+   "name": "position code 5 = given point",
+   "group": "part technology",
+   "value": 5,
+   "source": "MECHANICS P2"
+  },
+  {
+   "name": "auto micro-joints small limit",
+   "group": "part technology",
+   "value": 0.0,
+   "unit": "mm",
+   "source": "MECHANICS P7"
+  },
+  {
+   "name": "auto micro-joints large limit",
+   "group": "part technology",
+   "value": 99999.999,
+   "unit": "mm",
+   "source": "MECHANICS P7"
+  },
+  {
+   "name": "auto micro-joints default count",
+   "group": "part technology",
+   "value": 0,
+   "source": "MECHANICS P7, A3"
+  },
+  {
+   "name": "loop corner limit",
+   "group": "part technology",
+   "value": 95,
+   "unit": "deg",
+   "estimated": true
+  },
+  {
+   "name": "loop size",
+   "group": "part technology",
+   "value": 2.0,
+   "unit": "mm",
+   "estimated": true
+  },
+  {
+   "name": "valid corner minimum side",
+   "group": "part technology",
+   "value": "1.5 x lead length",
+   "estimated": true
+  },
+  {
+   "name": "open part scope modes",
+   "group": "open part",
+   "value": "selected / all / same machine / same machine+material+thickness",
+   "source": "MECHANICS O3"
+  },
+  {
+   "name": "warn when opened parts differ in machine/material/thickness",
+   "group": "open part",
+   "value": true,
+   "source": "MECHANICS O4"
+  },
+  {
+   "name": "drawing module launch mode",
+   "group": "open part",
+   "value": 0,
+   "source": "MECHANICS O6"
+  },
+  {
+   "name": "part hand-off languages",
+   "group": "open part",
+   "value": 9,
+   "source": "MECHANICS O5"
+  },
+  {
+   "name": "part hand-off thickness format",
+   "group": "open part",
+   "value": "%f",
+   "source": "MECHANICS O2"
+  },
+  {
+   "name": "lead on element placed at element middle",
+   "group": "element picking",
+   "value": 0.5,
+   "unit": "fraction of element length",
+   "source": "MECHANICS E4"
+  },
+  {
+   "name": "lead on element refused when element shorter than lead",
+   "group": "element picking",
+   "value": true,
+   "source": "MECHANICS E4; minimum taken as the lead-in length (inferred)"
+  },
+  {
+   "name": "pick tie tolerance",
+   "group": "element picking",
+   "value": 1e-06,
+   "source": "MECHANICS E3"
+  },
+  {
+   "name": "pick tie broken by nearer start point",
+   "group": "element picking",
+   "value": true,
+   "source": "MECHANICS E3"
+  },
+  {
+   "name": "pick initial far distance",
+   "group": "element picking",
+   "value": 100000.999,
+   "source": "MECHANICS E3"
+  },
+  {
+   "name": "window selection needs element fully inside",
+   "group": "element picking",
+   "value": true,
+   "source": "MECHANICS E2"
+  },
+  {
+   "name": "capture square half-size",
+   "group": "element picking",
+   "value": 6,
+   "unit": "px",
+   "estimated": true
+  },
+  {
+   "name": "element corner angle",
+   "group": "element picking",
+   "value": 20,
+   "unit": "deg",
+   "estimated": true
+  },
+  {
+   "name": "default pane options (menu button)",
+   "group": "side panes",
+   "value": 16,
+   "source": "MECHANICS D1 (Side panes)"
+  },
+  {
+   "name": "translucent docking preview",
+   "group": "side panes",
+   "value": true,
+   "source": "MECHANICS D1 (Side panes)"
+  },
+  {
+   "name": "docking stickers",
+   "group": "side panes",
+   "value": true,
+   "source": "MECHANICS D1 (Side panes)"
+  },
+  {
+   "name": "pane contents shown while dragging",
+   "group": "side panes",
+   "value": true,
+   "source": "MECHANICS D1 (Side panes)"
+  },
+  {
+   "name": "keyboard pane navigation flags",
+   "group": "side panes",
+   "value": 15,
+   "source": "MECHANICS D1 (Side panes)"
+  },
+  {
+   "name": "pane option: can't close",
+   "group": "side panes",
+   "value": 1,
+   "source": "MECHANICS D5 (Side panes)"
+  },
+  {
+   "name": "pane option: can't float",
+   "group": "side panes",
+   "value": 4,
+   "source": "MECHANICS D4 (Side panes)"
+  },
+  {
+   "name": "pane option: can't dock (set by menu Floating)",
+   "group": "side panes",
+   "value": 32,
+   "source": "MECHANICS D3 (Side panes)"
+  },
+  {
+   "name": "new pane width",
+   "group": "side panes",
+   "value": 250,
+   "unit": "px",
+   "source": "MECHANICS D4 (Side panes)"
+  },
+  {
+   "name": "new pane height",
+   "group": "side panes",
+   "value": 140,
+   "unit": "px",
+   "source": "MECHANICS D4 (Side panes)"
+  },
+  {
+   "name": "layout name",
+   "group": "side panes",
+   "value": "ExpertLayout",
+   "source": "MECHANICS D6 (Side panes)"
+  },
+  {
+   "name": "last open pane can't be closed",
+   "group": "side panes",
+   "value": true,
+   "source": "MECHANICS D5 (Side panes)"
+  },
+  {
+   "name": "pane menu items",
+   "group": "side panes",
+   "value": "Floating / Docking / Auto Hide / Hide",
+   "source": "MECHANICS D2 (Side panes); names inferred from behaviour"
+  },
+  {
+   "name": "right-click on a pane opens the pane menu at the pointer",
+   "group": "side panes",
+   "value": true,
+   "source": "MECHANICS D7 (Side panes)"
+  },
+  {
+   "name": "closing a pane shows and activates the next open pane",
+   "group": "side panes",
+   "value": true,
+   "source": "MECHANICS D9 (Side panes)"
+  },
+  {
+   "name": "pane actions that post the layout command",
+   "group": "side panes",
+   "value": "0x61501",
+   "source": "MECHANICS D11 (Side panes)"
+  },
+  {
+   "name": "pane slid out by a command stays out",
+   "group": "side panes",
+   "value": 2.0,
+   "unit": "s",
+   "estimated": true
+  },
+  {
+   "name": "nesting methods, level 1",
+   "group": "nesting",
+   "value": 4,
+   "source": "MECHANICS N1 (A001); observed: LevelSys.nst"
+  },
+  {
+   "name": "nesting methods, level 2",
+   "group": "nesting",
+   "value": 7,
+   "source": "MECHANICS N1 (A001); observed: LevelSys.nst"
+  },
+  {
+   "name": "nesting methods, level 3",
+   "group": "nesting",
+   "value": 11,
+   "source": "MECHANICS N1 (A001); observed: LevelSys.nst"
+  },
+  {
+   "name": "nesting methods, level 4",
+   "group": "nesting",
+   "value": 16,
+   "source": "MECHANICS N1 (A001); observed: LevelSys.nst"
+  },
+  {
+   "name": "nesting methods, level 5",
+   "group": "nesting",
+   "value": 18,
+   "source": "MECHANICS N1 (A001); observed: LevelSys.nst"
+  },
+  {
+   "name": "nesting band width",
+   "group": "nesting",
+   "value": 3.0,
+   "unit": "mm",
+   "source": "MECHANICS N1 (A003); observed: LevelSys.nst"
+  },
+  {
+   "name": "regular nesting tests",
+   "group": "nesting",
+   "value": 99,
+   "source": "MECHANICS N1 (A004 / A005); observed: LevelSys.nst"
+  },
+  {
+   "name": "minimum module efficiency",
+   "group": "nesting",
+   "value": 0.8,
+   "source": "MECHANICS N1 (A011); observed: LevelSys.nst"
+  },
+  {
+   "name": "free rotation step",
+   "group": "nesting",
+   "value": 30.0,
+   "unit": "deg",
+   "source": "MECHANICS N1 (A014); observed: LevelSys.nst"
+  },
+  {
+   "name": "special rotations mode (automatic)",
+   "group": "nesting",
+   "value": 2,
+   "source": "MECHANICS N1 (A018), R3; observed: LevelSys.nst"
+  },
+  {
+   "name": "main nesting direction levels 4-5 (both)",
+   "group": "nesting",
+   "value": "both",
+   "source": "MECHANICS N1 (A002); observed: LevelSys.nst"
+  },
+  {
+   "name": "fill holes and test corners only at level 5",
+   "group": "nesting",
+   "value": true,
+   "source": "MECHANICS N1 (A016 / A017); observed: LevelSys.nst"
+  },
+  {
+   "name": "rotation permissions per part",
+   "group": "nesting",
+   "value": "0/90/180/270 plain and mirrored",
+   "source": "MECHANICS R1"
+  },
+  {
+   "name": "angle normalisation",
+   "group": "nesting",
+   "value": 360.0,
+   "unit": "deg",
+   "source": "MECHANICS R2"
+  },
+  {
+   "name": "default nesting level in the rebuild",
+   "group": "nesting",
+   "value": 3,
+   "estimated": true
+  },
+  {
+   "name": "marking text type",
+   "group": "texts",
+   "value": 1,
+   "source": "MECHANICS T1 (Texts on parts)"
+  },
+  {
+   "name": "special marking text types",
+   "group": "texts",
+   "value": "2-4",
+   "source": "MECHANICS T1 (Texts on parts)"
+  },
+  {
+   "name": "special text parameter marker",
+   "group": "texts",
+   "value": "#",
+   "source": "MECHANICS T2 (Texts on parts)"
+  },
+  {
+   "name": "notes are not machined",
+   "group": "texts",
+   "value": true,
+   "source": "MECHANICS T1 (Texts on parts)"
+  },
+  {
+   "name": "dxf text on a mark layer is marked",
+   "group": "texts",
+   "value": true,
+   "source": "MECHANICS T6 (Texts on parts); layer role mapping estimate"
+  },
+  {
+   "name": "marking font grid (rebuild's own font)",
+   "group": "texts",
+   "value": 6.0,
+   "unit": "grid units high",
+   "estimated": true
+  },
+  {
+   "name": "text angle snap: step meaning always level",
+   "group": "texts",
+   "value": 359.9,
+   "unit": "deg",
+   "source": "MECHANICS T9 (Texts on parts)"
+  },
+  {
+   "name": "text re-turned when off by more than",
+   "group": "texts",
+   "value": 0.1,
+   "unit": "deg",
+   "source": "MECHANICS T10 (Texts on parts)"
+  },
+  {
+   "name": "marking text is never mirrored on the sheet",
+   "group": "texts",
+   "value": true,
+   "source": "MECHANICS T8 (Texts on parts)"
+  },
+  {
+   "name": "text angle step used by the rebuild (always level)",
+   "group": "texts",
+   "value": 360.0,
+   "unit": "deg",
+   "estimated": true
+  },
+  {
+   "name": "text box half-size factor",
+   "group": "texts",
+   "value": 0.5,
+   "source": "MECHANICS T11 (Texts on parts)"
+  },
+  {
+   "name": "micro-joint lead length (default)",
+   "group": "micro-joints",
+   "value": 10.0,
+   "unit": "mm",
+   "source": "MECHANICS J1, A2"
+  },
+  {
+   "name": "micro-joint lead angle (default)",
+   "group": "micro-joints",
+   "value": 45.0,
+   "unit": "deg",
+   "source": "MECHANICS J1, A2"
+  },
+  {
+   "name": "micro-joint gap (default)",
+   "group": "micro-joints",
+   "value": 0.5,
+   "unit": "mm",
+   "source": "MECHANICS J1, A2"
+  },
+  {
+   "name": "corner joint types",
+   "group": "micro-joints",
+   "value": "1, 2, 7, 8",
+   "source": "MECHANICS J2"
+  },
+  {
+   "name": "plain gap types (no leads)",
+   "group": "micro-joints",
+   "value": "9-11",
+   "source": "MECHANICS J2"
+  },
+  {
+   "name": "joint element minimum length factor",
+   "group": "micro-joints",
+   "value": 10.0,
+   "source": "MECHANICS J5"
+  },
+  {
+   "name": "joint gap must lie on one element",
+   "group": "micro-joints",
+   "value": true,
+   "source": "MECHANICS J4"
+  },
+  {
+   "name": "joint lead-out mirrors the lead-in",
+   "group": "micro-joints",
+   "value": true,
+   "source": "MECHANICS J7"
+  },
+  {
+   "name": "joint lead edit angle limit",
+   "group": "micro-joints",
+   "value": 90.0,
+   "unit": "deg",
+   "source": "MECHANICS J8"
+  },
+  {
+   "name": "joint lead reach as share of part gap",
+   "group": "micro-joints",
+   "value": 0.8,
+   "estimated": true
+  },
+  {
+   "name": "manual contour labels",
+   "group": "manual machining",
+   "value": "##MANUAL / ##MANINT / ##MANCOM",
+   "source": "MECHANICS MM1"
+  },
+  {
+   "name": "a contour is a hole unless labelled outside cut",
+   "group": "manual machining",
+   "value": "##EXTCUT",
+   "source": "MECHANICS MM2"
+  },
+  {
+   "name": "a contour is cut once (already-cut contours can't be picked)",
+   "group": "manual machining",
+   "value": true,
+   "source": "MECHANICS MM3, MM4"
+  },
+  {
+   "name": "manual cuts go before automatic ones, in picked order",
+   "group": "manual machining",
+   "value": true,
+   "estimated": true
+  },
+  {
+   "name": "contour pick tolerance",
+   "group": "manual machining",
+   "value": 8.0,
+   "unit": "px",
+   "estimated": true
+  },
+  {
+   "name": "text picked by its box sides or inside its box",
+   "group": "texts",
+   "value": true,
+   "source": "MECHANICS T12 (Texts on parts)"
+  },
+  {
+   "name": "nearest text by distance to its box sides",
+   "group": "texts",
+   "value": true,
+   "source": "MECHANICS T13 (Texts on parts)"
+  },
+  {
+   "name": "window selection needs all four text box corners inside",
+   "group": "texts",
+   "value": 4,
+   "source": "MECHANICS T14 (Texts on parts)"
+  },
+  {
+   "name": "auto-hide slide-in delay",
+   "group": "side panes",
+   "value": 0.6,
+   "unit": "s",
+   "estimated": true
+  },
+  {
+   "name": "ghost follows the pointer and is written to the sheet only on drop",
+   "group": "dropping parts",
+   "value": true,
+   "source": "MECHANICS G1"
+  },
+  {
+   "name": "dragged part clamped inside the sheet limits instead of refused",
+   "group": "dropping parts",
+   "value": true,
+   "source": "MECHANICS G2"
+  },
+  {
+   "name": "approach snap leaves the part gap to the nearest neighbour or margin",
+   "group": "dropping parts",
+   "value": true,
+   "source": "MECHANICS G6"
+  },
+  {
+   "name": "approach snap reach",
+   "group": "dropping parts",
+   "value": 14.0,
+   "unit": "px",
+   "estimated": true
+  },
+  {
+   "name": "ghost fill opacity",
+   "group": "dropping parts",
+   "value": 120,
+   "unit": "of 255",
+   "estimated": true
+  },
+  {
+   "name": "rotation while dragging limited by the part's allowed turns",
+   "group": "dropping parts",
+   "value": true,
+   "source": "MECHANICS G3, G4"
+  },
+  {
+   "name": "Enter places one copy at the lowest, then leftmost free spot",
+   "group": "dropping parts",
+   "value": true,
+   "source": "MECHANICS G7; spot order estimate"
+  },
+  {
+   "name": "a part is round when its outer contour is one full circle (circle or 360 deg arc)",
+   "group": "round parts",
+   "value": true,
+   "source": "MECHANICS C1"
+  },
+  {
+   "name": "round parts collide by their real circle, not their box",
+   "group": "round parts",
+   "value": true,
+   "source": "MECHANICS C4"
+  },
+  {
+   "name": "imported outline counts as a circle within this share of its radius",
+   "group": "round parts",
+   "value": 0.005,
+   "estimated": true
+  },
+  {
+   "name": "imported outline needs at least this many points to count as a circle",
+   "group": "round parts",
+   "value": 16,
+   "estimated": true
+  },
+  {
+   "name": "round ghost snaps along the radius (and into the pocket between two rings)",
+   "group": "round parts",
+   "value": true,
+   "source": "MECHANICS C5, G6; pocket between two rings estimate"
+  },
+  {
+   "name": "parts collide by their contours element by element, not by their boxes",
+   "group": "true shape",
+   "value": true,
+   "source": "MECHANICS T-S1"
+  },
+  {
+   "name": "each element is box-tested first, then exactly (segment, arc, circle)",
+   "group": "true shape",
+   "value": true,
+   "source": "MECHANICS T-S2"
+  },
+  {
+   "name": "contour compaction passes (left, then down)",
+   "group": "true shape",
+   "value": 3,
+   "estimated": true
+  },
+  {
+   "name": "bisection steps when backing off a slanted contact",
+   "group": "true shape",
+   "value": 14,
+   "estimated": true
+  },
+  {
+   "name": "a part may sit inside another part's hole with the gap all round",
+   "group": "true shape",
+   "value": true,
+   "estimated": true
+  },
+  {
+   "name": "remnant line placed half a cut width past the parts (cut width x 0.5)",
+   "group": "remnants",
+   "value": 0.5,
+   "source": "MECHANICS RM1"
+  },
+  {
+   "name": "cut width (kerf) for the remnant line",
+   "group": "remnants",
+   "value": 0.3,
+   "unit": "mm",
+   "estimated": true
+  },
+  {
+   "name": "minimum remnant width (narrower is refused)",
+   "group": "remnants",
+   "value": 100.0,
+   "unit": "mm",
+   "estimated": true
+  },
+  {
+   "name": "remnant narrower than the minimum is refused",
+   "group": "remnants",
+   "value": true,
+   "source": "MECHANICS RM1"
+  },
+  {
+   "name": "rounding the remnant line puts fillets at its corners",
+   "group": "remnants",
+   "value": true,
+   "source": "MECHANICS RM3"
+  },
+  {
+   "name": "remnant line corner radius",
+   "group": "remnants",
+   "value": 10.0,
+   "unit": "mm",
+   "estimated": true
+  },
+  {
+   "name": "exact edge: shortest step kept",
+   "group": "remnants",
+   "value": 50.0,
+   "unit": "mm",
+   "estimated": true
+  },
+  {
+   "name": "only one remnant line per sheet",
+   "group": "remnants",
+   "value": true,
+   "source": "MECHANICS RM2"
+  },
+  {
+   "name": "cut lines must not cut into part contours",
+   "group": "remnants",
+   "value": true,
+   "source": "MECHANICS RM4"
+  },
+  {
+   "name": "remnant line cut after the parts",
+   "group": "remnants",
+   "value": true,
+   "source": "MECHANICS RM6"
+  },
+  {
+   "name": "zoom keeps the point under the cursor fixed (x0' = p - (p - x0) * f)",
+   "group": "view",
+   "value": true,
+   "source": "MECHANICS V1 (Moving and zooming the view)"
+  },
+  {
+   "name": "zooming in uses 1.0 / f of the zoom-out factor",
+   "group": "view",
+   "value": 1.0,
+   "source": "MECHANICS V1 (Moving and zooming the view)"
+  },
+  {
+   "name": "each view change stores the previous view for Zoom Previous",
+   "group": "view",
+   "value": true,
+   "source": "MECHANICS V3 (Moving and zooming the view)"
+  },
+  {
+   "name": "Zoom All fits all elements of the drawing, technology included",
+   "group": "view",
+   "value": true,
+   "source": "MECHANICS V4 (Moving and zooming the view)"
+  },
+  {
+   "name": "default style follows the Windows colours",
+   "group": "view",
+   "value": true,
+   "source": "MECHANICS V5 (Moving and zooming the view)"
+  },
+  {
+   "name": "zoom button step",
+   "group": "view",
+   "value": 1.25,
+   "estimated": true
+  },
+  {
+   "name": "wheel zoom per scrolled pixel (exp)",
+   "group": "view",
+   "value": 0.0015,
+   "estimated": true
+  },
+  {
+   "name": "views kept for Previous",
+   "group": "view",
+   "value": 20,
+   "estimated": true
+  },
+  {
+   "name": "pause that starts a new scroll step in the view history",
+   "group": "view",
+   "value": 0.4,
+   "unit": "s",
+   "estimated": true
+  },
+  {
+   "name": "room around the fitted part",
+   "group": "view",
+   "value": 64.0,
+   "unit": "px",
+   "estimated": true
+  },
+  {
+   "name": "Part view zoom range, most",
+   "group": "view",
+   "value": 40.0,
+   "estimated": true
+  },
+  {
+   "name": "opening a part shows the Drawing module tabs: Home, Technology, Machining, View, Simulation, Notes, Utilities",
+   "group": "drawing",
+   "value": "Home, Technology, Machining, View, Simulation, Notes, Utilities",
+   "source": "MECHANICS Opening a part (Drawing module)"
+  },
+  {
+   "name": "axes: two full-view lines through the drawing origin",
+   "group": "drawing",
+   "value": true,
+   "source": "MECHANICS DR1"
+  },
+  {
+   "name": "drawing colours are read from LANTEKIN.CNI lines (R G B style width)",
+   "group": "drawing",
+   "value": true,
+   "source": "MECHANICS DR2"
+  },
+  {
+   "name": "axes colour (C002, dashed)",
+   "group": "drawing",
+   "value": "255 0 0",
+   "source": "MECHANICS DR3; observed: LANTEKIN.CNI C002"
+  },
+  {
+   "name": "cut contour colour (C008)",
+   "group": "drawing",
+   "value": "255 255 0",
+   "source": "MECHANICS DR3; observed: LANTEKIN.CNI C008"
+  },
+  {
+   "name": "cursor colour (C011)",
+   "group": "drawing",
+   "value": "255 255 255",
+   "source": "MECHANICS DR3; observed: LANTEKIN.CNI C011"
+  },
+  {
+   "name": "marking text colour (C053)",
+   "group": "drawing",
+   "value": "0 255 0",
+   "source": "MECHANICS DR3; observed: LANTEKIN.CNI C053"
+  },
+  {
+   "name": "simulated (cut) contour colour (C057)",
+   "group": "drawing",
+   "value": "0 200 0",
+   "source": "MECHANICS DR3; observed: LANTEKIN.CNI C057"
+  },
+  {
+   "name": "drawing background",
+   "group": "drawing",
+   "value": "0 0 16",
+   "estimated": true
+  },
+  {
+   "name": "each cut-technology type has its own colour slot",
+   "group": "drawing",
+   "value": true,
+   "source": "MECHANICS DR4"
+  },
+  {
+   "name": "simulation step per contour",
+   "group": "drawing",
+   "value": 0.7,
+   "unit": "s",
+   "estimated": true
+  },
+  {
+   "name": "measuring snap aperture",
+   "group": "drawing",
+   "value": 10.0,
+   "unit": "px",
+   "estimated": true
+  },
+  {
+   "name": "the Drawing module opens on its Home tab",
+   "group": "drawing",
+   "value": true,
+   "estimated": true
+  },
+  {
+   "name": "Distance and Angle shows its values with this many decimals",
+   "group": "drawing",
+   "value": 2,
+   "source": "MECHANICS DR7"
+  },
+  {
+   "name": "Angle between three points is a Review command of its own",
+   "group": "drawing",
+   "value": true,
+   "source": "MECHANICS DR8"
+  },
+  {
+   "name": "Drawing module commands not built yet (listed in the app)",
+   "group": "drawing",
+   "value": "152 commands, listed in the app (Still missing)",
+   "estimated": true
+  },
+  {
+   "name": "commands that aren't available are left out of the ribbon (not greyed)",
+   "group": "ribbon",
+   "value": true,
+   "source": "MECHANICS RB4"
+  },
+  {
+   "name": "empty groups and tabs are removed from the ribbon",
+   "group": "ribbon",
+   "value": true,
+   "source": "MECHANICS RB5"
+  },
+  {
+   "name": "a ribbon control defaults to a plain button",
+   "group": "ribbon",
+   "value": "CONTROL_TYPE 1, BUTTON_STYLE 0",
+   "source": "MECHANICS RB2"
+  },
+  {
+   "name": "CONTROL_TYPE 10 is a gallery",
+   "group": "ribbon",
+   "value": "gallery",
+   "source": "MECHANICS RB3"
+  },
+  {
+   "name": "commands not built yet are hidden unless switched on",
+   "group": "ribbon",
+   "value": false,
+   "estimated": true
+  },
+  {
+   "name": "machine type codes: cut",
+   "group": "machines",
+   "value": 0,
+   "source": "MECHANICS MC1; observed: machine library (CF1) A001"
+  },
+  {
+   "name": "machine type codes: cut + punch",
+   "group": "machines",
+   "value": 1,
+   "source": "MECHANICS MC1; observed: machine library (CF1) A001"
+  },
+  {
+   "name": "machine type codes: punch",
+   "group": "machines",
+   "value": 2,
+   "source": "MECHANICS MC1; observed: machine library (CF1) A001"
+  },
+  {
+   "name": "machine tolerance",
+   "group": "machines",
+   "value": 0.005,
+   "unit": "mm",
+   "source": "MECHANICS Machines and standard shapes; observed: CF1 file A005"
+  },
+  {
+   "name": "standard shapes are tried in this order: circle, rectangle, obround, ring sector",
+   "group": "machines",
+   "value": "circle, rectangle, obround, ring sector",
+   "source": "MECHANICS MC3"
+  },
+  {
+   "name": "a circle is an arc of this sweep",
+   "group": "machines",
+   "value": 360.0,
+   "unit": "deg",
+   "source": "MECHANICS MC3"
+  },
+  {
+   "name": "an obround's arcs have this sweep",
+   "group": "machines",
+   "value": 180.0,
+   "unit": "deg",
+   "source": "MECHANICS MC3"
+  },
+  {
+   "name": "standard contours are machined as one standard macro",
+   "group": "machines",
+   "value": true,
+   "source": "MECHANICS MC4"
+  },
+  {
+   "name": "shape tolerance share of the shape size",
+   "group": "machines",
+   "value": 0.002,
+   "estimated": true
+  },
+  {
+   "name": "square-corner tolerance",
+   "group": "machines",
+   "value": 0.5,
+   "unit": "deg",
+   "estimated": true
+  },
+  {
+   "name": "nibbling step",
+   "group": "machines",
+   "value": 4.0,
+   "unit": "mm",
+   "estimated": true
+  },
+  {
+   "name": "seconds per punch hit",
+   "group": "machines",
+   "value": 0.25,
+   "unit": "s",
+   "estimated": true
+  },
+  {
+   "name": "simulation updates the head's current point on every move",
+   "group": "simulation",
+   "value": true,
+   "source": "MECHANICS SM2"
+  },
+  {
+   "name": "the simulated head is drawn with the cutter radius",
+   "group": "simulation",
+   "value": true,
+   "source": "MECHANICS SM3"
+  },
+  {
+   "name": "Simulation Window fields: Operation, X, Y, Cutter radius, Number of heads",
+   "group": "simulation",
+   "value": "Operation, X, Y, Cutter radius, Number of heads",
+   "source": "MECHANICS SM4"
+  },
+  {
+   "name": "number of heads simulated",
+   "group": "simulation",
+   "value": 1,
+   "source": "MECHANICS SM4"
+  },
+  {
+   "name": "default simulation speed",
+   "group": "simulation",
+   "value": 20.0,
+   "unit": "x real time",
+   "estimated": true
+  },
+  {
+   "name": "rapid traverse speed",
+   "group": "simulation",
+   "value": 60000.0,
+   "unit": "mm/min",
+   "estimated": true
+  },
+  {
+   "name": "database settings live in LANTEKIN.CNI lines R000-R013",
+   "group": "database",
+   "value": "R001 server, R002 database, R003 user, R004 password, R005 folder, R008 share",
+   "source": "MECHANICS DB1; observed: LANTEKIN.CNI R000-R013"
+  },
+  {
+   "name": "connection without a user: OLE DB with Windows sign-in",
+   "group": "database",
+   "value": "Provider=sqloledb;...;Integrated Security=SSPI",
+   "source": "MECHANICS DB2, CN1"
+  },
+  {
+   "name": "connection with a user: ODBC SQL Server driver",
+   "group": "database",
+   "value": "DRIVER=SQL SERVER;SERVER=...;DATABASE=...;User ID=...;Password=...",
+   "source": "MECHANICS DB2, CN1"
+  },
+  {
+   "name": "machines in the database are listed in DBConnect.lst",
+   "group": "database",
+   "value": true,
+   "source": "MECHANICS DB3; observed: DBConnect.lst"
+  },
+  {
+   "name": "SQL Server Browser port",
+   "group": "database",
+   "value": 1434,
+   "source": "MECHANICS DB4 (SQL Server Resolution Protocol, not Lantek)"
+  },
+  {
+   "name": "connection test timeout",
+   "group": "database",
+   "value": 3,
+   "unit": "s",
+   "estimated": true
+  },
+  {
+   "name": "machine seed programs run in order: time calculation, then the post",
+   "group": "post",
+   "value": "time calculation (3 0), then the post (3 1)",
+   "source": "MECHANICS DB5; observed: LANTEKPR.SEM Z001/Z002"
+  },
+  {
+   "name": "the post is run through the machine's post-processor library",
+   "group": "post",
+   "value": true,
+   "source": "MECHANICS DB5"
+  },
+  {
+   "name": "the machine's post name comes from the database (by its seed)",
+   "group": "post",
+   "value": true,
+   "source": "MECHANICS DB5"
+  },
+  {
+   "name": "block number prefix",
+   "group": "post",
+   "value": "N",
+   "source": "observed: LANTEKPR.CFF A009"
+  },
+  {
+   "name": "first block number",
+   "group": "post",
+   "value": 10,
+   "source": "observed: LANTEKPR.CFF A011"
+  },
+  {
+   "name": "block number increment",
+   "group": "post",
+   "value": 10,
+   "source": "observed: LANTEKPR.CFF A012"
+  },
+  {
+   "name": "block number characters",
+   "group": "post",
+   "value": 5,
+   "source": "observed: LANTEKPR.CFF A007"
+  },
+  {
+   "name": "CNC file extension",
+   "group": "post",
+   "value": ".CNC",
+   "source": "observed: LANTEKPR.CFF A014"
+  },
+  {
+   "name": "post tolerance",
+   "group": "post",
+   "value": 0.01,
+   "unit": "mm",
+   "source": "observed: LANTEKPR.CFF A005"
+  },
+  {
+   "name": "inch output divides coordinates by",
+   "group": "post",
+   "value": 25.4,
+   "source": "observed: LANTEKPR.CFF A006"
+  },
+  {
+   "name": "Verify Machining can check all sheets of the subjob",
+   "group": "verify",
+   "value": true,
+   "source": "MECHANICS V1 (v44 new features)"
+  },
+  {
+   "name": "safe distance default: the separation of parts",
+   "group": "verify",
+   "value": "The separation of parts",
+   "source": "MECHANICS V2 (v44 new features)"
+  },
+  {
+   "name": "safe distance tolerance",
+   "group": "verify",
+   "value": 0.01,
+   "unit": "mm",
+   "estimated": true
+  },
+  {
+   "name": "verify result code: not enough separation between parts",
+   "group": "verify",
+   "value": 20,
+   "source": "MECHANICS VM3"
+  },
+  {
+   "name": "verify result code: machining overlaps",
+   "group": "verify",
+   "value": 3,
+   "source": "MECHANICS VM3"
+  },
+  {
+   "name": "verify result code: out of the work zone or in clamps",
+   "group": "verify",
+   "value": 4,
+   "source": "MECHANICS VM3"
+  },
+  {
+   "name": "verify result code: cut contours without lead-in/lead-outs",
+   "group": "verify",
+   "value": 8,
+   "source": "MECHANICS VM3"
+  },
+  {
+   "name": "verify result code: remnants or parts that fall",
+   "group": "verify",
+   "value": 10,
+   "source": "MECHANICS VM3"
+  },
+  {
+   "name": "minimum distance field maximum",
+   "group": "verify",
+   "value": 99999.999,
+   "unit": "mm",
+   "source": "MECHANICS VM1"
+  },
+  {
+   "name": "safe distance list order",
+   "group": "verify",
+   "value": "Value, The separation of parts",
+   "source": "MECHANICS VM1"
+  },
+  {
+   "name": "distance is read-only when the separation of parts is chosen",
+   "group": "verify",
+   "value": true,
+   "source": "MECHANICS VM2"
+  },
+  {
+   "name": "correct sheet message",
+   "group": "verify",
+   "value": "All machining on the sheet has been executed",
+   "source": "MECHANICS VM3"
+  },
+  {
+   "name": "totals labels",
+   "group": "verify",
+   "value": "Correct sheets: / Incorrect sheets:",
+   "source": "MECHANICS VM4"
+  },
+  {
+   "name": "safe distance value default",
+   "group": "verify",
+   "value": 5.0,
+   "unit": "mm",
+   "estimated": true
+  },
+  {
+   "name": "BLM post for the LC5",
+   "group": "blm",
+   "value": "the PstAdi06 post (ADIGE Laser, Siemens 840D)",
+   "source": "MECHANICS BLM LC5 programs; observed: PstAdi06.PS1 header"
+  },
+  {
+   "name": "zip tool called by the post",
+   "group": "blm",
+   "value": "adi2zip",
+   "source": "MECHANICS BL1"
+  },
+  {
+   "name": "subprogram number base",
+   "group": "blm",
+   "value": 700,
+   "source": "MECHANICS BL3"
+  },
+  {
+   "name": "maximum subprograms before the warning",
+   "group": "blm",
+   "value": 96,
+   "source": "MECHANICS BL4"
+  },
+  {
+   "name": "CORNER maximum angle",
+   "group": "blm",
+   "value": 119.9,
+   "unit": "deg",
+   "source": "MECHANICS BL5; observed: PS1 file Z043"
+  },
+  {
+   "name": "NEXT_L cut quality code",
+   "group": "blm",
+   "value": 3,
+   "source": "MECHANICS BL5; observed: BLM program output"
+  },
+  {
+   "name": "NEXT_L marking quality code",
+   "group": "blm",
+   "value": 9,
+   "source": "MECHANICS BL5; observed: BLM program output"
+  },
+  {
+   "name": "NEXT_L pierce code for cutting",
+   "group": "blm",
+   "value": 2,
+   "source": "MECHANICS BL5, BL2; observed: BLM program output"
+  },
+  {
+   "name": "generate XML file",
+   "group": "blm",
+   "value": 2,
+   "source": "MECHANICS BL2; observed: CF1 file A049"
+  },
+  {
+   "name": "sheet program call path",
+   "group": "blm",
+   "value": "/_n_wks_dir/_n_sheet_wpd/_n_",
+   "source": "MECHANICS BL4"
+  },
+  {
+   "name": "post version written in the header",
+   "group": "blm",
+   "value": "2.0.0",
+   "source": "MECHANICS BL4; observed: BLM program output"
+  },
+  {
+   "name": "LASTLINE second value for cut paths",
+   "group": "blm",
+   "value": "1.",
+   "estimated": true
+  },
+  {
+   "name": "arc fit tolerance",
+   "group": "blm",
+   "value": 0.005,
+   "unit": "mm",
+   "source": "MECHANICS BL7; observed: CF1 file A005"
+  },
+  {
+   "name": "cut-off line overrun",
+   "group": "blm",
+   "value": 10.0,
+   "unit": "mm",
+   "source": "MECHANICS BL8, BL12; observed: PS1 file Z039/Z040, BLM program output"
+  },
+  {
+   "name": "cut-off part name",
+   "group": "blm",
+   "value": "FINAL_CUT",
+   "source": "MECHANICS BL8; observed: BLM program output"
+  },
+  {
+   "name": "largest turn inside an arc",
+   "group": "blm",
+   "value": 30.0,
+   "unit": "deg",
+   "estimated": true
+  },
+  {
+   "name": "largest arc radius",
+   "group": "blm",
+   "value": 5000.0,
+   "unit": "mm",
+   "estimated": true
+  },
+  {
+   "name": "fewest moves per arc",
+   "group": "blm",
+   "value": 3,
+   "estimated": true
+  },
+  {
+   "name": "trim cut stops before the far edge",
+   "group": "blm",
+   "value": 10.0,
+   "unit": "mm",
+   "source": "MECHANICS BL13"
+  },
+  {
+   "name": "trim overrun on the low edges (approach) Z039",
+   "group": "blm",
+   "value": 10.0,
+   "unit": "mm",
+   "source": "MECHANICS BL12; observed: PS1 file Z039"
+  },
+  {
+   "name": "trim overrun on the high edges / cut-in Z040",
+   "group": "blm",
+   "value": 10.0,
+   "unit": "mm",
+   "source": "MECHANICS BL12; observed: PS1 file Z040"
+  },
+  {
+   "name": "arc I/J are relative to the move's start point",
+   "group": "blm",
+   "value": true,
+   "source": "MECHANICS BL10"
+  },
+  {
+   "name": "trim uses NEXT_L and HD_DWN_OFF with post version Z016 = 3 (LT9)",
+   "group": "blm",
+   "value": true,
+   "source": "MECHANICS BL13; observed: PS1 file Z016"
+  },
+  {
+   "name": "trim edge tolerance on the low edges",
+   "group": "blm",
+   "value": 0.5,
+   "unit": "mm",
+   "estimated": true
+  },
+  {
+   "name": "jobs table",
+   "group": "database",
+   "value": "DIS_MMNN_MMOO_00000200",
+   "source": "MECHANICS DT1"
+  },
+  {
+   "name": "job parts (manufacturing orders) table",
+   "group": "database",
+   "value": "MMNN_MMOO_00000300",
+   "source": "MECHANICS DT2"
+  },
+  {
+   "name": "nestings table (with CNC)",
+   "group": "database",
+   "value": "DIS_NEST_NEST_00000100",
+   "source": "MECHANICS DT3"
+  },
+  {
+   "name": "parts on nestings table",
+   "group": "database",
+   "value": "DIS_NEST_NEST_00000500",
+   "source": "MECHANICS DT4"
+  },
+  {
+   "name": "work centres table",
+   "group": "database",
+   "value": "MMNN_OOPP_00000100",
+   "source": "MECHANICS DT6"
+  },
+  {
+   "name": "materials table",
+   "group": "database",
+   "value": "DIS_MMTT_MMTT_00000100",
+   "source": "MECHANICS DT7"
+  },
+  {
+   "name": "in-house parts have IsOutsourcing",
+   "group": "database",
+   "value": "0",
+   "source": "MECHANICS DT2"
+  },
+  {
+   "name": "rows shown per table",
+   "group": "database",
+   "value": 200,
+   "estimated": true
+  },
+  {
+   "name": "Job Explorer folders table",
+   "group": "database",
+   "value": "DIS_MMNN_BWSR_00000100",
+   "source": "MECHANICS DT8"
+  },
+  {
+   "name": "folder links table (job/product to folder)",
+   "group": "database",
+   "value": "DIS_MMNN_BWSR_00000200",
+   "source": "MECHANICS DT9"
+  },
+  {
+   "name": "folder columns",
+   "group": "database",
+   "value": "NodeID, NodeName, ParentID, BwsrType",
+   "source": "MECHANICS DT8"
+  },
+  {
+   "name": "CNC programs stored as documents with DocDsc",
+   "group": "database",
+   "value": "CNC",
+   "source": "MECHANICS DT10"
+  },
+  {
+   "name": "most jobs read for the tree",
+   "group": "database",
+   "value": 5000,
+   "estimated": true
+  },
+  {
+   "name": "query (command) timeout",
+   "group": "database",
+   "value": 600,
+   "unit": "s",
+   "source": "MECHANICS CN3"
+  },
+  {
+   "name": "connect timeout (ADO default; Expert doesn't set it)",
+   "group": "database",
+   "value": 15,
+   "unit": "s",
+   "source": "MECHANICS CN3"
+  },
+  {
+   "name": "Windows sign-in when the user is empty",
+   "group": "database",
+   "value": true,
+   "source": "MECHANICS CN1"
+  },
+  {
+   "name": "doubled quotes become single in the connection string",
+   "group": "database",
+   "value": true,
+   "source": "MECHANICS CN2"
+  },
+  {
+   "name": "DBConnect.lst database key",
+   "group": "database",
+   "value": "server,database",
+   "source": "MECHANICS CN4"
+  },
+  {
+   "name": "ribbon font sizes (A213)",
+   "group": "look",
+   "value": "System default, Normal, Large, Extra large",
+   "source": "MECHANICS LK4"
+  },
+  {
+   "name": "largest ribbon font value; above reads as 0",
+   "group": "look",
+   "value": 3,
+   "source": "MECHANICS LK4"
+  },
+  {
+   "name": "dark ribbon style (A212 = 1)",
+   "group": "look",
+   "value": "Office 2013 Gray Dark",
+   "source": "MECHANICS LK2, LK3"
+  },
+  {
+   "name": "style saved as soon as it changes",
+   "group": "look",
+   "value": true,
+   "source": "MECHANICS LK1"
+  },
+  {
+   "name": "shortcut list can be copied",
+   "group": "look",
+   "value": true,
+   "source": "MECHANICS LK5"
+  },
+  {
+   "name": "large interface zoom",
+   "group": "look",
+   "value": 1.15,
+   "estimated": true
+  },
+  {
+   "name": "extra large interface zoom",
+   "group": "look",
+   "value": 1.3,
+   "estimated": true
+  },
+  {
+   "name": "Lantek nesting export extension",
+   "group": "nesting import",
+   "value": ".nxp",
+   "source": "MECHANICS NX1"
+  },
+  {
+   "name": "nesting block starts / ends",
+   "group": "nesting import",
+   "value": "N001 \"<name>\" … N999",
+   "source": "MECHANICS NX3"
+  },
+  {
+   "name": "the .nxp is a plain copy of the text index",
+   "group": "nesting import",
+   "value": true,
+   "source": "MECHANICS NX4"
+  },
+  {
+   "name": "placement with PS1 Z005 = 0",
+   "group": "nesting import",
+   "value": "TRANS X Y + AROT Z",
+   "source": "MECHANICS NX6"
+  },
+  {
+   "name": "arc rebuild step",
+   "group": "nesting import",
+   "value": 5.0,
+   "unit": "deg",
+   "estimated": true
+  },
+  {
+   "name": "path close tolerance",
+   "group": "nesting import",
+   "value": 0.05,
+   "unit": "mm",
+   "estimated": true
+  },
+  {
+   "name": "records per storage sub-folder",
+   "group": "storage",
+   "value": 1000,
+   "source": "MECHANICS ST1 (How Lantek stores nestings)"
+  },
+  {
+   "name": "nesting folder pattern",
+   "group": "storage",
+   "value": "Nestings\\<n/1000>\\<n>",
+   "source": "MECHANICS ST1 (How Lantek stores nestings)"
+  },
+  {
+   "name": "nesting file types",
+   "group": "storage",
+   "value": ".chp .mec .ret .bmp .wmf .pdf .mcs Box1/Box2.wmf",
+   "source": "MECHANICS ST2 (How Lantek stores nestings)"
+  },
+  {
+   "name": "job file extension",
+   "group": "storage",
+   "value": "snjob",
+   "estimated": true
+  },
+  {
+   "name": "job file layout version",
+   "group": "storage",
+   "value": 1,
+   "estimated": true
+  },
+  {
+   "name": "Lantek file header word",
+   "group": "storage",
+   "value": "FILEMECLT",
+   "source": "MECHANICS MF1"
+  },
+  {
+   "name": "highest unencrypted Lantek file version",
+   "group": "storage",
+   "value": 7,
+   "source": "MECHANICS MF2"
+  },
+  {
+   "name": "sample MEC version",
+   "group": "storage",
+   "value": "8.1",
+   "source": "MECHANICS MF3; observed: sample MEC file"
+  },
+  {
+   "name": "automatic job reference prefix",
+   "group": "library",
+   "value": "JOB",
+   "source": "MECHANICS RF2"
+  },
+  {
+   "name": "automatic sheet-part reference prefix",
+   "group": "library",
+   "value": "SHP",
+   "source": "MECHANICS RF3"
+  },
+  {
+   "name": "reference counter characters",
+   "group": "library",
+   "value": 6,
+   "source": "MECHANICS RF2"
+  },
+  {
+   "name": "reference counter end",
+   "group": "library",
+   "value": 999999,
+   "source": "MECHANICS RF2"
+  },
+  {
+   "name": "first record number",
+   "group": "library",
+   "value": 1,
+   "source": "MECHANICS RF1"
+  },
+  {
+   "name": "product key field",
+   "group": "library",
+   "value": "PrdRef",
+   "source": "MECHANICS PK1"
+  },
+  {
+   "name": "product key includes material",
+   "group": "library",
+   "value": false,
+   "source": "MECHANICS PK1"
+  },
+  {
+   "name": "product picker thickness filter minimum",
+   "group": "library",
+   "value": 0.0,
+   "source": "MECHANICS PK3"
+  },
+  {
+   "name": "product picker thickness decimals",
+   "group": "library",
+   "value": 6,
+   "source": "MECHANICS PK3"
+  },
+  {
+   "name": "product picker filters material",
+   "group": "library",
+   "value": true,
+   "source": "MECHANICS PK3"
+  },
+  {
+   "name": "product has technology when machinings above",
+   "group": "library",
+   "value": 0,
+   "source": "MECHANICS PK4"
+  },
+  {
+   "name": "joint unset gap value",
+   "group": "micro-joints",
+   "value": 99999.999,
+   "source": "MECHANICS MJ4, J6"
+  },
+  {
+   "name": "joint unset gap tolerance",
+   "group": "micro-joints",
+   "value": 1.0,
+   "source": "MECHANICS MJ4, J6"
+  },
+  {
+   "name": "automatic joint records",
+   "group": "micro-joints",
+   "value": 10,
+   "source": "MECHANICS MJ4"
+  },
+  {
+   "name": "joint near rule",
+   "group": "micro-joints",
+   "value": "distance <= width + other size",
+   "source": "MECHANICS MJ2"
+  },
+  {
+   "name": "joint near tolerance",
+   "group": "micro-joints",
+   "value": 1e-06,
+   "estimated": true
+  },
+  {
+   "name": "joint end-of-contour off value",
+   "group": "micro-joints",
+   "value": 99999.0,
+   "source": "MECHANICS MJ6"
+  },
+  {
+   "name": "cut by size area scale",
+   "group": "cut technology",
+   "value": 1000.0,
+   "source": "MECHANICS CT1"
+  },
+  {
+   "name": "cut by size radius formula",
+   "group": "cut technology",
+   "value": "sqrt(|A*1000*1000|/pi)",
+   "source": "MECHANICS CT1"
+  },
+  {
+   "name": "cut by size upper limit included",
+   "group": "cut technology",
+   "value": false,
+   "source": "MECHANICS CT1"
+  },
+  {
+   "name": "cut by size rows",
+   "group": "cut technology",
+   "value": 3,
+   "estimated": true
+  },
+  {
+   "name": "small hole example radius",
+   "group": "cut technology",
+   "value": 5.0,
+   "estimated": true
+  },
+  {
+   "name": "machine lead zone",
+   "group": "machine technology",
+   "value": 1,
+   "source": "MECHANICS MT1; observed: CT1 file E000"
+  },
+  {
+   "name": "machine corner max angle",
+   "group": "machine technology",
+   "value": 135.0,
+   "source": "MECHANICS MT2; observed: CT1 file E001"
+  },
+  {
+   "name": "machine min element length",
+   "group": "machine technology",
+   "value": 5.0,
+   "source": "MECHANICS MT3; observed: CT1 file E004"
+  },
+  {
+   "name": "machine lead-in contours",
+   "group": "machine technology",
+   "value": 7.0,
+   "source": "MECHANICS MT5; observed: CT1 file E044"
+  },
+  {
+   "name": "machine lead-out contours",
+   "group": "machine technology",
+   "value": 5.0,
+   "source": "MECHANICS MT5; observed: CT1 file E045"
+  },
+  {
+   "name": "machine lead angle contours",
+   "group": "machine technology",
+   "value": 45.0,
+   "source": "MECHANICS MT6; observed: CT1 file E046"
+  },
+  {
+   "name": "machine lead-in round holes",
+   "group": "machine technology",
+   "value": 7.0,
+   "source": "MECHANICS MT4; observed: CT1 file E014"
+  },
+  {
+   "name": "machine lead-out round holes",
+   "group": "machine technology",
+   "value": 5.0,
+   "source": "MECHANICS MT4; observed: CT1 file E015"
+  },
+  {
+   "name": "machine overlap",
+   "group": "machine technology",
+   "value": 0.5,
+   "source": "MECHANICS MT7; observed: CT1 file B156"
+  },
+  {
+   "name": "machine loop radius",
+   "group": "machine technology",
+   "value": 10.0,
+   "source": "MECHANICS MT8; observed: CT1 file B157"
+  },
+  {
+   "name": "machine joint lead",
+   "group": "machine technology",
+   "value": 10.0,
+   "source": "MECHANICS MT9; observed: CT1 file F001"
+  },
+  {
+   "name": "machine joint lead angle",
+   "group": "machine technology",
+   "value": 45.0,
+   "source": "MECHANICS MT9; observed: CT1 file F003"
+  },
+  {
+   "name": "machine joint gap",
+   "group": "machine technology",
+   "value": 5.0,
+   "source": "MECHANICS MT10; observed: CT1 file F005"
+  },
+  {
+   "name": "machine joint spacing",
+   "group": "machine technology",
+   "value": 100.0,
+   "source": "MECHANICS MT11; observed: CT1 file F120"
+  },
+  {
+   "name": "machine joints min per contour",
+   "group": "machine technology",
+   "value": 0,
+   "source": "MECHANICS MT12; observed: CT1 file F121"
+  },
+  {
+   "name": "machine joints max per contour",
+   "group": "machine technology",
+   "value": 32767,
+   "source": "MECHANICS MT12; observed: CT1 file F122"
+  },
+  {
+   "name": "spaced joint count rounding",
+   "group": "machine technology",
+   "value": "floor",
+   "estimated": true
+  },
+  {
+   "name": "contour starts at first joint lead-in",
+   "group": "micro-joints",
+   "value": true,
+   "source": "MECHANICS MJ5"
+  },
+  {
+   "name": "lead pick near start share",
+   "group": "leads",
+   "value": 0.33333,
+   "source": "MECHANICS LP3"
+  },
+  {
+   "name": "lead pick near end share",
+   "group": "leads",
+   "value": 0.66666,
+   "source": "MECHANICS LP3"
+  },
+  {
+   "name": "lead element length factor",
+   "group": "leads",
+   "value": 4.0,
+   "source": "MECHANICS LP2"
+  },
+  {
+   "name": "lead middle factor",
+   "group": "leads",
+   "value": 0.5,
+   "source": "MECHANICS LP3"
+  },
+  {
+   "name": "lead linear tolerance",
+   "group": "leads",
+   "value": 0.01,
+   "source": "MECHANICS LP1-LP3; observed: CF1 file A005; mapping inferred"
+  },
+  {
+   "name": "cut zones default count",
+   "group": "cut order",
+   "value": 20,
+   "source": "MECHANICS CZ2"
+  },
+  {
+   "name": "cut zones X",
+   "group": "cut order",
+   "value": 20,
+   "source": "MECHANICS CZ3; observed: CT1 file B122"
+  },
+  {
+   "name": "cut zones Y",
+   "group": "cut order",
+   "value": 10,
+   "source": "MECHANICS CZ3; observed: CT1 file B123"
+  },
+  {
+   "name": "cut start left",
+   "group": "cut order",
+   "value": true,
+   "source": "MECHANICS CZ3; observed: CT1 file B110"
+  },
+  {
+   "name": "cut start bottom",
+   "group": "cut order",
+   "value": true,
+   "source": "MECHANICS CZ6; observed: BLM program output"
+  },
+  {
+   "name": "cut zones horizontal",
+   "group": "cut order",
+   "value": false,
+   "source": "MECHANICS CZ3; observed: CT1 file B114"
+  },
+  {
+   "name": "cut zones zigzag",
+   "group": "cut order",
+   "value": false,
+   "source": "MECHANICS CZ3; observed: CT1 file B115"
+  },
+  {
+   "name": "part in zone rule",
+   "group": "cut order",
+   "value": "box overlaps zone and a box corner inside",
+   "source": "MECHANICS CZ4"
+  },
+  {
+   "name": "file name separator forbidden characters",
+   "group": "import",
+   "value": "<>:\"/\\|?*",
+   "source": "MECHANICS FN1, FN2"
+  },
+  {
+   "name": "file name ignored text mark",
+   "group": "import",
+   "value": "*",
+   "source": "MECHANICS FN3"
+  },
+  {
+   "name": "file name example format",
+   "group": "import",
+   "value": "[Reference]_[Quantity]_[Material]",
+   "source": "MECHANICS FN3"
+  },
+  {
+   "name": "file name thickness field",
+   "group": "import",
+   "value": "[Thickness]",
+   "estimated": true
+  },
+  {
+   "name": "imported reference max characters",
+   "group": "import",
+   "value": 40,
+   "source": "MECHANICS FN5"
+  },
+  {
+   "name": "imported reference layout",
+   "group": "import",
+   "value": "prefix + name + suffix",
+   "source": "MECHANICS FN5"
+  },
+  {
+   "name": "part name equals file name test",
+   "group": "import",
+   "value": "file stem, exact",
+   "source": "MECHANICS FN6"
+  },
+  {
+   "name": "machine parts inside holes",
+   "group": "nesting",
+   "value": true,
+   "source": "MECHANICS HF4; observed: CT1 file B134"
+  },
+  {
+   "name": "machine min usable hole area",
+   "group": "nesting",
+   "value": 0.0,
+   "source": "MECHANICS HF4; observed: CT1 file B076"
+  },
+  {
+   "name": "machine group parts by attributes",
+   "group": "nesting",
+   "value": false,
+   "source": "MECHANICS GZ1; observed: CT1 file A785"
+  },
+  {
+   "name": "machine groups in separate zones",
+   "group": "nesting",
+   "value": true,
+   "source": "MECHANICS GZ1; observed: CT1 file A787"
+  },
+  {
+   "name": "machine zone gap",
+   "group": "nesting",
+   "value": 0.0,
+   "source": "MECHANICS GZ1; observed: CT1 file A788"
+  },
+  {
+   "name": "zone part centre share",
+   "group": "nesting",
+   "value": 0.5,
+   "source": "MECHANICS GZ2"
+  },
+  {
+   "name": "folder name taken error",
+   "group": "job explorer",
+   "value": 9,
+   "source": "MECHANICS JX4, JX5"
+  },
+  {
+   "name": "folder name compare ignores case",
+   "group": "job explorer",
+   "value": true,
+   "source": "MECHANICS JX6"
+  },
+  {
+   "name": "new folder default name",
+   "group": "job explorer",
+   "value": "New folder",
+   "source": "MECHANICS JX7"
+  },
+  {
+   "name": "new folder numbered names",
+   "group": "job explorer",
+   "value": "New folder (1)..(9)",
+   "estimated": true
+  },
+  {
+   "name": "active job record file",
+   "group": "job explorer",
+   "value": "ORDENACT.SYS",
+   "source": "MECHANICS AJ1"
+  },
+  {
+   "name": "active job line max characters",
+   "group": "job explorer",
+   "value": 40,
+   "source": "MECHANICS AJ2"
+  },
+  {
+   "name": "closing the job clears the active job",
+   "group": "job explorer",
+   "value": true,
+   "source": "MECHANICS AJ3"
+  },
+  {
+   "name": "removing a nesting updates the job CAM date",
+   "group": "job explorer",
+   "value": true,
+   "source": "MECHANICS ND1"
+  },
+  {
+   "name": "removing a nesting deletes its attached files",
+   "group": "job explorer",
+   "value": true,
+   "source": "MECHANICS ND2"
+  },
+  {
+   "name": "expert network api",
+   "group": "integration",
+   "value": false,
+   "source": "MECHANICS XI1"
+  },
+  {
+   "name": "import xml root element",
+   "group": "integration",
+   "value": "Import",
+   "source": "MECHANICS XI3; observed: DXF Import XML schema"
+  },
+  {
+   "name": "import xml product element",
+   "group": "integration",
+   "value": "Product",
+   "source": "MECHANICS XI3; observed: DXF Import XML schema"
+  },
+  {
+   "name": "import xml drawing attribute",
+   "group": "integration",
+   "value": "Fich",
+   "source": "MECHANICS XI3; observed: DXF Import XML schema"
+  },
+  {
+   "name": "import filler priority",
+   "group": "integration",
+   "value": 99,
+   "source": "MECHANICS XI9"
+  },
+  {
+   "name": "import quantity read as integer",
+   "group": "integration",
+   "value": true,
+   "source": "MECHANICS XI6"
+  },
+  {
+   "name": "import boolean true words",
+   "group": "integration",
+   "value": "true or 1",
+   "source": "MECHANICS XI8"
+  },
+  {
+   "name": "import user data fields",
+   "group": "integration",
+   "value": 8,
+   "source": "MECHANICS XI5"
+  },
+  {
+   "name": "material master table",
+   "group": "materials",
+   "value": "DIS_MMTT_MMTT_00000100",
+   "source": "MECHANICS MA1"
+  },
+  {
+   "name": "material thickness range table",
+   "group": "materials",
+   "value": "DIS_MMTT_MMTT_00000200",
+   "source": "MECHANICS MA2"
+  },
+  {
+   "name": "material internal reference prefix",
+   "group": "materials",
+   "value": "##MATEXP",
+   "source": "MECHANICS MA1"
+  },
+  {
+   "name": "material alias gives main material",
+   "group": "materials",
+   "value": true,
+   "source": "MECHANICS MA6"
+  },
+  {
+   "name": "laser default alias",
+   "group": "materials",
+   "value": "< >",
+   "source": "MECHANICS MA6"
+  },
+  {
+   "name": "default material aliases",
+   "group": "materials",
+   "value": "grades and shop names",
+   "estimated": true
+  },
+  {
+   "name": "window icon file name",
+   "group": "icon",
+   "value": "iExpert.ico",
+   "source": "MECHANICS IC1"
+  },
+  {
+   "name": "window icon loaded from a file",
+   "group": "icon",
+   "value": true,
+   "source": "MECHANICS IC1"
+  },
+  {
+   "name": "small window icon size",
+   "group": "icon",
+   "value": 16,
+   "source": "MECHANICS IC2"
+  },
+  {
+   "name": "big window icon size",
+   "group": "icon",
+   "value": 32,
+   "source": "MECHANICS IC2"
+  },
+  {
+   "name": "missing icon file keeps default",
+   "group": "icon",
+   "value": true,
+   "source": "MECHANICS IC3"
+  },
+  {
+   "name": "largest exe icon size",
+   "group": "icon",
+   "value": 256,
+   "source": "MECHANICS IC5"
+  },
+  {
+   "name": "exe icon sizes",
+   "group": "icon",
+   "value": "16, 32, 48, 64, 128, 256",
+   "source": "MECHANICS IC5"
+  },
+  {
+   "name": "replacement icon file in rebuild",
+   "group": "icon",
+   "value": "nestpro.ico",
+   "estimated": true
+  },
+  {
+   "name": "main window show state",
+   "group": "startup",
+   "value": 3,
+   "source": "MECHANICS SU4"
+  },
+  {
+   "name": "hidden main window show state",
+   "group": "startup",
+   "value": 0,
+   "source": "MECHANICS SU3, SU4"
+  },
+  {
+   "name": "hide switch",
+   "group": "startup",
+   "value": "/hide",
+   "source": "MECHANICS SU3"
+  },
+  {
+   "name": "command-line file extension (upper)",
+   "group": "startup",
+   "value": ".NXP",
+   "source": "MECHANICS SU3"
+  },
+  {
+   "name": "command-line file extension (lower)",
+   "group": "startup",
+   "value": ".nxp",
+   "source": "MECHANICS SU3"
+  },
+  {
+   "name": "working folder set to program folder",
+   "group": "startup",
+   "value": true,
+   "source": "MECHANICS SU1"
+  },
+  {
+   "name": "single running copy",
+   "group": "startup",
+   "value": true,
+   "source": "MECHANICS SU2"
+  },
+  {
+   "name": "single-copy window class",
+   "group": "startup",
+   "value": "C_ActualizaLANTEK",
+   "source": "MECHANICS SU2, IC4"
+  },
+  {
+   "name": "icons set after window is shown",
+   "group": "startup",
+   "value": true,
+   "source": "MECHANICS SU5"
+  },
+  {
+   "name": "splash font",
+   "group": "startup",
+   "value": "Segoe UI",
+   "source": "MECHANICS SU6"
+  },
+  {
+   "name": "stock order largest first",
+   "group": "sheet stock",
+   "value": "strictly larger real area wins; ties keep list order",
+   "source": "MECHANICS ST2 (Sheet stock and remnants)"
+  },
+  {
+   "name": "stock order smallest first",
+   "group": "sheet stock",
+   "value": "strictly smaller real area wins; start 99999999.999",
+   "source": "MECHANICS ST2 (Sheet stock and remnants)"
+  },
+  {
+   "name": "stock order by priority",
+   "group": "sheet stock",
+   "value": "lowest DIS_RPriority number first (start 9999)",
+   "source": "MECHANICS ST2 (Sheet stock and remnants)"
+  },
+  {
+   "name": "stock skips locked and short items",
+   "group": "sheet stock",
+   "value": true,
+   "source": "MECHANICS ST1 (Sheet stock and remnants)"
+  },
+  {
+   "name": "remnants before sheets",
+   "group": "sheet stock",
+   "value": "only remnants while any is usable, then sheets",
+   "source": "MECHANICS ST2 (Sheet stock and remnants)"
+  },
+  {
+   "name": "stock quantity cap",
+   "group": "sheet stock",
+   "value": 32500,
+   "source": "MECHANICS ST4 (Sheet stock and remnants)"
+  },
+  {
+   "name": "stock never below zero",
+   "group": "sheet stock",
+   "value": "unless 'use sheets with no stock left'",
+   "source": "MECHANICS ST4 (Sheet stock and remnants)"
+  },
+  {
+   "name": "stock taken when",
+   "group": "sheet stock",
+   "value": "when the job is saved (original: when the sheet is given to a nesting); given back when no longer used",
+   "source": "MECHANICS ST4 (Sheet stock and remnants); moment changed by the rebuild"
+  },
+  {
+   "name": "remove to zero deletes",
+   "group": "sheet stock",
+   "value": true,
+   "source": "MECHANICS ST5 (Sheet stock and remnants)"
+  },
+  {
+   "name": "merge without sheet references",
+   "group": "sheet stock",
+   "value": "same material, thickness, length, width adds quantity",
+   "source": "MECHANICS ST5 (Sheet stock and remnants)"
+  },
+  {
+   "name": "sheet reference counter",
+   "group": "sheet stock",
+   "value": "base 36 (1..9, A..Z, 10..)",
+   "source": "MECHANICS ST6 (Sheet stock and remnants)"
+  },
+  {
+   "name": "remnant reference",
+   "group": "remnants",
+   "value": "<origin sheet>-<base-36 counter>, at most 40 characters",
+   "source": "MECHANICS ST6 (Sheet stock and remnants)"
+  },
+  {
+   "name": "remnant keeps parent data",
+   "group": "remnants",
+   "value": "priority, user data, prices copied; origin = parent sheet",
+   "source": "MECHANICS ST7 (Sheet stock and remnants)"
+  },
+  {
+   "name": "quote sheet remnant",
+   "group": "remnants",
+   "value": "stored with quantity 0 and locked",
+   "source": "MECHANICS ST7 (Sheet stock and remnants)"
+  },
+  {
+   "name": "remnant area",
+   "group": "remnants",
+   "value": "real outline area (holes subtracted), not the box",
+   "source": "MECHANICS ST7 (Sheet stock and remnants)"
+  },
+  {
+   "name": "minimum remnant area default (m2)",
+   "group": "remnants",
+   "value": 0.1,
+   "source": "MECHANICS ST7 (Sheet stock and remnants); default estimate"
+  },
+  {
+   "name": "efficiency drop test",
+   "group": "do all",
+   "value": "drop the stock sheet when used/area < minimum (equal kept)",
+   "source": "MECHANICS ST3 (Sheet stock and remnants)"
+  },
+  {
+   "name": "efficiency used-area modes",
+   "group": "do all",
+   "value": "real / external / rectangular / parts bounding box",
+   "source": "MECHANICS ST3 (Sheet stock and remnants)"
+  },
+  {
+   "name": "do all sheet by sheet",
+   "group": "do all",
+   "value": "next sheet in stock order, filled as fully as possible, then the next",
+   "source": "MECHANICS ST3 (Sheet stock and remnants)"
+  },
+  {
+   "name": "automatic line refused if one exists",
+   "group": "remnant line",
+   "value": true,
+   "source": "MECHANICS ST8 (Sheet stock and remnants), MECHANICS RM2"
+  },
+  {
+   "name": "automatic line shapes",
+   "group": "remnant line",
+   "value": "codes 1 vertical, 7 horizontal, 2/3 L, 4 L auto, 5 one step, 6 staircase, 9 irregular at offset, 8 irregular at cut",
+   "source": "MECHANICS ST8 (Sheet stock and remnants)"
+  },
+  {
+   "name": "L auto choice",
+   "group": "remnant line",
+   "value": "the L whose two remnants' short/long ratios multiply higher",
+   "source": "MECHANICS ST8 (Sheet stock and remnants)"
+  },
+  {
+   "name": "shapes 1-5 obstacles",
+   "group": "remnant line",
+   "value": "part boxes grown by the offset, stretched in X to the nesting origin",
+   "source": "MECHANICS ST8 (Sheet stock and remnants)"
+  },
+  {
+   "name": "cut overshoot past sheet edge (x tolerance)",
+   "group": "remnant line",
+   "value": 2,
+   "source": "MECHANICS ST8 (Sheet stock and remnants)"
+  },
+  {
+   "name": "linear tolerance (mm)",
+   "group": "remnant line",
+   "value": 0.01,
+   "source": "MECHANICS D4 (DXF drawings); assumed equal for the remnant engine (estimate)"
+  },
+  {
+   "name": "min X / min Y apply to",
+   "group": "remnant line",
+   "value": "first six shapes only",
+   "source": "MECHANICS ST8 (Sheet stock and remnants)"
+  },
+  {
+   "name": "irregular fallback",
+   "group": "remnant line",
+   "value": "staircase when the envelope fails",
+   "source": "MECHANICS ST8 (Sheet stock and remnants)"
+  },
+  {
+   "name": "rounding skipped for shape",
+   "group": "remnant line",
+   "value": 8,
+   "source": "MECHANICS ST8 (Sheet stock and remnants)"
+  },
+  {
+   "name": "edge bridge",
+   "group": "remnant line",
+   "value": "line ends on the sheet edge shortened by 'Offset in the sheet edge' when > 1e-6",
+   "source": "MECHANICS ST8 (Sheet stock and remnants)"
+  },
+  {
+   "name": "semi-automatic piece",
+   "group": "remnants",
+   "value": "must contain the click and no part; under minimum area refused",
+   "source": "MECHANICS ST9 (Sheet stock and remnants)"
+  },
+  {
+   "name": "rotate remnant only when empty",
+   "group": "remnants",
+   "value": true,
+   "source": "MECHANICS ST10 (Sheet stock and remnants)"
+  },
+  {
+   "name": "remnant auto-orientation",
+   "group": "remnants",
+   "value": "corner with most straight edge to the start corner; prefer H/V pre-rotates then half turns only",
+   "source": "MECHANICS ST10 (Sheet stock and remnants)"
+  },
+ {
+  "name": "agent re-nest excludes the job's own remnants",
+  "group": "sheet stock (agents)",
+  "value": true,
+  "source": "MECHANICS SA1; own design"
+ },
+ {
+  "name": "agent job takes stock when",
+  "group": "sheet stock (agents)",
+  "value": "when booked (stock-book book); then after every change. The window books on every save",
+  "source": "MECHANICS SA2; own design"
+ },
+ {
+  "name": "agent release",
+  "group": "sheet stock (agents)",
+  "value": "held sheets back; stored remnants out while qty >= 1",
+  "source": "MECHANICS SA3; own design"
+ },
+ {
+  "name": "agent sheet-add/change needs a free stock item",
+  "group": "sheet stock (agents)",
+  "value": "qty + held - job's sheets of it > 0, unless allow no stock",
+  "source": "MECHANICS SA4"
+ },
+ {
+  "name": "agent undo and the stock",
+  "group": "sheet stock (agents)",
+  "value": "stock not rolled back; held kept, restored job re-booked",
+  "source": "MECHANICS SA5; own design"
+ },
+ {
+  "name": "agent stock rules",
+  "group": "sheet stock (agents)",
+  "value": "read-only (window settings)",
+  "source": "MECHANICS SA6; own design"
+ },
+ {
+  "name": "ERP quantity rounding",
+  "group": "erp (fulcrum)",
+  "value": "fractional quantities round up",
+  "source": "MECHANICS F3; own design"
+ },
+ {
+  "name": "ERP drawing choice",
+  "group": "erp (fulcrum)",
+  "value": "operation-specific DXF first, else the item's first DXF",
+  "source": "MECHANICS F4; Fulcrum API (NestingWorkPackageDrawingDto.isOperationSpecific)"
+ },
+ {
+  "name": "ERP unitless DXF",
+  "group": "erp (fulcrum)",
+  "value": "inch (setting; $INSUNITS wins)",
+  "source": "MECHANICS F6; estimate"
+ },
+ {
+  "name": "ERP order fill",
+  "group": "erp (fulcrum)",
+  "value": "earliest due first, extras to the last order",
+  "source": "MECHANICS F9; own design"
+ },
+ {
+  "name": "ERP units sent",
+  "group": "erp (fulcrum)",
+  "value": "inch (setting)",
+  "source": "MECHANICS F14; estimate (the API takes dimensions as the nesting software reports them)"
+ },
+ {
+  "name": "ERP work order status",
+  "group": "erp (fulcrum)",
+  "value": "needsReview (setting: approved)",
+  "source": "MECHANICS F13; Fulcrum API (WorkOrderCreateDto.status: needsReview or approved)"
+ },
+ {
+  "name": "ERP nestable list page",
+  "group": "erp (fulcrum)",
+  "value": 500,
+  "source": "MECHANICS ERP / MES integrations: Fulcrum; Fulcrum API (Take up to 5000; the app pages by 500, at most 50 pages)"
+ },
+ {
+  "name": "ERP manifest batch",
+  "group": "erp (fulcrum)",
+  "value": 500,
+  "source": "MECHANICS ERP / MES integrations: Fulcrum; Fulcrum API (NestingWorkPackageManifestParameters: 1 to 500 job operations)"
+ },
+ {
+  "name": "lead table for quality 1",
+  "group": "automatic leads",
+  "value": "CT1 B200-B271 (+B294 pierce radius, B295 min lead)",
+  "source": "MECHANICS AL1"
+ },
+ {
+  "name": "lead table for quality q>=2",
+  "group": "automatic leads",
+  "value": "CT1 E block at (q-2)*71 (E000 = quality 2 ... E710 = quality 12)",
+  "source": "MECHANICS AL1"
+ },
+ {
+  "name": "lead contour classes",
+  "group": "automatic leads",
+  "value": "round hole, round part, rect hole, rect part, slot hole, other shape (contour 1/2/3 settings tried in order)",
+  "source": "MECHANICS AL3"
+ },
+ {
+  "name": "per-class overlap",
+  "group": "automatic leads",
+  "value": "E814 + 8(q-1) + class; 99999.999 = use B156",
+  "source": "MECHANICS AL2"
+ },
+ {
+  "name": "zone point",
+  "group": "automatic leads",
+  "value": "keypad 1-9 on the contour box; round contours at 1:225 2:270 3:315 4:180 6:0 7:135 8:90 9:45 degrees",
+  "source": "MECHANICS AL4"
+ },
+ {
+  "name": "valid corner for a corner lead",
+  "group": "automatic leads",
+  "value": "on the scrap side, angle <= B201/E001 + tolerance; no side-length test (corrects P2/P3 estimate)",
+  "source": "MECHANICS AL5"
+ },
+ {
+  "name": "element lead position",
+  "group": "automatic leads",
+  "value": "middle ((L-overlap)/2) of the element whose middle is nearest the zone point, length >= E004, arc radius >= E005",
+  "source": "MECHANICS AL6"
+ },
+ {
+  "name": "corner lead type 10",
+  "group": "automatic leads",
+  "value": "straight of D_in extending the first side backwards past the corner; lead-out extends the last side (corrects P4: not the bisector)",
+  "source": "MECHANICS AL7"
+ },
+ {
+  "name": "lead types 1-9",
+  "group": "lead shapes",
+  "value": "in-form (t-1) div 3, out-form (t-1) mod 3: 0 perpendicular (0,D), 1 inclined (-D/tanA, D), 2 tangent arc centre (0,R), h=min(D,2R)",
+  "source": "MECHANICS AL8"
+ },
+ {
+  "name": "no lead-out",
+  "group": "lead shapes",
+  "value": "when D_out <= 2 x linear tolerance",
+  "source": "MECHANICS AL8"
+ },
+ {
+  "name": "round hole limit to centre",
+  "group": "lead shapes",
+  "value": "types 1-9: D <= r (clamped -> perpendicular), A >= 45, R <= r/2; type 13: R <= r/3",
+  "source": "MECHANICS AL10"
+ },
+ {
+  "name": "lead collision test",
+  "group": "lead shapes",
+  "value": "B185 1 shorten by B186 per step (floor max(2tol, B295)), 2 move by perimeter/B187, 3 move then shorten",
+  "source": "MECHANICS AL11"
+ },
+ {
+  "name": "micro-joint count",
+  "group": "automatic micro-joints",
+  "value": "n = ceil(P / F150) (default 100), clamped to size-class (min,max), odd unclamped n -> n+1; F120 not read (corrects MT11)",
+  "source": "MECHANICS AM1"
+ },
+ {
+  "name": "micro-joint size classes",
+  "group": "automatic micro-joints",
+  "value": "small w<=F136 & h<=F137, large w>=F138 & h>=F139; (min,max) pairs F140-F149, fallback F121/F122 (corrects P7: not X/Y counts)",
+  "source": "MECHANICS AM2"
+ },
+ {
+  "name": "micro-joints on holes",
+  "group": "automatic micro-joints",
+  "value": "every closed contour without joints, holes included",
+  "source": "MECHANICS AM3"
+ },
+ {
+  "name": "micro-joint placement",
+  "group": "automatic micro-joints",
+  "value": "spacing P/n, first s/2 after the lead-in, joints centred on each element, leftover carried",
+  "source": "MECHANICS AM4"
+ },
+ {
+  "name": "micro-joint element rule",
+  "group": "automatic micro-joints",
+  "value": "element must be longer than the gap; plain gap slides flush to the element end (corrects J5 10x rule)",
+  "source": "MECHANICS AM5"
+ },
+ {
+  "name": "micro-joint near a line end",
+  "group": "automatic micro-joints",
+  "value": "within 2tol + gap of an end -> corner joint straddling the corner (types 3->2, 4-6->1)",
+  "source": "MECHANICS AM5"
+ },
+ {
+  "name": "joint lead shape",
+  "group": "automatic micro-joints",
+  "value": "D is the distance off the contour, leads lean away from the gap, lead-out only when D_out > 2tol",
+  "source": "MECHANICS AM6"
+ },
+ {
+  "name": "unset joint gap",
+  "group": "automatic micro-joints",
+  "value": "99999.999 -> B164 joint width",
+  "source": "MECHANICS AM6, MJ4"
+ },
+ {
+  "name": "nesting method",
+  "group": "true-shape nesting",
+  "value": "strip (band) profiles: parts and sheet sliced across X into strips of B057, each holding Y stretches in 0.1 mm",
+  "source": "MECHANICS True-shape strip nesting #1-#10"
+ },
+ {
+  "name": "part strip offset",
+  "group": "true-shape nesting",
+  "value": "outline grown by gap/2 (holes shrunk), holes <= B076 area count as solid",
+  "source": "MECHANICS True-shape strip nesting #2, #3"
+ },
+ {
+  "name": "drop rule",
+  "group": "true-shape nesting",
+  "value": "lowest Y at a sheet strip where every part stretch fits a free stretch (lift/room loop); strips scanned from the left, first fit (methods 8-11 scan all)",
+  "source": "MECHANICS True-shape strip nesting #12, #14"
+ },
+ {
+  "name": "next part",
+  "group": "true-shape nesting",
+  "value": "size tier: every orientation of every item with order value within 0.9-1.1 of the largest left; lowest method cost wins",
+  "source": "MECHANICS True-shape strip nesting #17"
+ },
+ {
+  "name": "best method",
+  "group": "true-shape nesting",
+  "value": "each sheet is filled by every method of the level and the best sheet kept",
+  "source": "MECHANICS True-shape strip nesting #18"
+ },
+ {
+  "name": "best sheet ranking",
+  "group": "true-shape nesting",
+  "value": "sheet taking every part left wins, then higher efficiency, else more part area (estimate: our choice, Lantek ranks parts placed first)",
+  "source": "MECHANICS True-shape strip nesting (design choices); estimate"
+ },
+ {
+  "name": "strip width",
+  "group": "true-shape nesting",
+  "value": "CT1 B057; LevelSys A003 only when A020 = 1 (never in system levels); default 5 mm without a CT1 (estimate)",
+  "source": "MECHANICS True-shape strip nesting #21"
+ },
+ {
+  "name": "fit to sheet border",
+  "group": "true-shape nesting",
+  "value": "B078 on: usable area grows by gap/2 so real part edges reach the margin",
+  "source": "MECHANICS True-shape strip nesting #11"
+ },
+ {
+  "name": "horizontal nesting",
+  "group": "true-shape nesting",
+  "value": "swap X/Y of sheet and parts, run the same engine, swap back",
+  "source": "MECHANICS True-shape strip nesting #20"
+ },
+ {
+  "name": "nesting on several sheet formats",
+  "group": "true-shape nesting",
+  "value": "sheet by sheet in plan order; best fill of all methods; a format that takes nothing is skipped",
+  "source": "MECHANICS BN1"
+ },
+ {
+  "name": "remnant shape in the strip nester",
+  "group": "true-shape nesting",
+  "value": "outline moved in by margin (less gap/2 + 0.05 with B078); strips keep only stretches fully inside",
+  "source": "MECHANICS BN2; estimate"
+ },
+ {
+  "name": "part inside a remnant",
+  "group": "true-shape nesting",
+  "value": "box in a free rectangle, or real outline inside within 0.01 mm2",
+  "source": "MECHANICS BN3"
+ },
+ {
+  "name": "automatic micro-joints spacing",
+  "group": "micro-joints",
+  "value": "joint_every = machine F150 for the part's quality (or agent every=); fixed count 0; delete clears it",
+  "source": "MECHANICS BN4"
+ },
+ {
+  "name": "automatic lead type default",
+  "group": "lead-ins",
+  "value": "machine tables; delete resets to inclined (type 5)",
+  "source": "MECHANICS BN5"
+ },
+ {
+  "name": "remnant line dialog order",
+  "group": "remnant line",
+  "value": "icons 1..9 = codes 1,7,2,3,4,5,6,9,8 (confirmed)",
+  "source": "MECHANICS ST11 (Sheet stock and remnants), MECHANICS ST8 (Sheet stock and remnants)"
+ },
+ {
+  "name": "exact irregular disables rounding",
+  "group": "remnant line",
+  "value": true,
+  "source": "MECHANICS ST11 (Sheet stock and remnants)"
+ },
+ {
+  "name": "remnant dialog defaults",
+  "group": "remnants",
+  "value": "save 0, completed 0, min area 0.1 m2, auto line 0, rotation allow, shape 1, offset 10, edge 0, min width 100, round 0, prompt 0, min X/Y 100",
+  "source": "MECHANICS ST11 (Sheet stock and remnants)"
+ },
+ {
+  "name": "turn over shown only when rotation allowed",
+  "group": "remnants",
+  "value": true,
+  "source": "MECHANICS ST11 (Sheet stock and remnants)"
+ },
+ {
+  "name": "semi-automatic ignores minimum width",
+  "group": "remnants",
+  "value": true,
+  "source": "MECHANICS ST9 (Sheet stock and remnants)"
+ },
+ {
+  "name": "use sheet with no quantity",
+  "group": "sheet stock",
+  "value": "refused unless 'allow no stock'",
+  "source": "MECHANICS ST4 (Sheet stock and remnants), MECHANICS SA4"
+ },
+ {
+  "name": "remake remnants when lines change",
+  "group": "remnants",
+  "value": "only if none of the old ones is used; else warn and keep",
+  "source": "MECHANICS ST12 (Sheet stock and remnants)"
+ },
+ {
+  "name": "best sheet format",
+  "group": "do all",
+  "value": "whole job per size; complete first, then less waste, then higher worst-sheet efficiency",
+  "source": "MECHANICS ST13 (Sheet stock and remnants)"
+ },
+ {
+  "name": "best sheet combination",
+  "group": "do all",
+  "value": "next sheet under the minimum efficiency is tried in the other sizes; first reaching it wins, else most placed",
+  "source": "MECHANICS ST13 (Sheet stock and remnants)"
+ },
+ {
+  "name": "best sheet combination on the strip nester",
+  "group": "sheet stock",
+  "value": "per sheet: below combination_min, other formats with sheets left are filled; first reaching it wins, else most part area if more",
+  "source": "MECHANICS BN6"
+ },
+ {
+  "name": "remnants stored before fingerprints",
+  "group": "sheet stock",
+  "value": "made_from 0 = unchanged (not remade)",
+  "source": "MECHANICS BN7; own design"
+ },
+ {
+  "name": "agent remnant references",
+  "group": "sheet stock",
+  "value": "stock-book book refs= in status order; default numbered",
+  "source": "MECHANICS BN8"
+ }
+]
+}

@@ -1,0 +1,26 @@
+# Private research notes: a checkout of KerfLabs/nestpro-research (never public).
+/research/
+
+# The other program's own files: its install, installers and zips. Proprietary,
+# several GB, and Expert/LogFile$ holds real customer jobs.
+/vendor/
+
+# Old run logs and evidence; they live in the research repo.
+/history/
+
+# Day-to-day check screenshots (tools/shot.sh). Reviewed images for the docs
+# go in docs/ and are listed in tools/public-images.txt.
+/app/shots/
+
+# Rust build output.
+/app/target/
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+.DS_Store
+
+# Agent worktrees (Claude Code)
+/.claude/worktrees/
