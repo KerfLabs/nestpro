@@ -3091,6 +3091,48 @@
   "group": "sheet stock",
   "value": "stock-book book refs= in status order; default numbered",
   "source": "MECHANICS BN8"
+ },
+ {
+  "name": "automatic references default",
+  "group": "references",
+  "value": "off, empty formats",
+  "source": "MECHANICS ST14 (Sheet stock and remnants)"
+ },
+ {
+  "name": "remnant reference format tokens",
+  "group": "references",
+  "value": "[MAT] [UD1-3] [SHT] [AUT] [LNGx] [WDTx] [THKx]; x: 1 = /10, 2 = /100, 3rd char = decimals; unknown [xxx] -> xxx; first 40 chars",
+  "source": "MECHANICS ST14 (Sheet stock and remnants)"
+ },
+ {
+  "name": "sheet reference format",
+  "group": "references",
+  "value": "same tokens as remnants (estimated)",
+  "source": "MECHANICS ST14 (Sheet stock and remnants)"
+ },
+ {
+  "name": "counters skip device names",
+  "group": "references",
+  "value": "NUL CON AUX PRN COM1-9 LPT1-9",
+  "source": "MECHANICS ST14 (Sheet stock and remnants)"
+ },
+ {
+  "name": "remnant mark tokens",
+  "group": "remnant mark",
+  "value": "#300 ref, #301 L, #302 W, #303 area, #304 weight, #200-203 sheet, #400 material, #401 thickness, #104 date; #N.d decimals; unavailable -> ?",
+  "source": "MECHANICS ST15 (Sheet stock and remnants)"
+ },
+ {
+  "name": "remnant mark position",
+  "group": "remnant mark",
+  "value": "1-9 keypad on the remnant box with X/Y margins; else search grid, then 90 degrees, then smaller text",
+  "source": "MECHANICS ST15 (Sheet stock and remnants)"
+ },
+ {
+  "name": "remnant mark machines",
+  "group": "remnant mark",
+  "value": "cutting machines only",
+  "source": "MECHANICS ST15 (Sheet stock and remnants)"
  }
 ]
 }

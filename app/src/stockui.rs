@@ -65,8 +65,16 @@ impl App {
         stockflow::nest_from_stock(&self.parts, &self.spec, &self.stock_use())
     }
 
+    /// The automatic marks on sheet `i`'s remnants (RF9–RF10).
+    pub fn remnant_marks(&self, i: usize) -> Vec<Vec<nest::P>> {
+        if !self.cfg.stock.mark.on {
+            return vec![];
+        }
+        stockflow::remnant_marks(&Stock::load_cached(&self.library_dir()), &self.job_sheets(), &self.result.formats, i, &self.cfg.stock)
+    }
+
     fn job_sheets(&self) -> stockflow::JobSheets<'_> {
-        stockflow::JobSheets { name: &self.job_name, parts: &self.parts, spec: &self.spec, sheets: &self.result.sheets, cut_lines: &self.cut_lines }
+        stockflow::JobSheets { name: &self.job_name, parts: &self.parts, spec: &self.spec, sheets: &self.result.sheets, cut_lines: &self.cut_lines, material_name: stockflow::material_name(&self.cfg, self.spec.material) }
     }
 
     /// Before a job is written: put new remnants in stock and settle what the
@@ -558,6 +566,30 @@ pub fn stock_options(ui: &mut egui::Ui, st: &mut stock::StockSettings) {
     ui.checkbox(&mut st.keep_completed, "Generate remnants with the completed sheets").on_hover_text("Keep the whole used sheet (less the parts) in stock to nest more on later");
     ui.checkbox(&mut st.prompt_remnant_ref, "Prompt for references when generating remnants");
     ui.horizontal(|ui| {
+        ui.checkbox(&mut st.auto_sheet_ref, "Automatic sheet references");
+        ui.add_enabled(st.auto_sheet_ref, egui::TextEdit::singleline(&mut st.sheet_ref_format).hint_text("[MAT]_[LNG]x[WDT]x[THK]").desired_width(200.0));
+    });
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut st.auto_remnant_ref, "Automatic remnant references");
+        ui.add_enabled(st.auto_remnant_ref, egui::TextEdit::singleline(&mut st.remnant_ref_format).hint_text("[SHT]-[AUT]").desired_width(200.0));
+    })
+    .response
+    .on_hover_text("[MAT] material, [UD1]–[UD3] user data, [SHT] origin sheet, [AUT] next number, [LNG] [WDT] [THK] sizes (add 1 = ÷10, 2 = ÷100; a third character = decimals)");
+    let m = &mut st.mark;
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut m.on, "Automatic mark");
+        ui.add_enabled(m.on, egui::TextEdit::singleline(&mut m.text).desired_width(140.0)).on_hover_text("#300 reference, #301 length, #302 width, #303 area, #304 weight, #200 sheet, #400 material, #401 thickness, #104 date; #N.d = d decimals");
+        ui.add_enabled_ui(m.on, |ui| {
+            ui.add(egui::DragValue::new(&mut m.height).range(1.0..=200.0).speed(0.5).prefix("H ").suffix(" mm"));
+            egui::ComboBox::from_id_salt("mark_pos").width(110.0).selected_text(if m.position == 0 { "Find room".to_string() } else { format!("Position {}", m.position) }).show_ui(ui, |ui| {
+                ui.selectable_value(&mut m.position, 0, "Find room");
+                for k in 1..=9u8 {
+                    ui.selectable_value(&mut m.position, k, format!("Position {k} (keypad)"));
+                }
+            });
+        });
+    });
+    ui.horizontal(|ui| {
         ui.label("Minimum area of remnants");
         ui.add(egui::DragValue::new(&mut st.min_remnant_m2).range(0.0..=100.0).speed(0.01).max_decimals(3).suffix(" m²"));
     });
@@ -743,6 +775,28 @@ mod tests {
         a.cur_sheet = 0;
         a.semi_auto_at(crate::remline::SemiMode::ExteriorOrthogonal, [2800.0, 1400.0]);
         assert_eq!(a.remnant_pieces().len(), 1, "{}", a.status);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remnant_marks_go_into_the_program_before_the_remnant_line() {
+        let (mut a, dir) = app_with_stock("marks");
+        a.cfg.stock.use_stock = false;
+        a.cfg.stock.mark = crate::remmark::MarkSettings { on: true, text: "#300".into(), ..Default::default() };
+        a.cfg.stock.auto_remnant_ref = true;
+        a.cfg.stock.remnant_ref_format = "R[THK]-[AUT]".into();
+        a.parts[0].qty = 4;
+        a.run_nesting();
+        a.cut_lines = vec![vec![crate::cutoff::CutLine { pts: vec![[1500.0, 0.0], [1500.0, 1500.0]], kind: crate::cutoff::CutKind::Remnant }]];
+        let blocks = crate::engine::program_blocks(&a.cut_lines[0], &a.remnant_marks(0), &a.cur_spec(), 0.0);
+        let labels: Vec<&str> = blocks.iter().map(|b| b.0.as_str()).collect();
+        let m = labels.iter().position(|l| *l == "REMNANT MARK").expect("a mark");
+        let r = labels.iter().position(|l| *l == "REMNANT LINE").unwrap();
+        assert!(m < r, "{labels:?}");
+        // The formatted reference is the one stored on save.
+        a.cfg.stock.remnants_on_save = true;
+        a.stock_on_save();
+        assert_eq!(a.result.formats[0].made, vec!["R10-1".to_string()]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

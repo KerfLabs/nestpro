@@ -40,6 +40,7 @@ mod libui;
 mod library;
 mod region;
 mod remline;
+mod remmark;
 mod remnant;
 mod stock;
 mod stockui;
@@ -1302,7 +1303,8 @@ impl App {
         };
         // Every sheet's program (or BLM LC5 set) and the CSV parts report.
         let blm = self.blm_now();
-        let res = engine::export(&base, &self.job_name, &self.parts, &self.result.sheets, &self.result.formats, &self.plans, &self.spec, &self.cut_lines, &self.post, Some(&blm), self.cfg.stock.line.edge_offset);
+        let marks: Vec<Vec<Vec<nest::P>>> = (0..self.result.sheets.len()).map(|k| self.remnant_marks(k)).collect();
+        let res = engine::export(&base, &self.job_name, &self.parts, &self.result.sheets, &self.result.formats, &self.plans, &self.spec, &self.cut_lines, &marks, &self.post, Some(&blm), self.cfg.stock.line.edge_offset);
         self.status = match res {
             Ok(ex) if ex.warning.is_some() => format!("Exported, but {}.", ex.warning.unwrap_or_default()),
             Ok(ex) if self.blm.on => format!("Exported {} BLM LC5 program set(s) (.zip + .XML) and a parts report to {}", self.result.sheets.len(), ex.dir.display()),
@@ -1364,7 +1366,7 @@ impl App {
         }
         self.plans = engine::plans(&self.parts, &self.result.sheets, &self.result.formats, &self.spec, &self.manual_cuts);
         self.program = match (self.result.sheets.get(self.cur_sheet), self.plans.get(self.cur_sheet)) {
-            (Some(s), Some(pl)) => engine::program(self.cur_sheet + 1, &self.parts, s, &self.cur_spec(), pl, self.cut_list(), &self.post, self.cfg.stock.line.edge_offset),
+            (Some(s), Some(pl)) => engine::program(self.cur_sheet + 1, &self.parts, s, &self.cur_spec(), pl, self.cut_list(), &self.remnant_marks(self.cur_sheet), &self.post, self.cfg.stock.line.edge_offset),
             _ => "( NO SHEET NESTED )".into(),
         };
     }
@@ -2412,6 +2414,10 @@ fn main() -> eframe::Result {
             if std::env::args().any(|a| a == "--nest-stock") {
                 app.run_nesting();
                 app.anim_pending = false;
+            }
+            // --remnant-mark: the automatic mark on remnants on (screenshots).
+            if std::env::args().any(|a| a == "--remnant-mark") {
+                app.cfg.stock.mark = remmark::MarkSettings { on: true, text: "#300 #301x#302".into(), height: 18.0, ..Default::default() };
             }
             // --remline=<code>: the automatic remnant line in that shape (screenshots).
             if let Some(c) = std::env::args().find_map(|a| a.strip_prefix("--remline=").and_then(|v| v.parse::<u8>().ok())) {

@@ -574,8 +574,17 @@ pub fn plans(parts: &[Part], sheets: &[Vec<Placed>], formats: &[SheetFormat], sp
 /// The ISO program of one sheet (sheet numbers from 1; `spec` with that
 /// sheet's size), cut lines last; `bridge` is the remnant line's edge offset.
 #[allow(clippy::too_many_arguments)]
-pub fn program(sheet_no: usize, parts: &[Part], sheet: &[Placed], spec: &SheetSpec, plan: &SheetPlan, cuts: &[CutLine], post: &crate::post::PostConfig, bridge: f64) -> String {
-    cnc::program_lines(sheet_no, parts, sheet, spec, plan, &cutoff::gcode_lines(cuts, spec, bridge), post)
+pub fn program(sheet_no: usize, parts: &[Part], sheet: &[Placed], spec: &SheetSpec, plan: &SheetPlan, cuts: &[CutLine], marks: &[Vec<crate::nest::P>], post: &crate::post::PostConfig, bridge: f64) -> String {
+    cnc::program_lines(sheet_no, parts, sheet, spec, plan, &program_blocks(cuts, marks, spec, bridge), post)
+}
+
+/// A sheet's extra program blocks: free cut paths, then the remnant marks
+/// (RF9), then the remnant line last so the remnant only comes loose at the end.
+pub fn program_blocks(cuts: &[CutLine], marks: &[Vec<crate::nest::P>], spec: &SheetSpec, bridge: f64) -> Vec<(String, Vec<crate::nest::P>)> {
+    let mut v = cutoff::gcode_lines(cuts, spec, bridge);
+    let at = v.iter().position(|(l, _)| l == "REMNANT LINE").unwrap_or(v.len());
+    v.splice(at..at, marks.iter().map(|s| ("REMNANT MARK".to_string(), s.clone())));
+    v
 }
 
 /// Add a cut line to a sheet's list; a new remnant line replaces the old one
@@ -662,7 +671,7 @@ pub fn safe_name(s: &str) -> String {
 /// Write every sheet's machine program (G-code, or BLM LC5 sets) and the CSV
 /// parts report into `base\<job>`.
 #[allow(clippy::too_many_arguments)]
-pub fn export(base: &Path, job_name: &str, parts: &[Part], sheets: &[Vec<Placed>], formats: &[SheetFormat], plans: &[SheetPlan], job_spec: &SheetSpec, cuts: &[Vec<CutLine>], post: &crate::post::PostConfig, blm: Option<&crate::blm::BlmSettings>, bridge: f64) -> Result<Exported, String> {
+pub fn export(base: &Path, job_name: &str, parts: &[Part], sheets: &[Vec<Placed>], formats: &[SheetFormat], plans: &[SheetPlan], job_spec: &SheetSpec, cuts: &[Vec<CutLine>], marks: &[Vec<Vec<crate::nest::P>>], post: &crate::post::PostConfig, blm: Option<&crate::blm::BlmSettings>, bridge: f64) -> Result<Exported, String> {
     if sheets.is_empty() {
         return Err("Nothing to export — nest first.".into());
     }
@@ -686,7 +695,7 @@ pub fn export(base: &Path, job_name: &str, parts: &[Part], sheets: &[Vec<Placed>
                 continue;
             }
             let f = dir.join(post.file_name(job_name, k + 1));
-            std::fs::write(&f, program(k + 1, parts, s, spec, pl, c, post, bridge))?;
+            std::fs::write(&f, program(k + 1, parts, s, spec, pl, c, marks.get(k).map_or(&[][..], |v| v.as_slice()), post, bridge))?;
             files.push(f);
         }
         let mut csv = String::from("reference,shape,width_mm,height_mm,quantity,nested\n");
@@ -789,8 +798,8 @@ impl JobFile {
     }
 
     /// The job's sheets as the stock's remnant generation sees them.
-    pub fn stock_sheets(&self) -> stockflow::JobSheets<'_> {
-        stockflow::JobSheets { name: &self.name, parts: &self.parts, spec: &self.spec, sheets: &self.sheets, cut_lines: &self.cut_lines }
+    pub fn stock_sheets(&self, cfg: &AppSettings) -> stockflow::JobSheets<'_> {
+        stockflow::JobSheets { name: &self.name, parts: &self.parts, spec: &self.spec, sheets: &self.sheets, cut_lines: &self.cut_lines, material_name: stockflow::material_name(cfg, self.spec.material) }
     }
 
     /// Bring the stock in step with the job (what the window does on save):
@@ -806,7 +815,7 @@ impl JobFile {
     pub fn book_stock_named(&mut self, ctx: &Ctx, force_lines: bool, names: Option<&BTreeMap<(usize, usize), String>>) -> String {
         self.normalise_formats();
         let (mut formats, mut held) = (std::mem::take(&mut self.formats), std::mem::take(&mut self.held));
-        let note = stockflow::on_save(&ctx.library_dir, &self.stock_sheets(), &mut formats, &mut held, &ctx.cfg.stock, force_lines, names);
+        let note = stockflow::on_save(&ctx.library_dir, &self.stock_sheets(&ctx.cfg), &mut formats, &mut held, &ctx.cfg.stock, force_lines, names);
         (self.formats, self.held) = (formats, held);
         self.booked = true;
         note

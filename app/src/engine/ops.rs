@@ -1426,8 +1426,8 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                     job.normalise_formats();
                     let used = stockflow::sheets_used(&job.formats, job.sheets.len());
                     let missing: Vec<&String> = used.keys().filter(|r| st.get(r).is_none()).collect();
-                    let rows = stockflow::remnant_rows(&ctx.library_dir, &job.stock_sheets(), &job.formats, &ctx.cfg.stock, true);
-                    let (_, kept_used) = stockflow::pending_remnants(&st, &job.stock_sheets(), &job.formats, &ctx.cfg.stock, true);
+                    let rows = stockflow::remnant_rows(&ctx.library_dir, &job.stock_sheets(&ctx.cfg), &job.formats, &ctx.cfg.stock, true);
+                    let (_, kept_used) = stockflow::pending_remnants(&st, &job.stock_sheets(&ctx.cfg), &job.formats, &ctx.cfg.stock, true);
                     let v = json!({
                         "booked": job.booked,
                         "held": job.held,
@@ -1444,7 +1444,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                     let names: Option<BTreeMap<(usize, usize), String>> = match a.str("refs") {
                         None => None,
                         Some(list) => {
-                            let rows = stockflow::remnant_rows(&ctx.library_dir, &job.stock_sheets(), &job.formats, &ctx.cfg.stock, true);
+                            let rows = stockflow::remnant_rows(&ctx.library_dir, &job.stock_sheets(&ctx.cfg), &job.formats, &ctx.cfg.stock, true);
                             let refs: Vec<String> = list.split(',').map(|r| r.trim().to_string()).collect();
                             if refs.len() != rows.len() {
                                 return Err(format!("refs: {} given, but booking stores {} new remnant(s) — see stock-book mode=status", refs.len(), rows.len()));
@@ -1867,7 +1867,8 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                 }
                 t
             } else {
-                program(s + 1, &job.parts, &job.sheets[s], &job.spec_at(s), &plans[s], job.cuts(s), &ctx.post, ctx.cfg.stock.line.edge_offset)
+                let marks = stockflow::remnant_marks(&crate::stock::Stock::load_cached(&ctx.library_dir), &job.stock_sheets(&ctx.cfg), &job.formats, s, &ctx.cfg.stock);
+                program(s + 1, &job.parts, &job.sheets[s], &job.spec_at(s), &plans[s], job.cuts(s), &marks, &ctx.post, ctx.cfg.stock.line.edge_offset)
             };
             let mut o = Outcome::read(format!("Program for sheet {} ({} lines).", s + 1, text.lines().count()), json!(text));
             if let Some(out) = a.str("out") {
@@ -1881,7 +1882,8 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             let base = a.str("dir").map(PathBuf::from).unwrap_or_else(|| ctx.export_dir());
             let plans = job.plans();
             let blm = blm_for(&job.spec, &ctx.blm, &job.name, &ctx.cfg);
-            let ex = export(&base, &job.name, &job.parts, &job.sheets, &job.formats, &plans, &job.spec, &job.cut_lines, &ctx.post, Some(&blm), ctx.cfg.stock.line.edge_offset)?;
+            let marks = stockflow::all_remnant_marks(&ctx.library_dir, &job.stock_sheets(&ctx.cfg), &job.formats, &ctx.cfg.stock);
+            let ex = export(&base, &job.name, &job.parts, &job.sheets, &job.formats, &plans, &job.spec, &job.cut_lines, &marks, &ctx.post, Some(&blm), ctx.cfg.stock.line.edge_offset)?;
             let what = if blm.on { "BLM LC5 program set(s) (.zip + .XML)" } else { "program(s)" };
             let mut o = Outcome::read(
                 format!("Exported {} {what} and a parts report to {}{}", job.sheets.len(), ex.dir.display(), ex.warning.as_ref().map_or(String::new(), |w| format!(" — but {w}"))),

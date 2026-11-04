@@ -226,6 +226,85 @@ pub struct JobSheets<'a> {
     pub spec: &'a SheetSpec,
     pub sheets: &'a [Vec<Placed>],
     pub cut_lines: &'a [Vec<CutLine>],
+    /// The job material's name as programs call it ([MAT], mark #400).
+    pub material_name: String,
+}
+
+/// The material's name from the settings (the built-in name when none is set).
+pub fn material_name(cfg: &crate::settings::AppSettings, m: usize) -> String {
+    cfg.materials.get(m).map(|x| x.0.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| crate::cnc::MATERIALS[m.min(crate::cnc::MATERIALS.len() - 1)].to_string())
+}
+
+/// What a reference format can use for a remnant of sheet `i` (RF4–RF5).
+fn ref_values(j: &JobSheets, f: &SheetFormat, i: usize, parent: Option<&Item>, o: &crate::stock::Outline) -> stock::RefValues {
+    let (l, w) = o.size();
+    stock::RefValues { material: j.material_name.clone(), user_data: parent.map(|p| p.user_data.clone()).unwrap_or_default(), sheet: origin_of(j, f, i), length: l, width: w, thickness: j.spec.thickness, decimals: 0 }
+}
+
+/// The next reference for a new remnant of sheet `i`: the automatic remnant
+/// format when it's on, else `<origin>-<number>` (RF2).
+pub fn next_ref(s: &mut Stock, j: &JobSheets, f: &SheetFormat, i: usize, parent: Option<&Item>, o: &crate::stock::Outline, st: &StockSettings) -> String {
+    let v = ref_values(j, f, i, parent, o);
+    let fmt = if st.auto_remnant_ref { st.remnant_ref_format.as_str() } else { "" };
+    s.remnant_ref_from(fmt, &v)
+}
+
+/// The references sheet `i`'s remnant pieces have, or will get when stored.
+pub fn remnant_refs(stock: &Stock, j: &JobSheets, f: &SheetFormat, i: usize, pieces: &[crate::stock::Outline], st: &StockSettings) -> Vec<String> {
+    if f.made.len() == pieces.len() {
+        return f.made.clone();
+    }
+    let mut s = stock.clone();
+    let parent = s.get(&f.stock_ref).cloned();
+    pieces.iter().map(|o| next_ref(&mut s, j, f, i, parent.as_ref(), o, st)).collect()
+}
+
+/// The automatic marks on sheet `i`'s remnants, in sheet coordinates (RF9–RF10;
+/// cutting machines only). Engraved before the remnant line.
+pub fn remnant_marks(stock: &Stock, j: &JobSheets, formats: &[SheetFormat], i: usize, st: &StockSettings) -> Vec<Vec<crate::nest::P>> {
+    let ms = &st.mark;
+    if !ms.on || j.spec.machine == crate::machine::MachineKind::Punch {
+        return vec![];
+    }
+    let lines = j.cut_lines.get(i).map_or(&[][..], |v| v.as_slice());
+    if !lines.iter().any(|l| l.kind == CutKind::Remnant) {
+        return vec![];
+    }
+    let Some(sheet) = j.sheets.get(i) else { return vec![] };
+    let f = formats.get(i).cloned().unwrap_or_else(|| SheetFormat::rect(j.spec.w, j.spec.h));
+    let pieces = crate::remnant::sheet_remnants_cached(j.parts, sheet, &f, lines, crate::cutoff::KERF_MM);
+    let refs = remnant_refs(stock, j, &f, i, &pieces, st);
+    let mut out = vec![];
+    for (k, o) in pieces.iter().enumerate() {
+        let (l, w) = o.size();
+        let v = crate::remmark::MarkValues {
+            reference: refs.get(k).cloned().unwrap_or_default(),
+            length: l,
+            width: w,
+            area_m2: o.area_mm2() / 1e6,
+            weight_kg: crate::cnc::weight_kg(j.spec.material, o.area_mm2(), j.spec.thickness),
+            sheet: origin_of(j, &f, i),
+            sheet_user_data: Default::default(),
+            material: j.material_name.clone(),
+            thickness: j.spec.thickness,
+            date: stock::today(),
+            time: String::new(),
+        };
+        let text = crate::remmark::expand_text(&ms.text, &v);
+        if let Some(st) = crate::remmark::place(o, &text, ms) {
+            out.extend(st);
+        }
+    }
+    out
+}
+
+/// Every sheet's remnant marks (for exporting all programs).
+pub fn all_remnant_marks(dir: &Path, j: &JobSheets, formats: &[SheetFormat], st: &StockSettings) -> Vec<Vec<Vec<crate::nest::P>>> {
+    if !st.mark.on {
+        return vec![];
+    }
+    let stock = Stock::load_cached(dir);
+    (0..j.sheets.len()).map(|i| remnant_marks(&stock, j, formats, i, st)).collect()
 }
 
 /// A fingerprint of a sheet's remnant lines, to tell whether they changed
@@ -314,10 +393,11 @@ pub fn remnant_rows(dir: &Path, j: &JobSheets, formats: &[SheetFormat], st: &Sto
         for r in &p.replace {
             s.delete(r);
         }
-        let origin = origin_of(j, &formats[p.sheet], p.sheet);
+        let f = &formats[p.sheet];
+        let parent = s.get(&f.stock_ref).cloned();
         for (k, o) in p.pieces.iter().enumerate() {
             let (w, h) = o.size();
-            let reference = s.next_remnant_ref(&origin);
+            let reference = next_ref(&mut s, j, f, p.sheet, parent.as_ref(), o, st);
             rows.push(NameRow { sheet: p.sheet, piece: k, reference, w, h, area_m2: o.area_mm2() / 1e6 });
         }
     }
@@ -372,7 +452,16 @@ pub fn make_remnants(dir: &Path, j: &JobSheets, formats: &mut Vec<SheetFormat>, 
                 it.priority = stock::DEFAULT_PRIORITY;
                 it
             });
-            let refs = p.pieces.iter().enumerate().map(|(k, o)| s.add_remnant(o.clone(), &parent, 1, names.and_then(|m| m.get(&(p.sheet, k)).cloned()), j.name)).collect();
+            let refs = p
+                .pieces
+                .iter()
+                .enumerate()
+                .map(|(k, o)| {
+                    // A given name, else the format (or <origin>-<number>).
+                    let r = names.and_then(|m| m.get(&(p.sheet, k)).cloned()).unwrap_or_else(|| next_ref(s, j, f, p.sheet, Some(&parent), o, st));
+                    s.add_remnant(o.clone(), &parent, 1, Some(r), j.name)
+                })
+                .collect();
             out.push((p.sheet, refs));
         }
         Ok(out)

@@ -931,13 +931,14 @@ fn program_mm(sheet_no: usize, parts: &[Part], placed: &[Placed], spec: &SheetSp
     }
     for (label, pts) in lines {
         let Some(first) = pts.first() else { continue };
+        let mark = label.ends_with("MARK");
         let _ = writeln!(s, "( {label} )");
         line(&mut s, format!("G0 X{:.2} Y{:.2}", first[0], first[1]));
-        line(&mut s, "M07 ( PIERCE )".into());
+        line(&mut s, if mark { "M10 ( MARK ON )".into() } else { "M07 ( PIERCE )".into() });
         for q in pts.iter().skip(1) {
             line(&mut s, format!("G1 X{:.2} Y{:.2}", q[0], q[1]));
         }
-        line(&mut s, "M08".into());
+        line(&mut s, if mark { "M11 ( MARK OFF )".into() } else { "M08".into() });
     }
     line(&mut s, "G0 X0 Y0".into());
     line(&mut s, "M30".into());

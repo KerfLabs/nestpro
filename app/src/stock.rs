@@ -434,6 +434,14 @@ pub struct StockSettings {
     pub turn_over: bool,
     /// The automatic remnant line's shape and options.
     pub line: crate::remline::LineSettings,
+    /// Automatic sheet / remnant references and their formats (RF1; off and
+    /// empty by default).
+    pub auto_sheet_ref: bool,
+    pub sheet_ref_format: String,
+    pub auto_remnant_ref: bool,
+    pub remnant_ref_format: String,
+    /// The automatic mark on remnants (RF9–RF10).
+    pub mark: crate::remmark::MarkSettings,
     /// "Look for the best sheet format": nest the whole job on each sheet size
     /// and keep the best (UI21).
     pub best_format: bool,
@@ -467,6 +475,11 @@ impl Default for StockSettings {
             turn_over: true,
             line: Default::default(),
             lines_after_nesting: false,
+            auto_sheet_ref: false,
+            sheet_ref_format: String::new(),
+            auto_remnant_ref: false,
+            remnant_ref_format: String::new(),
+            mark: Default::default(),
             best_format: false,
             best_combination: false,
             combination_min: 0.7,
@@ -518,6 +531,83 @@ pub fn base36(mut n: u64) -> String {
     String::from_utf8(s).unwrap_or_default()
 }
 
+/// Names Windows keeps for devices; the counters skip them (RF3).
+fn is_device_name(s: &str) -> bool {
+    let u = s.to_ascii_uppercase();
+    matches!(u.as_str(), "NUL" | "CON" | "AUX" | "PRN") || ((u.starts_with("COM") || u.starts_with("LPT")) && u.len() == 4 && u.as_bytes()[3].is_ascii_digit() && u.as_bytes()[3] != b'0')
+}
+
+/// What a reference format can use (RF4–RF5).
+#[derive(Clone, Debug, Default)]
+pub struct RefValues {
+    pub material: String,
+    pub user_data: [String; 3],
+    /// The origin sheet (remnants) — [SHT].
+    pub sheet: String,
+    /// Length along X, width along Y, thickness (mm).
+    pub length: f64,
+    pub width: f64,
+    pub thickness: f64,
+    /// Decimals when a number token doesn't give them.
+    pub decimals: usize,
+}
+
+/// Expand a reference format (RF4–RF6): `[MAT]`, `[UD1]`–`[UD3]`, `[SHT]`,
+/// `[AUT]` (the counter, taken only when the format uses it), and the number
+/// tokens `[LNGx]`, `[WDTx]`, `[THKx]` — x's first character `1` divides by 10,
+/// `2` by 100; with exactly three characters the last is the decimals. Any
+/// other `[xxx]` becomes `xxx`. The result keeps its first 40 characters.
+pub fn expand_format(format: &str, v: &RefValues, mut counter: impl FnMut() -> String) -> String {
+    let mut out = String::new();
+    let mut rest = format;
+    let mut seen_num: Vec<&str> = vec![];
+    while let Some(a) = rest.find('[') {
+        out.push_str(&rest[..a]);
+        let Some(b) = rest[a..].find(']') else {
+            out.push_str(&rest[a..]);
+            rest = "";
+            break;
+        };
+        let tok = &rest[a + 1..a + b];
+        rest = &rest[a + b + 1..];
+        let num = |name: &str, val: f64, seen: &mut Vec<&str>| -> Option<String> {
+            let x = tok.strip_prefix(name)?;
+            if seen.contains(&name) {
+                return None;
+            }
+            let scale = match x.chars().next() {
+                Some('1') => 10.0,
+                Some('2') => 100.0,
+                _ => 1.0,
+            };
+            let d = if x.chars().count() == 3 { x.chars().last().and_then(|c| c.to_digit(10)).map_or(v.decimals, |d| d as usize) } else { v.decimals };
+            Some(format!("{:.d$}", val / scale, d = d))
+        };
+        let piece = match tok {
+            "MAT" => v.material.clone(),
+            "UD1" => v.user_data[0].clone(),
+            "UD2" => v.user_data[1].clone(),
+            "UD3" => v.user_data[2].clone(),
+            "SHT" | "SHT#NestId" => v.sheet.clone(),
+            "AUT" | "AUT#ByNest" => counter(),
+            _ => {
+                let mut r = None;
+                for (name, val) in [("LNG", v.length), ("WDT", v.width), ("THK", v.thickness)] {
+                    if tok.starts_with(name) {
+                        r = num(name, val, &mut seen_num);
+                        seen_num.push(name);
+                        break;
+                    }
+                }
+                r.unwrap_or_else(|| tok.to_string())
+            }
+        };
+        out.push_str(&piece);
+    }
+    out.push_str(rest);
+    out.chars().take(MAX_REF).collect()
+}
+
 pub fn today() -> String {
     let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) as i64;
     let days = secs.div_euclid(86_400);
@@ -547,6 +637,21 @@ impl Stock {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Stock::default()),
             Err(e) => Err(format!("{}: {e}", f.display())),
         }
+    }
+
+    /// `load`, re-read only when the file changed (for drawing every frame).
+    pub fn load_cached(library_dir: &Path) -> Stock {
+        thread_local! {
+            static CACHE: std::cell::RefCell<Option<(PathBuf, Option<std::time::SystemTime>, Stock)>> = const { std::cell::RefCell::new(None) };
+        }
+        let f = Self::file(library_dir);
+        let mtime = std::fs::metadata(&f).and_then(|m| m.modified()).ok();
+        if let Some(s) = CACHE.with(|c| c.borrow().as_ref().filter(|(p, t, _)| *p == f && *t == mtime).map(|x| x.2.clone())) {
+            return s;
+        }
+        let s = Stock::load(library_dir).unwrap_or_default();
+        CACHE.with(|c| *c.borrow_mut() = Some((f, mtime, s.clone())));
+        s
     }
 
     /// Write atomically (temp file, then rename) so a shared folder never sees
@@ -677,18 +782,48 @@ impl Stock {
         loop {
             self.sheet_counter += 1;
             let r = base36(self.sheet_counter);
-            if self.get(&r).is_none() {
+            if self.get(&r).is_none() && !is_device_name(&r) {
                 return r;
             }
         }
     }
 
+    /// The next remnant counter value (base 36, device names skipped).
+    pub fn next_remnant_number(&mut self) -> String {
+        loop {
+            self.remnant_counter += 1;
+            let r = base36(self.remnant_counter);
+            if !is_device_name(&r) {
+                return r;
+            }
+        }
+    }
+
+    /// A sheet reference from a format (Automatic sheet references), or the
+    /// next counter value when the format is empty.
+    pub fn sheet_ref_from(&mut self, format: &str, v: &RefValues) -> String {
+        if format.trim().is_empty() {
+            return self.next_sheet_ref();
+        }
+        expand_format(format, v, || self.next_sheet_ref())
+    }
+
+    /// A remnant reference from a format (Automatic remnant references), or
+    /// `<origin>-<counter>` when the format is empty (RF2). The counter moves
+    /// on only when the format uses it.
+    pub fn remnant_ref_from(&mut self, format: &str, v: &RefValues) -> String {
+        if format.trim().is_empty() {
+            return self.next_remnant_ref(&v.sheet);
+        }
+        expand_format(format, v, || self.next_remnant_number())
+    }
+
+
     /// The next automatic remnant reference: `<origin>-<counter>` (the sample
     /// database's `2-16`, `E-2F`), cut to 40 characters.
     pub fn next_remnant_ref(&mut self, origin: &str) -> String {
         loop {
-            self.remnant_counter += 1;
-            let suffix = base36(self.remnant_counter);
+            let suffix = self.next_remnant_number();
             let head: String = origin.chars().take(MAX_REF.saturating_sub(suffix.len() + 1)).collect();
             let r = if head.is_empty() { format!("R-{suffix}") } else { format!("{head}-{suffix}") };
             if self.get(&r).is_none() {
@@ -909,6 +1044,25 @@ mod tests {
         let tall = Outline { outer: vec![[0.0, 0.0], [300.0, 0.0], [300.0, 1200.0], [0.0, 1200.0]], holes: vec![] };
         let lying = orient_for_machine(&tall, RemnantRotation::PreferHorizontal, false);
         assert_eq!(lying.size(), (1200.0, 300.0));
+    }
+
+    #[test]
+    fn reference_formats_expand_like_the_original() {
+        let v = RefValues { material: "S235".into(), user_data: ["A".into(), String::new(), String::new()], sheet: "7".into(), length: 1234.5, width: 678.0, thickness: 10.0, decimals: 0 };
+        let mut s = Stock::default();
+        // Formats of the kind shops use: material and sizes, or a numbered remnant.
+        assert_eq!(s.sheet_ref_from("PL-[MAT]_[LNG]x[WDT]x[THK]", &v), "PL-S235_1234x678x10");
+        assert_eq!(s.sheet_counter, 0, "no [AUT]: the counter isn't used");
+        assert_eq!(s.remnant_ref_from("REM_[MAT]_T_[THK]_[AUT]", &v), "REM_S235_T_10_1");
+        assert_eq!(s.remnant_counter, 1);
+        // ÷10 / ÷100 and decimals; unknown tokens lose their brackets.
+        assert_eq!(expand_format("[LNG1x1]/[WDT2x2]/[XYZ]/[UD1]", &v, || "?".into()), "123.5/6.78/XYZ/A");
+        // Cut to 40 characters from the end.
+        assert_eq!(expand_format(&"X".repeat(50), &v, || "?".into()).len(), 40);
+        // No format: origin-counter.
+        assert_eq!(s.remnant_ref_from("", &v), "7-2");
+        // Device names are skipped.
+        assert!(is_device_name("COM1") && is_device_name("con") && !is_device_name("COM0") && !is_device_name("CONX"));
     }
 
     #[test]

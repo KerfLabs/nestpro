@@ -698,6 +698,11 @@ impl App {
                 painter.galley(rr.min + Vec2::new(8.0, 5.0), g, Color32::WHITE);
             }
         }
+        // The automatic marks on the remnants (engraved before the remnant line).
+        for st in self.remnant_marks(self.cur_sheet) {
+            let pts: Vec<Pos2> = st.iter().map(|&p| to_s(p)).collect();
+            painter.add(EShape::line(pts, Stroke::new(1.2, Color32::from_rgb(255, 240, 200))));
+        }
         for (i, l) in self.cut_list().iter().enumerate() {
             let hovered = self.cut_tool.is_none() && hover_w.is_some_and(|w| polyline_dist(w, &l.pts) <= tol);
             let sel = self.sel_cut == Some(i);
