@@ -3,7 +3,7 @@
 
 # The other program's own files: its install, installers and zips. Proprietary,
 # several GB, and Expert/LogFile$ holds real customer jobs.
-/vendor/
+/vendor
 
 # Old run logs and evidence; they live in the research repo.
 /history/
