@@ -3,7 +3,13 @@
 //! - Flick: keep the right button down, move toward a tool, let go — it runs.
 //! - Click: a plain right-click leaves the ring open; click a tool to run it,
 //!   click the middle, press Esc or right-click again to close it.
+//!
+//! The ring shows the tools for where it was opened (QR1): the Part view's
+//! technology tools, the moving tools on a part on the sheet, or the sheet
+//! tools on empty sheet. A tool found in several rings keeps its direction in
+//! each (QR2), and a tool that can't run is greyed, never moved.
 
+use crate::nest::P;
 use crate::theme::th;
 use crate::ui_parts::{draw_icon_with, with_alpha, Icon};
 use crate::{App, Workspace};
@@ -19,6 +25,7 @@ const FLICK: f32 = 26.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Act {
+    // Part view (technology).
     LeadAuto,
     LeadOnElement,
     JointsAuto,
@@ -26,11 +33,47 @@ pub enum Act {
     PlaceText,
     TextOnElement,
     Loops,
+    // A part on the sheet.
+    Turn,
+    TurnBack,
+    CopyHere,
+    MirrorLr,
+    MirrorTb,
+    Delete,
+    // Empty sheet.
+    SelectAll,
+    NextSheet,
+    PrevSheet,
+    Compact,
+    Collision,
+    // Shared, at the same place in every ring that has them (QR2).
+    Undo,
+    Redo,
     FitView,
 }
 
-/// Clockwise from the top (N, NE, E, SE, S, SW, W, NW).
-pub const SLOTS: [Act; 8] = [Act::LeadAuto, Act::LeadOnElement, Act::JointsAuto, Act::JointOnElement, Act::PlaceText, Act::TextOnElement, Act::Loops, Act::FitView];
+/// Which ring opens (QR1): decided by where the right-click landed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Ring {
+    /// The Part view: technology on the part and its elements.
+    Part,
+    /// On a part on the sheet: move, turn, mirror, copy, delete the selection.
+    OnPart,
+    /// On empty sheet: the sheet and the view.
+    Sheet,
+}
+
+impl Ring {
+    /// The tools clockwise from the top (N, NE, E, SE, S, SW, W, NW).
+    pub fn slots(self) -> [Act; 8] {
+        use Act::*;
+        match self {
+            Ring::Part => [LeadAuto, LeadOnElement, JointsAuto, JointOnElement, PlaceText, TextOnElement, Loops, FitView],
+            Ring::OnPart => [Turn, TurnBack, CopyHere, MirrorTb, MirrorLr, Undo, Delete, FitView],
+            Ring::Sheet => [SelectAll, Redo, NextSheet, Collision, Compact, Undo, PrevSheet, FitView],
+        }
+    }
+}
 
 impl Act {
     pub fn label(self) -> &'static str {
@@ -42,6 +85,19 @@ impl Act {
             Act::PlaceText => "Place text",
             Act::TextOnElement => "Text on element",
             Act::Loops => "Loops",
+            Act::Turn => "Turn to the next allowed angle",
+            Act::TurnBack => "Turn back to the previous angle",
+            Act::CopyHere => "Copy — click to drop it",
+            Act::MirrorLr => "Mirror left ↔ right",
+            Act::MirrorTb => "Mirror top ↕ bottom",
+            Act::Delete => "Take off the sheet",
+            Act::SelectAll => "Select every part on this sheet",
+            Act::NextSheet => "Next sheet",
+            Act::PrevSheet => "Previous sheet",
+            Act::Compact => "Compact (slide parts left, then down)",
+            Act::Collision => "Collision checking on / off",
+            Act::Undo => "Undo",
+            Act::Redo => "Redo",
             Act::FitView => "Fit view",
         }
     }
@@ -55,6 +111,19 @@ impl Act {
             Act::PlaceText => "Text",
             Act::TextOnElement => "Text here",
             Act::Loops => "Loops",
+            Act::Turn => "Turn",
+            Act::TurnBack => "Turn back",
+            Act::CopyHere => "Copy",
+            Act::MirrorLr => "Mirror ↔",
+            Act::MirrorTb => "Mirror ↕",
+            Act::Delete => "Delete",
+            Act::SelectAll => "Select all",
+            Act::NextSheet => "Next sheet",
+            Act::PrevSheet => "Prev sheet",
+            Act::Compact => "Compact",
+            Act::Collision => "Collisions",
+            Act::Undo => "Undo",
+            Act::Redo => "Redo",
             Act::FitView => "Fit",
         }
     }
@@ -65,6 +134,20 @@ impl Act {
             Act::JointsAuto | Act::JointOnElement => Icon::Joint,
             Act::PlaceText | Act::TextOnElement => Icon::Numbers,
             Act::Loops => Icon::Loop,
+            // The next allowed turn is counter-clockwise, the way back clockwise.
+            Act::Turn => Icon::RotateLeft,
+            Act::TurnBack => Icon::Rotate,
+            Act::CopyHere => Icon::Copy,
+            Act::MirrorLr => Icon::Mirror,
+            Act::MirrorTb => Icon::MirrorTb,
+            Act::Delete => Icon::Remove,
+            Act::SelectAll => Icon::SelectAll,
+            Act::NextSheet => Icon::Next,
+            Act::PrevSheet => Icon::Prev,
+            Act::Compact => Icon::Compact,
+            Act::Collision => Icon::Collision,
+            Act::Undo => Icon::Undo,
+            Act::Redo => Icon::Redo,
             Act::FitView => Icon::Fit,
         }
     }
@@ -92,12 +175,23 @@ pub struct Radial {
     pub held: bool,
     /// A text on the part under the pointer when the ring opened (Text edits it).
     pub text_under: Option<usize>,
+    /// Which tools it shows.
+    pub ring: Ring,
+    /// Where it opened on the sheet (mm), for Copy.
+    pub at: Option<P>,
+}
+
+impl Radial {
+    pub fn new(center: Pos2, ring: Ring) -> Radial {
+        Radial { center, opened: -1.0, held: false, text_under: None, ring, at: None }
+    }
 }
 
 impl App {
     /// Right button pressed (or S) over a hovered canvas.
     pub fn radial_trigger(&self, ui: &egui::Ui) -> bool {
-        if self.radial.is_some() || self.dock.dragging.is_some() {
+        // Not while parts are being dragged or carried (right-click cancels a carry).
+        if self.radial.is_some() || self.dock.dragging.is_some() || self.drag.is_some() || self.carry.is_some() {
             return false;
         }
         let right = ui.input(|i| i.pointer.button_pressed(PointerButton::Secondary));
@@ -105,24 +199,40 @@ impl App {
         right || s_key
     }
 
-    pub fn open_radial(&mut self, ctx: &egui::Context, at: Pos2) {
+    pub fn open_radial(&mut self, ctx: &egui::Context, at: Pos2, ring: Ring) {
         let held = ctx.input(|i| i.pointer.button_down(PointerButton::Secondary));
-        self.radial = Some(Radial { center: at, opened: ctx.input(|i| i.time), held, text_under: None });
+        self.radial = Some(Radial { opened: ctx.input(|i| i.time), held, ..Radial::new(at, ring) });
         self.placing_text = false;
     }
 
-    fn radial_enabled(&self, a: Act) -> bool {
+    fn sheet_len(&self) -> usize {
+        self.result.sheets.get(self.cur_sheet).map_or(0, |s| s.len())
+    }
+
+    pub(crate) fn radial_enabled(&self, a: Act) -> bool {
         let in_part = self.workspace == Workspace::Part;
+        let has_sel = !in_part && !self.selection().is_empty();
         match a {
-            Act::FitView => true,
+            Act::FitView | Act::Collision => true,
             Act::PlaceText => in_part,
-            Act::TextOnElement => in_part && !self.sel_elems.is_empty(),
             a if a.on_element() => in_part && !self.sel_elems.is_empty(),
-            _ => !self.tech_targets().is_empty(),
+            Act::LeadAuto | Act::JointsAuto | Act::Loops => !self.tech_targets().is_empty(),
+            // Greyed when the selection's rotations don't allow it (QR2).
+            Act::Turn | Act::TurnBack => has_sel && self.can_step_turn(a == Act::TurnBack),
+            Act::MirrorLr | Act::MirrorTb => {
+                has_sel && self.result.sheets.get(self.cur_sheet).is_some_and(|s| crate::engine::arrange::can_mirror(&self.parts, s, &self.selection(), a == Act::MirrorLr))
+            }
+            Act::CopyHere | Act::Delete => has_sel,
+            Act::SelectAll | Act::Compact => self.sheet_len() > 0,
+            Act::NextSheet => self.cur_sheet + 1 < self.result.sheets.len(),
+            Act::PrevSheet => self.cur_sheet > 0,
+            Act::Undo => !self.undo.is_empty(),
+            Act::Redo => !self.redo.is_empty(),
+            _ => false,
         }
     }
 
-    fn radial_run(&mut self, a: Act, rm: Radial) {
+    pub(crate) fn radial_run(&mut self, a: Act, rm: Radial) {
         match a {
             Act::LeadAuto => self.auto_leads(),
             Act::LeadOnElement => self.lead_on_element(),
@@ -135,6 +245,30 @@ impl App {
             },
             Act::TextOnElement => self.open_text_editor(rm.center, crate::textedit::TextTarget::New { on_element: true }),
             Act::Loops => self.auto_loops(),
+            Act::Turn => self.rotate_selected(),
+            Act::TurnBack => self.turn_back_selected(),
+            Act::CopyHere => {
+                if let Some(w) = rm.at {
+                    self.start_carry_copy(w);
+                }
+            }
+            Act::MirrorLr => self.mirror_selected(true),
+            Act::MirrorTb => self.mirror_selected(false),
+            Act::Delete => self.remove_selected(),
+            Act::SelectAll => self.select_all_on_sheet(),
+            Act::NextSheet => self.select_sheet(self.cur_sheet + 1),
+            Act::PrevSheet => self.select_sheet(self.cur_sheet.saturating_sub(1)),
+            Act::Compact => self.compact(),
+            Act::Collision => {
+                self.collision = !self.collision;
+                self.status = if self.collision {
+                    "Collision checking on — moved parts keep the part gap.".into()
+                } else {
+                    "Collision checking OFF — moved parts may overlap. Overlapping parts are outlined in red and the CNC export warns about them.".into()
+                };
+            }
+            Act::Undo => self.undo(),
+            Act::Redo => self.redo(),
             Act::FitView => {
                 if self.workspace == Workspace::Part {
                     self.part_zoom = 1.0;
@@ -150,9 +284,10 @@ impl App {
     /// Draw the ring and handle flicks and clicks. Call once per frame, after the canvas.
     pub fn radial_ui(&mut self, ctx: &egui::Context) {
         let Some(rm) = self.radial else { return };
+        let slots = rm.ring.slots();
         let p = ctx.pointer_latest_pos().unwrap_or(rm.center);
         let d = p - rm.center;
-        let hover = slot_at(d).filter(|&k| d.length() <= OUTER * 1.6 && self.radial_enabled(SLOTS[k]));
+        let hover = slot_at(d).filter(|&k| d.length() <= OUTER * 1.6 && self.radial_enabled(slots[k]));
         let (right_up, left_click, right_click, esc) = ctx.input(|i| {
             (
                 i.pointer.button_released(PointerButton::Secondary),
@@ -176,11 +311,9 @@ impl App {
             painter.circle_filled(c + Vec2::new(0.0, 6.0), OUTER * scale + 2.0, Color32::from_black_alpha((60.0 * ease) as u8));
             painter.circle_filled(c, OUTER * scale, with_alpha(th.panel, alpha));
             painter.circle_stroke(c, OUTER * scale, Stroke::new(1.0, with_alpha(th.border, alpha)));
-            // Highlight the wedge being pointed at.
-            if let Some(k) = hover {
+            let wedge = |k: usize, col: Color32| {
                 let mid = (k as f32 * 45.0 - 90.0).to_radians();
                 let mut mesh = egui::Mesh::default();
-                let col = with_alpha(th.accent, (90.0 * ease) as u8);
                 let steps = 12;
                 for s in 0..=steps {
                     let a = mid - 22.5f32.to_radians() + 45f32.to_radians() * s as f32 / steps as f32;
@@ -194,6 +327,16 @@ impl App {
                     mesh.add_triangle(i + 1, i + 3, i + 2);
                 }
                 painter.add(EShape::mesh(mesh));
+            };
+            // A switch that is on (collision checking) keeps a soft wedge.
+            for (k, a) in slots.iter().enumerate() {
+                if *a == Act::Collision && self.collision && hover != Some(k) {
+                    wedge(k, with_alpha(th.accent, (40.0 * ease) as u8));
+                }
+            }
+            // Highlight the wedge being pointed at.
+            if let Some(k) = hover {
+                wedge(k, with_alpha(th.accent, (90.0 * ease) as u8));
             }
             // Dividers between the tools.
             for k in 0..8 {
@@ -202,7 +345,7 @@ impl App {
                 painter.line_segment([c + u * (INNER + 4.0) * scale, c + u * (OUTER - 6.0) * scale], Stroke::new(1.0, with_alpha(th.border, (160.0 * ease) as u8)));
             }
             // Tools.
-            for (k, a) in SLOTS.iter().enumerate() {
+            for (k, a) in slots.iter().enumerate() {
                 let ang = (k as f32 * 45.0 - 90.0).to_radians();
                 let pos = c + Vec2::new(ang.cos(), ang.sin()) * ICON_R * scale;
                 let en = self.radial_enabled(*a);
@@ -211,7 +354,7 @@ impl App {
                 let ink = if !en { with_alpha(th.text_dim, 90) } else if hot { th.accent_fg } else { th.text };
                 let accent = if !en { with_alpha(th.text_dim, 90) } else { th.accent_fg };
                 draw_icon_with(&painter, ir, a.icon(), ink, accent, false);
-                painter.text(pos + Vec2::new(0.0, 14.0), Align2::CENTER_CENTER, if *a == Act::PlaceText && rm.text_under.is_some() { "Edit text" } else { a.short() }, FontId::proportional(11.0), ink);
+                painter.text(pos + Vec2::new(0.0, 14.0), Align2::CENTER_CENTER, self.radial_short(*a, &rm), FontId::proportional(11.0), ink);
             }
             // Middle: what will happen.
             painter.circle_filled(c, INNER * scale, with_alpha(th.pane_header, alpha));
@@ -222,9 +365,9 @@ impl App {
                 painter.line_segment([c, p], Stroke::new(2.0, with_alpha(th.accent, 180)));
             }
             if let Some(k) = hover {
-                let tip = Rect::from_center_size(c + Vec2::new(0.0, OUTER * scale + 16.0), Vec2::new(150.0, 22.0));
+                let tip = Rect::from_center_size(c + Vec2::new(0.0, OUTER * scale + 16.0), Vec2::new(230.0, 22.0));
                 painter.rect_filled(tip, CornerRadius::same(6), th.overlay);
-                painter.text(tip.center(), Align2::CENTER_CENTER, SLOTS[k].label(), FontId::proportional(12.0), Color32::WHITE);
+                painter.text(tip.center(), Align2::CENTER_CENTER, slots[k].label(), FontId::proportional(12.0), Color32::WHITE);
             }
         });
         ctx.request_repaint();
@@ -233,7 +376,7 @@ impl App {
         let run = |me: &mut App, k: Option<usize>| {
             me.radial = None;
             if let Some(k) = k {
-                me.radial_run(SLOTS[k], rm);
+                me.radial_run(slots[k], rm);
             }
         };
         if esc {
@@ -251,11 +394,26 @@ impl App {
             run(self, if left_click { hover } else { None });
         }
     }
+
+    /// The name under a tool, which for some tools shows their state.
+    fn radial_short(&self, a: Act, rm: &Radial) -> &'static str {
+        match a {
+            Act::PlaceText if rm.text_under.is_some() => "Edit text",
+            Act::Collision if self.collision => "Collisions on",
+            Act::Collision => "Collisions OFF",
+            _ => a.short(),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Up-left in every ring.
+    const FIT_SLOT: usize = 7;
+    /// Down-left in every ring that has it.
+    const UNDO_SLOT: usize = 5;
 
     #[test]
     fn directions_map_to_the_eight_slots() {
@@ -265,7 +423,29 @@ mod tests {
         assert_eq!(slot_at(Vec2::new(-60.0, 0.0)), Some(6)); // left
         assert_eq!(slot_at(Vec2::new(-42.0, -42.0)), Some(7)); // up-left
         assert_eq!(slot_at(Vec2::new(5.0, 5.0)), None); // the middle cancels
-        assert_eq!(SLOTS[4], Act::PlaceText);
+        assert_eq!(Ring::Part.slots()[4], Act::PlaceText);
+    }
+
+    #[test]
+    fn shared_tools_keep_their_direction_in_every_ring() {
+        // QR2: a tool in several rings sits in the same slot in each.
+        let rings = [Ring::Part, Ring::OnPart, Ring::Sheet];
+        for a in rings.iter().flat_map(|r| r.slots()) {
+            let at: Vec<usize> = rings.iter().filter_map(|r| r.slots().iter().position(|&b| b == a)).collect();
+            assert!(at.windows(2).all(|w| w[0] == w[1]), "{a:?} moves between rings: {at:?}");
+        }
+        for r in rings {
+            assert_eq!(r.slots()[FIT_SLOT], Act::FitView);
+        }
+        assert_eq!(Ring::OnPart.slots()[UNDO_SLOT], Act::Undo);
+        assert_eq!(Ring::Sheet.slots()[UNDO_SLOT], Act::Undo);
+        // No tool twice in one ring.
+        for r in rings {
+            let s = r.slots();
+            for i in 0..8 {
+                assert!(!s[i + 1..].contains(&s[i]), "{r:?} has {:?} twice", s[i]);
+            }
+        }
     }
 
     #[test]
@@ -276,7 +456,7 @@ mod tests {
         a.sel_elems = vec![0];
         assert!(a.radial_enabled(Act::LeadOnElement));
         assert!(a.radial_enabled(Act::FitView));
-        a.radial_run(Act::LeadAuto, Radial { center: Pos2::ZERO, opened: 0.0, held: false, text_under: None });
+        a.radial_run(Act::LeadAuto, Radial::new(Pos2::ZERO, Ring::Part));
         assert!(a.parts[3].tech.is_some_and(|t| t.corner_start));
     }
 }

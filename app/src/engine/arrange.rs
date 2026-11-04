@@ -347,11 +347,8 @@ pub fn turn(parts: &[Part], sheet: &[Placed], sel: &[usize], quarters: u8, spec:
     if q == 0 {
         return Ok(sel.iter().map(|&i| sheet[i]).collect());
     }
-    for &i in &sel {
-        let p = &parts[sheet[i].part];
-        if !nest::turn_allowed(p, sheet[i].turns + q, sheet[i].mirror) {
-            return Err(format!("'{}' isn't allowed to turn {}° (its rotations, Part Properties).", p.name, q as u16 * 90));
-        }
+    if let Some(p) = refuses_turn(parts, sheet, &sel, q) {
+        return Err(format!("'{}' isn't allowed to turn {}° (its rotations, Part Properties).", p.name, q as u16 * 90));
     }
     let b = group_box(sheet, &sel);
     let c = [(b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0];
@@ -388,7 +385,7 @@ pub fn mirror(parts: &[Part], sheet: &[Placed], sel: &[usize], vertical: bool, s
         let p = sheet[i];
         // Left↔right mirror = mirror in the part's own X and the turn reversed;
         // top↔bottom adds a half turn.
-        let turns = if vertical { (4 - p.turns % 4) % 4 } else { (6 - p.turns % 4) % 4 };
+        let turns = mirror_turns(p, vertical);
         let part = &parts[p.part];
         if !nest::turn_allowed(part, turns, !p.mirror) {
             return Err(format!("'{}' isn't allowed to be mirrored (its rotations, Part Properties).", part.name));
@@ -397,6 +394,30 @@ pub fn mirror(parts: &[Part], sheet: &[Placed], sel: &[usize], vertical: bool, s
         out.push(Placed { x, y, turns, mirror: !p.mirror, ..p });
     }
     place_changed(parts, sheet, &sel, out, spec, f, collision, "mirror")
+}
+
+/// The turn a part takes when mirrored: left↔right (`vertical`) is its own
+/// X mirror with the turn reversed; top↔bottom adds a half turn.
+fn mirror_turns(p: Placed, vertical: bool) -> u8 {
+    if vertical { (4 - p.turns % 4) % 4 } else { (6 - p.turns % 4) % 4 }
+}
+
+/// The first selected part whose rotations don't allow turning it by
+/// `quarters` (None = all may turn).
+fn refuses_turn<'a>(parts: &'a [Part], sheet: &[Placed], sel: &[usize], quarters: u8) -> Option<&'a Part> {
+    clean(sheet, sel).into_iter().map(|i| (&parts[sheet[i].part], sheet[i])).find(|(p, s)| !nest::turn_allowed(p, s.turns + quarters % 4, s.mirror)).map(|(p, _)| p)
+}
+
+/// The selection may turn by `quarters` (each part's allowed rotations; room
+/// is found when it turns). The quick ring greys Turn when not (QR2).
+pub fn can_turn(parts: &[Part], sheet: &[Placed], sel: &[usize], quarters: u8) -> bool {
+    !clean(sheet, sel).is_empty() && refuses_turn(parts, sheet, sel, quarters).is_none()
+}
+
+/// The selection may be mirrored left↔right (`vertical`) or top↔bottom.
+pub fn can_mirror(parts: &[Part], sheet: &[Placed], sel: &[usize], vertical: bool) -> bool {
+    let sel = clean(sheet, sel);
+    !sel.is_empty() && sel.iter().all(|&i| nest::turn_allowed(&parts[sheet[i].part], mirror_turns(sheet[i], vertical), !sheet[i].mirror))
 }
 
 /// Put the changed selection in, moving it to the nearest free spot when it

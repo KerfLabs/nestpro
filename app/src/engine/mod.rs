@@ -353,16 +353,18 @@ pub fn placement_ok(parts: &[Part], sheet: &[Placed], spec: &SheetSpec, f: &Shee
     sheet.iter().enumerate().all(|(j, o)| Some(j) == skip || !nest::clash_exact(parts, cand, o, gap))
 }
 
-/// The placed part turned to its next allowed quarter turn.
-pub fn next_turn(part: &Part, old: Placed) -> Result<Placed, &'static str> {
+/// The placed part turned to its next allowed quarter turn, or with `back` to
+/// the previous one (QR3: the quick ring's "Turn back").
+pub fn step_turn(part: &Part, old: Placed, back: bool) -> Result<Placed, &'static str> {
     if !part.rotate {
         return Err("This part is not allowed to rotate.");
     }
-    let Some(k) = (1..4u8).find(|&k| nest::turn_allowed(part, (old.turns + k) % 4, old.mirror)) else {
+    let step = |k: u8| if back { (old.turns + 4 - k) % 4 } else { (old.turns + k) % 4 };
+    let Some(k) = (1..4u8).find(|&k| nest::turn_allowed(part, step(k), old.mirror)) else {
         return Err("No other rotation is allowed for this part.");
     };
     let mut c = old;
-    c.turns = (old.turns + k) % 4;
+    c.turns = step(k);
     if k % 2 == 1 {
         std::mem::swap(&mut c.w, &mut c.h);
     }
@@ -686,6 +688,45 @@ pub fn verify_sheet(parts: &[Part], sheet: &[Placed], spec: &SheetSpec, plan: &S
     issues
 }
 
+/// Distance under which two parts count as touching (mm).
+pub const TOUCH: f64 = 0.01;
+
+/// Pairs of parts on a sheet that touch or overlap by their real contours
+/// (QR6). Only possible after moving parts with collision checking off; the
+/// CNC program would cut them through each other. A job nested with no part
+/// gap is meant to have touching parts, so nothing is reported for it.
+pub fn overlapping(parts: &[Part], sheet: &[Placed], spec: &SheetSpec) -> Vec<(usize, usize)> {
+    let need = spec.gap.min(TOUCH);
+    if need <= 0.0 {
+        return vec![];
+    }
+    let mut out = vec![];
+    for i in 0..sheet.len() {
+        for j in i + 1..sheet.len() {
+            if nest::clash_exact(parts, &sheet[i], &sheet[j], need) {
+                out.push((i, j));
+            }
+        }
+    }
+    out
+}
+
+/// "sheet 2: #3 Bracket and #5 Plate overlap" when parts on sheet `k` (from 0)
+/// touch or overlap (QR6).
+pub fn sheet_overlap_note(parts: &[Part], k: usize, sheet: &[Placed], spec: &SheetSpec) -> Option<String> {
+    let pairs = overlapping(parts, sheet, spec);
+    let &(i, j) = pairs.first()?;
+    let more = if pairs.len() > 1 { format!(" (+{} more pair(s))", pairs.len() - 1) } else { String::new() };
+    Some(format!("sheet {}: #{} {} and #{} {} overlap{more}", k + 1, i + 1, parts[sheet[i].part].name, j + 1, parts[sheet[j].part].name))
+}
+
+/// One warning for every sheet with overlapping parts, or None when all are
+/// clear (QR6).
+pub fn overlap_warning(parts: &[Part], sheets: &[Vec<Placed>], spec_at: impl Fn(usize) -> SheetSpec) -> Option<String> {
+    let lines: Vec<String> = sheets.iter().enumerate().filter_map(|(k, s)| sheet_overlap_note(parts, k, s, &spec_at(k))).collect();
+    (!lines.is_empty()).then(|| format!("parts overlap and would be cut through each other — {}", lines.join("; ")))
+}
+
 /// What an export wrote.
 pub struct Exported {
     pub dir: PathBuf,
@@ -738,6 +779,13 @@ pub fn export(base: &Path, job_name: &str, parts: &[Part], sheets: &[Vec<Placed>
         Ok(())
     })();
     res.map_err(|e| format!("Export failed: {e}"))?;
+    // QR6: warn (the programs are still written) when parts overlap.
+    if let Some(o) = overlap_warning(parts, sheets, |k| job_spec.for_format(&format_at(formats, job_spec, k))) {
+        warning = Some(match warning {
+            Some(w) => format!("{o}; and {w}"),
+            None => o,
+        });
+    }
     Ok(Exported { dir, files, warning })
 }
 

@@ -36,6 +36,29 @@ pub struct DragState {
     pub halo: Vec<Vec<P>>,
 }
 
+/// The quick ring's Copy (QR4): copies of the selection on the pointer. They
+/// are only drawn until a click drops them; the sheet and the parts' order
+/// quantities change only then, so cancelling has nothing to undo.
+pub struct Carry {
+    /// The sheet it was started on, exactly as it was. Any change to it (a
+    /// command, undo, nesting, another sheet or job) ends the carry.
+    pub sheet: usize,
+    pub base: Vec<Placed>,
+    /// The sheet's size, margin and part gap then (the ribbon edits these).
+    pub limits: [f64; 4],
+    /// The copies where the originals are.
+    pub copies: Vec<Placed>,
+    /// The copy the pointer holds, and where on it (mm from its corner).
+    pub grab_idx: usize,
+    pub grab: P,
+    /// The offset now, the last one that fitted, and whether this one fits.
+    pub off: P,
+    pub last: Option<P>,
+    pub valid: bool,
+    /// The originals (selected again on cancel).
+    pub orig: Vec<usize>,
+}
+
 impl App {
     /// The selected parts on the current sheet (sorted, existing).
     pub fn selection(&self) -> Vec<usize> {
@@ -186,7 +209,7 @@ impl App {
     /// The Nesting screen's keys for the selected parts (HM1, HM5, HM6).
     pub fn sheet_keys(&mut self, ctx: &egui::Context) {
         // Only a text box being typed in keeps the keys (a focused button doesn't).
-        if ctx.egui_wants_keyboard_input() || self.ghost.is_some() || self.cut_tool.is_some() || self.manual_mode || self.drag.is_some() || self.result.sheets.is_empty() {
+        if ctx.egui_wants_keyboard_input() || self.ghost.is_some() || self.cut_tool.is_some() || self.manual_mode || self.drag.is_some() || self.carry.is_some() || self.result.sheets.is_empty() {
             return;
         }
         let now = ctx.input(|i| i.time);
@@ -273,6 +296,10 @@ impl App {
     pub fn sheet_pointer(&mut self, ui: &egui::Ui, resp: &egui::Response, to_w: &dyn Fn(Pos2) -> P, s: f32) {
         let si = self.cur_sheet;
         let (mods, space) = ui.input(|i| (i.modifiers, i.key_down(Key::Space)));
+        if self.carry.is_some() {
+            self.carry_pointer(ui, resp, to_w, s, mods.alt);
+            return;
+        }
         let hit = |app: &App, w: P| app.result.sheets[si].iter().rposition(|p| nest::placed_contains(&app.parts, p, w));
         // Middle button, or Space + left button: pan.
         if resp.dragged_by(PointerButton::Middle) || (space && resp.dragged_by(PointerButton::Primary)) {
@@ -370,7 +397,141 @@ impl App {
         self.drag = Some(DragState { sel, start, grab_idx, grab: [w[0] - g.x, w[1] - g.y], off: [0.0, 0.0], last: copied_from.is_none().then_some([0.0, 0.0]), valid: copied_from.is_none(), copied_from, halo });
     }
 
-    fn drag_move(&mut self, w: P, s: f32, no_snap: bool) {
+    /// The quick ring's Copy (QR4): copies of the whole selection, spacing
+    /// kept, follow the pointer from `at` (mm) until a click drops them.
+    pub fn start_carry_copy(&mut self, at: P) {
+        let sel = self.selection();
+        let si = self.cur_sheet;
+        let Some(sheet) = self.result.sheets.get(si).filter(|_| !sel.is_empty()) else { return };
+        let copies = arrange::copies(sheet, &sel, [0.0, 0.0]);
+        let grab_idx = sel.iter().position(|&i| nest::placed_contains(&self.parts, &sheet[i], at)).unwrap_or(0);
+        let g = copies[grab_idx];
+        let n = copies.len();
+        self.carry = Some(Carry { sheet: si, base: sheet.clone(), limits: self.sheet_limits(), copies, grab_idx, grab: [at[0] - g.x, at[1] - g.y], off: [0.0, 0.0], last: None, valid: false, orig: sel });
+        self.status = format!("Copy of {} on the pointer — click to drop it, Esc or right-click to cancel.", if n == 1 { "the part".to_string() } else { format!("{n} parts") });
+    }
+
+    fn sheet_limits(&self) -> [f64; 4] {
+        let s = self.cur_spec();
+        [s.w, s.h, s.margin, s.gap]
+    }
+
+    /// The carry still belongs to the sheet as it is now (nothing else has
+    /// changed it, it's still shown, no other tool has started).
+    fn carry_current(&self) -> bool {
+        self.carry.as_ref().is_some_and(|c| {
+            c.sheet == self.cur_sheet
+                && self.result.sheets.get(c.sheet) == Some(&c.base)
+                && self.sheet_limits() == c.limits
+                && c.copies.iter().all(|p| p.part < self.parts.len())
+                && self.workspace == crate::Workspace::Nesting
+                && self.ghost.is_none()
+                && self.cut_tool.is_none()
+                && !self.manual_mode
+        })
+    }
+
+    /// End a carry that no longer belongs to the sheet shown (see `carry_current`).
+    pub fn check_carry(&mut self) {
+        if self.carry.is_some() && !self.carry_current() {
+            self.carry = None;
+        }
+    }
+
+    /// Move the carried copies toward the pointer at `w` (mm), sliding and
+    /// snapping as a Ctrl + drag does.
+    pub(crate) fn carry_move(&mut self, w: P, s: f32, no_snap: bool) {
+        self.check_carry();
+        let Some(c) = self.carry.as_ref() else { return };
+        let mut all = c.base.clone();
+        let n = all.len();
+        all.extend(c.copies.iter().copied());
+        let sel: Vec<usize> = (n..all.len()).collect();
+        let g = c.copies[c.grab_idx];
+        let want = [(w[0] - c.grab[0]).round() - g.x, (w[1] - c.grab[1]).round() - g.y];
+        let reach = if self.cfg.nesting.snap && !no_snap { (self.cfg.nesting.snap_px / s) as f64 } else { 0.0 };
+        let f = self.result.format(c.sheet, &self.spec);
+        let (off, ok) = arrange::drag(&self.parts, &all, &sel, c.last, want, &self.spec, &f, self.collision, reach);
+        if let Some(c) = self.carry.as_mut() {
+            c.off = off;
+            c.valid = ok;
+            if ok {
+                c.last = Some(off);
+            }
+        }
+    }
+
+    /// Drop the carried copies where they are: only now do they go on the
+    /// sheet, one undo step, each adding one to its part's order.
+    pub(crate) fn carry_drop(&mut self) -> bool {
+        self.check_carry();
+        let Some(c) = self.carry.take() else { return false };
+        if !c.valid {
+            self.status = "The copy would overlap a part or leave the sheet — move it to a free spot (Esc cancels).".into();
+            self.carry = Some(c);
+            return false;
+        }
+        self.checkpoint();
+        let si = c.sheet;
+        let n = self.result.sheets[si].len();
+        for p in arrange::copies(&c.copies, &(0..c.copies.len()).collect::<Vec<_>>(), c.off) {
+            self.parts[p.part].qty += 1;
+            self.result.sheets[si].push(p);
+        }
+        self.set_selection((n..self.result.sheets[si].len()).collect());
+        self.refresh();
+        let p = self.result.sheets[si][n + c.grab_idx];
+        self.status = if c.copies.len() == 1 {
+            format!("Copied {} to X {}  Y {} (quantity now {}).", self.parts[p.part].name, self.len_txt(p.x), self.len_txt(p.y), self.parts[p.part].qty)
+        } else {
+            format!("Copied {} parts (each part's quantity grew by one).", c.copies.len())
+        };
+        true
+    }
+
+    /// While a copy is carried: it follows the pointer; a click (or a press
+    /// that wobbles into a short drag) drops it where it fits; Esc or a
+    /// right-click cancels.
+    fn carry_pointer(&mut self, ui: &egui::Ui, resp: &egui::Response, to_w: &dyn Fn(Pos2) -> P, s: f32, no_snap: bool) {
+        if resp.dragged_by(PointerButton::Middle) {
+            self.pan += resp.drag_delta();
+        }
+        if let Some(hp) = resp.hover_pos() {
+            self.carry_move(to_w(hp), s, no_snap);
+        }
+        let esc = ui.input(|i| i.key_pressed(Key::Escape));
+        if esc || resp.secondary_clicked() {
+            self.cancel_carry();
+        } else if resp.clicked() || resp.drag_stopped_by(PointerButton::Primary) {
+            self.carry_drop();
+        }
+        ui.ctx().request_repaint();
+    }
+
+    /// Put the carried copies away; nothing was changed, so nothing to undo.
+    pub fn cancel_carry(&mut self) {
+        let Some(c) = self.carry.take() else { return };
+        if self.carry_base_ok(&c) {
+            self.set_selection(c.orig);
+        }
+        self.status = "Copy cancelled.".into();
+    }
+
+    fn carry_base_ok(&self, c: &Carry) -> bool {
+        c.sheet == self.cur_sheet && self.result.sheets.get(c.sheet) == Some(&c.base)
+    }
+
+    /// The carried copies, see-through, green where they fit and red where not.
+    pub fn carry_canvas(&self, painter: &egui::Painter, to_s: &dyn Fn(P) -> Pos2) {
+        let Some(c) = self.carry.as_ref().filter(|_| self.carry_current()) else { return };
+        let tone = if c.valid { Color32::from_rgb(74, 222, 128) } else { Color32::from_rgb(248, 80, 90) };
+        for p in arrange::copies(&c.copies, &(0..c.copies.len()).collect::<Vec<_>>(), c.off) {
+            let part = &self.parts[p.part];
+            crate::ui_parts::paint_part_placed(painter, part, &p, to_s, crate::ui_parts::with_alpha(crate::ui_parts::part_color(part.color), crate::ghost::GHOST_ALPHA), Stroke::new(2.0, tone), crate::ui_parts::with_alpha(th().sheet, 150));
+        }
+    }
+
+    pub(crate) fn drag_move(&mut self, w: P, s: f32, no_snap: bool) {
         let si = self.cur_sheet;
         let Some(d) = self.drag.as_ref() else { return };
         let g = d.start[d.grab_idx];
@@ -393,7 +554,7 @@ impl App {
         }
     }
 
-    fn end_drag(&mut self) {
+    pub(crate) fn end_drag(&mut self) {
         let si = self.cur_sheet;
         let Some(d) = self.drag.take() else { return };
         let moved = d.off[0].abs() > arrange::EPS || d.off[1].abs() > arrange::EPS;
@@ -446,6 +607,44 @@ impl App {
             painter.rect_filled(r, CornerRadius::ZERO, th().accent.gamma_multiply(0.12));
             painter.rect_stroke(r, CornerRadius::ZERO, Stroke::new(1.0, th().accent), egui::StrokeKind::Middle);
         }
+    }
+
+    /// Overlapping parts outlined in red, and while collision checking is off
+    /// a badge saying so with how many parts overlap (QR5, QR6).
+    pub fn overlap_canvas(&self, painter: &egui::Painter, rect: Rect, to_s: &dyn Fn(P) -> Pos2) {
+        let red = Color32::from_rgb(239, 68, 68);
+        let Some(sheet) = self.result.sheets.get(self.cur_sheet) else { return };
+        // While parts are being moved the list is from before the move.
+        if self.drag.is_none() {
+            let mut bad: Vec<usize> = self.overlaps.iter().flat_map(|&(i, j)| [i, j]).filter(|&i| i < sheet.len()).collect();
+            bad.sort_unstable();
+            bad.dedup();
+            for i in bad {
+                let (outer, holes) = nest::placed_shape(&self.parts, &sheet[i]);
+                for ring in std::iter::once(&outer).chain(holes.iter()) {
+                    let mut pts: Vec<Pos2> = ring.iter().map(|&q| to_s(q)).collect();
+                    pts.extend(pts.first().copied());
+                    painter.add(EShape::line(pts, Stroke::new(2.5, red)));
+                }
+            }
+        }
+        if self.collision && self.overlaps.is_empty() {
+            return;
+        }
+        let mut text = if self.collision { String::new() } else { "Collisions OFF".to_string() };
+        if !self.overlaps.is_empty() {
+            let n = self.overlaps.len();
+            if !text.is_empty() {
+                text += "  ·  ";
+            }
+            text += &format!("{n} overlap{} — the CNC export will warn", if n == 1 { "" } else { "s" });
+        }
+        let galley = painter.layout_no_wrap(text, egui::FontId::proportional(12.5), Color32::WHITE);
+        let size = galley.size() + Vec2::new(20.0, 10.0);
+        let chip = Rect::from_min_size(Pos2::new(rect.center().x - size.x / 2.0, rect.top() + 10.0), size);
+        painter.rect_filled(chip.translate(Vec2::new(0.0, 2.0)), CornerRadius::same(8), Color32::from_black_alpha(60));
+        painter.rect_filled(chip, CornerRadius::same(8), if self.overlaps.is_empty() { Color32::from_rgb(180, 83, 9) } else { red });
+        painter.galley(chip.min + Vec2::new(10.0, 5.0), galley, Color32::WHITE);
     }
 
     /// Screenshots: `--select=1,3` selects those parts on the sheet;
@@ -553,5 +752,170 @@ impl App {
             self.save_prefs();
             self.status = format!("Movement value: {}.", unit.show_long(self.cfg.nesting.step));
         }
+    }
+}
+
+#[cfg(test)]
+mod quick_ring_tests {
+    use super::*;
+    use crate::nest::{NestResult, Part, Shape, SheetFormat};
+    use crate::radial::{Act, Radial, Ring};
+
+    fn app() -> App {
+        let mut a = App::new(None);
+        let r = Part { name: "A".into(), shape: Shape::Rectangle, w: 100.0, h: 100.0, qty: 2, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
+        a.parts = vec![r];
+        a.spec.gap = 5.0;
+        a.result = NestResult {
+            sheets: vec![vec![Placed { part: 0, x: 100.0, y: 100.0, w: 100.0, h: 100.0, turns: 0, mirror: false }, Placed { part: 0, x: 300.0, y: 100.0, w: 100.0, h: 100.0, turns: 0, mirror: false }]],
+            formats: vec![SheetFormat::rect(2000.0, 1000.0)],
+            method: String::new(),
+            tried: 0,
+        };
+        a.cur_sheet = 0;
+        a.refresh();
+        a
+    }
+
+    #[test]
+    fn the_sheet_rings_offer_what_can_run() {
+        // QR1: the part ring needs a selection; the sheet ring's sheet arrows,
+        // undo and redo follow what there is.
+        let mut a = app();
+        assert!(!a.radial_enabled(Act::Turn) && !a.radial_enabled(Act::CopyHere));
+        assert!(a.radial_enabled(Act::SelectAll) && a.radial_enabled(Act::Collision) && a.radial_enabled(Act::Compact));
+        assert!(!a.radial_enabled(Act::NextSheet) && !a.radial_enabled(Act::PrevSheet));
+        assert!(!a.radial_enabled(Act::Undo) && !a.radial_enabled(Act::Redo));
+        a.radial_run(Act::SelectAll, Radial::new(Pos2::ZERO, Ring::Sheet));
+        assert_eq!(a.selection(), vec![0, 1]);
+        for k in [Act::Turn, Act::TurnBack, Act::CopyHere, Act::Delete] {
+            assert!(a.radial_enabled(k), "{k:?}");
+        }
+        // Parts may not be mirrored unless their rotations say so (QR2).
+        assert!(!a.radial_enabled(Act::MirrorLr) && !a.radial_enabled(Act::MirrorTb));
+        a.parts[0].rots.mirrored = [true; 4];
+        assert!(a.radial_enabled(Act::MirrorLr) && a.radial_enabled(Act::MirrorTb));
+        a.radial_run(Act::Delete, Radial::new(Pos2::ZERO, Ring::OnPart));
+        assert!(a.result.sheets.is_empty() || a.result.sheets[0].is_empty());
+        assert!(a.radial_enabled(Act::Undo));
+        a.radial_run(Act::Undo, Radial::new(Pos2::ZERO, Ring::Sheet));
+        assert_eq!(a.result.sheets[0].len(), 2);
+        assert!(a.radial_enabled(Act::Redo));
+    }
+
+    #[test]
+    fn turn_back_goes_to_the_previous_allowed_turn() {
+        // QR3: the next allowed turn is a quarter left, back is a quarter right;
+        // a part that may only turn 180° flips between 0° and 180° either way.
+        let mut a = app();
+        a.set_selection(vec![0]);
+        a.radial_run(Act::TurnBack, Radial::new(Pos2::ZERO, Ring::OnPart));
+        assert_eq!(a.result.sheets[0][0].turns, 3, "{}", a.status);
+        a.radial_run(Act::Turn, Radial::new(Pos2::ZERO, Ring::OnPart));
+        assert_eq!(a.result.sheets[0][0].turns, 0, "{}", a.status);
+        a.parts[0].rots.plain = [true, false, true, false];
+        a.turn_back_selected();
+        assert_eq!(a.result.sheets[0][0].turns, 2, "{}", a.status);
+    }
+
+    #[test]
+    fn a_carried_copy_follows_the_pointer_and_drops_on_a_click() {
+        // QR4: copies of the whole selection, layout kept, on the pointer; the
+        // sheet and the order change only when they're dropped.
+        let mut a = app();
+        a.set_selection(vec![0, 1]);
+        let undo0 = a.undo.len();
+        a.radial_run(Act::CopyHere, Radial { at: Some([150.0, 150.0]), ..Radial::new(Pos2::ZERO, Ring::OnPart) });
+        assert!(a.carry.is_some(), "{}", a.status);
+        assert_eq!((a.result.sheets[0].len(), a.parts[0].qty, a.undo.len()), (2, 2, undo0), "nothing placed yet");
+        // Over the originals it can't drop and stays on the pointer.
+        a.carry_move([150.0, 150.0], 1.0, true);
+        assert!(!a.carry_drop() && a.carry.is_some());
+        // Esc: gone, the originals selected again, nothing to undo.
+        a.cancel_carry();
+        assert!(a.carry.is_none());
+        assert_eq!((a.result.sheets[0].len(), a.parts[0].qty, a.undo.len()), (2, 2, undo0));
+        assert_eq!(a.selection(), vec![0, 1], "the originals are selected again");
+        // Carried up into free sheet and dropped: both copies, 200 mm apart as before.
+        a.start_carry_copy([150.0, 150.0]);
+        a.carry_move([150.0, 650.0], 1.0, true);
+        assert!(a.carry_drop());
+        let s = &a.result.sheets[0];
+        assert_eq!(s.len(), 4);
+        assert_eq!((s[2].x, s[2].y, s[3].x, s[3].y), (100.0, 600.0, 300.0, 600.0));
+        assert_eq!(a.parts[0].qty, 4);
+        assert_eq!(a.undo.len(), undo0 + 1, "one undo step");
+        assert_eq!(a.selection(), vec![2, 3], "the copies are selected");
+        assert!(a.overlaps.is_empty());
+    }
+
+    #[test]
+    fn any_other_change_ends_a_carried_copy() {
+        // QR4: a command, another sheet or another tool ends the carry, and
+        // the sheet and quantities are left as that command made them.
+        let mut a = app();
+        a.set_selection(vec![0]);
+        a.start_carry_copy([150.0, 150.0]);
+        a.remove_selected();
+        assert!(a.carry.is_none(), "Delete ends it");
+        assert_eq!((a.result.sheets[0].len(), a.parts[0].qty), (1, 2));
+        a.set_selection(vec![0]);
+        a.start_carry_copy([350.0, 150.0]);
+        a.undo();
+        a.check_carry();
+        assert!(a.carry.is_none(), "undo changed the sheet");
+        a.set_selection(vec![0, 1]);
+        a.start_carry_copy([150.0, 150.0]);
+        a.workspace = crate::Workspace::Jobs;
+        a.check_carry();
+        assert!(a.carry.is_none(), "another screen");
+        a.workspace = crate::Workspace::Nesting;
+        a.start_carry_copy([150.0, 150.0]);
+        a.start_ghost(0, false);
+        a.check_carry();
+        assert!(a.carry.is_none(), "another tool");
+        a.stop_ghost();
+        a.start_carry_copy([150.0, 150.0]);
+        a.spec.margin += 50.0;
+        a.check_carry();
+        assert!(a.carry.is_none(), "the margin changed on the ribbon");
+        assert_eq!((a.result.sheets[0].len(), a.parts[0].qty), (2, 2));
+    }
+
+    #[test]
+    fn turn_and_mirror_grey_out_when_the_part_may_not() {
+        // QR2: a part that may only turn 180° can still Turn (to 180°); one
+        // that may not turn or mirror at all greys them.
+        let mut a = app();
+        a.set_selection(vec![0]);
+        a.parts[0].rots.plain = [true, false, true, false];
+        assert!(a.radial_enabled(Act::Turn) && a.radial_enabled(Act::TurnBack));
+        a.parts[0].rots.plain = [true, false, false, false];
+        a.parts[0].rots.mirrored = [false; 4];
+        for k in [Act::Turn, Act::TurnBack, Act::MirrorLr, Act::MirrorTb] {
+            assert!(!a.radial_enabled(k), "{k:?}");
+        }
+        assert!(a.radial_enabled(Act::CopyHere) && a.radial_enabled(Act::Delete));
+        // Two parts turn 90° together: greyed when one may not.
+        a.parts[0].rots.plain = [true; 4];
+        a.set_selection(vec![0, 1]);
+        assert!(a.radial_enabled(Act::Turn));
+        a.parts[0].rotate = false;
+        assert!(!a.radial_enabled(Act::Turn));
+    }
+
+    #[test]
+    fn overlapping_parts_are_found_after_a_move_with_collision_off() {
+        // QR5, QR6: with collision off a part may land on another; it is
+        // outlined and counted until it is moved clear.
+        let mut a = app();
+        a.radial_run(Act::Collision, Radial::new(Pos2::ZERO, Ring::Sheet));
+        assert!(!a.collision && a.status.contains("OFF"));
+        a.set_selection(vec![1]);
+        a.cfg.nesting.step = 150.0;
+        a.nudge(Dir::Left, false, 1.0);
+        assert_eq!(a.overlaps, vec![(0, 1)], "{}", a.status);
+        a.radial_run(Act::Undo, Radial::new(Pos2::ZERO, Ring::Sheet));
+        assert!(a.overlaps.is_empty());
     }
 }
