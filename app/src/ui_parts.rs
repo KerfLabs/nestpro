@@ -1644,6 +1644,10 @@ Last run won with: {}.", level_summary(self.spec.nest_level()), self.result.meth
         let util = if sheets > 0 { parts_area / self.total_sheet_area().max(1.0) * 100.0 } else { 0.0 };
         let cut: f64 = self.plans.iter().map(|p| p.cut_len).sum();
         let secs: f64 = self.plans.iter().map(|p| p.seconds).sum();
+        let mut split = cnc::TimeSplit::default();
+        for p in &self.plans {
+            split += p.times;
+        }
         let pierces: usize = self.plans.iter().map(|p| p.pierces).sum();
         let need: u32 = self.parts.iter().map(|p| p.qty).sum();
         let placed = self.total_placed();
@@ -1655,7 +1659,16 @@ Last run won with: {}.", level_summary(self.spec.nest_level()), self.result.meth
             row(ui, "Usage", format!("{util:.1} %"));
             row(ui, "Cut length", format!("{:.1} m", cut / 1000.0));
             row(ui, "Pierces", format!("{pierces}"));
-            row(ui, "Cutting time", fmt_time(secs));
+            row(ui, "Machine time", fmt_time(secs));
+            row(ui, "  Cutting", fmt_time(split.cut));
+            if split.mark > 0.0 {
+                row(ui, "  Marking", fmt_time(split.mark));
+            }
+            row(ui, "  Rapids", fmt_time(split.rapid));
+            row(ui, "  Pierces", fmt_time(split.pierce));
+            if split.head > 0.0 {
+                row(ui, "  Head up / down", fmt_time(split.head));
+            }
             row(ui, "Sheet weight", format!("{:.1} kg", cnc::weight_kg(m, self.total_sheet_area(), t)));
             row(ui, "Parts weight", format!("{:.1} kg", cnc::weight_kg(m, parts_area, t)));
         });
@@ -1673,7 +1686,10 @@ Last run won with: {}.", level_summary(self.spec.nest_level()), self.result.meth
             });
         }
         ui.add_space(4.0);
-        ui.label(RichText::new("Times use typical laser speeds (estimate).").small().weak());
+        if let Some(pl) = self.plans.get(self.cur_sheet).or(self.plans.first()) {
+            ui.label(RichText::new(pl.timing.speeds.label()).small().weak());
+            ui.label(RichText::new(pl.timing.settings.label()).small().weak());
+        }
     }
 
     pub fn program_panel(&mut self, ui: &mut egui::Ui) {

@@ -4,7 +4,7 @@
 //! cutter radius, number of heads). See MECHANICS.md "Nesting and Machining:
 //! machining and simulating the sheet".
 
-use crate::cnc::{self, SheetPlan};
+use crate::cnc::SheetPlan;
 use crate::nest::P;
 use crate::theme::th;
 use crate::ui_parts::*;
@@ -40,28 +40,35 @@ fn len(path: &[P]) -> f64 {
     path.windows(2).map(|w| ((w[1][0] - w[0][0]).powi(2) + (w[1][1] - w[0][1]).powi(2)).sqrt()).sum()
 }
 
-/// The sheet's machining as timed operations, in program order: per part its
-/// markings first (once), then each contour — rapid to the pierce, then the
-/// lead-in and contour (or the punch hits).
-pub fn ops(plan: &SheetPlan, part_names: &[String], spec_material: usize, thickness: f64) -> Vec<Op> {
-    let mark_speed = cnc::cut_speed(spec_material, thickness) * cnc::MARK_SPEED_FACTOR;
-    let rapid = |a: P, b: P| Op { kind: OpKind::Rapid, label: "Rapid".into(), path: vec![a, b], secs: len(&[a, b]) / cnc::RAPID_MM_MIN * 60.0 };
+/// The sheet's machining as timed operations, in program order: each part's
+/// markings first, then each contour — rapid to the pierce, then the
+/// lead-in and contour (or the punch hits). Each step takes the plan's time
+/// for it (MECHANICS "Machining time and speeds"), so the whole run lasts as
+/// long as the sheet's time.
+pub fn ops(plan: &SheetPlan, part_names: &[String]) -> Vec<Op> {
+    let tm = &plan.timing;
+    let rapid = |a: P, b: P| Op { kind: OpKind::Rapid, label: "Rapid".into(), path: vec![a, b], secs: tm.rapid(a, b) };
     let mut out = vec![];
     let mut pos: P = [0.0, 0.0];
-    let mut marked: Vec<usize> = vec![];
-    for (k, c) in plan.contours.iter().enumerate() {
-        let name = part_names.get(c.part_no - 1).cloned().unwrap_or_default();
-        if !marked.contains(&c.part_no) {
-            marked.push(c.part_no);
-            for (_, m) in plan.marks.iter().filter(|m| m.0 == c.part_no) {
-                if let Some(&s) = m.first() {
-                    out.push(rapid(pos, s));
-                    out.push(Op { kind: OpKind::Mark, label: format!("Mark contour : part {} ({name})", c.part_no), path: m.clone(), secs: len(m) / mark_speed * 60.0 });
-                    pos = *m.last().unwrap_or(&s);
-                }
+    let name_of = |no: usize| part_names.get(no.wrapping_sub(1)).cloned().unwrap_or_default();
+    // The markings in the plan's order: those due before contour `k`.
+    let mut next_mark = 0;
+    let mut marks_upto = |k: usize, out: &mut Vec<Op>, pos: &mut P| {
+        while next_mark < plan.marks.len() && plan.mark_before.get(next_mark).is_none_or(|&b| b <= k) {
+            let (no, m) = &plan.marks[next_mark];
+            if let Some(&s) = m.first() {
+                out.push(rapid(*pos, s));
+                out.push(Op { kind: OpKind::Mark, label: format!("Mark contour : part {no} ({})", name_of(*no)), path: m.clone(), secs: tm.mark(m).total() });
+                *pos = *m.last().unwrap_or(&s);
             }
+            next_mark += 1;
         }
+    };
+    for (k, c) in plan.contours.iter().enumerate() {
+        marks_upto(k, &mut out, &mut pos);
+        let name = name_of(c.part_no);
         if let Some(p) = &c.punch {
+            // The same split as the plan's: rapids between hits, a fixed time per hit.
             for h in &p.hits {
                 out.push(rapid(pos, *h));
                 out.push(Op { kind: OpKind::Punch, label: format!("{} : part {} ({name})", p.label(), c.part_no), path: vec![*h], secs: crate::machine::HIT_SECONDS });
@@ -80,9 +87,14 @@ pub fn ops(plan: &SheetPlan, part_names: &[String], spec_material: usize, thickn
             path.push(lo);
         }
         let what = if c.inner { "hole" } else { "outside" };
-        out.push(Op { kind: OpKind::Cut, label: format!("Cut contour {} : {what} of part {} ({name})", k + 1, c.part_no), secs: len(&path) / c.feed.max(1.0) * 60.0 + cnc::pierce_time(thickness), path });
-        pos = c.points[0];
+        out.push(Op { kind: OpKind::Cut, label: format!("Cut contour {} : {what} of part {} ({name})", k + 1, c.part_no), secs: c.time.total(), path });
+        // Where the next rapid starts: the plan's (the lead-out's end, or the
+        // closing joint's lead-out).
+        let start = c.points[0];
+        pos = if c.closing { c.joint_leads.last().map_or(start, |l| *l.0.last().unwrap()) } else { c.lead_out.unwrap_or(start) };
     }
+    // Markings of parts none of whose contours are cut.
+    marks_upto(usize::MAX, &mut out, &mut pos);
     out
 }
 
@@ -170,7 +182,7 @@ impl App {
     fn sheet_ops(&self) -> Vec<Op> {
         let Some(plan) = self.plans.get(self.cur_sheet) else { return vec![] };
         let names: Vec<String> = self.result.sheets.get(self.cur_sheet).map_or(vec![], |s| s.iter().map(|p| self.parts[p.part].name.clone()).collect());
-        ops(plan, &names, self.spec.material, self.spec.thickness)
+        ops(plan, &names)
     }
 
     fn sim_total(&self) -> f64 {

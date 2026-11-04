@@ -20,6 +20,8 @@ mod jobtree;
 mod filename;
 mod dock;
 mod cutoff;
+mod cuttime;
+mod techtable;
 mod dbbrowse;
 mod dbconn;
 mod dbquery;
@@ -2192,6 +2194,7 @@ fn main() -> eframe::Result {
     let want_part_pan = args.iter().any(|a| a == "--part-pan");
     // --machine=laser|plasma|oxyfuel|waterjet|laserpunch|punch (screenshots).
     let want_sim = args.iter().any(|a| a == "--sim");
+    let want_times = args.iter().any(|a| a == "--times");
     let want_db = args.iter().any(|a| a == "--db");
     let want_post = args.iter().any(|a| a == "--post");
     let want_dbb = args.iter().any(|a| a == "--dbbrowse");
@@ -2432,6 +2435,9 @@ fn main() -> eframe::Result {
                 app.open_settings(settings_ui::Section::Machines);
                 app.show_program = true;
             }
+            if want_times {
+                app.show_times = true;
+            }
             if want_db {
                 app.workspace = Workspace::Jobs;
                 app.open_db_window();
@@ -2442,7 +2448,7 @@ fn main() -> eframe::Result {
                 let mut s = sheetsim::SheetSim::default();
                 if let Some(plan) = app.plans.first() {
                     let names: Vec<String> = app.result.sheets[0].iter().map(|p| app.parts[p.part].name.clone()).collect();
-                    let total: f64 = sheetsim::ops(plan, &names, app.spec.material, app.spec.thickness).iter().map(|o| o.secs).sum();
+                    let total: f64 = sheetsim::ops(plan, &names).iter().map(|o| o.secs).sum();
                     s.t = total * 0.45;
                 }
                 app.ssim = Some(s);

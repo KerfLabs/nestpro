@@ -3311,8 +3311,9 @@
  {
   "name": "hole-size bands",
   "group": "machine file sections",
-  "value": "Z010/Z011/Z012 triples; read, not used",
-  "source": "MECHANICS MTL10"
+  "value": "Z010/Z011/Z012 triples pick a contour quality by equivalent radius (index → quality by TT8), for parts that leave the quality to the machine",
+  "source": "MECHANICS MTL10",
+  "estimated": true
  },
  {
   "name": "machine part gap and margin",
@@ -3636,6 +3637,195 @@
   "group": "moving parts by hand",
   "value": "80 px",
   "source": "MECHANICS HM13; estimate",
+  "estimated": true
+ },
+ {
+  "name": "technology table and time file",
+  "group": "machining time and speeds",
+  "value": "CF A019 (table) / A026 (time file), beside the CF or technology file; else <name>.TT<n> / .TM<n>; xxxxxxxx.xxx = none",
+  "source": "MECHANICS TT1"
+ },
+ {
+  "name": "table block",
+  "group": "machining time and speeds",
+  "value": "W000 3 (laser); a record per A000, keys A001–A009",
+  "source": "MECHANICS TT2"
+ },
+ {
+  "name": "cutting speed field",
+  "group": "machining time and speeds",
+  "value": "D(50(q-1)+7), mm/min, q = 1..12",
+  "source": "MECHANICS TT3"
+ },
+ {
+  "name": "pierce time fields",
+  "group": "machining time and speeds",
+  "value": "D(50(q-1)+10) + D(50(q-1)+11) + B(100(k-1)+1) per pierce type digit of D(50(q-1)+15)",
+  "source": "MECHANICS TT5"
+ },
+ {
+  "name": "optional table fields",
+  "group": "machining time and speeds",
+  "value": "CF T412 (second pierce term), T408 (pierce types) ON/OFF",
+  "source": "MECHANICS TT4",
+  "estimated": true
+ },
+ {
+  "name": "marking speed field",
+  "group": "machining time and speeds",
+  "value": "C009, mm/min",
+  "source": "MECHANICS TT6"
+ },
+ {
+  "name": "empty speed field",
+  "group": "machining time and speeds",
+  "value": "<= 0.001 = none",
+  "source": "MECHANICS TT6"
+ },
+ {
+  "name": "technology index to quality",
+  "group": "machining time and speeds",
+  "value": "1->2, 2->3, 10-12->4-6, 100-102->7-9, 110-112->10-12, else 1",
+  "source": "MECHANICS TT8"
+ },
+ {
+  "name": "record choice",
+  "group": "machining time and speeds",
+  "value": "first full fit in file order, else last default (A008) for material+thickness, else none; thickness +-0.005, no nearest range; record gas 0 = any",
+  "source": "MECHANICS TT9"
+ },
+ {
+  "name": "no table speed",
+  "group": "machining time and speeds",
+  "value": "machine default speed (A058 / section Z003)",
+  "source": "MECHANICS TT10; own design",
+  "estimated": true
+ },
+ {
+  "name": "rapid speed",
+  "group": "machining time and speeds",
+  "value": "CT1 A051 (60 000 mm/min when absent)",
+  "source": "MECHANICS CTM3"
+ },
+ {
+  "name": "rapids straight",
+  "group": "machining time and speeds",
+  "value": "TM1 A001 ON (default); OFF = 45° then straight",
+  "source": "MECHANICS CTM3"
+ },
+ {
+  "name": "move time",
+  "group": "machining time and speeds",
+  "value": "per-axis ramp up / cruise / ramp down, slowest axis; entry = previous exit",
+  "source": "MECHANICS CTM2"
+ },
+ {
+  "name": "corner speed",
+  "group": "machining time and speeds",
+  "value": "v90*sqrt((s/(1-s))/(sin45/(1-sin45))), s = sin(90-a/2), <= feed; v90 = TM1 D168",
+  "source": "MECHANICS CTM5"
+ },
+ {
+  "name": "curve vertex limit",
+  "group": "machining time and speeds",
+  "value": "turn <= 20° keeps the feed",
+  "source": "MECHANICS CTM5; estimate",
+  "estimated": true
+ },
+ {
+  "name": "acceleration records",
+  "group": "machining time and speeds",
+  "value": "O rapids, P cuts, Q arcs (else P): t from, t to, acc X Y, dec X Y (mm/s²), vmax X Y (mm/min)",
+  "source": "MECHANICS CTM6"
+ },
+ {
+  "name": "jerk-limited moves",
+  "group": "machining time and speeds",
+  "value": "S001 > 0; timed as plain ramps",
+  "source": "MECHANICS CTM7",
+  "estimated": true
+ },
+ {
+  "name": "cutting speed source",
+  "group": "machining time and speeds",
+  "value": "TM1 D018: 1 machine default, 2 table, 3 table + corner reduction (as 2)",
+  "source": "MECHANICS CTM8"
+ },
+ {
+  "name": "marking speed source",
+  "group": "machining time and speeds",
+  "value": "TM1 D017: 1 machine A063, else table C009",
+  "source": "MECHANICS CTM9"
+ },
+ {
+  "name": "pierce time mode",
+  "group": "machining time and speeds",
+  "value": "TM1 D014: 1 D016 s, 2 D015 s/mm, 3 table",
+  "source": "MECHANICS CTM10"
+ },
+ {
+  "name": "beam off time",
+  "group": "machining time and speeds",
+  "value": "TM1 D001 when D169 = 1",
+  "source": "MECHANICS CTM11"
+ },
+ {
+  "name": "head up / down",
+  "group": "machining time and speeds",
+  "value": "TM1 H006 / H007, once per contour and marking",
+  "source": "MECHANICS CTM12",
+  "estimated": true
+ },
+ {
+  "name": "time factors",
+  "group": "machining time and speeds",
+  "value": "N001 rapids, N002 cutting, N007 marking, N008 pierces",
+  "source": "MECHANICS CTM14",
+  "estimated": true
+ },
+ {
+  "name": "no time file",
+  "group": "machining time and speeds",
+  "value": "machine speeds, no accelerations, 1 s per mm per pierce, no head times",
+  "source": "MECHANICS CTM16"
+ },
+ {
+  "name": "time by program replay",
+  "group": "machining time and speeds",
+  "value": "head down, beam runs (pierce, cut, beam off) with micro-joint jumps head-down, head up; markings before their part",
+  "source": "MECHANICS CTM1",
+  "estimated": true
+ },
+ {
+  "name": "cut accelerations",
+  "group": "machining time and speeds",
+  "value": "P record for every cut move (our contours are polylines)",
+  "source": "MECHANICS CTM4",
+  "estimated": true
+ },
+ {
+  "name": "corner feed reduction",
+  "group": "machining time and speeds",
+  "value": "L601-L612, only with D018 = 3; not built",
+  "source": "MECHANICS TT7"
+ },
+ {
+  "name": "change and start/end times",
+  "group": "machining time and speeds",
+  "value": "D002-D013, 12x12 quality table, L/M codes: not counted",
+  "source": "MECHANICS CTM13"
+ },
+ {
+  "name": "times card",
+  "group": "machining time and speeds",
+  "value": "machine time split into cutting, marking, rapids, pierces, head; speed source and time file named",
+  "source": "MECHANICS CTM15; own design"
+ },
+ {
+  "name": "zero values in the time file",
+  "group": "machining time and speeds",
+  "value": "acceleration or top speed <= 0 limits nothing; D168 < 0 = no corner slow-down",
+  "source": "MECHANICS CTM5, CTM6; estimate",
   "estimated": true
  }
 ]

@@ -726,3 +726,37 @@ fn an_agent_arranges_parts_by_hand() {
     }
     let _ = std::fs::remove_dir_all(&d);
 }
+
+// ---------------------------------------------------------------------------
+// Machining time and speeds (CTM1–CTM16, TT1–TT10) through the agent operations.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn an_agent_sees_the_table_speeds_and_the_time_split() {
+    let mut mt = crate::ct1::MachineTech::from_text("A051 40000\nA058 3000\n");
+    let time = crate::cuttime::TimeSettings::from_text("D014 3\nD017 2\nD018 2\nH006 0.7\nP001 0 999999 10000 10000 10000 10000 114000 140000\n");
+    mt.speed_files = std::sync::Arc::new(crate::techtable::SpeedFiles { time, table: Some(crate::techtable::Table::from_text(crate::techtable::demo_table())), fields: Default::default(), gas: 1 });
+    crate::ct1::set_thread_active(Some(mt));
+    let d = dir("speeds");
+    let job = d.join("plate.snjob");
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"material": "stainless", "thickness": 3, "gap": 5, "margin": 5}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 200, "h": 100, "qty": 2}));
+    call(&mut s, "nest", None, json!({}));
+    // The machine's table record for stainless 2.7–3.2 mm with gas 1.
+    let r = call(&mut s, "machine-tech", None, json!({}));
+    let sp = &r["data"]["speeds"];
+    assert!(sp["source"].as_str().unwrap().contains("technology table"), "{r}");
+    assert_eq!((sp["cut_mm_min_by_quality"][0].as_f64(), sp["cut_mm_min_by_quality"][2].as_f64()), (Some(1500.0), Some(9500.0)));
+    assert_eq!((sp["mark_mm_min"].as_f64(), sp["rapid_mm_min"].as_f64(), sp["gas"].as_u64()), (Some(7500.0), Some(40000.0), Some(1)));
+    // The sheet's time by kind adds up to its time; parts cut at quality 1 (no size bands): 1500 mm/min.
+    let info = call(&mut s, "info", None, json!({}));
+    let sh = &info["data"]["sheets"][0];
+    let t = &sh["times_s"];
+    let sum: f64 = ["cut", "mark", "rapid", "pierce", "head"].iter().map(|k| t[k].as_f64().unwrap()).sum();
+    assert!((sum - sh["time_s"].as_f64().unwrap()).abs() < 0.3, "{sh}");
+    // Two 600 mm outsides at 1500 mm/min ≈ 48 s of cutting; two head-ups of 0.7 s.
+    assert!((t["cut"].as_f64().unwrap() - 48.0).abs() < 2.0, "{t}");
+    assert!((t["head"].as_f64().unwrap() - 1.4).abs() < 0.05, "{t}");
+    crate::ct1::set_thread_active(None);
+}
