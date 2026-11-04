@@ -114,6 +114,7 @@ original (or a real job).
 | MAC-25 | Speeds and times checked only against the installer's template laser (PSTadi02); the shop's own BLM files (PstAdi06 .CF1 / .TT1 / .TM1) not seen yet: check which table and time file its CF names and that the times card matches the original's | Estimate | ★★★ | MECHANICS TT1, CTM8 |
 | MAC-27 | Oxyfuel, plasma and waterjet technology tables (their own record layouts) | Missing | ★ | MECHANICS TT6 |
 | MAC-28 | Overlap check when the part gap is 0: such a job is meant to have touching parts, so parts that cross each other aren't reported either | Estimate | ★ | MECHANICS QR6, `engine::overlapping` |
+| MAC-29 | A plain micro-joint across a corner is timed as one straight jump between beam runs; the program goes round the corner in two moves | Estimate | ★ | MECHANICS CTM1; `cnc::beam_runs` |
 
 ## Jobs, parts and data (JOB)
 
