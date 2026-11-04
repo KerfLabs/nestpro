@@ -105,6 +105,12 @@ original (or a real job).
 | JOB-9 | Parametric editor, duct parts, processes | Missing | ★ | 8 built-in shapes |
 | JOB-10 | Flex3D unfolding / bending, 3D import | Missing | ★ | |
 | JOB-11 | ERP connectors (Masterlink, Oseon) | Missing | ★ | needs those systems |
+| JOB-12 | Fulcrum link not yet tried against the live API: every answer is read as the published API description states it | Estimate | ★★★ | MECHANICS F18–F23; needs a read-only token |
+| JOB-13 | Fulcrum: sheet stock item matched automatically from material + sheet size (now typed per job) | Partial | ★★ | MECHANICS F13 |
+| JOB-14 | Fulcrum: a job opened from a work order switches the app-wide machine; jobs don't keep their own machine | Estimate | ★★ | MECHANICS F21 |
+| JOB-15 | Fulcrum: finding the planner's work order asks for every unfinished work order on the operation, one request each (slow with many open work orders) | Estimate | ★ | MECHANICS F22 |
+| JOB-16 | Fulcrum: re-sending replaces the step's nest without checking whether someone else stored a newer one meanwhile | Missing | ★ | MECHANICS F18 |
+| JOB-17 | Fulcrum: report sheets cut and scrap back (completion tracking); remnants as Fulcrum inventory | Missing | ★★ | ROADMAP |
 
 ## Part drawing (DRW)
 

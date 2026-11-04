@@ -125,6 +125,8 @@ Punching, bevel, duct and 3D unfolding are other products' work and can wait.
 | Integration layer: one `Connector` per system, shared settings page, window and job links | Have (`src/integrations/`, `src/erpui.rs`) | |
 | **Fulcrum**: token (DPAPI on Windows), Test connection | Have | |
 | Fulcrum: list work waiting to be nested (material + operation groups, search, filters) | Have | |
+| Fulcrum: **the planner's work orders** — list them, open a step as a job, store the nest on it (the app makes none) | Have (MECHANICS F18, F22, F23) | |
+| Fulcrum: **work stations** — operations and scheduled machines mapped to the app's machines; only their work listed | Have (MECHANICS F20, F21) | |
 | Fulcrum: import job operations as a job (cut list, DXF download, units, material, thickness, quantities per order) | Have | |
 | Fulcrum: send the nest back (work order, sheets × count, parts per sheet, quantity per job operation, unplaced parts) | Have — **not yet tried against the live API** | ★★★ |
 | Fulcrum: sheet stock item matched automatically (material shape + sheet size) | Part — item number typed per job | ★★ |

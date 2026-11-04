@@ -183,6 +183,11 @@ pub struct CreatedDto {
 pub struct WoOpDto {
     pub id: String,
     pub order: i32,
+    pub status: Option<String>,
+    pub operation: RefDto,
+    pub scheduled_equipment: RefDto,
+    pub scheduled_start_utc: Option<String>,
+    pub is_nested: bool,
     pub job_operations: Vec<WoOpJobOpDto>,
 }
 
@@ -190,7 +195,40 @@ pub struct WoOpDto {
 #[serde(rename_all = "camelCase", default)]
 pub struct WoOpJobOpDto {
     pub job_id: String,
+    pub job_number: Option<i64>,
+    pub job_name: Option<String>,
+    pub item_to_make_id: Option<String>,
     pub job_operation_id: String,
+}
+
+#[derive(Deserialize, Default, Debug)]
+#[serde(rename_all = "camelCase", default)]
+pub struct OperationDto {
+    pub id: String,
+    pub name: String,
+    pub is_nestable: bool,
+    pub work_centers: Vec<RefDto>,
+    pub equipment: Vec<RefDto>,
+}
+
+pub fn step_from(o: WoOpDto) -> WorkOrderStep {
+    WorkOrderStep {
+        id: o.id,
+        order: o.order,
+        status: s(&o.status),
+        operation: o.operation.to_ref(),
+        equipment: o.scheduled_equipment.to_ref(),
+        start: s(&o.scheduled_start_utc),
+        nested: o.is_nested,
+        job_ops: o
+            .job_operations
+            .into_iter()
+            .map(|j| {
+                let name = j.job_name.filter(|n| !n.trim().is_empty()).or(j.job_number.map(|n| n.to_string())).unwrap_or_default();
+                (j.job_id, name, j.job_operation_id, j.item_to_make_id.unwrap_or_default())
+            })
+            .collect(),
+    }
 }
 
 #[derive(Deserialize, Default, Debug)]
@@ -561,6 +599,32 @@ impl Connector for Fulcrum {
         }
         Ok(res)
     }
+
+    fn stations(&self) -> Result<Vec<StationInfo>, String> {
+        let mut out = vec![];
+        // A bare list: page until a page comes back short.
+        for page in 0..20 {
+            let q = [("Skip", (page * PAGE).to_string()), ("Take", PAGE.to_string())];
+            let v: Vec<OperationDto> = self.http.post_json("/api/operations/list", &q, &serde_json::json!({}))?;
+            let n = v.len();
+            out.extend(v.into_iter().map(|o| StationInfo { op: Ref { id: o.id, name: o.name }, nestable: o.is_nestable, work_centers: o.work_centers.iter().map(RefDto::to_ref).collect(), equipment: o.equipment.iter().map(RefDto::to_ref).collect() }));
+            if n < PAGE {
+                break;
+            }
+        }
+        out.sort_by(|a, b| b.nestable.cmp(&a.nestable).then(a.op.name.to_lowercase().cmp(&b.op.name.to_lowercase())));
+        Ok(out)
+    }
+
+    fn work_order_steps(&self, work_order_id: &str) -> Result<Vec<WorkOrderStep>, String> {
+        if work_order_id.len() != 24 || !work_order_id.chars().all(|c| c.is_ascii_alphanumeric()) {
+            return Err(format!("not a Fulcrum work order id ({work_order_id})"));
+        }
+        let v: Vec<WoOpDto> = self.http.post_json(&format!("/api/work-orders/{work_order_id}/operations/list"), &[], &serde_json::json!({}))?;
+        let mut steps: Vec<WorkOrderStep> = v.into_iter().map(step_from).collect();
+        steps.sort_by_key(|s| s.order);
+        Ok(steps)
+    }
 }
 
 #[cfg(test)]
@@ -676,6 +740,28 @@ pub(crate) mod tests {
         let seen = seen_all.lock().unwrap();
         let again: Vec<&str> = seen[n..].iter().map(|s| s.0.as_str()).collect();
         assert_eq!(again, vec!["PUT /api/work-orders/6650cccccccccccccccccccc/operations/woop9/nesting-setup"]);
+    }
+
+    #[test]
+    fn operations_and_work_order_steps_are_read() {
+        let (url, seen) = mock(vec![
+            ("/api/operations/list", 200, r#"[{"id":"op2","name":"Saw","isNestable":false,"workCenters":[],"equipment":[]},
+              {"id":"op1","name":"Laser Cut","isNestable":true,"workCenters":[{"id":"wc","name":"Laser cell"}],"equipment":[{"id":"eq1","name":"Fiber 6 kW"}],"modifiedUtc":"2026-01-01T00:00:00Z"}]"#.into()),
+            ("/operations/list", 200, r#"[{"id":"s2","order":2,"status":"pending","operation":{"id":"op9","name":"Brake"},"isNested":false,"jobOperations":[]},
+              {"id":"s1","order":1,"status":"ready","operation":{"id":"op1","name":"Laser Cut"},"scheduledEquipment":{"id":"eq1","name":"Fiber 6 kW"},"scheduledStartUtc":"2026-11-05T07:00:00Z","isNested":true,
+               "jobOperations":[{"jobId":"j","jobNumber":1001,"jobName":null,"itemToMakeId":"itm","jobOperationId":"jo1"}]}]"#.into()),
+        ]);
+        let f = Fulcrum::new(&url, "t".into(), Units::Inch, false, "unknown");
+        let st = f.stations().unwrap();
+        assert_eq!(st.iter().map(|s| (s.op.name.as_str(), s.nestable)).collect::<Vec<_>>(), vec![("Laser Cut", true), ("Saw", false)], "nestable first");
+        assert_eq!((st[0].equipment[0].name.as_str(), st[0].work_centers[0].name.as_str()), ("Fiber 6 kW", "Laser cell"));
+        let steps = f.work_order_steps("6650dddddddddddddddddddd").unwrap();
+        assert_eq!(steps.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), vec!["s1", "s2"], "run order");
+        assert_eq!((steps[0].equipment.id.as_str(), steps[0].nested), ("eq1", true));
+        assert_eq!(steps[0].job_ops, vec![("j".into(), "1001".into(), "jo1".into(), "itm".into())], "the job number when it has no name");
+        assert!(f.work_order_steps("../x").is_err(), "only Fulcrum ids go into the address");
+        let seen = seen.lock().unwrap();
+        assert!(seen[0].0.starts_with("POST /api/operations/list?") && seen[0].0.contains("Take=500"));
     }
 
     #[test]

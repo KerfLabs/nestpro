@@ -3133,6 +3133,30 @@
   "group": "remnant mark",
   "value": "cutting machines only",
   "source": "MECHANICS ST15 (Sheet stock and remnants)"
+ },
+ {
+  "name": "ERP work orders made by",
+  "group": "erp (fulcrum)",
+  "value": "planner (setting: this app)",
+  "source": "MECHANICS F18, F19; own design"
+ },
+ {
+  "name": "ERP work listed",
+  "group": "erp (fulcrum)",
+  "value": "mapped operations only (all until one is mapped)",
+  "source": "MECHANICS F20; own design"
+ },
+ {
+  "name": "ERP machine for a job",
+  "group": "erp (fulcrum)",
+  "value": "scheduled equipment's machine, else the operation's",
+  "source": "MECHANICS F21; estimate (app-wide machine)"
+ },
+ {
+  "name": "ERP planner's work order",
+  "group": "erp (fulcrum)",
+  "value": "the one unfinished step on the operation holding the job operations; none or several = not sent",
+  "source": "MECHANICS F22; Fulcrum API"
  }
 ]
 }

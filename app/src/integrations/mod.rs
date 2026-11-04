@@ -119,15 +119,98 @@ pub struct Integration {
     pub approve: bool,
     /// Which nesting program the nest is reported as coming from.
     pub software: String,
+    /// Who makes the work orders the nests go on.
+    pub work_orders: WorkOrders,
+    /// The system's operations (routing steps) and which of the app's
+    /// machines runs each: the work stations.
+    pub stations: Vec<Station>,
+    /// The system's machines (equipment) and which of the app's machines
+    /// each is; more precise than the operation when a step is scheduled on one.
+    pub equipment: Vec<Station>,
+}
+
+/// Who makes work orders (F18, F19).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorkOrders {
+    /// A planner makes them in the ERP; the app only stores nests on them.
+    Planner,
+    /// The app makes one the first time a nest is sent.
+    App,
+}
+
+impl WorkOrders {
+    pub fn key(self) -> &'static str {
+        match self {
+            WorkOrders::Planner => "planner",
+            WorkOrders::App => "app",
+        }
+    }
+    pub fn from_key(s: &str) -> Self {
+        if s.trim().eq_ignore_ascii_case("app") { WorkOrders::App } else { WorkOrders::Planner }
+    }
+}
+
+/// One of the system's operations or machines and the app's machine for it
+/// (`machine` = the name of a machine in Settings → Machines; empty = not ours).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Station {
+    pub id: String,
+    pub name: String,
+    pub machine: String,
 }
 
 impl Integration {
     pub fn new(provider: Provider) -> Self {
-        Integration { provider, enabled: true, base_url: String::new(), token_enc: String::new(), units: Units::Inch, drawing_units: Units::Inch, approve: false, software: "unknown".into() }
+        Integration {
+            provider,
+            enabled: true,
+            base_url: String::new(),
+            token_enc: String::new(),
+            units: Units::Inch,
+            drawing_units: Units::Inch,
+            approve: false,
+            software: "unknown".into(),
+            work_orders: WorkOrders::Planner,
+            stations: vec![],
+            equipment: vec![],
+        }
     }
     pub fn url(&self) -> String {
         let u = self.base_url.trim().trim_end_matches('/');
         if u.is_empty() { self.provider.default_url().to_string() } else { u.to_string() }
+    }
+    /// Some operation is mapped to one of the app's machines.
+    pub fn is_mapped(&self) -> bool {
+        self.stations.iter().any(|s| !s.machine.is_empty())
+    }
+    /// The app's machine for an operation, when mapped.
+    pub fn station_machine(&self, op_id: &str) -> Option<&str> {
+        self.stations.iter().find(|s| s.id == op_id && !s.machine.is_empty()).map(|s| s.machine.as_str())
+    }
+    /// Work on this operation is for this shop's machines (F20): mapped
+    /// operations only, or everything while nothing is mapped yet.
+    pub fn ours(&self, op_id: &str) -> bool {
+        !self.is_mapped() || self.station_machine(op_id).is_some()
+    }
+    /// The app's machine for a step (F21): the scheduled equipment's, else
+    /// the operation's.
+    pub fn machine_for(&self, op_id: &str, equipment_id: &str) -> Option<String> {
+        let eq = (!equipment_id.is_empty()).then(|| self.equipment.iter().find(|e| e.id == equipment_id && !e.machine.is_empty())).flatten();
+        eq.map(|e| e.machine.clone()).or_else(|| self.station_machine(op_id).map(str::to_string))
+    }
+    /// Map an operation (`equipment = false`) or a machine to the app's machine.
+    pub fn set_station(&mut self, equipment: bool, r: &Ref, machine: &str) {
+        let list = if equipment { &mut self.equipment } else { &mut self.stations };
+        match list.iter_mut().find(|s| s.id == r.id) {
+            Some(s) => {
+                s.machine = machine.to_string();
+                if !r.name.is_empty() {
+                    s.name = r.name.clone();
+                }
+            }
+            None => list.push(Station { id: r.id.clone(), name: r.name.clone(), machine: machine.to_string() }),
+        }
+        list.retain(|s| !s.machine.is_empty());
     }
 }
 
@@ -297,6 +380,39 @@ pub struct NestRef {
     pub nested: bool,
 }
 
+impl NestRef {
+    /// The work order or its step is finished or cancelled.
+    pub fn finished(&self) -> bool {
+        let done = |s: &str| s.eq_ignore_ascii_case("complete") || s.eq_ignore_ascii_case("cancelled");
+        done(&self.status) || done(&self.op_status)
+    }
+}
+
+/// One of the system's operations (routing steps), with where it may run.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct StationInfo {
+    pub op: Ref,
+    /// The system marks the operation as nestable (cut from sheets).
+    pub nestable: bool,
+    pub work_centers: Vec<Ref>,
+    pub equipment: Vec<Ref>,
+}
+
+/// One step (operation) of a work order and the job operations it runs.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WorkOrderStep {
+    pub id: String,
+    pub order: i32,
+    pub status: String,
+    pub operation: Ref,
+    /// The machine it is scheduled on, if any.
+    pub equipment: Ref,
+    pub start: String,
+    pub nested: bool,
+    /// (job id, job name, job operation id, item-to-make id).
+    pub job_ops: Vec<(String, String, String, String)>,
+}
+
 /// The material a part is cut from, as the system describes it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MaterialInfo {
@@ -426,6 +542,60 @@ pub trait Connector: Send {
     /// Store a nest: makes the work order the first time (from every job
     /// operation in `ops`), then replaces its nest.
     fn send_nest(&self, job_name: &str, link: &ErpJob, ops: &[(String, String)], nest: &NestReport) -> Result<SendResult, String>;
+    /// The system's operations, with the work centers and machines each may run on.
+    fn stations(&self) -> Result<Vec<StationInfo>, String>;
+    /// A work order's steps, in run order, with the job operations each runs.
+    fn work_order_steps(&self, work_order_id: &str) -> Result<Vec<WorkOrderStep>, String>;
+}
+
+/// What looking for the planner's work order found.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Attach {
+    pub found: Option<WorkOrderRef>,
+    /// Work orders holding some of the job operations, when there are several.
+    pub several: Vec<String>,
+    /// Job operations not on the work order found.
+    pub missing: usize,
+}
+
+/// Find the work order a planner made for these job operations (F22):
+/// among the nestable work-order steps on the job's operation (any, if not
+/// known) that aren't finished, the one step holding them. Steps holding
+/// some of them on different work orders are listed instead.
+pub fn find_work_order(c: &dyn Connector, operation_id: &str, ops: &[(String, String)]) -> Result<Attach, String> {
+    let groups = c.groups(&GroupFilter::default())?;
+    let mut work_orders: Vec<Ref> = vec![];
+    for g in groups.iter().filter(|g| operation_id.is_empty() || g.operation.id == operation_id) {
+        for n in g.nests.iter().filter(|n| !n.finished()) {
+            if !work_orders.iter().any(|w| w.id == n.work_order.id) {
+                work_orders.push(n.work_order.clone());
+            }
+        }
+    }
+    // (work order, step id, how many of ours it holds)
+    let mut hits: Vec<(Ref, String, usize)> = vec![];
+    for wo in &work_orders {
+        for s in c.work_order_steps(&wo.id)? {
+            if !operation_id.is_empty() && !s.operation.id.is_empty() && s.operation.id != operation_id {
+                continue;
+            }
+            let n = ops.iter().filter(|(j, o)| s.job_ops.iter().any(|x| &x.2 == o && (x.0.is_empty() || &x.0 == j))).count();
+            if n > 0 {
+                hits.push((wo.clone(), s.id.clone(), n));
+            }
+        }
+    }
+    let mut a = Attach::default();
+    match hits.len() {
+        0 => {}
+        1 => {
+            let (wo, step, n) = hits.remove(0);
+            a.missing = ops.len().saturating_sub(n);
+            a.found = Some(WorkOrderRef { id: wo.id, op_id: step, name: wo.name });
+        }
+        _ => a.several = hits.into_iter().map(|(w, _, n)| format!("{} ({n})", if w.name.is_empty() { w.id } else { w.name })).collect(),
+    }
+    Ok(a)
 }
 
 // ---------------------------------------------------------------------------
@@ -484,12 +654,13 @@ pub fn whole_qty(q: f64) -> u32 {
 
 /// Group a work package into parts to make, earliest due first within each
 /// part. Parts without a DXF, or already nested, are returned as notes.
-pub fn plan_import(wp: &WorkPackage) -> (Vec<ImportPart>, Vec<String>) {
+/// `on_step` is the work-order step being opened: its own parts are kept.
+pub fn plan_import(wp: &WorkPackage, on_step: Option<&str>) -> (Vec<ImportPart>, Vec<String>) {
     let mut out: Vec<ImportPart> = vec![];
     let mut notes = wp.skipped.clone();
     for cp in &wp.parts {
         let label = format!("{} ({})", cp.part_name(), cp.demand.job_name);
-        if let Some(wo) = &cp.nested_on {
+        if let Some(wo) = cp.nested_on.as_ref().filter(|w| Some(w.as_str()) != on_step) {
             notes.push(format!("{label}: already nested on work-order operation {wo}"));
             continue;
         }
@@ -848,7 +1019,7 @@ mod tests {
             ],
             skipped: vec!["j9/o9: notFound".into()],
         };
-        let (parts, notes) = plan_import(&wp);
+        let (parts, notes) = plan_import(&wp, None);
         assert_eq!(parts.len(), 2);
         assert_eq!((parts[0].name.as_str(), parts[0].qty()), ("BRK-1", 6), "3 + 2.5 rounded up");
         assert_eq!(parts[0].demands.iter().map(|d| d.job_id.as_str()).collect::<Vec<_>>(), vec!["j1", "j2"], "earliest due first");
@@ -878,6 +1049,85 @@ mod tests {
         scale_drawing(&mut d, 25.4);
         let w1 = d.pieces[0].pts.iter().map(|p| p[0]).fold(f64::MIN, f64::max);
         assert!((w1 - w0 * 25.4).abs() < 1e-9);
+    }
+
+    #[test]
+    fn mapped_operations_and_machines_pick_the_work_and_the_machine() {
+        let r = |id: &str| Ref { id: id.into(), name: format!("{id} name") };
+        let mut i = Integration::new(Provider::Fulcrum);
+        assert_eq!(i.work_orders, WorkOrders::Planner, "F18: the planner makes work orders by default");
+        assert!(i.ours("anything"), "F20: everything shows until something is mapped");
+        i.set_station(false, &r("laser"), "Fiber 1");
+        i.set_station(false, &r("thin"), "Fiber 2");
+        i.set_station(true, &r("eq6"), "Fiber 2");
+        assert!(i.ours("laser") && !i.ours("saw"));
+        assert_eq!(i.machine_for("laser", ""), Some("Fiber 1".into()));
+        assert_eq!(i.machine_for("laser", "eq6"), Some("Fiber 2".into()), "F21: the scheduled machine wins");
+        assert_eq!(i.machine_for("laser", "eq-other"), Some("Fiber 1".into()));
+        assert_eq!(i.machine_for("saw", "eq6"), Some("Fiber 2".into()));
+        assert_eq!(i.machine_for("saw", ""), None);
+        // Unmapping removes the row.
+        i.set_station(false, &r("thin"), "");
+        assert_eq!(i.stations.len(), 1);
+    }
+
+    /// A connector answering from memory.
+    struct Fake {
+        groups: Vec<Group>,
+        steps: Vec<(String, Vec<WorkOrderStep>)>,
+    }
+
+    impl Connector for Fake {
+        fn check(&self) -> Result<String, String> {
+            Ok(String::new())
+        }
+        fn groups(&self, _: &GroupFilter) -> Result<Vec<Group>, String> {
+            Ok(self.groups.clone())
+        }
+        fn work_package(&self, _: &[(String, String, String)]) -> Result<WorkPackage, String> {
+            Ok(Default::default())
+        }
+        fn download(&self, _: &DrawingRef) -> Result<Vec<u8>, String> {
+            Ok(vec![])
+        }
+        fn send_nest(&self, _: &str, _: &ErpJob, _: &[(String, String)], _: &NestReport) -> Result<SendResult, String> {
+            Ok(Default::default())
+        }
+        fn stations(&self) -> Result<Vec<StationInfo>, String> {
+            Ok(vec![])
+        }
+        fn work_order_steps(&self, wo: &str) -> Result<Vec<WorkOrderStep>, String> {
+            Ok(self.steps.iter().find(|s| s.0 == wo).map_or(vec![], |s| s.1.clone()))
+        }
+    }
+
+    #[test]
+    fn the_planners_work_order_is_the_one_holding_the_job_operations() {
+        let r = |id: &str, n: &str| Ref { id: id.into(), name: n.into() };
+        let nest = |wo: &str, step: &str, status: &str| NestRef { work_order: r(wo, &format!("WO {wo}")), op_id: step.into(), status: status.into(), ..Default::default() };
+        let step = |id: &str, op: &str, jobs: &[&str]| WorkOrderStep { id: id.into(), operation: r(op, op), job_ops: jobs.iter().map(|j| ("J".to_string(), "J".to_string(), j.to_string(), String::new())).collect(), ..Default::default() };
+        let ops = vec![("J".to_string(), "jo1".to_string()), ("J".to_string(), "jo2".to_string())];
+        let fake = |groups: Vec<Group>, steps: Vec<(String, Vec<WorkOrderStep>)>| Fake { groups, steps };
+        let g = |op: &str, nests: Vec<NestRef>| Group { operation: r(op, op), nests, ..Default::default() };
+
+        // One work order holds both, on the laser step (its saw step doesn't count).
+        let f = fake(vec![g("laser", vec![nest("w1", "s1", "approved")])], vec![("w1".into(), vec![step("s0", "saw", &["jo1"]), step("s1", "laser", &["jo1", "jo2"])])]);
+        let a = find_work_order(&f, "laser", &ops).unwrap();
+        assert_eq!(a.found, Some(WorkOrderRef { id: "w1".into(), op_id: "s1".into(), name: "WO w1".into() }));
+        assert_eq!(a.missing, 0);
+
+        // Only one of the two is on it.
+        let f = fake(vec![g("laser", vec![nest("w1", "s1", "scheduled")])], vec![("w1".into(), vec![step("s1", "laser", &["jo2"])])]);
+        assert_eq!(find_work_order(&f, "laser", &ops).unwrap().missing, 1);
+
+        // Split over two work orders: listed, none chosen.
+        let f = fake(vec![g("laser", vec![nest("w1", "s1", "approved"), nest("w2", "s2", "approved")])], vec![("w1".into(), vec![step("s1", "laser", &["jo1"])]), ("w2".into(), vec![step("s2", "laser", &["jo2"])])]);
+        let a = find_work_order(&f, "laser", &ops).unwrap();
+        assert!(a.found.is_none() && a.several.len() == 2);
+
+        // Finished work orders and other operations are not looked at.
+        let f = fake(vec![g("laser", vec![nest("w1", "s1", "complete")]), g("saw", vec![nest("w3", "s3", "approved")])], vec![("w1".into(), vec![step("s1", "laser", &["jo1"])]), ("w3".into(), vec![step("s3", "saw", &["jo1"])])]);
+        assert_eq!(find_work_order(&f, "laser", &ops).unwrap(), Attach::default());
     }
 
     #[test]
