@@ -19,7 +19,7 @@ is **`FEATURES.md`** at the top of the repo; keep both in step.
 | Parts from database, Import parts (DXF/DWG/MEC/IGES/GEO…) | Part — DXF only (the original also imports DWG, MEC, IGES, GEO…) | ★★★ |
 | Rectangles (quick rectangular parts) | Part — built-in shapes | |
 | Sheets stock manager (sizes, quantities, remnants) | Have — Sheet stock window: list/criteria, quantities, priority, locking, create, what the open job uses; nesting takes sheets from stock (best sheet format / combination searches, time limit) | |
-| **Materials** and **Consumables** (gas, nozzles) | Part — fixed material list | ★★ |
+| **Materials** and **Consumables** (gas, nozzles) | Part — fixed material list, each with its machine-file key (Settings → Materials → Machine table); the machine file's material × thickness sections pick leads, joints, joint gap and offer gap/margins (MECHANICS MTL1–MTL12); no gas/nozzle keys | ★★ |
 | Machine setup (several machines) | Part — several machines in Settings (post library, BLM, CT1), one active at a time | ★★ |
 | Kits From Database, Kit Explorer | Missing | ★★ |
 | Quotation (save quote, Quotation Jobs) | Missing | ★★ |
@@ -54,7 +54,7 @@ is **`FEATURES.md`** at the top of the repo; keep both in step.
 | Original | Rebuild | Pri |
 |---|---|---|
 | Lead-in/outs: Automatic, Semi-automatic, Delete, 16 lead types, dynamic, custom, move point, lead-out like lead-in, bisector | Part — automatic leads from the machine's CT1 tables by contour class and quality (types 1–13, zones, corner rules, round-hole clipping, collision test; `leads.rs`, MECHANICS AL1–AL11); types 14–16, force placement, dynamic/custom leads missing | ★★ |
-| Micro-joints: Automatic, Semi-auto, 6 types, corner lead-in, nano-joints, move point, to geometry | Part — Lantek's automatic count (ceil P/F150, size-class min/max, even), holes too, centred on elements, corner joints straddle corners, joint leads (`joints.rs`, MECHANICS AM1–AM6); material-file joint records, zone modes, nano-joints missing | ★ |
+| Micro-joints: Automatic, Semi-auto, 6 types, corner lead-in, nano-joints, move point, to geometry | Part — Lantek's automatic count (ceil P/F150, size-class min/max, even), holes too, centred on elements, corner joints straddle corners, joint leads (`joints.rs`, MECHANICS AM1–AM6); lead and joint tables per material × thickness section of the machine file (MTL7); per-class V records, zone modes, nano-joints missing | ★ |
 | Loops (2 types), Round angles | Part — loops | ★ |
 | **Bridges** (join parts so they cut as one) | Missing | ★★ |
 | Standard bevel, 3D bevel | Missing (bevel heads) | ★ |
@@ -72,7 +72,7 @@ is **`FEATURES.md`** at the top of the repo; keep both in step.
 | Delete instructions (current, by selection, from-to) | Part — undo pick / clear | ★ |
 | **Component extraction** (stop, trap, lift; assign boxes) | Missing | ★ |
 | Avoid holes already cut (head rapids) | Missing | ★★ |
-| Speed rates, CN/system compensation, postprocessor words | Part — the post library (.CFF/.CF1) shapes the G-code, BLM LC5 output; no speed tables or compensation (FEATURES MAC-1) | ★★★ |
+| Speed rates, CN/system compensation, postprocessor words | Part — the post library (.CFF/.CF1) shapes the G-code, BLM LC5 output; **kerf compensation built** (side from the cutting direction, G41/G42 + corrector, system offset path, job toggles; MECHANICS KC1–KC18); no speed tables (FEATURES MAC-1, MAC-13–MAC-19) | ★★★ |
 | Cycles, pockets, nibbling, punch macros | Missing (punch / milling) | ★ |
 | Clamps and work zone, sheet reposition, multihead | Missing | ★ |
 | Verify machining, verify unstable contours | Part — Verify Machining with safe distance; unstable contours not yet | ★ |
@@ -95,7 +95,7 @@ is **`FEATURES.md`** at the top of the repo; keep both in step.
 | Feature | Rebuild | Pri |
 |---|---|---|
 | Headless engine shared by the window, CLI and MCP (`src/engine/`) | Have | |
-| Operations: job, parts (shapes, DXF + layer roles, library), sheet, nest, place/move/rotate/copy, technology (leads, element leads, joints, loops, cut quality, texts), cut order, remnants/cut lines, verify, program, export, sheet stock | Have — 45 operations (`nestpro ops`) | |
+| Operations: job, parts (shapes, DXF + layer roles, library), sheet, nest, place/move/rotate/copy, technology (leads, element leads, joints, loops, cut quality, texts), cut order, remnants/cut lines, verify, program, export, sheet stock | Have — 46 operations (`nestpro ops`; `machine-tech` reports the machine-file section for the job) | |
 | Pictures for the agent (sheet/part PNG or SVG, numbered elements) | Have | |
 | Every ribbon command mapped to an operation, test-enforced (`nestpro ops --gui`) | Have | |
 | Window notices when an agent changed the open job file: reloads it, or asks when both changed | Have (`filewatch.rs`, once a second) | |

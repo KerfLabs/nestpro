@@ -216,6 +216,10 @@ impl App {
                 self.refresh();
             }
         });
+        ribbon_group(ui, "Compensation", |ui| {
+            let r = crate::drawing::dropdown(ui, Icon::CutPath, "Kerf", true).on_hover_text(crate::kerf::status_line(&self.spec));
+            egui::Popup::menu(&r).show(|ui| self.kerf_menu(ui));
+        });
         self.ribbon_manual(ui);
         self.ribbon_verify(ui);
         ribbon_group(ui, "CNC", |ui| {
@@ -318,12 +322,15 @@ impl App {
         let cut = crate::drawing::rgb(crate::drawing::C_DONE);
         let mark = Color32::from_rgb(140, 255, 140);
         let punch = Color32::from_rgb(255, 140, 60);
+        // A cut is drawn at least as wide as the real kerf at this zoom.
+        let px_per_mm = (to_s([1.0, 0.0]).x - to_s([0.0, 0.0]).x).abs();
+        let kerf_px = (crate::kerf::kerf_mm(&self.cur_spec()) as f32 * px_per_mm).max(2.4);
         for (i, o) in ops.iter().enumerate().take(cur + 1) {
             let pts: Vec<P> = if i == cur { path_upto(&o.path, f) } else { o.path.clone() };
             let sp: Vec<Pos2> = pts.iter().map(|&q| to_s(q)).collect();
             match o.kind {
                 OpKind::Cut => {
-                    painter.add(egui::Shape::line(sp, Stroke::new(2.4, cut)));
+                    painter.add(egui::Shape::line(sp, Stroke::new(kerf_px, cut)));
                 }
                 OpKind::Mark => {
                     painter.add(egui::Shape::line(sp, Stroke::new(1.6, mark)));
@@ -395,7 +402,7 @@ impl App {
                         ui.label(format!("{:.3}", head[1]));
                         ui.add_space(12.0);
                         ui.label(RichText::new("Cutter radius :").strong());
-                        ui.label(format!("{:.3}", crate::cutoff::KERF_MM * 0.5));
+                        ui.label(format!("{:.3}", crate::kerf::cutter_radius(&crate::ct1::for_spec(&self.cur_spec()))));
                         ui.add_space(12.0);
                         ui.label(RichText::new("Number of heads :").strong());
                         ui.label(format!("{HEADS}"));

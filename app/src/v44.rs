@@ -67,6 +67,9 @@ pub const ERR_OVERLAPS: u8 = 3;
 pub const ERR_OUT_OF_ZONE: u8 = 4;
 pub const ERR_NO_LEADS: u8 = 8;
 pub const ERR_PARTS_FALL: u8 = 10;
+/// Elements not (completely) cut because of the kerf compensation (KC18; the
+/// test itself is ours).
+pub const ERR_KERF: u8 = 13;
 pub const ERR_SEPARATION: u8 = 20;
 /// A check this rebuild adds that has no code in the original.
 pub const OWN_CHECK: u8 = 255;

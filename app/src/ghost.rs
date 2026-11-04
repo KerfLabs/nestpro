@@ -397,7 +397,7 @@ mod ghost_tests {
     use crate::nest::Shape;
 
     fn spec() -> SheetSpec {
-        SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default() }
+        SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() }
     }
     fn part() -> Part {
         Part { name: "P".into(), shape: Shape::Rectangle, w: 100.0, h: 40.0, qty: 2, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }
@@ -502,7 +502,7 @@ mod ghost_tests {
     #[test]
     fn compaction_tucks_parts_along_their_contours() {
         let parts = [tri()];
-        let s = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default() };
+        let s = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
         // The flipped gusset starts box-to-box right of the first one.
         let mut sheet = vec![tri_at(10.0, 10.0, 0), tri_at(115.0, 10.0, 2)];
         nest::compact_contours(&parts, &mut sheet, &s);

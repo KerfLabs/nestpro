@@ -177,6 +177,7 @@ pub static OPS: &[Op] = &[
         a("w", Ty::Num, "Length X, mm"), a("h", Ty::Num, "Width Y, mm"), a("margin", Ty::Num, "Margin, mm"), a("gap", Ty::Num, "Gap between parts, mm"),
         a("material", Ty::Str, "Material name or number"), a("thickness", Ty::Num, "Thickness, mm"), a("level", Ty::Int, "Nesting level 1-5"), c("machine", MACHINES, "Machine type"),
         c("nestings", &["keep", "remove"], "What happens to nested sheets on a material/thickness change"),
+        a("machine_spacing", Ty::Bool, "true = take the part gap and margin from the machine file for the (new) material and thickness (see machine-tech); gap/margin given here still win"),
     ] },
     Op { name: "nest", group: "Nesting", kind: Kind::Write, help: "Nest all parts automatically (Do All; replaces the sheets, cut lines and hand-picked cut order). When the sheet stock has sheets or remnants for the job's material and thickness, they are taken in the stock's order (remnants first, then by size or priority; locked ones never), one sheet at a time, each filled by the best method; stock sheets below the minimum efficiency are dropped; with the window's options on, the best sheet combination and the best sheet format are searched within the maximum time (Sheet stock → Options; see stock mode=rules).", args: &[
         a("group", Ty::Bool, "Nest each part group in its own zone (default: the machine's CT1 setting)"), a("level", Ty::Int, "Nesting level 1-5 for this run (kept)"),
@@ -208,6 +209,14 @@ pub static OPS: &[Op] = &[
     Op { name: "joints", group: "Technology", kind: Kind::Write, help: "Micro-joints: auto (one per the machine's maximum distance — 100 mm by default — on every contour, holes too, rounded up to an even number and centred on its line or arc, within the machine's fewest/most for the contour's size class) or delete.", args: &[
         Arg { name: "mode", ty: Ty::Str, required: true, help: "auto or delete", choices: &["auto", "delete"] }, PARTS,
         a("every", Ty::Num, "auto: one joint per this many mm of each contour (default: the machine's maximum distance for the part's quality)"),
+    ] },
+    Op { name: "machine-tech", group: "Technology", kind: Kind::Read, help: "Which material × thickness section of the machine's technology file applies to the job (or to another material/thickness), and the values it gives: lead and joint tables, joint gap, pierce and loop radius, kerf, part gap and margins (compare with the sheet's; take them with set-sheet machine_spacing=true).", args: &[
+        a("material", Ty::Str, "Look at this material instead of the job's (name or number)"), a("thickness", Ty::Num, "Look at this thickness instead of the job's, mm"),
+    ] },
+    Op { name: "compensation", group: "Machining", kind: Kind::Write, help: "Kerf compensation: how the beam is kept half a kerf on the scrap side of each cut — control (the program writes G41/G42 and the corrector number, the CNC offsets) and/or system (the program carries the already-offset path). Shows the machine's settings, the job's choice and, per contour of a sheet, its side, corrector and radius, plus the contours system compensation can't cut (holes no bigger than the kerf, slots narrower than it). control/system set the job's choice (on, off, or machine = the machine file's).", args: &[
+        c("control", &["on", "off", "machine"], "Control compensation (G41/G42 + corrector) for this job"),
+        c("system", &["on", "off", "machine"], "System compensation (offset path) for this job"),
+        SHEET,
     ] },
     Op { name: "joint-at", group: "Technology", kind: Kind::Write, help: "A micro-joint in the middle of each listed element of a part (see part-info).", args: &[PART, r("elements", Ty::Str, "Element numbers, e.g. \"2,5\"")] },
     Op { name: "loops", group: "Technology", kind: Kind::Write, help: "Loops at sharp outer corners on or off.", args: &[r("on", Ty::Bool, "true = add loops, false = remove"), PARTS, a("size", Ty::Num, "Loop size, mm")] },
@@ -562,7 +571,7 @@ pub fn info(job: &JobFile, ctx: &Ctx, detail_sheet: Option<usize>) -> Value {
                 "sheet": k + 1, "parts": s.len(), "usage_pct": r1(u), "usage_to_remnant_pct": r1(ur), "used_up_to_x": r1(cx),
                 "cut_len_mm": r1(pl.cut_len), "mark_len_mm": r1(pl.mark_len), "rapid_len_mm": r1(pl.rapid_len), "pierces": pl.pierces, "time_s": r1(pl.seconds),
                 "manual_cuts": job.manual_cuts.get(k).map_or(0, |v| v.len()), "cut_lines": job.cuts(k).len(),
-                "remnant": remnant_info(&job.parts, s, &f, job.cuts(k)).map(|(w, h, a)| json!({"w": r1(w), "h": r1(h), "area_m2": (a / 1e4).round() / 100.0})),
+                "remnant": remnant_info(&job.parts, s, &f, job.cuts(k), crate::kerf::kerf_mm(&job.spec_at(k))).map(|(w, h, a)| json!({"w": r1(w), "h": r1(h), "area_m2": (a / 1e4).round() / 100.0})),
                 "size": [r1(f.w), r1(f.h)], "stock_ref": (!f.stock_ref.is_empty()).then(|| f.stock_ref.clone()), "is_remnant": f.remnant, "area_m2": (f.area_mm2() / 1e4).round() / 100.0,
                 "remnants_stored": f.made,
                 "program": if ctx.blm.on { format!("{}.zip", crate::blm::nest_name(&job.name, k + 1)) } else { ctx.post.file_name(&job.name, k + 1) },
@@ -646,6 +655,96 @@ fn catalog() -> Value {
     })
 }
 
+/// The machine's values for a sheet's material and thickness (MTL1–MTL9):
+/// which section applies and what it gives, beside the job's own spacing.
+fn machine_tech_report(spec: &SheetSpec, job: &SheetSpec) -> (String, Value) {
+    let t = crate::ct1::for_spec(spec);
+    let q1 = t.leads.quality(1);
+    let opt = |v: Option<f64>| v.map_or(Value::Null, |x| json!(r1(x * 1000.0) / 1000.0));
+    let section = t.applied().map(|s| {
+        json!({
+            "number": s.no, "material_key": s.material, "material": crate::ct1::material_label(&s.material),
+            "thickness_from": s.t_min, "thickness_to": s.t_max, "gas": s.gas, "default": s.default, "hole_size_bands": s.hole_bands.len(),
+        })
+    });
+    let mat = cnc::MATERIALS.get(spec.material).copied().unwrap_or("?");
+    let mut msg = format!("{mat} {} mm: {}.", spec.thickness, t.table_label());
+    match (t.part_gap, t.sheet_margin()) {
+        (None, None) => msg.push_str(" The machine file gives no part gap or margins."),
+        (g, m) => msg.push_str(&format!(
+            " Machine part gap {}, margin {} (the job: gap {} mm, margin {} mm; set-sheet machine_spacing=true takes the machine's).",
+            g.map_or("—".to_string(), |g| format!("{g} mm")),
+            m.map_or("—".to_string(), |m| format!("{m} mm")),
+            job.gap,
+            job.margin
+        )),
+    }
+    let data = json!({
+        "material": mat, "material_key": t.picked_for.as_ref().map(|p| p.0.clone()), "thickness": spec.thickness,
+        "table": t.table_label(), "section": section, "sections_in_file": t.file.sections.len(),
+        "default_rule": t.default_rule,
+        "source": t.source.as_ref().map_or("built-in values".to_string(), |p| p.display().to_string()),
+        "leads": {
+            "lead_in": t.lead_in, "lead_out": t.lead_out, "lead_angle": t.lead_angle, "hole_lead_in": t.hole_lead_in, "hole_lead_out": t.hole_lead_out,
+            "overlap": t.overlap, "position": t.zone, "min_lead": q1.min_lead,
+            "by_class": crate::leads::CLASS_NAMES.iter().zip(q1.recs.iter()).map(|(n, r)| json!({"class": n, "type": r.kind, "in": r.d_in, "out": r.d_out})).collect::<Vec<_>>(),
+        },
+        "joints": { "gap": t.joint_gap, "lead": t.joint_lead, "lead_out": t.joint_lead_out, "angle": t.joint_angle, "every": t.joint_every, "fewest": t.joint_min, "most": t.joint_max },
+        "loop_radius": t.loop_radius, "pierce_radius": opt(t.pierce_radius),
+        "cutter_radius": opt(t.cutter_radius), "kerf": opt(t.cutter_radius.map(|r| 2.0 * r)), "cut_speed": opt(t.cut_speed),
+        "compensation": crate::kerf::status_line(spec),
+        "spacing": {
+            "machine_gap": opt(t.part_gap), "machine_margins": t.margins.map(|m| json!({"bottom": m[0], "top": m[1], "left": m[2], "right": m[3]})),
+            "machine_margin": opt(t.sheet_margin()), "remnant_margin": opt(t.remnant_margin), "y_gap": opt(t.y_gap),
+            "job_gap": job.gap, "job_margin": job.margin,
+        },
+    });
+    (msg, data)
+}
+
+/// The job's kerf compensation (KC1–KC6, KC18): the machine's settings, the
+/// job's choice, and per contour of one sheet what it gets.
+fn compensation_report(job: &JobFile, a: &Args) -> Result<(String, Value), String> {
+    let mt = crate::ct1::for_spec(&job.spec);
+    let s = &mt.comp;
+    let line = crate::kerf::status_line(&job.spec);
+    let choice = |v: Option<bool>| v.map_or(json!("machine"), |b| json!(if b { "on" } else { "off" }));
+    let mut data = json!({
+        "status": line,
+        "kerf": 2.0 * crate::kerf::cutter_radius(&mt),
+        "cutter_radius_from": if mt.cutter_radius.is_some() { mt.table_label() } else { format!("no cutter radius in the machine file: {} mm kerf assumed", cutoff::KERF_MM) },
+        "job": { "control": choice(job.spec.kerf.control), "system": choice(job.spec.kerf.system) },
+        "machine": {
+            "control": s.control, "system": s.system, "hole_corrector": s.hole_corrector, "outside_corrector": s.outside_corrector,
+            "by_quality": s.by_quality, "quality_mode": s.modes[0], "corners": s.corners().label(), "lead_mode": s.lead_mode, "joint_mode": s.joint_mode,
+            "common_cut": s.common_cut,
+        },
+        "notes": [
+            "Side = the scrap side from each contour's cutting direction: outside counter-clockwise right (G42), clockwise left (G41); a hole the other way round. Mirrored parts and reversed contours flip it.",
+            "Control words: written on the first lead-in move when the needed side or corrector changes, G40 when a contour, marking or cut line needs none and at the end.",
+            "The app has no common cut: the machine's common-cut setting is read only.",
+        ],
+    });
+    let mut msg = format!("{line}.");
+    if !job.sheets.is_empty() {
+        let k = sheet_idx(job, a)?;
+        let plans = job.plans();
+        let p = &plans[k];
+        data["sheet"] = json!(k + 1);
+        data["contours"] = json!(p.contours.iter().enumerate().filter(|(_, c)| c.punch.is_none()).map(|(n, c)| json!({
+            "cut": n + 1, "part": c.part_no, "hole": c.inner, "side": c.comp.side.label(),
+            "word": c.comp.word().map(|(sd, d)| format!("{} D{d}", sd.word())),
+            "offset_path": c.comp.system, "radius": (c.comp.radius * 1e4).round() / 1e4,
+        })).collect::<Vec<_>>());
+        let lost: Vec<Value> = plans.iter().enumerate().flat_map(|(si, p)| p.kerf_issues.iter().map(move |(part, inner, what)| json!({"sheet": si + 1, "part": part, "hole": inner, "what": what}))).collect();
+        if !lost.is_empty() {
+            msg.push_str(&format!(" {} contour(s) can't be cut fully with system compensation (see not_cut).", lost.len()));
+        }
+        data["not_cut"] = json!(lost);
+    }
+    Ok((msg, data))
+}
+
 fn machines(ctx: &Ctx) -> Value {
     let t = &ctx.tech;
     json!({
@@ -657,6 +756,8 @@ fn machines(ctx: &Ctx) -> Value {
             "source": t.source.as_ref().map_or("built-in values".to_string(), |p| p.display().to_string()),
             "lead_in": t.lead_in, "lead_out": t.lead_out, "overlap": t.overlap, "position": t.zone, "hole_lead_in": t.hole_lead_in,
             "joint_gap": t.joint_gap, "joint_every": t.joint_every, "group_parts": t.group_parts, "zones": [t.zones_x, t.zones_y],
+            "material_sections": t.file.sections.len(),
+            "note": "These are the machine's own values; a job's material and thickness may pick a section of the file instead (machine-tech).",
         },
         "post": { "extension": ctx.post.file_name("JOB", 1) },
         "note": "Settings are changed in the app (Settings window), not by agents.",
@@ -915,7 +1016,7 @@ fn set_remnant_lines(parts: &[Part], sheet: &[Placed], list: &mut Vec<CutLine>, 
 /// The automatic remnant line for a sheet that has none yet (None when it
 /// has one, there's no remnant, or the line would cut a part).
 pub fn auto_remnant_lines(parts: &[Part], sheet: &[Placed], spec: &SheetSpec, ls: &crate::remline::LineSettings) -> Option<Vec<CutLine>> {
-    let lines = crate::remline::auto_lines(parts, sheet, spec, ls, cutoff::KERF_MM / 2.0);
+    let lines = crate::remline::auto_lines(parts, sheet, spec, ls, crate::kerf::kerf_mm(spec) / 2.0);
     (!lines.is_empty() && lines.iter().all(|l| cutoff::path_hits_part(parts, sheet, &l.pts).is_none())).then_some(lines)
 }
 
@@ -1311,9 +1412,18 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
         "set-sheet" => {
             let mut spec = job.spec.clone();
             set_spec_fields(&mut spec, &a, ctx)?;
+            // "Use machine values" (MTL9): only the fields not given here.
+            let spacing = if a.bool("machine_spacing")? == Some(true) {
+                Some(use_machine_spacing(&mut spec, a.num("gap")?.is_none(), a.num("margin")?.is_none())?)
+            } else {
+                None
+            };
             let mat_change = spec.material != job.spec.material || (spec.thickness - job.spec.thickness).abs() > 1e-9;
             let nested = !job.sheets.is_empty();
-            let mut m = format!("Sheet: {} × {} mm, {} {} mm, {}.", spec.w, spec.h, cnc::MATERIALS.get(spec.material).copied().unwrap_or("?"), spec.thickness, spec.nest_level().name);
+            let mut m = format!("Sheet: {} × {} mm, {} {} mm, {}, gap {} mm, margin {} mm.", spec.w, spec.h, cnc::MATERIALS.get(spec.material).copied().unwrap_or("?"), spec.thickness, spec.nest_level().name, spec.gap, spec.margin);
+            if let Some(s) = spacing {
+                m = format!("{m} {s}");
+            }
             if nested && mat_change {
                 // The original asks once: keep the nestings, or remove them and free the sheets (T4).
                 match a.str("nestings").as_deref() {
@@ -1604,7 +1714,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                 }
                 edit_tech(job, &a, TechEdit::AutoLeads { lead_type, position: position as u8 }, "Automatic lead-ins")
             }
-            "machine" => edit_tech(job, &a, TechEdit::MachineLeads(ctx.tech.clone()), "Machine lead-ins"),
+            "machine" => edit_tech(job, &a, TechEdit::MachineLeads(crate::ct1::for_spec(&job.spec)), "Machine lead-ins"),
             "delete" => edit_tech(job, &a, TechEdit::DeleteLeads, "Lead-ins removed"),
             m => Err(format!("leads mode '{m}'?")),
         },
@@ -1623,14 +1733,50 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                 if every.is_some_and(|e| e <= 0.0) {
                     return Err("every must be more than 0 mm (use mode=delete to remove joints)".into());
                 }
-                let mt = &ctx.tech;
-                let mut o = edit_tech(job, &a, TechEdit::AutoJoints { dist: mt.joint_dist, gap: mt.joint_gap, every }, "Automatic micro-joints")?;
+                // The machine's joint table for the job's material and thickness (MTL7).
+                let mt = crate::ct1::for_spec(&job.spec);
+                let mut o = edit_tech(job, &a, TechEdit::auto_joints(&mt, every), "Automatic micro-joints")?;
                 o.message.push_str(" Each contour's count is kept within the machine's fewest/most for its size class.");
                 Ok(o)
             }
             "delete" => edit_tech(job, &a, TechEdit::DeleteJoints, "Micro-joints removed"),
             m => Err(format!("joints mode '{m}'?")),
         },
+        "machine-tech" => {
+            let mut spec = job.spec.clone();
+            if let Some(v) = a.str("material") {
+                spec.material = material_from(&v, &ctx.cfg)?;
+            }
+            if let Some(v) = a.num("thickness")? {
+                if v <= 0.0 {
+                    return Err("thickness must be more than 0 mm".into());
+                }
+                spec.thickness = v;
+            }
+            let (msg, data) = machine_tech_report(&spec, &job.spec);
+            Ok(Outcome::read(msg, data))
+        }
+        "compensation" => {
+            let pick = |k: &str| -> Result<Option<Option<bool>>, String> {
+                Ok(match a.str(k).as_deref().map(str::trim) {
+                    None => None,
+                    Some("on") | Some("true") => Some(Some(true)),
+                    Some("off") | Some("false") => Some(Some(false)),
+                    Some("machine") => Some(None),
+                    Some(v) => return Err(format!("{k}: '{v}'? Use on, off or machine.")),
+                })
+            };
+            let (control, system) = (pick("control")?, pick("system")?);
+            let changed = control.is_some() || system.is_some();
+            if let Some(v) = control {
+                job.spec.kerf.control = v;
+            }
+            if let Some(v) = system {
+                job.spec.kerf.system = v;
+            }
+            let (msg, data) = compensation_report(job, &a)?;
+            Ok(if changed { Outcome { message: format!("Compensation set. {msg}"), data, changed: true, files: vec![] } } else { Outcome::read(msg, data) })
+        }
         "joint-at" => {
             let i = one_part(job, &a)?;
             let elems = nest::elements_of(&job.parts[i].geometry());
@@ -1784,7 +1930,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             match a.need_str("mode")?.as_str() {
                 "auto" => {
                     let ls = &ctx.cfg.stock.line;
-                    let lines = crate::remline::auto_lines(&parts, &sheet, &sp, ls, cutoff::KERF_MM / 2.0);
+                    let lines = crate::remline::auto_lines(&parts, &sheet, &sp, ls, crate::kerf::kerf_mm(&sp) / 2.0);
                     if lines.is_empty() {
                         return Err(format!("No remnant: less than the minimum width ({:.0} mm) is left past the parts.", ls.min_width));
                     }
@@ -1803,7 +1949,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                     add_cut_line(&parts, &sheet, job.cuts_mut(s), line)?;
                 }
             }
-            let m = match remnant_info(&job.parts, &job.sheets[s], &job.format(s), job.cuts(s)) {
+            let m = match remnant_info(&job.parts, &job.sheets[s], &job.format(s), job.cuts(s), crate::kerf::kerf_mm(&job.spec_at(s))) {
                 Some((w, h, ar)) => format!("Remnant line added on sheet {} — remnant about {w:.0} × {h:.0} mm ({:.2} m²), cut last.", s + 1, ar / 1e6),
                 None => "Cut line added — it is cut after the parts.".into(),
             };
@@ -2009,7 +2155,8 @@ pub const GUI_MAP: &[(&str, &str)] = &[
     ("Standard shapes/Recognise\nshapes", "part-info"),
     ("Contours/Contours", "part-info"),
     ("Contours/Cycles", "todo: [MAC-11] punch/milling cycles (greyed out in the app too)"),
-    ("Settings/Options", "todo: [MAC-1] speed rates, CN compensation (greyed out in the app too)"),
+    ("Settings/Options", "todo: [MAC-1] speed rates, postprocessor words (greyed out in the app too)"),
+    ("Compensation/Kerf", "compensation"),
     ("Settings/Extraction", "todo: [MAC-6] component extraction (greyed out in the app too)"),
     ("View/Current\nstatus", "part-info"),
     ("View/Verify\nMachining", "part-info"),

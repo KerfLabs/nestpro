@@ -100,6 +100,10 @@ pub struct AppSettings {
     /// shop names. A name that is an alias stands for its main material, as
     /// in the original (MA6).
     pub material_aliases: Vec<String>,
+    /// Per material: its key in the machine file's material × thickness
+    /// sections (a catalogue number such as 0010, or a plain name; empty = the
+    /// material's name in programs). MTL2.
+    pub material_refs: Vec<String>,
     /// Appearance: "system" (follow Windows), "light" or "dark".
     pub theme: String,
     /// Ask before changing a part that has its own technology.
@@ -162,6 +166,13 @@ pub fn default_material_aliases() -> Vec<String> {
     ]
 }
 
+/// Default machine-file keys of the materials (MTL2 catalogue numbers): mild
+/// steel 0010, stainless 0100, aluminium 0210 (the aluminium-magnesium grades
+/// the aliases list; pure aluminium is 0200 — our choice, editable).
+pub fn default_material_refs() -> Vec<String> {
+    vec!["0010".into(), "0100".into(), "0210".into()]
+}
+
 /// Default material names and codes (BLM codes from PstAdi06.PS1's D-lines).
 pub fn default_materials() -> Vec<(String, String)> {
     vec![("STEEL".into(), "0010".into()), ("STAINLESS".into(), "0100".into()), ("ALUMINIUM".into(), "0200".into())]
@@ -184,6 +195,7 @@ impl Default for AppSettings {
             active_machine: 0,
             materials: default_materials(),
             material_aliases: default_material_aliases(),
+            material_refs: default_material_refs(),
             theme: "system".into(),
             warn_tech: true,
             show_unbuilt: false,
@@ -297,6 +309,9 @@ impl AppSettings {
         for (k, a) in self.material_aliases.iter().enumerate() {
             s += &format!("material_alias{k} = {}\n", esc(a));
         }
+        for (k, r) in self.material_refs.iter().enumerate() {
+            s += &format!("material_ref{k} = {}\n", esc(r));
+        }
         for c in &self.connections {
             s += &format!(
                 "[connection]\nname = {}\nserver = {}\ndatabase = {}\nwindows = {}\nuser = {}\npassword_enc = {}\n",
@@ -385,6 +400,13 @@ impl AppSettings {
                     "ui_size" => st.ui_size = ui_size_from(v.parse().unwrap_or(0)),
                     "stock" => st.stock = serde_json::from_str(&v).unwrap_or_default(),
                     "scroll_speed" => st.scroll_speed = v.parse::<f32>().ok().filter(|x| (0.5..=6.0).contains(x)).unwrap_or(SCROLL_SPEED_DEFAULT),
+                    _ if k.starts_with("material_ref") => {
+                        if let Ok(i) = k["material_ref".len()..].parse::<usize>() {
+                            if i < st.material_refs.len() {
+                                st.material_refs[i] = v;
+                            }
+                        }
+                    }
                     _ if k.starts_with("material_alias") => {
                         if let Ok(i) = k["material_alias".len()..].parse::<usize>() {
                             if i < st.material_aliases.len() {
@@ -651,6 +673,7 @@ mod settings_tests {
             active_machine: 0,
             materials: vec![("S235".into(), "0010".into()), ("304".into(), "0100".into()), ("5052".into(), "0200".into())],
             material_aliases: vec!["A36, S275".into(), String::new(), "AL".into()],
+            material_refs: vec!["10".into(), "AISI304".into(), String::new()],
             theme: "dark".into(),
             warn_tech: false,
             show_unbuilt: true,

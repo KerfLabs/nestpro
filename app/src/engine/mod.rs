@@ -52,6 +52,49 @@ pub fn install_machine(m: &settings::Machine, lantek_dir: &str) -> crate::ct1::M
     t
 }
 
+/// Tell the rules which machine-file key each material has (Settings →
+/// Materials → Machine table, MTL2). Shared with the GUI's Settings → Apply.
+pub fn install_material_keys(cfg: &AppSettings) {
+    let names: Vec<String> = cfg.materials.iter().map(|m| m.0.clone()).collect();
+    crate::ct1::set_material_keys(&cfg.material_refs, &names);
+}
+
+/// The machine's part gap and sheet margin for a sheet's material and
+/// thickness (MTL9; the margin is the widest of the machine's four), each None
+/// when the machine file has none.
+pub fn machine_spacing(spec: &SheetSpec) -> (Option<f64>, Option<f64>) {
+    let t = crate::ct1::for_spec(spec);
+    (t.part_gap, t.sheet_margin())
+}
+
+/// "Use machine values": take the machine's part gap and margin for the
+/// sheet's material and thickness into the sheet. Our choice: the sheet's
+/// spacing is never changed by itself when the material or thickness
+/// changes; this is the one-click action (window and agents). Says what it set.
+pub fn use_machine_spacing(spec: &mut SheetSpec, gap: bool, margin: bool) -> Result<String, String> {
+    let (g, m) = machine_spacing(spec);
+    let mut said = vec![];
+    if let (true, Some(g)) = (gap, g) {
+        spec.gap = g;
+        said.push(format!("part gap {g} mm"));
+    }
+    if let (true, Some(m)) = (margin, m) {
+        spec.margin = m;
+        said.push(format!("margin {m} mm"));
+    }
+    if said.is_empty() {
+        return Err(format!(
+            "The machine file has no part gap or margins for {} {} mm ({}); the sheet keeps gap {} mm and margin {} mm.",
+            cnc::MATERIALS.get(spec.material).copied().unwrap_or("?"),
+            spec.thickness,
+            crate::ct1::for_spec(spec).table_label(),
+            spec.gap,
+            spec.margin
+        ));
+    }
+    Ok(format!("Machine spacing: {}.", said.join(", ")))
+}
+
 /// BLM output switches of a machine.
 pub fn blm_base(m: &settings::Machine) -> crate::blm::BlmSettings {
     let mut b = crate::blm::BlmSettings::for_machine(&m.name);
@@ -78,6 +121,7 @@ impl Ctx {
     pub fn from_settings(cfg: AppSettings) -> Ctx {
         let m = cfg.machine();
         let tech = install_machine(&m, &cfg.lantek_dir);
+        install_material_keys(&cfg);
         let library_dir = if cfg.library_dir.is_empty() { crate::library::default_dir() } else { PathBuf::from(&cfg.library_dir) };
         Ctx { post: load_post(&m), blm: blm_base(&m), tech, library_dir, cfg }
     }
@@ -409,8 +453,10 @@ pub enum TechEdit {
     /// holes too — by default the machine's maximum distance for the part's
     /// quality (`dist`, CT1 F150) — within the machine's size-class limits
     /// (`ct1::MachineTech::joint_sizes`, applied when the cut plan is made).
-    /// A part without a joint gap takes the machine's (`gap`, F005/B164).
-    AutoJoints { dist: [[f64; 4]; 12], gap: f64, every: Option<f64> },
+    /// A part without a joint gap takes the machine's (`gap`, F005/B164);
+    /// with `gap_wins` (the values come from a material × thickness section)
+    /// every part takes it — our choice: the plate's table decides the gap.
+    AutoJoints { dist: [[f64; 4]; 12], gap: f64, every: Option<f64>, gap_wins: bool },
     DeleteJoints,
     Loops(bool),
     /// The part's own technology with the defaults.
@@ -420,6 +466,12 @@ pub enum TechEdit {
 }
 
 impl TechEdit {
+    /// Automatic micro-joints from the machine's values for the job (`ct1::for_spec`):
+    /// the joint distance by quality and the joint gap (MTL7).
+    pub fn auto_joints(mt: &crate::ct1::MachineTech, every: Option<f64>) -> TechEdit {
+        TechEdit::AutoJoints { dist: mt.joint_dist, gap: mt.joint_gap, every, gap_wins: mt.section.is_some() }
+    }
+
     pub fn apply(&self, t: &mut Option<PartTech>, _bbox: (f64, f64)) {
         match self {
             TechEdit::AutoLeads { lead_type, position } => {
@@ -452,7 +504,7 @@ impl TechEdit {
                     *t = Some(PartTech { lead_in: 0.0, lead_out: 0.0, ..Default::default() });
                 }
             }
-            TechEdit::AutoJoints { dist, gap, every } => {
+            TechEdit::AutoJoints { dist, gap, every, gap_wins } => {
                 let mut x = t.unwrap_or_default();
                 if let Some(e) = every {
                     x.joint_every = e.max(0.0);
@@ -461,7 +513,7 @@ impl TechEdit {
                     x.joint_every = dist[q.clamp(1, 12) - 1][0];
                 }
                 x.micro_joints = 0;
-                if x.joint_width <= 0.0 {
+                if x.joint_width <= 0.0 || (*gap_wins && *gap > 0.0) {
                     x.joint_width = *gap;
                 }
                 *t = Some(x);
@@ -609,16 +661,17 @@ pub fn classify_path(pts: Vec<P>, spec: &SheetSpec) -> CutLine {
 
 /// The remnants a sheet's remnant lines cut off (sheet coordinates, largest
 /// first): the sheet less the cut strip and the parts (remnant.rs).
-pub fn remnant_pieces(parts: &[Part], sheet: &[Placed], f: &SheetFormat, cuts: &[CutLine]) -> Vec<crate::stock::Outline> {
+/// `kerf` is the cut's width (`kerf::kerf_mm`: the machine's, else 0.3 mm).
+pub fn remnant_pieces(parts: &[Part], sheet: &[Placed], f: &SheetFormat, cuts: &[CutLine], kerf: f64) -> Vec<crate::stock::Outline> {
     if !cuts.iter().any(|l| l.kind == CutKind::Remnant) {
         return vec![];
     }
-    crate::remnant::sheet_remnants_cached(parts, sheet, f, cuts, cutoff::KERF_MM)
+    crate::remnant::sheet_remnants_cached(parts, sheet, f, cuts, kerf)
 }
 
 /// (width, height, area) of the largest remnant the sheet's remnant lines cut off.
-pub fn remnant_info(parts: &[Part], sheet: &[Placed], f: &SheetFormat, cuts: &[CutLine]) -> Option<(f64, f64, f64)> {
-    let r = remnant_pieces(parts, sheet, f, cuts).into_iter().next()?;
+pub fn remnant_info(parts: &[Part], sheet: &[Placed], f: &SheetFormat, cuts: &[CutLine], kerf: f64) -> Option<(f64, f64, f64)> {
+    let r = remnant_pieces(parts, sheet, f, cuts, kerf).into_iter().next()?;
     let (w, h) = r.size();
     Some((w, h, r.area_mm2()))
 }
@@ -646,7 +699,7 @@ pub fn verify_sheet(parts: &[Part], sheet: &[Placed], spec: &SheetSpec, plan: &S
     use crate::v44::*;
     let mut issues: Vec<Issue> = crate::drawing::verify_machining(plan)
         .into_iter()
-        .map(|t| Issue { code: if t.contains("drop first") { ERR_PARTS_FALL } else { OWN_CHECK }, text: t, at: None })
+        .map(|t| Issue { code: if t.contains("drop first") { ERR_PARTS_FALL } else if t.contains("kerf") { ERR_KERF } else { OWN_CHECK }, text: t, at: None })
         .collect();
     issues.extend(no_lead_issues(plan));
     issues.extend(out_of_zone_issues(parts, sheet, spec.w, spec.h));
@@ -862,7 +915,7 @@ impl JobFile {
 
 /// The default sheet of a new job: 2000 × 1000 mm, 3 mm mild steel, level 3.
 pub fn default_spec() -> SheetSpec {
-    SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default() }
+    SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() }
 }
 
 #[cfg(test)]

@@ -65,7 +65,7 @@ original (or a real job).
 | ID | What | Status | Pri | Notes / source |
 |---|---|---|---|---|
 | TEC-1 | Lead-ins: types 14–16, force placement, dynamic and custom leads, move point, lead-out like lead-in | Partial | ★★ | automatic leads by contour class from the machine's tables (types 1–13, zones, corner rules, round-hole limits, collision test) are built: MECHANICS AL1–AL11, `leads.rs` |
-| TEC-2 | Micro-joints: joint records from the material file, zone modes, nano-joints, move point, to geometry, semi-automatic | Partial | ★ | automatic joints (count per F150, even, size-class fewest/most, holes too, centred, corner joints, joint leads) are built: MECHANICS AM1–AM6, `joints.rs` |
+| TEC-2 | Micro-joints: per-class joint records from the material file (V lines), zone modes, nano-joints, move point, to geometry, semi-automatic | Partial | ★ | automatic joints (count per F150, even, size-class fewest/most, holes too, centred, corner joints, joint leads) are built: MECHANICS AM1–AM6, `joints.rs`; the joint table per material × thickness section too (MTL7) |
 | TEC-3 | **Bridges**: join parts so they cut as one | Missing | ★★ | |
 | TEC-4 | Cut technologies: no cut, clean cut, dynamic, hatch, bending lines | Partial | ★★ | cut quality per part and marking texts are built |
 | TEC-5 | Texts: QR codes, templates, vectorize, written text | Partial | ★★ | marked / note / special, curved |
@@ -73,12 +73,18 @@ original (or a real job).
 | TEC-7 | Bevel (standard, 3D) | Missing | ★ | bevel heads only |
 | TEC-8 | Exact lead-length field, the 120° corner limits, position codes above 9, P1's placement for standard shapes | Missing | ★ | MECHANICS (Technology tab) |
 | TEC-9 | Micro-joint size classes (fewest / most per small, medium, large part and hole) are edited in the window only (Micro-joints → Settings) and change the active machine's values until the machine is loaded again; they aren't saved to the machine file, and agents use the machine file's | Partial | ★ | `techui.rs`, `ct1::MachineTech::joint_sizes`; agents: `joints mode=auto every=` |
+| TEC-10 | Machine-file sections chosen by gas, lens, power, nozzle, pressure, abrasive or configuration alias: jobs carry none of these, so only material and thickness pick the section (and the default-technology rule always applies when the machine has it on) | Estimate | ★★ | MECHANICS MTL4, MTL5; `ct1::JobKeys` |
+| TEC-11 | The machine's part gap, Y gap and four margins per material/thickness are only offered (Sheet tab *Use*, `set-sheet machine_spacing=true`), never applied by themselves; the sheet has one margin (the widest is taken) and no separate Y gap | Estimate | ★★ | MECHANICS MTL9; own design |
+| TEC-12 | Hole-size bands of a section (Z010–Z012): small holes cut with another technology by size | Missing | ★★ | MECHANICS MTL10 |
+| TEC-13 | A second technology file read after the machine's (its sections win over the first's) | Missing | ★ | MECHANICS MTL6 |
+| TEC-14 | Per-class micro-joint records of a section (V lines) and the conditional value groups (Z308/Z313/Z337, X124–X128 switches) | Missing | ★ | MECHANICS MTL11, MTL12 |
+| TEC-15 | Material keys for the machine file: one per app material (aluminium defaults to 0210 aluminium-magnesium, a guess); galvanised, copper and brass sections can't be reached until the app has those materials (JOB-2) | Estimate | ★★ | MECHANICS MTL2; Settings → Materials → Machine table |
 
 ## Machining and output (MAC)
 
 | ID | What | Status | Pri | Notes / source |
 |---|---|---|---|---|
-| MAC-1 | **Speed rates per material, CN / system compensation, postprocessor words** | Partial | ★★★ | the post library (.CFF/.CF1) shapes the G-code; BLM LC5 output; times are typical laser speeds (estimate) |
+| MAC-1 | **Speed rates per material, postprocessor words** | Partial | ★★★ | the post library (.CFF/.CF1) shapes the G-code; BLM LC5 output; times are typical laser speeds (estimate); CN / system compensation built (MAC-12) |
 | MAC-2 | Common-cut / continuous cut, flying cut in holes, hole destruction | Missing | ★★ | |
 | MAC-3 | Avoid holes already cut (head rapids) | Missing | ★★ | |
 | MAC-4 | Manual machining: two points, between micro-joints, continuous contours | Partial | ★★ | manual contour picking is built |
@@ -89,6 +95,13 @@ original (or a real job).
 | MAC-9 | BLM LC5 output: arcs (written as G01), micro-joints, FINAL_CUT remnant subprogram, 2nd LASTLINE value | Partial | ★★ | MECHANICS (BLM LC5 output) |
 | MAC-10 | Breaking contours that span two zones | Missing | ★ | punching machines |
 | MAC-11 | Cycles, pockets, nibbling, punch macros | Missing | ★ | punch / milling |
+| MAC-13 | **Modify compensation** per contour (one contour, all holes, all outsides, all contours; side left / right / off), and the per-contour CN / system compensation commands (side + corrector / side + radius) | Missing | ★★ | MECHANICS KC16 |
+| MAC-14 | Compensation of common-cut contours (B191, quality modes B750/B751) — needs common cut (MAC-2) | Missing | ★ | MECHANICS KC7 |
+| MAC-15 | Compensation of bevel contours (system on bevels, angle compensation) | Missing | ★ | MECHANICS KC3; TEC-7 |
+| MAC-16 | System offset: removing self-crossing loops (corner mode tens digit); keeping true arcs in the offset path (ours is a polyline, arcs as runs of short moves) | Missing | ★ | MECHANICS KC10 |
+| MAC-17 | Kerf guesses: control words stay on between contours that need the same, G40 on the next rapid that needs none (post choice); a mirroring post swaps G41/G42; the job's toggles win over the machine's switches and quality mode; a vertex turning ≤ 20° counts as part of a curve; sharp corners further than 10 cutter radii are chamfered; 0.15 mm cutter radius when the file has none; in quality mode 2 a negative radius flips the control side too | Estimate | ★★ | MECHANICS KC4–KC6, KC10; own design |
+| MAC-18 | The original's test for elements left uncut by compensation (what it compares): ours lists holes no bigger than the kerf, contours narrower than it, narrow slots and dropped inside arcs | Estimate | ★ | MECHANICS KC18 |
+| MAC-19 | Cutting speeds from the machine file (A058 / section Z003): shown by `machine-tech`, times still use the app's table | Missing | ★★ | MECHANICS MTL9 |
 
 ## Jobs, parts and data (JOB)
 
@@ -170,4 +183,6 @@ original (or a real job).
 | NST-1 | **True-shape nesting**: strip (band) profiles — parts hook into notches and drop into holes, every method fills each sheet and the best is kept; on the job's sheet, stock sheets and inside a remnant's real outline; agents' `nest` runs the same code | 2026-11-04 (`bands.rs`, `nest::nest_plan`, MECHANICS "True-shape strip nesting") |
 | REM-12 | Nesting on an irregular remnant follows its true shape (strips outside the outline are taken), no longer its free rectangles | 2026-11-04 (`bands::Sheet::keep_inside`) |
 | — | Automatic lead-ins by contour class and automatic micro-joints from the machine's CT1; agents' `leads` / `joints` set the same part technology the window does | 2026-11-04 (`leads.rs`, `joints.rs`, `engine::TechEdit`, MECHANICS AL1–AL11, AM1–AM6) |
+| — | **Material × thickness sections of the machine file**: the first fitting section (material key, thickness range, default technology) replaces the lead and micro-joint tables, joint gap, pierce and loop radius; the applied section shows on the Sheet tab and Part view; the machine's part gap and margins offered with *Use*; agents' `machine-tech` and `set-sheet machine_spacing=true` | 2026-11-04 (`ct1.rs`, MECHANICS MTL1–MTL12) |
+| MAC-12 | **Kerf compensation**: side from each contour's real cutting direction (fixes the BLM post's fixed G41-on-holes / G42-on-outsides for mirrored parts and clockwise drawings); control compensation (G41/G42 + corrector, section Z024/Z025) in the generic post; system compensation (offset path with round / chamfer / sharp corners, trimmed inside corners, tiny holes and narrow slots reported, joint gaps, leads moved or offset, pierce moved) used by the drawing, simulation, times and programs; the quality-dependent table; the job's CN / System toggles (Machining → Compensation); remnant and cut-off lines use the machine's kerf; agents' `compensation` | 2026-11-04 (`kerf.rs`, MECHANICS KC1–KC18) |
 | — | Saving jobs (`.snjob`) and the Library | before 2026-11 |

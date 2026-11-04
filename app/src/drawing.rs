@@ -142,7 +142,7 @@ pub const MISSING: &[(&str, &str, &[&str])] = &[
     ("Machining", "Contours", &["Manual Contours (in the drawing)", "All Drill Cycles", "All Marks", "All Contours of one Quality", "Automatic Cycles", "Flying cut in holes", "Manual / automatic / semi-automatic hole destruction", "Hatch pattern machining"]),
     ("Machining", "Cycles", &["Simple, circular, linear, grid and irregular cycles", "Milling pockets and nibbling"]),
     ("Machining", "Modify", &["Order machining", "Micro-joints at the end of the contour", "Regenerate", "Modify lead-in/outs", "Avoid holes already cut", "Continuous cut", "Copy / transform machining", "Modify compensation"]),
-    ("Machining", "Options", &["Optimize", "Speed rates", "Postprocessor words", "Contour attributes", "CN compensation", "System compensation"]),
+    ("Machining", "Options", &["Optimize", "Speed rates", "Postprocessor words", "Contour attributes"]),
     ("Machining", "Component Extraction", &["Automatic", "Manual stop / trap / lift", "Semiautomatic stop / trap / lift", "Assign extractions", "Assign boxes"]),
     ("View", "Display", &["Part Machining List", "Simulation Window", "Machining Explorer", "3D view", "Change co-ordinates", "Auxiliary geometry", "Bending geometry", "Redraw"]),
     ("View", "Zoom", &["Zoom Dynamic", "Zoom Scale", "Zoom Base", "Define limits"]),
@@ -155,7 +155,7 @@ pub const MISSING: &[(&str, &str, &[&str])] = &[
 pub const BUILT: &[(&str, &str)] = &[
     ("Home", "Back/previous/next part, Access to points (picked, end, mid, centre, near), Verify Part, Time and cost, View Geometry, Distance and Angle, Angle between three points, Orthogonal"),
     ("Technology", "Lead-ins (4 types, keypad position, on element), micro-joints (gap, leads, corner; edit leads), loops, cut quality, marking / special / note texts (curved), apply to selected or all parts"),
-    ("Machining", "Automatic, Delete instructions, Contours (Automatic, Parts, All Cut), Current status, Verify the Machining"),
+    ("Machining", "Automatic, Delete instructions, Contours (Automatic, Parts, All Cut), CN and system (kerf) compensation, Current status, Verify the Machining"),
     ("View", "Axis, Color Display, Machining Window, Restore Panels, Full Screen, Show Parts, Zoom All / Window / Previous / In / Out"),
     ("Simulation", "Beginning, Previous, Run/Pause, Next, End, Stop"),
     ("Notes", "Automatic / Delete dimension notes, Texts, Modify text, Text and Dimensions"),
@@ -335,6 +335,10 @@ pub fn verify_machining(plan: &cnc::SheetPlan) -> Vec<String> {
         if !c.inner {
             outer_done.insert(c.part_no);
         }
+    }
+    // KC18 (our check): what system compensation can't cut.
+    for (part, inner, what) in &plan.kerf_issues {
+        out.push(format!("part {part}: {} {what}", if *inner { "a hole —" } else { "the outside —" }));
     }
     out
 }
@@ -670,10 +674,14 @@ impl App {
             let r = dropdown(ui, Icon::Loop, "Cycles", true);
             soon_menu(&r, "Cycles", &["Simple cycle", "Circular cycle", "Linear cycle", "Grid cycle", "Irregular cycle", "Milling pockets", "Milling nibblings"]);
         });
+        ribbon_group(ui, "Compensation", |ui| {
+            let r = dropdown(ui, Icon::CutPath, "Kerf", true).on_hover_text(crate::kerf::status_line(&self.spec));
+            egui::Popup::menu(&r).show(|ui| self.kerf_menu(ui));
+        });
         if self.dv.show_unbuilt {
         ribbon_group(ui, "Settings", |ui| {
             let r = dropdown(ui, Icon::Numbers, "Options", true);
-            soon_menu(&r, "Options", &["Optimize", "Speed rates", "Postprocessor words", "Contour attributes", "CN compensation", "System compensation"]);
+            soon_menu(&r, "Options", &["Optimize", "Speed rates", "Postprocessor words", "Contour attributes"]);
             let r = dropdown(ui, Icon::Export, "Extraction", true);
             soon_menu(&r, "Component Extraction", &["Automatic", "Manual stop", "Manual trap", "Manual lift", "Semiautomatic stop / trap / lift", "Assign extractions", "Assign boxes"]);
         });
@@ -686,6 +694,36 @@ impl App {
                 self.verify_machining_now();
             }
         });
+    }
+
+    /// Machining → Compensation → Kerf: the job's control / system
+    /// compensation (KC1), each defaulting to the machine file's.
+    pub fn kerf_menu(&mut self, ui: &mut egui::Ui) {
+        ui.label(RichText::new("Kerf compensation").strong().color(th().text_strong));
+        ui.label(RichText::new(crate::kerf::status_line(&self.spec)).size(11.5).color(th().text_dim));
+        let mt = crate::ct1::for_spec(&self.spec);
+        let mut control = self.spec.kerf.control.unwrap_or(mt.comp.control);
+        let mut system = self.spec.kerf.system.unwrap_or(mt.comp.system);
+        let mut changed = false;
+        if ui.checkbox(&mut control, "CN compensation").on_hover_text("The program writes G41/G42 and the corrector number; the CNC offsets the drawn path by the radius in that corrector").changed() {
+            self.spec.kerf.control = Some(control);
+            changed = true;
+        }
+        if ui.checkbox(&mut system, "System compensation").on_hover_text("The program carries the path already offset by the cutter radius (no G41/G42): corners, leads, joints and the pierce move with it").changed() {
+            self.spec.kerf.system = Some(system);
+            changed = true;
+        }
+        if ui.add_enabled(self.spec.kerf != Default::default(), egui::Button::new("Use the machine's settings")).clicked() {
+            self.spec.kerf = Default::default();
+            changed = true;
+        }
+        if self.dv.show_unbuilt {
+            ui.add_enabled(false, egui::Button::new("Modify compensation").frame(false)).on_disabled_hover_text(soon("Modify compensation (per contour)"));
+        }
+        if changed {
+            self.refresh();
+            self.status = format!("{}.", crate::kerf::status_line(&self.spec));
+        }
     }
 
     /// Machine choice (combo + what it does). Returns true when it changed.
@@ -1017,7 +1055,7 @@ mod drawing_tests {
     #[test]
     fn automatic_machining_verifies() {
         let parts = vec![part(Shape::PlateHole), part(Shape::Flange)];
-        let spec = nest::SheetSpec { w: 1000.0, h: 500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default() };
+        let spec = nest::SheetSpec { w: 1000.0, h: 500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
         for i in 0..parts.len() {
             let pl = nest::Placed { part: i, x: 0.0, y: 0.0, w: 200.0, h: 120.0, turns: 0, mirror: false };
             let plan = cnc::plan(&parts, &[pl], &spec);

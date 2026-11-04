@@ -60,6 +60,10 @@ pub struct Contour {
     /// joint's lead-out (rule MJ5): the
     /// last joint closes the contour.
     pub closing: bool,
+    /// Kerf compensation (KC1–KC6): the scrap side, the control's corrector,
+    /// and whether `points`, the leads and the joints are already the offset
+    /// path of the beam's centre (system compensation).
+    pub comp: crate::kerf::ContourComp,
 }
 
 /// Point at distance `d` along the closed polyline `pts` (starting at pts[0]).
@@ -273,8 +277,36 @@ fn vertex_at_distance(pts: &[P], d: f64) -> usize {
     best.0
 }
 
+/// Cut length of a planned contour: the contour less its micro-joint gaps,
+/// plus its leads, loops, joint leads and overlap (a negative overlap = the
+/// cut stops that much before its start, KC13).
+pub fn contour_cut_len(c: &Contour) -> f64 {
+    let per = perimeter(&c.points);
+    let uncut: f64 = c.joints.iter().map(|j| j.1 - j.0).sum();
+    let lead = if c.closing { 0.0 } else { crate::leads::path_len(&c.lead_path) };
+    let joint_leads: f64 = c.joint_leads.iter().map(|(o, i)| crate::leads::path_len(o) + crate::leads::path_len(i)).sum();
+    let loops: f64 = c
+        .loops
+        .iter()
+        .map(|(i, l)| {
+            let mut prev = c.points[*i];
+            l.iter()
+                .map(|q| {
+                    let d = dist(prev, *q);
+                    prev = *q;
+                    d
+                })
+                .sum::<f64>()
+        })
+        .sum();
+    per - uncut + lead + crate::leads::path_len(&c.lead_out_path) + loops + joint_leads + c.overlap
+}
+
 pub struct SheetPlan {
     pub contours: Vec<Contour>,
+    /// Contours system compensation can't cut (fully or in part), our check:
+    /// (part number, hole?, what).
+    pub kerf_issues: Vec<(usize, bool, String)>,
     /// Marking lines per part number (from drawing layers set to "Mark").
     pub marks: Vec<(usize, Vec<P>)>,
     pub mark_len: f64,
@@ -383,7 +415,8 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
     };
     // Zone by zone (rules CZ4, CZ5): the parts of each zone, nearest first,
     // with parts sitting in another part's hole before the rest.
-    let mt = crate::ct1::active();
+    // The machine's tables for this sheet's material and thickness (MTL1–MTL7).
+    let mt = crate::ct1::for_spec(spec);
     let zones = crate::ct1::zones(spec.w, spec.h, &mt);
     let mut zi = 0;
     while !left.is_empty() {
@@ -421,6 +454,10 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
     // Parts without their own technology: the machine's automatic leads, no joints.
     let auto_tech = PartTech { lead_in: 0.0, lead_out: 0.0, micro_joints: 0, joint_width: 0.0, quality: CutQuality::Normal, lead_type: LeadType::Machine, corner_start: true, position: 0, ..PartTech::default() };
     let tol = mt.leads.lin_tol;
+    // Kerf compensation for this sheet's material and thickness (KC1–KC14).
+    let cutter_r = crate::kerf::cutter_radius(&mt);
+    let sys_opts = crate::kerf::SystemOpts { corners: mt.comp.corners(), lead_mode: mt.comp.lead_mode, joint_mode: mt.comp.joint_mode, tol: tol.clamp(1e-4, 0.01) };
+    let mut kerf_issues: Vec<(usize, bool, String)> = vec![];
     // Every placed part's contours (holes first, outline last), for the leads' collision test.
     let obst: Vec<([f64; 4], Vec<(Vec<P>, bool)>)> = placed.iter().map(|pl| (pl.bbox4(), sheet_contours(&parts[pl.part], pl))).collect();
     for (i, ci, man) in jobs {
@@ -502,7 +539,7 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
                 }
                 cut_secs += p.hits.len() as f64 * crate::machine::HIT_SECONDS;
                 let first = p.hits.first().copied().unwrap_or(pts[0]);
-                contours.push(Contour { lead_in: first, lead_path: vec![], lead_out: None, lead_out_path: vec![], loops: vec![], points: pts, inner, part_no: i + 1, joints: vec![], joint_leads: vec![], feed, manual: man.is_some(), punch: Some(p), overlap: 0.0, closing: false });
+                contours.push(Contour { lead_in: first, lead_path: vec![], lead_out: None, lead_out_path: vec![], loops: vec![], points: pts, inner, part_no: i + 1, joints: vec![], joint_leads: vec![], feed, manual: man.is_some(), punch: Some(p), overlap: 0.0, closing: false, comp: Default::default() });
                 continue;
             }
             // The lead record: the placement's, else the class's. An automatic
@@ -551,14 +588,12 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
                     geo.lead_out = crate::leads::shorten_until(&geo.lead_out, o, mt.leads.shorten, floor, |p| !hits(p, o, full));
                 }
             }
-            let start = pts[0];
             let mut path = geo.lead_in.clone();
             let mut lead_len = crate::leads::path_len(&path);
             let mut lead_in = path[0];
             let per = perimeter(&pts);
             let mut overlap = geo.overlap;
             let mut lead_out_path = geo.lead_out.clone();
-            let mut out_len = crate::leads::path_len(&lead_out_path);
             let mut lead_out = lead_out_path.last().copied();
             // Micro-joints. Automatic (one per `joint_every` mm, F150): every contour
             // the joint type reaches, holes too (AM3); a fixed
@@ -655,7 +690,6 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
                 })
                 .collect();
             let mut joints: Vec<(f64, f64)> = spans.iter().map(|s| s.0).collect();
-            let uncut: f64 = joints.iter().map(|j| j.1 - j.0).sum();
             // Joint leads (AM6): free ends D off the contour in the scrap, leaning
             // away from the gap; no lead-out when its D ≤ 2·tol. Without the
             // machine's joint overlap test (F133 ≤ 0) outer leads stay inside 0.8 ×
@@ -700,17 +734,9 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
                 path = back;
                 lead_in = path[0];
                 lead_len = 0.0; // counted with the joint leads
-                out_len = 0.0;
                 lead_out = None;
                 lead_out_path.clear();
                 overlap = 0.0;
-            }
-            let joint_lead_len: f64 = joint_leads.iter().map(|(o, i)| crate::leads::path_len(o) + crate::leads::path_len(i)).sum();
-            // Each joint with leads re-pierces in the scrap (the closing joint's
-            // pierce is the contour's own).
-            joint_pierces += joint_leads.len() - usize::from(closing);
-            for (o, i) in joint_leads.iter().take(joint_leads.len() - usize::from(closing)) {
-                rapid_len += dist(*o.last().unwrap(), i[0]);
             }
             // Loops at sharp convex outer corners: run past the corner, swing round
             // outside the part and come back in along the next side.
@@ -737,30 +763,38 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
                     }
                 }
             }
-            let loop_len: f64 = loops
-                .iter()
-                .map(|(i, l)| {
-                    let mut prev_p = pts[*i];
-                    l.iter()
-                        .map(|q| {
-                            let d = dist(prev_p, *q);
-                            prev_p = *q;
-                            d
-                        })
-                        .sum::<f64>()
-                })
-                .sum();
-            let len = per - uncut + lead_len + out_len + loop_len + joint_lead_len + overlap;
-            rapid_len += dist(pos, lead_in);
+            // Kerf compensation (KC1–KC6): the side from the real cutting
+            // direction, the corrector, and — with system compensation — the
+            // offset path in place of the drawn one (KC8–KC15).
+            let side = crate::kerf::side_for(&pts, inner, true);
+            let comp = crate::kerf::resolve(&mt.comp, spec.kerf, inner, qn, cutter_r, side);
+            let mut con = Contour { lead_in, lead_path: path, lead_out, lead_out_path, loops, points: pts, inner, part_no: i + 1, joints, joint_leads, feed, manual: man.is_some(), punch: None, overlap, closing, comp };
+            match crate::kerf::compensate(&mut con, &comp, &sys_opts) {
+                Err(t) => {
+                    // Not cut at all: no pierce, no time (our check, KC18).
+                    kerf_issues.push((i + 1, inner, t.describe(2.0 * comp.radius)));
+                    continue;
+                }
+                Ok(Some(t)) => kerf_issues.push((i + 1, inner, t.describe(2.0 * comp.radius))),
+                Ok(None) => {}
+            }
+            let open_leads = con.joint_leads.len() - usize::from(con.closing);
+            joint_pierces += open_leads;
+            for (o, b) in con.joint_leads.iter().take(open_leads) {
+                rapid_len += dist(*o.last().unwrap(), b[0]);
+            }
+            let len = contour_cut_len(&con);
+            rapid_len += dist(pos, con.lead_in);
             cut_len += len;
             cut_secs += len / feed * 60.0;
-            pos = if closing { joint_leads.last().map_or(start, |l| *l.0.last().unwrap()) } else { lead_out.unwrap_or(start) };
-            contours.push(Contour { lead_in, lead_path: path, lead_out, lead_out_path, loops, points: pts, inner, part_no: i + 1, joints, joint_leads, feed, manual: man.is_some(), punch: None, overlap, closing });
+            let start = con.points[0];
+            pos = if con.closing { con.joint_leads.last().map_or(start, |l| *l.0.last().unwrap()) } else { con.lead_out.unwrap_or(start) };
+            contours.push(con);
         }
     }
     let pierces = contours.iter().filter(|c| c.punch.is_none()).count() + joint_pierces;
     let seconds = cut_secs + rapid_len / RAPID_MM_MIN * 60.0 + pierces as f64 * pierce_time(spec.thickness);
-    SheetPlan { contours, marks, mark_len, cut_len, rapid_len, pierces, seconds }
+    SheetPlan { contours, kerf_issues, marks, mark_len, cut_len, rapid_len, pierces, seconds }
 }
 
 /// Write the sheet's machine program as ISO G-code.
@@ -795,8 +829,25 @@ fn program_mm(sheet_no: usize, parts: &[Part], placed: &[Placed], spec: &SheetSp
     );
     let _ = writeln!(s, "( {} PARTS, {} PIERCES, CUT {:.0} MM )", placed.len(), plan.pierces, plan.cut_len);
     let _ = writeln!(s, "( MACHINE {} - TYPE {} )", spec.machine.label().to_uppercase(), spec.machine.family().code());
+    if let Some(c) = plan.contours.iter().find(|c| c.comp.control || c.comp.system) {
+        let how = match (c.comp.control, c.comp.system) {
+            (true, true) => "CONTROL G41/G42 AND OFFSET PATH",
+            (true, false) => "CONTROL G41/G42",
+            _ => "OFFSET PATH",
+        };
+        let _ = writeln!(s, "( KERF {:.2} MM - {how} )", 2.0 * c.comp.radius);
+    }
     line(&mut s, "G90 G21 G17".into());
     line(&mut s, format!("F{:.0}", cut_speed(spec.material, spec.thickness)));
+    // Control compensation (KC4, KC17): the side word and corrector go on the
+    // first lead-in move and stay on while the next contour needs the same; G40
+    // goes on the rapid to whatever needs none (a contour without it, marking,
+    // a free cut line, the end). The same word is never written twice in a row.
+    let mut active: Option<(crate::kerf::Side, u32)> = None;
+    let g0 = |active: &mut Option<(crate::kerf::Side, u32)>, p: P| {
+        let off = if active.take().is_some() { "G40 " } else { "" };
+        format!("G0 {off}X{:.2} Y{:.2}", p[0], p[1])
+    };
     let mut last_part = 0;
     let mut marked: Vec<usize> = vec![];
     for c in &plan.contours {
@@ -810,7 +861,7 @@ fn program_mm(sheet_no: usize, parts: &[Part], placed: &[Placed], spec: &SheetSp
             let first_visit = !marked.contains(&c.part_no);
             marked.push(c.part_no);
             for (_, m) in plan.marks.iter().filter(|m| m.0 == c.part_no && first_visit) {
-                line(&mut s, format!("G0 X{:.2} Y{:.2}", m[0][0], m[0][1]));
+                line(&mut s, g0(&mut active, m[0]));
                 line(&mut s, "M10 ( MARK ON )".into());
                 for q in m.iter().skip(1) {
                     line(&mut s, format!("G1 X{:.2} Y{:.2}", q[0], q[1]));
@@ -822,17 +873,34 @@ fn program_mm(sheet_no: usize, parts: &[Part], placed: &[Placed], spec: &SheetSp
             // One hit per standard shape, a row of hits when nibbling.
             let _ = writeln!(s, "( {} )", p.label());
             for h in &p.hits {
-                line(&mut s, format!("G0 X{:.2} Y{:.2}", h[0], h[1]));
+                line(&mut s, g0(&mut active, *h));
                 line(&mut s, "M12 ( HIT )".into());
             }
             continue;
         }
-        line(&mut s, format!("G0 X{:.2} Y{:.2}", c.lead_in[0], c.lead_in[1]));
+        let want = c.comp.word();
+        if want.is_some() {
+            line(&mut s, format!("G0 X{:.2} Y{:.2}", c.lead_in[0], c.lead_in[1]));
+        } else {
+            line(&mut s, g0(&mut active, c.lead_in));
+        }
         line(&mut s, format!("M07 ( PIERCE{} )", if c.inner { " INNER" } else { "" }));
+        let mut comp_word = match want {
+            Some((side, d)) if want != active => {
+                active = want;
+                format!("{} D{d} ", side.word())
+            }
+            _ => String::new(),
+        };
+        if c.lead_path.len() < 2 && !comp_word.is_empty() {
+            // No lead-in: the word on a block of its own before the contour.
+            line(&mut s, comp_word.trim_end().to_string());
+            comp_word.clear();
+        }
         // Lead-in path (line, line + arc, arc or from the hole centre).
         for (k, q) in c.lead_path.iter().enumerate().skip(1) {
             if k == 1 {
-                line(&mut s, format!("G1 X{:.2} Y{:.2} F{:.0} ( LEAD-IN )", q[0], q[1], c.feed));
+                line(&mut s, format!("G1 {comp_word}X{:.2} Y{:.2} F{:.0} ( LEAD-IN )", q[0], q[1], c.feed));
             } else {
                 line(&mut s, format!("G1 X{:.2} Y{:.2}", q[0], q[1]));
             }
@@ -864,6 +932,12 @@ fn program_mm(sheet_no: usize, parts: &[Part], placed: &[Placed], spec: &SheetSp
         for j in &c.joints {
             events.push(j.0);
             events.push(j.1);
+        }
+        // With system compensation the cut may stop short of its start (KC13).
+        if c.overlap < 0.0 {
+            let end = acc + c.overlap;
+            events.retain(|&e| e < end - 1e-6);
+            events.push(end);
         }
         events.sort_by(|a, b| a.partial_cmp(b).unwrap());
         events.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
@@ -933,14 +1007,14 @@ fn program_mm(sheet_no: usize, parts: &[Part], placed: &[Placed], spec: &SheetSp
         let Some(first) = pts.first() else { continue };
         let mark = label.ends_with("MARK");
         let _ = writeln!(s, "( {label} )");
-        line(&mut s, format!("G0 X{:.2} Y{:.2}", first[0], first[1]));
+        line(&mut s, g0(&mut active, *first));
         line(&mut s, if mark { "M10 ( MARK ON )".into() } else { "M07 ( PIERCE )".into() });
         for q in pts.iter().skip(1) {
             line(&mut s, format!("G1 X{:.2} Y{:.2}", q[0], q[1]));
         }
         line(&mut s, if mark { "M11 ( MARK OFF )".into() } else { "M08".into() });
     }
-    line(&mut s, "G0 X0 Y0".into());
+    line(&mut s, g0(&mut active, [0.0, 0.0]));
     line(&mut s, "M30".into());
     s
 }
@@ -1059,7 +1133,7 @@ mod joint_tests {
     fn plan_for(tech: PartTech) -> SheetPlan {
         let parts = vec![Part { name: "S".into(), shape: Shape::Rectangle, w: 200.0, h: 100.0, qty: 1, rotate: false, color: 0, tech: Some(tech), custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
         let pl = Placed { part: 0, x: 50.0, y: 50.0, w: 200.0, h: 100.0, turns: 0, mirror: false };
-        let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default() };
+        let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
         plan(&parts, &[pl], &spec)
     }
 
@@ -1112,7 +1186,7 @@ mod joint_tests {
         assert!(p.cut_len > plain.cut_len);
         let parts = vec![Part { name: "S".into(), shape: Shape::Rectangle, w: 200.0, h: 100.0, qty: 1, rotate: false, color: 0, tech: Some(t), custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
         let pl = Placed { part: 0, x: 50.0, y: 50.0, w: 200.0, h: 100.0, turns: 0, mirror: false };
-        let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default() };
+        let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
         let prog = program(1, &parts, &[pl], &spec, &p);
         assert_eq!(prog.matches("JOINT LEAD-OUT").count(), 4);
         assert_eq!(prog.matches("PIERCE JOINT").count(), 3);
@@ -1127,7 +1201,7 @@ mod joint_tests {
         assert_eq!(ov.contours[0].overlap, 0.5);
         let parts = vec![Part { name: "S".into(), shape: Shape::Rectangle, w: 200.0, h: 100.0, qty: 1, rotate: false, color: 0, tech: Some(PartTech { overlap: 0.5, ..PartTech::default() }), custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
         let pl = Placed { part: 0, x: 50.0, y: 50.0, w: 200.0, h: 100.0, turns: 0, mirror: false };
-        let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default() };
+        let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
         assert!(program(1, &parts, &[pl], &spec, &plan(&parts, &[pl], &spec)).contains("( OVERLAP )"));
         // 600 mm round at one per 100 mm (CT1 F150): 6 joints.
         let every = plan_for(PartTech { joint_every: 100.0, micro_joints: 0, ..PartTech::default() });
@@ -1197,7 +1271,7 @@ mod joint_tests {
         // the outside (800 mm): 8. A fixed count stays on the outside only.
         let parts = vec![Part { name: "H".into(), shape: Shape::PlateHole, w: 200.0, h: 200.0, qty: 1, rotate: false, color: 0, tech: Some(PartTech { joint_every: 100.0, ..PartTech::default() }), custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
         let pl = Placed { part: 0, x: 50.0, y: 50.0, w: 200.0, h: 200.0, turns: 0, mirror: false };
-        let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default() };
+        let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
         let p = plan(&parts, &[pl], &spec);
         let hole = p.contours.iter().find(|c| c.inner).unwrap();
         let outer = p.contours.iter().find(|c| !c.inner).unwrap();
@@ -1214,7 +1288,7 @@ mod joint_tests {
         // 7 mm corner lead extending its first side (laser template B209/B232).
         let r = |x: f64| Placed { part: 0, x, y: 20.0, w: 100.0, h: 50.0, turns: 0, mirror: false };
         let parts = vec![Part { name: "R".into(), shape: Shape::Rectangle, w: 100.0, h: 50.0, qty: 2, rotate: false, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
-        let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 3.0, material: 0, thickness: 3.0, level: 3, machine: Default::default() };
+        let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 3.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
         let alone = plan(&parts, &[r(200.0)], &spec);
         let c = &alone.contours[0];
         assert_eq!(c.points[0], [200.0, 20.0]);
@@ -1258,7 +1332,7 @@ mod manual_tests {
             Placed { part: 0, x: 10.0, y: 10.0, w: 200.0, h: 200.0, turns: 0, mirror: false },
             Placed { part: 1, x: 300.0, y: 10.0, w: 100.0, h: 50.0, turns: 0, mirror: false },
         ];
-        (parts, placed, SheetSpec { w: 1000.0, h: 500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default() })
+        (parts, placed, SheetSpec { w: 1000.0, h: 500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() })
     }
 
     #[test]
@@ -1299,5 +1373,158 @@ mod manual_tests {
         assert!(a * b < 0.0, "reversed direction");
         let prog = program(1, &parts, &placed, &spec, &p);
         assert_eq!(prog.matches("MANUAL CUT").count(), 1);
+    }
+}
+
+#[cfg(test)]
+mod kerf_plan_tests {
+    //! Kerf compensation through the cut plan and the programs (KC1–KC15).
+    use super::*;
+    use crate::kerf::Side;
+    use crate::nest::{Part, Placed, Shape, SheetSpec};
+
+    fn part(shape: Shape, w: f64, h: f64, custom: Option<crate::dxf::CustomGeo>) -> Part {
+        Part { name: "P".into(), shape, w, h, qty: 1, rotate: false, color: 0, tech: None, custom: custom.map(std::sync::Arc::new), rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }
+    }
+    fn at(x: f64, y: f64, w: f64, h: f64, mirror: bool) -> Placed {
+        Placed { part: 0, x, y, w, h, turns: 0, mirror }
+    }
+    fn spec() -> SheetSpec {
+        SheetSpec { w: 1000.0, h: 500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() }
+    }
+    /// A drawing part from outline and holes as drawn (direction kept).
+    fn drawn(outline: Vec<P>, holes: Vec<Vec<P>>) -> Part {
+        let g = crate::dxf::CustomGeo { w: 100.0, h: 60.0, outline, holes, fills: vec![], hole_fills: vec![], marks: vec![], texts: vec![] };
+        part(Shape::Custom, 100.0, 60.0, Some(g))
+    }
+    fn sides(p: &SheetPlan) -> Vec<(bool, Side)> {
+        p.contours.iter().map(|c| (c.inner, c.comp.side)).collect()
+    }
+    fn machine(text: &str) {
+        crate::ct1::set_thread_active(Some(crate::ct1::MachineTech::from_text(text)));
+    }
+
+    #[test]
+    fn a_mirrored_part_is_compensated_on_the_other_side() {
+        crate::ct1::set_thread_active(None);
+        let parts = vec![part(Shape::PlateHole, 100.0, 60.0, None)];
+        let plain = plan(&parts, &[at(10.0, 10.0, 100.0, 60.0, false)], &spec());
+        let mirrored = plan(&parts, &[at(10.0, 10.0, 100.0, 60.0, true)], &spec());
+        // Built-in shapes run counter-clockwise: hole left (G41), outside right (G42).
+        assert_eq!(sides(&plain), vec![(true, Side::Left), (false, Side::Right)]);
+        // Mirrored they run clockwise: the scrap is on the other side.
+        assert_eq!(sides(&mirrored), vec![(true, Side::Right), (false, Side::Left)]);
+        let prog = program(1, &parts, &[at(10.0, 10.0, 100.0, 60.0, true)], &spec(), &mirrored);
+        assert!(prog.contains("G42 D1") && prog.contains("G41 D2"), "{prog}");
+        // The BLM post: the same sides, no corrector number.
+        let sub = crate::blm::subprogram("P", &mirrored, 1, [10.0, 10.0]);
+        let words: Vec<&str> = sub.lines().filter_map(|l| l.split_whitespace().nth(1).filter(|w| w.starts_with("G4"))).collect();
+        assert_eq!(words, vec!["G42", "G41"], "{sub}");
+        let sub = crate::blm::subprogram("P", &plain, 1, [10.0, 10.0]);
+        let words: Vec<&str> = sub.lines().filter_map(|l| l.split_whitespace().nth(1).filter(|w| w.starts_with("G4"))).collect();
+        assert_eq!(words, vec!["G41", "G42"], "{sub}");
+    }
+
+    #[test]
+    fn a_clockwise_drawing_is_compensated_on_its_scrap_side() {
+        crate::ct1::set_thread_active(None);
+        // Outline drawn clockwise, hole drawn clockwise.
+        let outline = vec![[0.0, 0.0], [0.0, 60.0], [100.0, 60.0], [100.0, 0.0]];
+        let hole = vec![[40.0, 20.0], [40.0, 40.0], [60.0, 40.0], [60.0, 20.0]];
+        let parts = vec![drawn(outline, vec![hole])];
+        let p = plan(&parts, &[at(10.0, 10.0, 100.0, 60.0, false)], &spec());
+        assert_eq!(sides(&p), vec![(true, Side::Right), (false, Side::Left)]);
+        let prog = program(1, &parts, &[at(10.0, 10.0, 100.0, 60.0, false)], &spec(), &p);
+        assert!(prog.contains("G42 D1") && prog.contains("G41 D2"), "{prog}");
+    }
+
+    #[test]
+    fn a_contour_reversed_by_hand_flips_its_side() {
+        crate::ct1::set_thread_active(None);
+        let parts = vec![part(Shape::Rectangle, 100.0, 60.0, None)];
+        let pl = [at(10.0, 10.0, 100.0, 60.0, false)];
+        let fwd = plan_manual(&parts, &pl, &spec(), &[ManualCut { placed: 0, contour: 0, start: [60.0, 10.0], reverse: false }]);
+        let rev = plan_manual(&parts, &pl, &spec(), &[ManualCut { placed: 0, contour: 0, start: [60.0, 10.0], reverse: true }]);
+        assert_eq!((fwd.contours[0].comp.side, rev.contours[0].comp.side), (Side::Right, Side::Left));
+    }
+
+    #[test]
+    fn control_words_are_written_once_per_change_and_cancelled_at_the_end() {
+        crate::ct1::set_thread_active(None);
+        let parts = vec![part(Shape::PlateHole, 100.0, 60.0, None)];
+        let pl = [at(10.0, 10.0, 100.0, 60.0, false), Placed { part: 0, ..at(150.0, 10.0, 100.0, 60.0, false) }];
+        let p = plan(&parts, &pl, &spec());
+        let prog = program(1, &parts, &pl, &spec(), &p);
+        // hole, outside, hole, outside: the word changes every contour.
+        assert_eq!(prog.matches("G41 D1").count(), 2, "{prog}");
+        assert_eq!(prog.matches("G42 D2").count(), 2);
+        assert_eq!(prog.matches("G40").count(), 1, "one cancel, on the way home: {prog}");
+        assert!(prog.contains("G0 G40 X0.00 Y0.00"), "{prog}");
+        // The word rides on the first lead-in move.
+        assert!(prog.lines().any(|l| l.contains("G1 G41 D1 X") && l.contains("LEAD-IN")), "{prog}");
+        // Two plain rectangles: one word for both.
+        let parts = vec![part(Shape::Rectangle, 100.0, 60.0, None)];
+        let p = plan(&parts, &pl, &spec());
+        let prog = program(1, &parts, &pl, &spec(), &p);
+        assert_eq!(prog.matches("G42 D2").count(), 1, "{prog}");
+        assert!(prog.contains("( KERF 0.30 MM - CONTROL G41/G42 )"));
+    }
+
+    #[test]
+    fn a_material_section_sets_its_own_correctors_and_cutter_radius() {
+        machine("B002 0.12\nB124 1\nB125 2\nZ000 \"*\"\nZ001 -1\nZ002 99\nZ004 0.2\nZ024 5\nZ025 6\nZ999 0\n");
+        let parts = vec![part(Shape::PlateHole, 100.0, 60.0, None)];
+        let p = plan(&parts, &[at(10.0, 10.0, 100.0, 60.0, false)], &spec());
+        let c: Vec<(u32, f64)> = p.contours.iter().map(|c| (c.comp.corrector, c.comp.radius)).collect();
+        assert_eq!(c, vec![(5, 0.2), (6, 0.2)]);
+        assert!((crate::kerf::kerf_mm(&spec()) - 0.4).abs() < 1e-12);
+        crate::ct1::set_thread_active(None);
+    }
+
+    #[test]
+    fn system_compensation_cuts_the_offset_path_and_moves_the_pierce() {
+        machine("B116 ON\nB117 OFF\nB002 0.5\nA017 2\n");
+        let parts = vec![part(Shape::Rectangle, 100.0, 60.0, None)];
+        let pl = [at(10.0, 10.0, 100.0, 60.0, false)];
+        let p = plan(&parts, &pl, &spec());
+        let c = &p.contours[0];
+        assert!(c.comp.system && !c.comp.control);
+        // The beam's centre runs 0.5 mm outside the part, sharp corners.
+        let (lo, hi) = c.points.iter().fold(([f64::MAX; 2], [f64::MIN; 2]), |(lo, hi), q| ([lo[0].min(q[0]), lo[1].min(q[1])], [hi[0].max(q[0]), hi[1].max(q[1])]));
+        assert!((lo[0] - 9.5).abs() < 1e-9 && (lo[1] - 9.5).abs() < 1e-9 && (hi[0] - 110.5).abs() < 1e-9 && (hi[1] - 70.5).abs() < 1e-9, "{lo:?} {hi:?}");
+        // The pierce moved off the drawn lead with it, out in the scrap.
+        assert_eq!(c.lead_in, c.lead_path[0]);
+        assert!(!crate::nest::point_in_poly(&c.points, c.lead_in));
+        // Time and length follow the longer path; the program has no G41/G42.
+        let nominal = { crate::ct1::set_thread_active(None); plan(&parts, &pl, &spec()) };
+        assert!(p.cut_len > nominal.cut_len + 2.0, "{} vs {}", p.cut_len, nominal.cut_len);
+        machine("B116 ON\nB117 OFF\nB002 0.5\nA017 2\n");
+        let prog = program(1, &parts, &pl, &spec(), &p);
+        assert!(!prog.contains("G41") && !prog.contains("G42") && !prog.contains("G40"), "{prog}");
+        assert!(prog.contains("( KERF 1.00 MM - OFFSET PATH )"));
+        assert!(prog.contains("X9.50 Y9.50") || prog.contains("X110.50 Y9.50"), "{prog}");
+        // The job can switch it off again: the drawn path, control words back.
+        let sp = SheetSpec { kerf: crate::kerf::KerfChoice { control: Some(true), system: Some(false) }, ..spec() };
+        let p2 = plan(&parts, &pl, &sp);
+        assert_eq!(p2.contours[0].comp.word(), Some((Side::Right, 2)));
+        assert!(p2.contours[0].points.iter().all(|q| q[0] >= 10.0 - 1e-9 && q[1] >= 10.0 - 1e-9));
+        crate::ct1::set_thread_active(None);
+    }
+
+    #[test]
+    fn a_hole_no_bigger_than_the_kerf_is_reported_and_not_cut() {
+        machine("B116 ON\nB117 OFF\nB002 0.15\n");
+        let tiny: Vec<P> = (0..24).map(|k| {
+            let t = std::f64::consts::TAU * k as f64 / 24.0;
+            [50.0 + 0.1 * t.cos(), 30.0 + 0.1 * t.sin()]
+        }).collect();
+        let outline = vec![[0.0, 0.0], [100.0, 0.0], [100.0, 60.0], [0.0, 60.0]];
+        let parts = vec![drawn(outline, vec![tiny])];
+        let p = plan(&parts, &[at(10.0, 10.0, 100.0, 60.0, false)], &spec());
+        assert_eq!(p.contours.len(), 1, "only the outside is cut");
+        assert_eq!(p.pierces, 1);
+        assert_eq!(p.kerf_issues.len(), 1);
+        assert!(p.kerf_issues[0].1 && p.kerf_issues[0].2.contains("not cut"), "{:?}", p.kerf_issues);
+        crate::ct1::set_thread_active(None);
     }
 }

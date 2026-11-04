@@ -995,6 +995,16 @@ line", false, has_sheets)
                 });
                 ui.end_row();
             });
+            // Which section of the machine file applies (MTL1–MTL6).
+            let mt = crate::ct1::for_spec(&self.spec);
+            let short = match mt.applied() {
+                Some(s) => format!("Machine table {}", s.label()),
+                None => "Machine table: global".to_string(),
+            };
+            ui.label(RichText::new(short).size(10.5).color(th().text_dim)).on_hover_text(format!(
+                "{}.\nLeads, micro-joints, joint gap, pierce and loop radius come from it; the part gap and margin are offered in Spacing.",
+                mt.table_label()
+            ));
         });
         ribbon_group(ui, "Machine", |ui| {
             if self.machine_picker(ui) {
@@ -1033,6 +1043,25 @@ line", false, has_sheets)
                 changed |= ui.add(egui::DragValue::new(&mut self.spec.gap).range(0.0..=50.0).speed(0.2).suffix(" mm")).changed();
                 ui.end_row();
             });
+            // The machine's gap and margin for this material and thickness
+            // (MTL9): offered, never applied by themselves.
+            let (g, m) = crate::engine::machine_spacing(&self.spec);
+            if g.is_some() || m.is_some() {
+                let fmt = |v: Option<f64>| v.map_or("—".to_string(), |v| format!("{v}"));
+                let same = g.is_none_or(|g| (g - self.spec.gap).abs() < 1e-9) && m.is_none_or(|m| (m - self.spec.margin).abs() < 1e-9);
+                let txt = format!("Machine: gap {} · margin {}", fmt(g), fmt(m));
+                if same {
+                    ui.label(RichText::new(txt).size(10.5).color(th().text_dim)).on_hover_text("The sheet already uses the machine's part gap and margin for this material and thickness.");
+                } else if ui.small_button(RichText::new(format!("Use {txt}")).size(10.5)).on_hover_text("Take the machine's part gap and margin for this material and thickness (the widest of its four margins)").clicked() {
+                    match crate::engine::use_machine_spacing(&mut self.spec, true, true) {
+                        Ok(s) => {
+                            self.status = s;
+                            changed = true;
+                        }
+                        Err(e) => self.status = e,
+                    }
+                }
+            }
         });
         ribbon_group(ui, "Nest", |ui| {
             if ribbon_button(ui, Icon::NestAll, "Nest\nall", false, !self.parts.is_empty()).clicked() {

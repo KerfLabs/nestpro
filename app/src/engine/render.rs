@@ -240,7 +240,7 @@ pub fn sheet_scene(job: &JobFile, k: usize, width_px: u32, path: bool) -> Result
     let mut rings = vec![outline.outer.clone()];
     rings.extend(outline.holes.iter().cloned());
     sc.fill(rings, SHEET);
-    for r in super::remnant_pieces(&job.parts, sheet, &f, job.cuts(k)) {
+    for r in super::remnant_pieces(&job.parts, sheet, &f, job.cuts(k), crate::kerf::kerf_mm(&job.spec_at(k))) {
         let mut rings = vec![r.outer];
         rings.extend(r.holes);
         sc.fill(rings, REMNANT);

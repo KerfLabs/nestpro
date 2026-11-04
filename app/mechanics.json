@@ -3157,6 +3157,348 @@
   "group": "erp (fulcrum)",
   "value": "the one unfinished step on the operation holding the job operations; none or several = not sent",
   "source": "MECHANICS F22; Fulcrum API"
+ },
+ {
+  "name": "material key format",
+  "group": "machine file sections",
+  "value": "##MATEXP + four-digit catalogue number + ## (shorter numbers padded); else the material name",
+  "source": "MECHANICS MTL2"
+ },
+ {
+  "name": "material catalogue numbers",
+  "group": "machine file sections",
+  "value": "0010 mild steel, 0100 stainless, 0200 pure aluminium, 0210 aluminium-magnesium, 0300 galvanised, 0510 copper, 0590 brass",
+  "source": "MECHANICS MTL2"
+ },
+ {
+  "name": "section for every material",
+  "group": "machine file sections",
+  "value": "*",
+  "source": "MECHANICS MTL2"
+ },
+ {
+  "name": "material names compare",
+  "group": "machine file sections",
+  "value": "exactly, case-sensitive",
+  "source": "MECHANICS MTL2"
+ },
+ {
+  "name": "app material keys (default)",
+  "group": "machine file sections",
+  "value": "mild steel 0010, stainless 0100, aluminium 0210 (estimate, editable)",
+  "source": "MECHANICS MTL2; own choice"
+ },
+ {
+  "name": "thickness slack",
+  "group": "machine file sections",
+  "value": 0.005,
+  "source": "MECHANICS MTL3"
+ },
+ {
+  "name": "negative thickness from",
+  "group": "machine file sections",
+  "value": "any thickness",
+  "source": "MECHANICS MTL3"
+ },
+ {
+  "name": "number key tolerance",
+  "group": "machine file sections",
+  "value": 0.01,
+  "source": "MECHANICS MTL4"
+ },
+ {
+  "name": "number key not given at or below",
+  "group": "machine file sections",
+  "value": 0.001,
+  "source": "MECHANICS MTL4"
+ },
+ {
+  "name": "gas key not given",
+  "group": "machine file sections",
+  "value": 0,
+  "source": "MECHANICS MTL4"
+ },
+ {
+  "name": "job gas / lens / nozzle keys",
+  "group": "machine file sections",
+  "value": "not given (jobs carry none)",
+  "source": "MECHANICS MTL4; own design"
+ },
+ {
+  "name": "which section",
+  "group": "machine file sections",
+  "value": "first fitting in file order; with A093 on, a default-marked (Z350) section beats earlier non-default ones",
+  "source": "MECHANICS MTL5"
+ },
+ {
+  "name": "no fitting section",
+  "group": "machine file sections",
+  "value": "machine's own values",
+  "source": "MECHANICS MTL6"
+ },
+ {
+  "name": "section replaces",
+  "group": "machine file sections",
+  "value": "lead tables of every quality and the micro-joint table, whole",
+  "source": "MECHANICS MTL7"
+ },
+ {
+  "name": "missing table lines in a section",
+  "group": "machine file sections",
+  "value": "built-in table values, not the machine's (inferred)",
+  "source": "MECHANICS MTL7"
+ },
+ {
+  "name": "section Y codes",
+  "group": "machine file sections",
+  "value": "Y n = E n",
+  "source": "MECHANICS MTL8"
+ },
+ {
+  "name": "section quality-1 lead codes",
+  "group": "machine file sections",
+  "value": "Z n = B (n+146) for 54-124; Z132 = B271; Z305 = B294; Z306 = B295",
+  "source": "MECHANICS MTL8"
+ },
+ {
+  "name": "section X codes",
+  "group": "machine file sections",
+  "value": "X n = F n (0-118, 129-197); X122 = F121; X123 = F122; X125-X128 = F123-F126",
+  "source": "MECHANICS MTL8"
+ },
+ {
+  "name": "section part gap",
+  "group": "machine file sections",
+  "value": "Z006 = B056",
+  "source": "MECHANICS MTL9"
+ },
+ {
+  "name": "section cutter radius",
+  "group": "machine file sections",
+  "value": "Z004 = B002 (half the kerf)",
+  "source": "MECHANICS MTL9"
+ },
+ {
+  "name": "section margins",
+  "group": "machine file sections",
+  "value": "Z005 = A256 and fills A257-A259; Z007-Z009 = A257-A259; Z130 = A260",
+  "source": "MECHANICS MTL9"
+ },
+ {
+  "name": "section joint width and leads",
+  "group": "machine file sections",
+  "value": "Z034-Z040 = B158-B164",
+  "source": "MECHANICS MTL9"
+ },
+ {
+  "name": "section loop radius",
+  "group": "machine file sections",
+  "value": "Z033 = B157",
+  "source": "MECHANICS MTL9"
+ },
+ {
+  "name": "section pierce radius",
+  "group": "machine file sections",
+  "value": "Z131 = B352",
+  "source": "MECHANICS MTL9"
+ },
+ {
+  "name": "missing single values in a section",
+  "group": "machine file sections",
+  "value": "machine's value (estimate)",
+  "source": "MECHANICS MTL9"
+ },
+ {
+  "name": "hole-size bands",
+  "group": "machine file sections",
+  "value": "Z010/Z011/Z012 triples; read, not used",
+  "source": "MECHANICS MTL10"
+ },
+ {
+  "name": "machine part gap and margin",
+  "group": "machine file sections",
+  "value": "shown and offered (Use button, set-sheet machine_spacing=true), never applied by themselves; margin = widest of four",
+  "source": "MECHANICS MTL9; own design"
+ },
+ {
+  "name": "automatic joint gap with a section",
+  "group": "machine file sections",
+  "value": "the section's gap for every part",
+  "source": "MECHANICS MTL7; own design"
+ },
+ {
+  "name": "kerf side, outside",
+  "group": "kerf compensation",
+  "value": "counter-clockwise right (G42), clockwise left (G41)",
+  "source": "MECHANICS KC2"
+ },
+ {
+  "name": "kerf side, hole",
+  "group": "kerf compensation",
+  "value": "counter-clockwise left (G41), clockwise right (G42)",
+  "source": "MECHANICS KC2"
+ },
+ {
+  "name": "kerf side, open path or marking",
+  "group": "kerf compensation",
+  "value": "off",
+  "source": "MECHANICS KC2"
+ },
+ {
+  "name": "system compensation switch",
+  "group": "kerf compensation",
+  "value": "B116, default off",
+  "source": "MECHANICS KC1"
+ },
+ {
+  "name": "control compensation switch",
+  "group": "kerf compensation",
+  "value": "B117, default on",
+  "source": "MECHANICS KC1"
+ },
+ {
+  "name": "hole corrector",
+  "group": "kerf compensation",
+  "value": "B124 (section Z024), default 1",
+  "source": "MECHANICS KC3"
+ },
+ {
+  "name": "outside corrector",
+  "group": "kerf compensation",
+  "value": "B125 (section Z025), default 2",
+  "source": "MECHANICS KC3"
+ },
+ {
+  "name": "quality table row",
+  "group": "kerf compensation",
+  "value": "B700+4(q-1)..B703+4(q-1): hole corrector, outside corrector, hole radius, outside radius; q outside 1-12 uses 1",
+  "source": "MECHANICS KC5"
+ },
+ {
+  "name": "quality table modes",
+  "group": "kerf compensation",
+  "value": "B749 normal, B750/B751 common cut: 0 control, 1 system, 2 both",
+  "source": "MECHANICS KC5"
+ },
+ {
+  "name": "negative quality radius",
+  "group": "kerf compensation",
+  "value": "flips the side",
+  "source": "MECHANICS KC5"
+ },
+ {
+  "name": "cutter radius",
+  "group": "kerf compensation",
+  "value": "quality row, else B002 / section Z004; fallback 0.15 mm (estimate)",
+  "source": "MECHANICS KC6"
+ },
+ {
+  "name": "radius counted as zero",
+  "group": "kerf compensation",
+  "value": 1e-06,
+  "source": "MECHANICS KC6"
+ },
+ {
+  "name": "common-cut compensation",
+  "group": "kerf compensation",
+  "value": "B191 read only (no common cut)",
+  "source": "MECHANICS KC7"
+ },
+ {
+  "name": "round hole no bigger than the kerf",
+  "group": "kerf compensation",
+  "value": "no path: not cut, reported",
+  "source": "MECHANICS KC8"
+ },
+ {
+  "name": "outside corner",
+  "group": "kerf compensation",
+  "value": "arc of radius r round the drawn corner, then the corner mode",
+  "source": "MECHANICS KC9"
+ },
+ {
+  "name": "inside corner",
+  "group": "kerf compensation",
+  "value": "trimmed where the offsets cross",
+  "source": "MECHANICS KC9"
+ },
+ {
+  "name": "corner mode",
+  "group": "kerf compensation",
+  "value": "A017 units digit: 0 round, 1 chamfer, 2+ sharp",
+  "source": "MECHANICS KC10"
+ },
+ {
+  "name": "curve point vs corner",
+  "group": "kerf compensation",
+  "value": "turn above 20 degrees = corner (app element rule; estimate)",
+  "source": "MECHANICS KC10"
+ },
+ {
+  "name": "sharp corner limit",
+  "group": "kerf compensation",
+  "value": "chamfer beyond 10 cutter radii (estimate)",
+  "source": "MECHANICS KC10"
+ },
+ {
+  "name": "slot narrower than the kerf",
+  "group": "kerf compensation",
+  "value": "walls and end left out, passed by; reported",
+  "source": "MECHANICS KC11"
+ },
+ {
+  "name": "micro-joint gap ends",
+  "group": "kerf compensation",
+  "value": "move sideways with their edge; length kept on straight edges",
+  "source": "MECHANICS KC12"
+ },
+ {
+  "name": "lead mode",
+  "group": "kerf compensation",
+  "value": "B752: 0 offset with the contour, 1 move corner leads, 2 move element leads, 3 move both",
+  "source": "MECHANICS KC13"
+ },
+ {
+  "name": "joint lead mode",
+  "group": "kerf compensation",
+  "value": "B753: 0 offset with the piece, 1 moved",
+  "source": "MECHANICS KC14"
+ },
+ {
+  "name": "pierce under system compensation",
+  "group": "kerf compensation",
+  "value": "first point of the offset lead-in",
+  "source": "MECHANICS KC15"
+ },
+ {
+  "name": "control word placement",
+  "group": "kerf compensation",
+  "value": "first lead-in move, only when side or corrector changes; G40 on the next rapid that needs none and at the end (estimate: post choice)",
+  "source": "MECHANICS KC4; KC17"
+ },
+ {
+  "name": "mirroring post axis",
+  "group": "kerf compensation",
+  "value": "A016 x A017 < 0 swaps G41/G42 (estimate)",
+  "source": "MECHANICS KC2; own design"
+ },
+ {
+  "name": "job compensation choice",
+  "group": "kerf compensation",
+  "value": "control / system toggles win over the machine's switches and quality mode (own design)",
+  "source": "MECHANICS KC1; own design"
+ },
+ {
+  "name": "uncut-by-compensation check",
+  "group": "kerf compensation",
+  "value": "holes no bigger than the kerf and too-narrow contours left out of the plan and listed (own design)",
+  "source": "MECHANICS KC18"
+ },
+ {
+  "name": "kerf for remnant and cut-off lines",
+  "group": "kerf compensation",
+  "value": "2 x machine cutter radius, else 0.3 mm",
+  "source": "MECHANICS KC6"
  }
 ]
 }
