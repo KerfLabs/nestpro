@@ -113,6 +113,7 @@ original (or a real job).
 | MAC-24 | The CF file's speed and acceleration factors (A037, A038, A046, A047): read by the original, where they apply wasn't traced; not applied | Missing | ★ | MECHANICS CTM3 |
 | MAC-25 | Speeds and times checked only against the installer's template laser (PSTadi02); the shop's own BLM files (PstAdi06 .CF1 / .TT1 / .TM1) not seen yet: check which table and time file its CF names and that the times card matches the original's | Estimate | ★★★ | MECHANICS TT1, CTM8 |
 | MAC-27 | Oxyfuel, plasma and waterjet technology tables (their own record layouts) | Missing | ★ | MECHANICS TT6 |
+| MAC-28 | Overlap check when the part gap is 0: such a job is meant to have touching parts, so parts that cross each other aren't reported either | Estimate | ★ | MECHANICS QR6, `engine::overlapping` |
 
 ## Jobs, parts and data (JOB)
 
@@ -170,6 +171,7 @@ original (or a real job).
 | ID | What | Status | Pri | Notes / source |
 |---|---|---|---|---|
 | APP-1 | Start-up: `/hide`, single-copy check, splash, help files | Missing | ★ | MECHANICS SU1–SU7 |
+| APP-2 | Quick ring set up per screen in Settings: choose the tool in each of the 8 slots of the Part view, on-a-part and empty-sheet rings (any ribbon command), keeping the shared tools anchored | Missing | ★★ | MECHANICS QR1, QR2; the built-in rings come first, so operators find out what they miss |
 
 ## Done
 
@@ -200,4 +202,5 @@ original (or a real job).
 | MAC-26 | The program's feed: every contour (with or without a lead-in) and every marking writes its own speed when it differs from the last one | 2026-11-04 (`cnc::program_mm`) |
 | TEC-12 | **Size bands** of a machine section (Z010–Z012) pick a contour's cut quality (small holes slower), which drives its leads, kerf table and speed | 2026-11-04 (`ct1::MachineTech::band_quality`, MECHANICS MTL10, TT8) |
 | MAC-12 | **Kerf compensation**: side from each contour's real cutting direction (fixes the BLM post's fixed G41-on-holes / G42-on-outsides for mirrored parts and clockwise drawings); control compensation (G41/G42 + corrector, section Z024/Z025) in the generic post; system compensation (offset path with round / chamfer / sharp corners, trimmed inside corners, tiny holes and narrow slots reported, joint gaps, leads moved or offset, pierce moved) used by the drawing, simulation, times and programs; the quality-dependent table; the job's CN / System toggles (Machining → Compensation); remnant and cut-off lines use the machine's kerf; agents' `compensation` | 2026-11-04 (`kerf.rs`, MECHANICS KC1–KC18) |
+| — | **Quick ring per screen**: right-click on a part on the sheet (turn, turn back, copy on the pointer, mirror ↔ / ↕, delete, undo, fit) or on empty sheet (select all, next / previous sheet, collisions on/off, compact, undo, redo, fit); Fit and Undo keep their direction in every ring; overlapping parts outlined in red with a "Collisions OFF" badge, and the CNC export (and agents' `program` / `export`) warns about them | 2026-11-04 (`radial.rs`, `arrange_ui.rs`, `engine::overlapping`, MECHANICS QR1–QR6) |
 | — | Saving jobs (`.snjob`) and the Library | before 2026-11 |

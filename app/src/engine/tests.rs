@@ -760,3 +760,61 @@ fn an_agent_sees_the_table_speeds_and_the_time_split() {
     assert!((t["head"].as_f64().unwrap() - 1.4).abs() < 0.05, "{t}");
     crate::ct1::set_thread_active(None);
 }
+
+#[test]
+fn turning_back_steps_to_the_previous_allowed_turn() {
+    // QR3: back from 0° is 270° (a quarter clockwise); with only 0° and 180°
+    // allowed, either way goes to 180°.
+    let mut p = Part { name: "P".into(), shape: Shape::Rectangle, w: 100.0, h: 40.0, qty: 1, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
+    let at = Placed { part: 0, x: 0.0, y: 0.0, w: 100.0, h: 40.0, turns: 0, mirror: false };
+    let b = step_turn(&p, at, true).unwrap();
+    assert_eq!((b.turns, b.w, b.h), (3, 40.0, 100.0));
+    assert_eq!(step_turn(&p, at, false).unwrap().turns, 1);
+    p.rots.plain = [true, false, true, false];
+    assert_eq!(step_turn(&p, at, true).unwrap().turns, 2);
+    p.rotate = false;
+    assert!(step_turn(&p, at, true).is_err());
+}
+
+#[test]
+fn overlapping_parts_are_reported_and_the_export_warns() {
+    // QR6: parts cut through each other are named per sheet; touching counts,
+    // a part gap of 0 is meant to touch and isn't reported.
+    let d = dir("overlap");
+    let p = Part { name: "Plate".into(), shape: Shape::Rectangle, w: 100.0, h: 100.0, qty: 3, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
+    let at = |x: f64| Placed { part: 0, x, y: 10.0, w: 100.0, h: 100.0, turns: 0, mirror: false };
+    let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
+    let parts = vec![p];
+    let clear = vec![at(10.0), at(115.0)];
+    assert!(overlapping(&parts, &clear, &spec).is_empty());
+    let bad = vec![at(10.0), at(115.0), at(150.0)];
+    assert_eq!(overlapping(&parts, &bad, &spec), vec![(1, 2)]);
+    assert_eq!(overlapping(&parts, &[at(10.0), at(110.0)], &spec), vec![(0, 1)], "touching");
+    assert!(overlapping(&parts, &[at(10.0), at(110.0)], &SheetSpec { gap: 0.0, ..spec.clone() }).is_empty());
+    let sheets = vec![clear, bad];
+    let w = overlap_warning(&parts, &sheets, |_| spec.clone()).unwrap();
+    assert!(w.contains("sheet 2: #2 Plate and #3 Plate overlap") && !w.contains("sheet 1"), "{w}");
+    let formats = vec![SheetFormat::rect(1000.0, 500.0); 2];
+    let plans = plans(&parts, &sheets, &formats, &spec, &[]);
+    let ex = export(&d, "DEMO-001", &parts, &sheets, &formats, &plans, &spec, &[], &[], &crate::post::PostConfig::default(), None, 0.0).unwrap();
+    assert!(ex.warning.as_deref().is_some_and(|w| w.contains("overlap")), "{:?}", ex.warning);
+    assert!(ex.files.len() >= 3, "the programs are still written");
+}
+
+#[test]
+fn an_agent_turns_a_part_back_to_its_previous_turn() {
+    // QR3 through the operations: rotate back=true is the quick ring's Turn back.
+    let d = dir("turnback");
+    let job = d.join("turn.snjob");
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1500, "h": 1000}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 100, "h": 40, "qty": 1}));
+    call(&mut s, "nest", None, json!({}));
+    let angle = |s: &mut Session| call(s, "info", None, json!({"sheet": 1}))["data"]["sheets"][0]["placed"][0]["angle"].as_f64().unwrap();
+    let a0 = angle(&mut s);
+    call(&mut s, "rotate", None, json!({"sheet": 1, "item": 1, "back": true}));
+    assert_eq!(angle(&mut s), (a0 + 270.0) % 360.0, "a quarter clockwise");
+    call(&mut s, "rotate", None, json!({"sheet": 1, "item": 1}));
+    assert_eq!(angle(&mut s), a0, "and the next turn brings it back");
+    let _ = std::fs::remove_dir_all(&d);
+}

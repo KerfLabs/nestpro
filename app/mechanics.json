@@ -3827,6 +3827,54 @@
   "value": "acceleration or top speed <= 0 limits nothing; D168 < 0 = no corner slow-down",
   "source": "MECHANICS CTM5, CTM6; estimate",
   "estimated": true
+ },
+ {
+  "name": "quick ring on a part on the sheet",
+  "group": "quick ring",
+  "value": "turn, turn back, copy, mirror top/bottom, mirror left/right, undo, delete, fit (clockwise from the top)",
+  "source": "MECHANICS QR1"
+ },
+ {
+  "name": "quick ring on empty sheet",
+  "group": "quick ring",
+  "value": "select all, redo, next sheet, collisions on/off, compact, undo, previous sheet, fit (clockwise from the top)",
+  "source": "MECHANICS QR1"
+ },
+ {
+  "name": "quick ring in the Part view",
+  "group": "quick ring",
+  "value": "lead-ins, lead on element, micro-joints, joint on element, place text, text on element, loops, fit (clockwise from the top)",
+  "source": "MECHANICS QR1"
+ },
+ {
+  "name": "shared tools keep their direction",
+  "group": "quick ring",
+  "value": "Fit up-left, Undo down-left in every ring",
+  "source": "MECHANICS QR2"
+ },
+ {
+  "name": "turn back",
+  "group": "quick ring",
+  "value": "previous allowed quarter turn (clockwise)",
+  "source": "MECHANICS QR3"
+ },
+ {
+  "name": "quick ring copy",
+  "group": "quick ring",
+  "value": "whole selection on the pointer, drawn only until a click drops it; Esc / right-click or any other change cancels",
+  "source": "MECHANICS QR4"
+ },
+ {
+  "name": "overlap distance",
+  "group": "quick ring",
+  "value": "0.01 mm by the real contours (touching counts); not checked when the part gap is 0",
+  "source": "MECHANICS QR6"
+ },
+ {
+  "name": "export with overlapping parts",
+  "group": "quick ring",
+  "value": "programs written, with a warning naming sheet and parts",
+  "source": "MECHANICS QR6"
  }
 ]
 }

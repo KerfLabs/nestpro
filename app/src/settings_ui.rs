@@ -101,7 +101,9 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Ctrl + ,", "Settings"),
     ("Middle button / Space + drag", "Pan"),
     ("Mouse wheel", "Zoom"),
-    ("Right-click on a part", "Quick menu"),
+    ("Right-click (or S) on a part", "Quick ring: turn, turn back, copy on the pointer, mirror, delete, undo, fit (flick toward a tool, or click it)"),
+    ("Right-click (or S) on empty sheet", "Quick ring: select all, next / previous sheet, collisions on/off, compact, undo, redo, fit"),
+    ("Right-click (or S) in the Part view", "Quick ring: lead-ins, micro-joints, texts, loops, fit"),
 ];
 
 #[derive(Default)]

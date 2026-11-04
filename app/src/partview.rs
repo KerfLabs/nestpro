@@ -375,7 +375,7 @@ impl App {
                         self.sel_elems = vec![e];
                     }
                 }
-                self.open_radial(ui.ctx(), hp);
+                self.open_radial(ui.ctx(), hp, crate::radial::Ring::Part);
                 if let Some(r) = self.radial.as_mut() {
                     r.text_under = tu;
                 }

@@ -776,6 +776,25 @@ How the rebuild uses them:
 - Big buttons are the original's style 4, the small captioned rows its style 3; drop-down
   buttons (caret under the label) stand for its popup and split buttons (types 2 and 4).
 
+## Quick ring (right-click tool menu)
+
+The app's own feature, in the style of a CAD program's mouse gestures (the original has
+no such ring). Right-click (or S) on a canvas opens a ring of eight tools. Code:
+`radial.rs`; the turn-back and overlap rules in `engine/mod.rs`.
+
+- Keep the right button down and flick toward a tool to run it.
+- A plain right-click leaves the ring open for a click; the middle, Esc or another
+  right-click closes it.
+
+| # | Rule | |
+|---|------|---|
+| QR1 | **The ring depends on where it opens.** In the Part view: the technology tools (clockwise from the top: lead-ins, lead on element, micro-joints, joint on element, place text, text on element, loops, fit); the element under the pointer is selected first. On the sheet, on a part: the tools for the selection (turn, turn back, copy, mirror top↕bottom, mirror left↔right, undo, delete, fit); the part is selected first unless it already is, so a selection or group stays whole. On empty sheet: the sheet tools (select all, redo, next sheet, collisions on/off, compact, undo, previous sheet, fit). The Jobs screen has no ring. | rebuild |
+| QR2 | **A tool in several rings keeps its direction**: Fit is always up-left and Undo down-left, so a learned flick does the same thing on every ring. A tool that can't run (nothing selected, last sheet, nothing to undo, a turn or mirror the selected parts' rotations don't allow) is greyed, never hidden or moved. | rebuild |
+| QR3 | **Turn** steps the selection to its next allowed quarter turn (counter-clockwise, like R); **Turn back** to the previous allowed one (clockwise). A part allowed only 0° and 180° flips between them either way; several parts turn 90° together. Agents: `rotate back=true`. | rebuild |
+| QR4 | **Copy** puts copies of the whole selection, spacing kept, on the pointer: they follow it with no button held and snap like a drag; a click drops them where they fit (a spot that doesn't fit keeps them on the pointer), Esc or a right-click takes them away. Until the drop they are only drawn: the sheet, the parts' order and the undo list change only when they land (one undo step, each copy adding one to its part's order as Ctrl + drag does, HM10). Any other change to the sheet (a command, undo, nesting, its margin or part gap), another sheet, job or screen, or starting another tool ends the carry. | rebuild |
+| QR5 | **Collisions on/off** toggles collision checking (the ribbon's Collision). Its wedge stays lit while it's on; while it's off a "Collisions OFF" badge sits at the top of the sheet. | rebuild |
+| QR6 | **Overlapping parts** (closer than 0.01 mm by their real contours, so touching counts) are outlined in red on the sheet and counted on the badge. Exporting the CNC programs still writes them but warns, naming each sheet and pair; the agents' `program` and `export` say the same. A job with a part gap of 0 is meant to touch and isn't checked. | rebuild |
+
 ## Moving and zooming the view, and light/dark
 
 How the original's drawing and nesting views zoom and pan, and how its styles pick colours.
@@ -959,14 +978,8 @@ How the rebuild uses them:
     height into the material.
   - Round an arc or circle, the text is curved and sits outside a hole or inside an outer edge,
     upright at the top or bottom.
-- **Radial tool menu**: right-click (or S) on the Part or sheet canvas opens a ring of eight
-  tools, in the style of a CAD program's mouse gestures. Clockwise from the top: lead-ins, lead
-  on element, micro-joints, joint on element, place text, text on element, loops, fit view.
-  - Keep the right button down and flick toward a tool to run it.
-  - A plain right-click leaves the ring open for a click; the middle, Esc or another
-    right-click closes it.
-  - On the sheet, the part under the pointer is selected first; in the Part view, the element
-    under it is.
+- **Radial tool menu**: right-click (or S) on the Part view opens the quick ring's
+  technology tools (see "Quick ring", QR1).
 - **Quick text editor**: the ring's **Text** and **Text here** open a small editor at the
   pointer with the cursor already in the box, so you just start typing.
   - In the editor: pick Marking, Special or Note; insert #REF, #QTY, #MAT, #THK or #NUM (which

@@ -197,6 +197,11 @@ pub struct App {
     pub tab: Tab,
     pub bottom: BottomTab,
     pub collision: bool,
+    /// Pairs of parts on the shown sheet that touch or overlap (QR6), worked
+    /// out on every change.
+    pub overlaps: Vec<(usize, usize)>,
+    /// Copies on the pointer from the quick ring's Copy (QR4).
+    pub carry: Option<arrange_ui::Carry>,
     pub show_path: bool,
     pub show_numbers: bool,
     pub show_grid: bool,
@@ -486,6 +491,8 @@ impl App {
             tab: Tab::Home,
             bottom: BottomTab::PartsView,
             collision: true,
+            overlaps: vec![],
+            carry: None,
             show_path: false,
             show_numbers: false,
             show_grid: false,
@@ -1192,6 +1199,8 @@ impl App {
 
     /// Remember the current state so the next change can be undone.
     pub fn checkpoint(&mut self) {
+        // Any other change ends a copy carried on the pointer (QR4).
+        self.carry = None;
         let s = self.snapshot();
         self.push_undo(s);
     }
@@ -1384,6 +1393,7 @@ impl App {
             self.cur_sheet = self.result.sheets.len().saturating_sub(1);
         }
         self.plans = engine::plans(&self.parts, &self.result.sheets, &self.result.formats, &self.spec, &self.manual_cuts);
+        self.overlaps = self.result.sheets.get(self.cur_sheet).map_or(vec![], |s| engine::overlapping(&self.parts, s, &self.cur_spec()));
         self.program = match (self.result.sheets.get(self.cur_sheet), self.plans.get(self.cur_sheet)) {
             (Some(s), Some(pl)) => engine::program(self.cur_sheet + 1, &self.parts, s, &self.cur_spec(), pl, self.cut_list(), &self.remnant_marks(self.cur_sheet), &self.post, self.cfg.stock.line.edge_offset),
             _ => "( NO SHEET NESTED )".into(),
@@ -1392,6 +1402,8 @@ impl App {
 
     pub fn select_sheet(&mut self, i: usize) {
         if i < self.result.sheets.len() && i != self.cur_sheet {
+            // A copy on the pointer belongs to the sheet it was made on.
+            self.carry = None;
             self.cur_sheet = i;
             self.ssim = None;
             self.sel_placed = None;
@@ -1445,6 +1457,28 @@ impl App {
     /// together — about their centre, moved to the nearest free spot when
     /// they'd land on another part (HM5).
     pub fn rotate_selected(&mut self) {
+        self.step_turn_selected(false);
+    }
+
+    /// The quick ring's Turn back: one part to its previous allowed turn,
+    /// several 90° the other way (QR3).
+    pub fn turn_back_selected(&mut self) {
+        self.step_turn_selected(true);
+    }
+
+    /// Whether Turn (or Turn back) can turn the selection: one part needs
+    /// another allowed turn that way, several must all be allowed 90° (QR2).
+    pub fn can_step_turn(&self, back: bool) -> bool {
+        let sel = self.selection();
+        let Some(sheet) = self.result.sheets.get(self.cur_sheet) else { return false };
+        match sel[..] {
+            [] => false,
+            [i] => engine::step_turn(&self.parts[sheet[i].part], sheet[i], back).is_ok(),
+            _ => engine::arrange::can_turn(&self.parts, sheet, &sel, if back { 3 } else { 1 }),
+        }
+    }
+
+    fn step_turn_selected(&mut self, back: bool) {
         let sel = self.selection();
         let s = self.cur_sheet;
         if sel.is_empty() || s >= self.result.sheets.len() {
@@ -1452,13 +1486,15 @@ impl App {
         }
         let q = if let [i] = sel[..] {
             let old = self.result.sheets[s][i];
-            match engine::next_turn(&self.parts[old.part], old) {
+            match engine::step_turn(&self.parts[old.part], old, back) {
                 Ok(c) => (c.turns + 4 - old.turns) % 4,
                 Err(e) => {
                     self.status = e.into();
                     return;
                 }
             }
+        } else if back {
+            3
         } else {
             1
         };
@@ -1583,15 +1619,18 @@ impl App {
         let ghosting = self.ghost.is_some() || self.cut_tool.is_some();
         if let Some(hp) = resp.hover_pos().filter(|_| !ghosting) {
             if self.radial_trigger(ui) {
-                if has_sheet {
-                    let w = to_w(hp);
-                    if let Some(i) = self.result.sheets[sheet_idx].iter().rposition(|p| nest::placed_contains(&self.parts, p, w)) {
-                        if !self.is_selected(i) {
-                            self.set_selection(vec![i]);
-                        }
+                // On a part: the part ring for the selection; on empty sheet: the sheet ring (QR1).
+                let w = to_w(hp);
+                let under = self.result.sheets.get(sheet_idx).and_then(|sh| sh.iter().rposition(|p| nest::placed_contains(&self.parts, p, w)));
+                if let Some(i) = under {
+                    if !self.is_selected(i) {
+                        self.set_selection(vec![i]);
                     }
                 }
-                self.open_radial(ui.ctx(), hp);
+                self.open_radial(ui.ctx(), hp, if under.is_some() { radial::Ring::OnPart } else { radial::Ring::Sheet });
+                if let Some(r) = self.radial.as_mut() {
+                    r.at = Some(w);
+                }
             }
         }
 
@@ -1771,9 +1810,10 @@ impl App {
         }
         if has_sheet {
             self.arrange_canvas(&painter, &to_s);
+            self.carry_canvas(&painter, &to_s);
         }
         // Hover card next to the pointer.
-        if let (Some(info), Some(hp), None, false) = (&self.hover_name, resp.hover_pos(), &self.drag, ghosting) {
+        if let (Some(info), Some(hp), None, false, None) = (&self.hover_name, resp.hover_pos(), &self.drag, ghosting, &self.carry) {
             let galley = painter.layout(info.clone(), FontId::proportional(12.5), th().text, 260.0);
             let size = galley.size() + Vec2::new(20.0, 14.0);
             let mut pos = hp + Vec2::new(18.0, 18.0);
@@ -1802,6 +1842,7 @@ impl App {
         }
         if has_sheet {
             self.verify_canvas(&painter, &to_s);
+            self.overlap_canvas(&painter, rect, &to_s);
         }
         if has_sheet || self.cut_tool.is_some() {
             self.cut_canvas(ui, &painter, &resp, &to_s, &to_w, s);
@@ -2024,6 +2065,9 @@ impl eframe::App for App {
         if !dropped.is_empty() {
             self.import_drawings(dropped);
         }
+        // A copy on the pointer ends when its sheet changes, the screen
+        // changes or another tool starts (QR4).
+        self.check_carry();
         if self.workspace == Workspace::Nesting {
             // Alt/Ctrl + arrows, Ctrl+Q/W, M, Ctrl+E… on the selected parts.
             self.sheet_keys(&ctx);
@@ -2534,8 +2578,27 @@ fn main() -> eframe::Result {
                     app.export();
                 }
             }
+            if args.iter().any(|a| a == "--overlap") {
+                // Collision checking off and the second part pushed onto the
+                // first: the red outlines and the badge (QR5, QR6).
+                app.collision = false;
+                if let Some(s) = app.result.sheets.first_mut().filter(|s| s.len() > 1) {
+                    s[1].x = s[0].x + s[0].w * 0.5;
+                    s[1].y = s[0].y + s[0].h * 0.3;
+                }
+                app.refresh();
+            }
             if want_radial {
-                app.radial = Some(radial::Radial { center: egui::Pos2::new(1060.0, 640.0), opened: -1.0, held: false, text_under: None });
+                // The Part view's ring, or on the sheet the part ring with a
+                // selection (--select=…) and the sheet ring without.
+                let ring = if app.workspace == Workspace::Part {
+                    radial::Ring::Part
+                } else if args.iter().any(|a| a.starts_with("--select=")) {
+                    radial::Ring::OnPart
+                } else {
+                    radial::Ring::Sheet
+                };
+                app.radial = Some(radial::Radial::new(egui::Pos2::new(1060.0, 640.0), ring));
             }
             if want_float {
                 // Show a floating, a collapsed and a docked-right pane.

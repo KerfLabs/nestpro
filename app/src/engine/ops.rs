@@ -204,7 +204,9 @@ pub static OPS: &[Op] = &[
         Arg { name: "dir", ty: Ty::Str, required: true, help: "Direction", choices: &["left", "right", "up", "down"] },
         a("by", Ty::Num, "Distance in mm (omit = to the end)"),
     ] },
-    Op { name: "rotate", group: "Nesting", kind: Kind::Write, help: "Turn a placed part to its next allowed quarter turn, where there is room.", args: &[SHEET, ITEM] },
+    Op { name: "rotate", group: "Nesting", kind: Kind::Write, help: "Turn a placed part to its next allowed quarter turn (counter-clockwise), or with back=true to its previous one (clockwise), where there is room.", args: &[
+        SHEET, ITEM, a("back", Ty::Bool, "Turn to the previous allowed turn (clockwise) instead of the next"),
+    ] },
     Op { name: "turn", group: "Nesting", kind: Kind::Write, help: "Turn placed parts together about the centre of their box by 90° (counter-clockwise), -90° or 180°; when the turned group would overlap a part or leave the sheet it moves to the nearest free spot.", args: &[
         SHEET, ITEM_ONE, ITEMS,
         Arg { name: "angle", ty: Ty::Int, required: false, help: "90 (default, counter-clockwise), -90 or 180", choices: &[] },
@@ -1767,7 +1769,8 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             let s = sheet_idx(job, &a)?;
             let i = item_idx(job, s, &a)?;
             let old = job.sheets[s][i];
-            let c = next_turn(&job.parts[old.part], old)?;
+            // QR3: back = the previous allowed turn, as the quick ring's Turn back.
+            let c = step_turn(&job.parts[old.part], old, a.bool("back")?.unwrap_or(false))?;
             if !placement_ok(&job.parts, &job.sheets[s], &job.spec, &job.format(s), Some(i), &c, true) {
                 return Err("No room to rotate the part here.".into());
             }
@@ -2139,7 +2142,9 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                 let marks = stockflow::remnant_marks(&crate::stock::Stock::load_cached(&ctx.library_dir), &job.stock_sheets(&ctx.cfg), &job.formats, s, &ctx.cfg.stock);
                 program(s + 1, &job.parts, &job.sheets[s], &job.spec_at(s), &plans[s], job.cuts(s), &marks, &ctx.post, ctx.cfg.stock.line.edge_offset)
             };
-            let mut o = Outcome::read(format!("Program for sheet {} ({} lines).", s + 1, text.lines().count()), json!(text));
+            // QR6: say so when parts on the sheet overlap.
+            let warn = sheet_overlap_note(&job.parts, s, &job.sheets[s], &job.spec_at(s)).map_or(String::new(), |w| format!(" Warning: {w} and would be cut through each other."));
+            let mut o = Outcome::read(format!("Program for sheet {} ({} lines).{warn}", s + 1, text.lines().count()), json!(text));
             if let Some(out) = a.str("out") {
                 let out = PathBuf::from(out);
                 std::fs::write(&out, &text).map_err(|e| format!("Couldn't write {}: {e}", out.display()))?;

@@ -38,11 +38,17 @@ pub enum Icon {
     NestAll,
     AddPart,
     Rotate,
+    /// Rotate drawn counter-clockwise.
+    RotateLeft,
     Remove,
     Clear,
     Collision,
     Snap,
     Mirror,
+    /// Mirror about a level axis (top↔bottom).
+    MirrorTb,
+    /// A dashed window round two parts.
+    SelectAll,
     Times,
     Program,
     CutPath,
@@ -229,16 +235,18 @@ pub fn draw_icon_with(p: &egui::Painter, r: Rect, icon: Icon, ink: Color32, acce
             p.line_segment([v(6.0, -9.0), v(6.0, -1.0)], a);
             p.line_segment([v(2.0, -5.0), v(10.0, -5.0)], a);
         }
-        Icon::Rotate => {
+        Icon::Rotate | Icon::RotateLeft => {
+            // RotateLeft is Rotate mirrored left↔right.
+            let fx = if icon == Icon::RotateLeft { -1.0 } else { 1.0 };
             let pts: Vec<Pos2> = (0..=24)
                 .map(|i| {
                     let ang = -0.4 + i as f32 / 24.0 * 4.6;
-                    c + Vec2::new(ang.cos(), ang.sin()) * 8.5
+                    c + Vec2::new(fx * ang.cos(), ang.sin()) * 8.5
                 })
                 .collect();
             let end = *pts.last().unwrap();
             poly(pts, s);
-            poly(vec![end + Vec2::new(-4.0, -1.0), end, end + Vec2::new(0.5, -4.5)], a);
+            poly(vec![end + Vec2::new(-4.0 * fx, -1.0), end, end + Vec2::new(0.5 * fx, -4.5)], a);
         }
         Icon::Remove => {
             p.line_segment([v(-8.0, -6.0), v(8.0, -6.0)], s);
@@ -266,6 +274,18 @@ pub fn draw_icon_with(p: &egui::Painter, r: Rect, icon: Icon, ink: Color32, acce
             p.extend(EShape::dashed_line(&[v(0.0, -11.0), v(0.0, 11.0)], Stroke::new(1.3, accent), 2.5, 2.0));
             poly(vec![v(-3.0, -7.0), v(-11.0, 6.0), v(-3.0, 6.0), v(-3.0, -7.0)], s);
             poly(vec![v(3.0, -7.0), v(11.0, 6.0), v(3.0, 6.0), v(3.0, -7.0)], a);
+        }
+        Icon::MirrorTb => {
+            p.extend(EShape::dashed_line(&[v(-11.0, 0.0), v(11.0, 0.0)], Stroke::new(1.3, accent), 2.5, 2.0));
+            poly(vec![v(-7.0, -3.0), v(6.0, -11.0), v(6.0, -3.0), v(-7.0, -3.0)], s);
+            poly(vec![v(-7.0, 3.0), v(6.0, 11.0), v(6.0, 3.0), v(-7.0, 3.0)], a);
+        }
+        Icon::SelectAll => {
+            let w = Rect::from_center_size(c, Vec2::new(24.0, 20.0));
+            let q = [w.left_top(), w.right_top(), w.right_bottom(), w.left_bottom(), w.left_top()];
+            p.extend(EShape::dashed_line(&q, Stroke::new(1.3, accent), 3.0, 2.0));
+            rr(Rect::from_min_size(v(-8.0, -6.0), Vec2::new(7.0, 12.0)), s);
+            rr(Rect::from_min_size(v(1.0, -6.0), Vec2::new(7.0, 7.0)), s);
         }
         Icon::Times => {
             p.circle_stroke(c, 9.0, s);
