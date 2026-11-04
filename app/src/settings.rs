@@ -120,8 +120,73 @@ pub struct AppSettings {
     pub scroll_speed: f32,
     /// Sheet stock and remnant options.
     pub stock: crate::stock::StockSettings,
+    /// Moving parts by hand, units, and the part gap and edge margin new jobs start with.
+    pub nesting: NestPrefs,
     /// ERP / MES systems the app talks to (one per provider).
     pub integrations: Vec<crate::integrations::Integration>,
+}
+
+/// Moving parts by hand on the sheet, and the units lengths are shown in
+/// (Settings → Nesting; MECHANICS "Moving parts by hand", HM1–HM12).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct NestPrefs {
+    /// Units for the part gap, edge margin and moves (the app keeps mm inside).
+    pub units: crate::units::LenUnit,
+    /// Part gap a new job starts with, mm.
+    pub part_gap: f64,
+    /// Edge margin (distance from the sheet edge) a new job starts with, mm.
+    pub edge_margin: f64,
+    /// The movement value: how far Alt+arrow moves the selected parts, mm (HM3, HM4).
+    pub step: f64,
+    /// Ctrl+9 turns clockwise: the original's "drag rotation direction" switched
+    /// off, which negates its fixed-angle turn keys (HM5).
+    pub keys_clockwise: bool,
+    /// Snap dragged parts to one part gap from a neighbour or the margin (HM9).
+    pub snap: bool,
+    /// How near (screen pixels) a dragged part must come before it snaps.
+    pub snap_px: f32,
+    /// Show the part-gap halo around parts being moved (HM11).
+    pub halo: bool,
+}
+
+/// Movement value the app starts with, mm: the original's factory value (HM4).
+pub const STEP_DEFAULT: f64 = 10.0;
+
+impl Default for NestPrefs {
+    fn default() -> Self {
+        // The gap outline starts off, as in the original (HM11).
+        NestPrefs { units: Default::default(), part_gap: 5.0, edge_margin: 5.0, step: STEP_DEFAULT, keys_clockwise: false, snap: true, snap_px: crate::ghost::SNAP_PX, halo: false }
+    }
+}
+
+impl NestPrefs {
+    /// Take the original's own values for moving parts from its LANTEKPR.CFG
+    /// text: A222 movement value (mm), A074 turn direction (OFF = the
+    /// fixed-angle keys turn clockwise), V025 gap outline.
+    pub fn import_cfg(&mut self, cfg: &str) {
+        let val = |k: &str| cfg.lines().find(|l| l.split_whitespace().next() == Some(k)).and_then(|l| l.split_whitespace().nth(1)).map(str::to_string);
+        if let Some(v) = val("A222").and_then(|v| v.parse::<f64>().ok()).filter(|v| *v > 0.0 && *v <= 1000.0) {
+            self.step = v;
+        }
+        if let Some(v) = val("A074") {
+            self.keys_clockwise = v.eq_ignore_ascii_case("OFF");
+        }
+        if let Some(v) = val("V025") {
+            self.halo = v.eq_ignore_ascii_case("ON");
+        }
+    }
+
+    /// Values kept in their ranges (a hand-edited settings file).
+    pub fn sane(mut self) -> Self {
+        let d = NestPrefs::default();
+        let fix = |v: f64, lo: f64, hi: f64, def: f64| if v.is_finite() && (lo..=hi).contains(&v) { v } else { def };
+        self.part_gap = fix(self.part_gap, 0.0, 50.0, d.part_gap);
+        self.edge_margin = fix(self.edge_margin, 0.0, 100.0, d.edge_margin);
+        self.step = fix(self.step, 0.001, 1000.0, d.step);
+        self.snap_px = if self.snap_px.is_finite() && (2.0..=60.0).contains(&self.snap_px) { self.snap_px } else { d.snap_px };
+        self
+    }
 }
 
 /// The mouse-wheel scroll speed the app starts with (× 40 px per line).
@@ -203,6 +268,7 @@ impl Default for AppSettings {
             ui_size: 0,
             scroll_speed: SCROLL_SPEED_DEFAULT,
             stock: Default::default(),
+            nesting: Default::default(),
             integrations: default_integrations(),
         }
     }
@@ -303,6 +369,7 @@ impl AppSettings {
         s += &format!("theme = {}\nwarn_tech = {}\nshow_unbuilt = {}\nauto_db = {}\n", self.theme, self.warn_tech, self.show_unbuilt, self.auto_db);
         s += &format!("ui_size = {}\nscroll_speed = {}\n", self.ui_size, self.scroll_speed);
         s += &format!("stock = {}\n", serde_json::to_string(&self.stock).unwrap_or_default());
+        s += &format!("nesting = {}\n", serde_json::to_string(&self.nesting).unwrap_or_default());
         for (k, (n, id)) in self.materials.iter().enumerate() {
             s += &format!("material{k} = {}|{}\n", esc(n), esc(id));
         }
@@ -399,6 +466,7 @@ impl AppSettings {
                     "auto_db" => st.auto_db = v != "false",
                     "ui_size" => st.ui_size = ui_size_from(v.parse().unwrap_or(0)),
                     "stock" => st.stock = serde_json::from_str(&v).unwrap_or_default(),
+                    "nesting" => st.nesting = serde_json::from_str::<NestPrefs>(&v).unwrap_or_default().sane(),
                     "scroll_speed" => st.scroll_speed = v.parse::<f32>().ok().filter(|x| (0.5..=6.0).contains(x)).unwrap_or(SCROLL_SPEED_DEFAULT),
                     _ if k.starts_with("material_ref") => {
                         if let Ok(i) = k["material_ref".len()..].parse::<usize>() {
@@ -584,7 +652,14 @@ impl AppSettings {
                 self.ui_size = ui_size_from(f);
             }
         }
-        format!("Imported {name} and {added} machine(s) from {dir}.")
+        // Moving parts by hand (LANTEKPR.CFG): the movement value, the turn
+        // direction of the fixed-angle keys and the gap outline (HM4, HM5, HM11).
+        let mut moves = String::new();
+        if let Ok(b) = std::fs::read(p.join("LANTEKPR.CFG")) {
+            self.nesting.import_cfg(&b.iter().map(|&c| c as char).collect::<String>());
+            moves = format!(" Moving parts: step {}.", self.nesting.units.show_long(self.nesting.step));
+        }
+        format!("Imported {name} and {added} machine(s) from {dir}.{moves}")
     }
 }
 
@@ -654,6 +729,17 @@ mod settings_tests {
     }
 
     #[test]
+    fn moving_part_values_come_from_the_originals_cfg() {
+        // HM4, HM5, HM11: a factory file and a shop that works in inches.
+        let mut n = NestPrefs::default();
+        assert_eq!((n.step, n.keys_clockwise, n.halo), (10.0, false, false));
+        n.import_cfg("A074 OFF                   ; x\r\nA222 1.270000              ; y\r\nV025 ON ; z\r\n");
+        assert_eq!((n.step, n.keys_clockwise, n.halo), (1.27, true, true));
+        n.import_cfg("A222 0.0 ; ignored\nA074 ON\n");
+        assert_eq!((n.step, n.keys_clockwise), (1.27, false));
+    }
+
+    #[test]
     fn settings_round_trip_through_text() {
         let s = AppSettings {
             lantek_dir: r"D:\Lantek\Expert".into(),
@@ -681,6 +767,7 @@ mod settings_tests {
             ui_size: 2,
             scroll_speed: 3.0,
             stock: crate::stock::StockSettings { order: crate::stock::Order::ByPriority, min_efficiency: 0.6, ..Default::default() },
+            nesting: NestPrefs { units: crate::units::LenUnit::Inch, part_gap: 6.35, edge_margin: 6.35, step: 25.4 / 16.0, keys_clockwise: true, snap: false, snap_px: 20.0, halo: true },
             integrations: vec![crate::integrations::Integration {
                 provider: crate::integrations::Provider::Fulcrum,
                 enabled: false,

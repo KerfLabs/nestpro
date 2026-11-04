@@ -3499,6 +3499,144 @@
   "group": "kerf compensation",
   "value": "2 x machine cutter radius, else 0.3 mm",
   "source": "MECHANICS KC6"
+ },
+ {
+  "name": "Alt + arrow moves the selection by the movement value",
+  "group": "moving parts by hand",
+  "value": true,
+  "source": "MECHANICS HM1"
+ },
+ {
+  "name": "Ctrl + arrow moves the selection to the end (next part or margin)",
+  "group": "moving parts by hand",
+  "value": true,
+  "source": "MECHANICS HM1"
+ },
+ {
+  "name": "Ctrl+R sets the movement value",
+  "group": "moving parts by hand",
+  "value": true,
+  "source": "MECHANICS HM1"
+ },
+ {
+  "name": "Ctrl+Q / Ctrl+W turn the selection (+/- rotation step)",
+  "group": "moving parts by hand",
+  "value": "90° steps only in the rebuild",
+  "source": "MECHANICS HM1"
+ },
+ {
+  "name": "slide to the end stops at",
+  "group": "moving parts by hand",
+  "value": "part gap from the next part (whatever the Collision button), else the sheet margin; exact contours in the rebuild",
+  "source": "MECHANICS HM2"
+ },
+ {
+  "name": "move by the movement value",
+  "group": "moving parts by hand",
+  "value": "no collision test (exactly the step, may end closer than the gap); kept on the sheet with a warning in the rebuild",
+  "source": "MECHANICS HM3"
+ },
+ {
+  "name": "movement value default",
+  "group": "moving parts by hand",
+  "value": "10 mm (factory), else the Lantek install's on first start",
+  "source": "MECHANICS HM4"
+ },
+ {
+  "name": "a selection turns about",
+  "group": "moving parts by hand",
+  "value": "the centre of its box",
+  "source": "MECHANICS HM5"
+ },
+ {
+  "name": "turned selection that collides",
+  "group": "moving parts by hand",
+  "value": "moves to the nearest free spot (rings every half gap, min 1 mm)",
+  "source": "MECHANICS HM5; search estimated",
+  "estimated": true
+ },
+ {
+  "name": "mirror the selection",
+  "group": "moving parts by hand",
+  "value": "left-right or top-bottom about its box centre",
+  "source": "MECHANICS HM6"
+ },
+ {
+  "name": "window selection picks",
+  "group": "moving parts by hand",
+  "value": "parts wholly inside the window",
+  "source": "MECHANICS HM7; estimate",
+  "estimated": true
+ },
+ {
+  "name": "blocked drag with Collision on",
+  "group": "moving parts by hand",
+  "value": "slides along, stopping one gap before the obstacle",
+  "source": "MECHANICS HM8; estimate",
+  "estimated": true
+ },
+ {
+  "name": "drag snap reach",
+  "group": "moving parts by hand",
+  "value": "14 px on screen",
+  "source": "MECHANICS HM9; estimate",
+  "estimated": true
+ },
+ {
+  "name": "drag snap target",
+  "group": "moving parts by hand",
+  "value": "one part gap from a neighbour's contour, or the margin",
+  "source": "MECHANICS HM9; estimate",
+  "estimated": true
+ },
+ {
+  "name": "copy of a selection goes to",
+  "group": "moving parts by hand",
+  "value": "first free spot by boxes, left first then lowest, layout kept",
+  "source": "MECHANICS HM10"
+ },
+ {
+  "name": "each copy adds to the part's order",
+  "group": "moving parts by hand",
+  "value": true,
+  "source": "MECHANICS HM10"
+ },
+ {
+  "name": "gap outline around dragged parts",
+  "group": "moving parts by hand",
+  "value": "off (factory), else the Lantek install's on first start",
+  "source": "MECHANICS HM11"
+ },
+ {
+  "name": "lengths on the nesting screen",
+  "group": "moving parts by hand",
+  "value": "mm or inches (fractions accepted)",
+  "source": "MECHANICS HM12"
+ },
+ {
+  "name": "new job part gap / edge margin",
+  "group": "moving parts by hand",
+  "value": "from Settings -> Nesting (5 mm / 5 mm)",
+  "source": "MECHANICS HM12"
+ },
+ {
+  "name": "Ctrl+9 turns",
+  "group": "moving parts by hand",
+  "value": "counter-clockwise (factory); clockwise when the install's turn direction is off",
+  "source": "MECHANICS HM5"
+ },
+ {
+  "name": "plain arrow keys / Page Down, Page Up",
+  "group": "moving parts by hand",
+  "value": "pan the view / zoom in, out (x2)",
+  "source": "MECHANICS HM13"
+ },
+ {
+  "name": "arrow-key pan step",
+  "group": "moving parts by hand",
+  "value": "80 px",
+  "source": "MECHANICS HM13; estimate",
+  "estimated": true
  }
 ]
 }

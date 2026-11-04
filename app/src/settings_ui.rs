@@ -18,6 +18,7 @@ pub enum Section {
     Shortcuts,
     Connections,
     Machines,
+    Nesting,
     Materials,
     Folders,
     Integrations,
@@ -28,7 +29,7 @@ impl Section {
     /// The navigation, in groups.
     const GROUPS: [(&'static str, &'static [Section]); 4] = [
         ("APP", &[Section::General, Section::Appearance, Section::Shortcuts]),
-        ("PRODUCTION", &[Section::Connections, Section::Machines, Section::Materials, Section::Folders]),
+        ("PRODUCTION", &[Section::Connections, Section::Machines, Section::Nesting, Section::Materials, Section::Folders]),
         ("INTEGRATIONS", &[Section::Integrations]),
         ("INFO", &[Section::About]),
     ];
@@ -39,6 +40,7 @@ impl Section {
             Section::Shortcuts => "Shortcuts",
             Section::Connections => "Connections",
             Section::Machines => "Machines & output",
+            Section::Nesting => "Nesting",
             Section::Materials => "Materials",
             Section::Folders => "Folders",
             Section::Integrations => "ERP / MES",
@@ -52,6 +54,7 @@ impl Section {
             Section::Shortcuts => "Keys and mouse",
             Section::Connections => "Databases to open",
             Section::Machines => "How programs are written",
+            Section::Nesting => "Units, part gap, moving parts",
             Section::Materials => "Names and codes in programs",
             Section::Folders => "Imports and exports",
             Section::Integrations => "Fulcrum and other systems",
@@ -65,6 +68,7 @@ impl Section {
             Section::Shortcuts => "⌨",
             Section::Connections => "🗄",
             Section::Machines => "⚙",
+            Section::Nesting => "▣",
             Section::Materials => "▦",
             Section::Folders => "📁",
             Section::Integrations => "🔗",
@@ -77,15 +81,25 @@ impl Section {
 pub const SHORTCUTS: &[(&str, &str)] = &[
     ("F5", "Nest all"),
     ("Ctrl + Z  /  Ctrl + Y", "Undo / redo"),
-    ("Ctrl + D", "Copy the selected part"),
-    ("R", "Rotate the selected part"),
-    ("Del", "Remove the selected part"),
+    ("Click / Shift or Ctrl + click", "Select a part / add it to the selection or take it out"),
+    ("Drag on empty sheet", "Select the parts wholly inside the window (Shift or Ctrl adds)"),
+    ("Ctrl + E  /  Ctrl + A", "Select every part on the sheet"),
+    ("Alt + arrow keys", "Move the selected parts by the step (Settings → Nesting, or Ctrl + R); like the original, this move doesn't stop at other parts"),
+    ("Ctrl + arrow keys", "Slide the selected parts to the next part (at the part gap) or the margin"),
+    ("Arrow keys  /  Page Down, Page Up", "Look around the sheet / zoom in, out"),
+    ("Ctrl + R", "Set the step (movement value)"),
+    ("Drag a part", "Move the selection; it snaps one part gap from a neighbour and slides along parts it meets (hold Alt for no snap)"),
+    ("Ctrl + drag a part", "Drag a copy of the selection"),
+    ("Ctrl + D", "Copy the selected parts to the first free spot"),
+    ("R  /  Ctrl + Q  /  Ctrl + W  /  Ctrl + 9", "Turn the selection: next allowed turn / 90° left / 90° right / 90° (direction in Settings → Nesting)"),
+    ("M  /  Shift + M", "Mirror the selection left↔right / top↔bottom"),
+    ("Del", "Remove the selected parts"),
+    ("Esc", "Clear the selection"),
     ("Ctrl + S", "Save the job"),
     ("Ctrl + Shift + S", "Save the job as…"),
     ("Ctrl + O", "Open a saved job"),
     ("Ctrl + ,", "Settings"),
-    ("Drag a part", "Move it"),
-    ("Drag empty space / middle button", "Pan"),
+    ("Middle button / Space + drag", "Pan"),
     ("Mouse wheel", "Zoom"),
     ("Right-click on a part", "Quick menu"),
 ];
@@ -301,6 +315,7 @@ impl App {
                             Section::About => self.settings_about(ui),
                             Section::Connections => self.settings_connections(ui),
                             Section::Machines => self.settings_machines(ui),
+                            Section::Nesting => self.settings_nesting(ui),
                             Section::Materials => self.settings_materials(ui),
                             Section::Folders => self.settings_folders(ui),
                             Section::Integrations => self.settings_integrations(ui),
@@ -438,6 +453,60 @@ impl App {
         });
     }
 
+    fn settings_nesting(&mut self, ui: &mut egui::Ui) {
+        use crate::units::{drag_len, LenUnit};
+        ui.label(RichText::new("Nesting").size(18.0).strong().color(th().text_strong));
+        ui.add_space(8.0);
+        card(ui, "Units", "Part gap, edge margin and moves on the Nesting screen are shown and typed in this unit. Inches can be typed as fractions (1/4, 1 1/2) or decimals; either unit can be typed with its suffix (6.35mm, 1/4in).", |ui| {
+            ui.horizontal(|ui| {
+                for u in [LenUnit::Mm, LenUnit::Inch] {
+                    ui.radio_value(&mut self.cfg.nesting.units, u, u.label());
+                }
+            });
+        });
+        ui.add_space(10.0);
+        let u = self.cfg.nesting.units;
+        card(ui, "New jobs start with", "The smallest distance between two parts, and the distance every part keeps from the sheet edge. A job keeps its own values (Nesting screen → Spacing).", |ui| {
+            row(ui, "Part gap", |ui| {
+                drag_len(ui, &mut self.cfg.nesting.part_gap, u, 50.0);
+                ui.label(RichText::new(u.other(self.cfg.nesting.part_gap)).size(11.5).color(th().text_dim));
+            });
+            row(ui, "Edge margin", |ui| {
+                drag_len(ui, &mut self.cfg.nesting.edge_margin, u, 100.0);
+                ui.label(RichText::new(u.other(self.cfg.nesting.edge_margin)).size(11.5).color(th().text_dim));
+            });
+            ui.horizontal(|ui| {
+                let same = self.spec.gap == self.cfg.nesting.part_gap && self.spec.margin == self.cfg.nesting.edge_margin;
+                if ui.add_enabled(!same, egui::Button::new("Use for the open job too")).on_hover_text("Set the open job's part gap and edge margin to these (nest again afterwards)").clicked() {
+                    self.checkpoint();
+                    self.spec.gap = self.cfg.nesting.part_gap;
+                    self.spec.margin = self.cfg.nesting.edge_margin;
+                    self.stale = true;
+                    self.refresh();
+                    self.setui.note = "The open job now uses these — nest again to apply them to its sheets.".into();
+                }
+                ui.label(RichText::new(format!("Open job: gap {}, margin {}", u.show(self.spec.gap), u.show(self.spec.margin))).size(11.5).color(th().text_dim));
+            });
+        });
+        ui.add_space(10.0);
+        card(ui, "Moving parts by hand", "Select parts on the sheet (click, Shift/Ctrl + click, or drag a window on empty sheet), then: Ctrl + arrow keys slide them until they meet the next part at the part gap (or the margin); Alt + arrow keys move them exactly by the step — like the original, that move doesn't stop at other parts (the status line warns when they end up closer than the part gap). Lantek's own values are taken from its install the first time the app starts.", |ui| {
+            row(ui, "Step (Alt + arrows)", |ui| {
+                if drag_len(ui, &mut self.cfg.nesting.step, u, 1000.0).changed() {
+                    self.cfg.nesting.step = self.cfg.nesting.step.max(0.001);
+                }
+                ui.label(RichText::new(u.other(self.cfg.nesting.step)).size(11.5).color(th().text_dim));
+            });
+            ui.checkbox(&mut self.cfg.nesting.snap, "Snap dragged parts to one part gap from a neighbour or to the margin (hold Alt while dragging to place freely)");
+            ui.add_enabled_ui(self.cfg.nesting.snap, |ui| {
+                row(ui, "Snap reach", |ui| {
+                    ui.add(egui::DragValue::new(&mut self.cfg.nesting.snap_px).range(2.0..=60.0).speed(0.5).suffix(" px on screen"));
+                });
+            });
+            ui.checkbox(&mut self.cfg.nesting.halo, "Show the part gap as a dashed outline around parts being dragged");
+            ui.checkbox(&mut self.cfg.nesting.keys_clockwise, "Ctrl + 9 turns clockwise (off: counter-clockwise)");
+        });
+    }
+
     fn settings_shortcuts(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label(RichText::new("Shortcuts").size(18.0).strong().color(th().text_strong));
@@ -509,7 +578,7 @@ impl App {
                 self.setui.sel_conn = self.cfg.connections.len() - 1;
                 self.setui.pw_input.clear();
             }
-            if ui.button("Import from Lantek…").on_hover_text("Add the database and machines of a Lantek Expert install").clicked() {
+            if ui.button("Import from Lantek…").on_hover_text("Add the database and machines of a Lantek Expert install, and its settings for moving parts by hand (step, turn direction, gap outline)").clicked() {
                 self.import_lantek_ui();
             }
         });

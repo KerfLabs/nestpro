@@ -6,6 +6,7 @@
 //! agent can run (the registry the CLI and the MCP tools are built from);
 //! `render.rs` draws a sheet or a part to PNG/SVG so an agent can look at it.
 
+pub mod arrange;
 pub mod imports;
 pub mod ops;
 pub mod render;
@@ -398,30 +399,6 @@ pub fn free_spot(parts: &[Part], sheet: &[Placed], spec: &SheetSpec, f: &SheetFo
     best
 }
 
-/// Where Copy puts a copy of a placed part: the first free spot by box, left
-/// first, in the same orientation.
-pub fn copy_spot(sheet: &[Placed], spec: &SheetSpec, f: &SheetFormat, src: Placed) -> Option<Placed> {
-    let (gap, m) = (spec.gap, spec.margin);
-    let mut xs: Vec<f64> = vec![m];
-    let mut ys: Vec<f64> = vec![m];
-    for o in sheet {
-        xs.push(o.x + o.w + gap);
-        ys.push(o.y + o.h + gap);
-    }
-    let mut best: Option<Placed> = None;
-    for &x in &xs {
-        for &y in &ys {
-            let c = Placed { x, y, ..src };
-            if !fits_format(spec, f, &c) || sheet.iter().any(|o| c.clashes(o, gap - 1e-6)) {
-                continue;
-            }
-            if best.is_none_or(|b| (c.x, c.y) < (b.x, b.y)) {
-                best = Some(c);
-            }
-        }
-    }
-    best
-}
 
 /// (usage of the whole sheet %, usage up to the remnant cut %, X of that cut)
 /// of a sheet of format `f` in a job with sheet settings `spec`. A remnant
@@ -911,6 +888,11 @@ impl JobFile {
         self.manual_cuts.clear();
         self.method.clear();
     }
+}
+
+/// A new job's sheet with the part gap and edge margin from Settings → Nesting (HM12).
+pub fn with_prefs(spec: &SheetSpec, cfg: &AppSettings) -> SheetSpec {
+    SheetSpec { gap: cfg.nesting.part_gap, margin: cfg.nesting.edge_margin, ..spec.clone() }
 }
 
 /// The default sheet of a new job: 2000 × 1000 mm, 3 mm mild steel, level 3.

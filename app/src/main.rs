@@ -1,6 +1,7 @@
 ﻿#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod appicon;
+mod arrange_ui;
 mod bands;
 mod blm;
 mod startup;
@@ -53,6 +54,7 @@ mod partview;
 mod techui;
 mod theme;
 mod ui_parts;
+mod units;
 mod v44;
 
 use eframe::egui;
@@ -169,13 +171,6 @@ pub struct Job {
     pub erp: Option<integrations::ErpJob>,
 }
 
-pub struct DragState {
-    idx: usize,
-    orig: Placed,
-    grab: [f64; 2],
-    valid: bool,
-}
-
 pub struct App {
     pub job_name: String,
     pub parts: Vec<Part>,
@@ -187,7 +182,13 @@ pub struct App {
     pub stale: bool,
     pub cur_sheet: usize,
     pub sel_placed: Option<usize>,
-    drag: Option<DragState>,
+    /// More selected parts on the sheet besides `sel_placed` (arrange_ui.rs).
+    pub sel_more: Vec<usize>,
+    pub drag: Option<arrange_ui::DragState>,
+    /// A selection window being drawn on the sheet: corners (mm) and whether it adds.
+    pub window_sel: Option<(P, P, bool)>,
+    /// The movement value window (Ctrl+R) is open.
+    pub step_popup: bool,
     panning: bool,
     pub zoom: f32,
     pub pan: Vec2,
@@ -473,7 +474,10 @@ impl App {
             stale: false,
             cur_sheet: 0,
             sel_placed: None,
+            sel_more: vec![],
             drag: None,
+            window_sel: None,
+            step_popup: false,
             panning: false,
             zoom: 1.0,
             pan: Vec2::ZERO,
@@ -791,7 +795,7 @@ impl App {
             return;
         };
         self.store_job();
-        self.jobs.push(Job { week, name, parts: vec![], spec: self.spec.clone(), result: NestResult::default(), stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None });
+        self.jobs.push(Job { week, name, parts: vec![], spec: engine::with_prefs(&self.spec, &self.cfg), result: NestResult::default(), stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None });
         let i = self.jobs.len() - 1;
         self.open_job(i);
         self.status = format!("Created job {} — add products, then nest.", self.job_name);
@@ -1258,19 +1262,31 @@ impl App {
         );
     }
 
-    /// Place a copy of the selected part in the first free spot (left first).
+    /// Place a copy of the selected parts in the first free spot (left first),
+    /// keeping their layout (HM10).
     pub fn duplicate_selected(&mut self) {
-        let Some(i) = self.sel_placed else { return };
+        let sel = self.selection();
         let ci = self.cur_sheet;
-        let src = self.result.sheets[ci][i];
-        match engine::copy_spot(&self.result.sheets[ci], &self.spec, &self.result.format(ci, &self.spec), src) {
-            Some(c) => {
+        if sel.is_empty() || ci >= self.result.sheets.len() {
+            return;
+        }
+        let f = self.result.format(ci, &self.spec);
+        match engine::arrange::copy_spot(&self.result.sheets[ci], &sel, &self.spec, &f) {
+            Some(d) => {
                 self.checkpoint();
-                self.result.sheets[ci].push(c);
-                self.parts[src.part].qty += 1;
-                self.sel_placed = Some(self.result.sheets[ci].len() - 1);
+                let n = self.result.sheets[ci].len();
+                for c in engine::arrange::copies(&self.result.sheets[ci], &sel, d) {
+                    self.parts[c.part].qty += 1;
+                    self.result.sheets[ci].push(c);
+                }
+                self.set_selection((n..self.result.sheets[ci].len()).collect());
                 self.refresh();
-                self.status = format!("Copied {} to X {:.0}  Y {:.0}.", self.parts[src.part].name, c.x, c.y);
+                let c = self.result.sheets[ci][n];
+                self.status = if sel.len() == 1 {
+                    format!("Copied {} to X {}  Y {}.", self.parts[c.part].name, self.len_txt(c.x), self.len_txt(c.y))
+                } else {
+                    format!("Copied {} parts; the copies are selected.", sel.len())
+                };
             }
             None => self.status = "No free spot on this sheet for a copy.".into(),
         }
@@ -1401,6 +1417,7 @@ impl App {
         self.parts.clear();
         self.sel_part = None;
         self.job_name = "New job".into();
+        self.spec = engine::with_prefs(&self.spec, &self.cfg);
         self.clear_sheets();
         self.status = "New job — add parts, then press Nest all.".into();
     }
@@ -1422,39 +1439,42 @@ impl App {
         self.stale = true;
     }
 
-    fn placement_ok(&self, sheet: usize, idx: usize, cand: &Placed) -> bool {
-        engine::placement_ok(&self.parts, &self.result.sheets[sheet], &self.spec, &self.result.format(sheet, &self.spec), Some(idx), cand, self.collision)
-    }
-
+    /// R: one part turns to its next allowed quarter turn, several turn 90°
+    /// together — about their centre, moved to the nearest free spot when
+    /// they'd land on another part (HM5).
     pub fn rotate_selected(&mut self) {
-        let Some(i) = self.sel_placed else { return };
+        let sel = self.selection();
         let s = self.cur_sheet;
-        let old = self.result.sheets[s][i];
-        // Next allowed quarter turn (the part's rotation permissions).
-        let c = match engine::next_turn(&self.parts[old.part], old) {
-            Ok(c) => c,
-            Err(e) => {
-                self.status = e.into();
-                return;
-            }
-        };
-        if self.placement_ok(s, i, &c) {
-            self.checkpoint();
-            self.result.sheets[s][i] = c;
-            self.refresh();
-            self.status = "Part rotated 90°.".into();
-        } else {
-            self.status = "No room to rotate the part here.".into();
+        if sel.is_empty() || s >= self.result.sheets.len() {
+            return;
         }
+        let q = if let [i] = sel[..] {
+            let old = self.result.sheets[s][i];
+            match engine::next_turn(&self.parts[old.part], old) {
+                Ok(c) => (c.turns + 4 - old.turns) % 4,
+                Err(e) => {
+                    self.status = e.into();
+                    return;
+                }
+            }
+        } else {
+            1
+        };
+        self.turn_selected(q);
     }
 
     pub fn remove_selected(&mut self) {
-        let Some(i) = self.sel_placed else { return };
+        let sel = self.selection();
+        if sel.is_empty() || self.cur_sheet >= self.result.sheets.len() {
+            return;
+        }
         self.checkpoint();
-        self.result.sheets[self.cur_sheet].remove(i);
-        self.sel_placed = None;
+        for &i in sel.iter().rev() {
+            self.result.sheets[self.cur_sheet].remove(i);
+        }
+        self.set_selection(vec![]);
         self.refresh();
-        self.status = "Part taken off the sheet. Press Nest all to place it again.".into();
+        self.status = if sel.len() == 1 { "Part taken off the sheet. Press Nest all to place it again.".into() } else { format!("{} parts taken off the sheet.", sel.len()) };
     }
 
     /// (usage of whole sheet %, usage up to the remnant cut line %, X of that cut line)
@@ -1564,8 +1584,9 @@ impl App {
                 if has_sheet {
                     let w = to_w(hp);
                     if let Some(i) = self.result.sheets[sheet_idx].iter().rposition(|p| nest::placed_contains(&self.parts, p, w)) {
-                        self.sel_placed = Some(i);
-                        self.sel_part = Some(self.result.sheets[sheet_idx][i].part);
+                        if !self.is_selected(i) {
+                            self.set_selection(vec![i]);
+                        }
                     }
                 }
                 self.open_radial(ui.ctx(), hp);
@@ -1578,68 +1599,8 @@ impl App {
                 self.pan += resp.drag_delta();
             }
         } else if has_sheet {
-            if resp.drag_started_by(egui::PointerButton::Primary) {
-                if let Some(pp) = resp.interact_pointer_pos() {
-                    let w = to_w(pp);
-                    // A straight cut line under the pointer moves ("Modify Edge").
-                    if self.cut_drag_begin(w, (cutoff::LINE_PICK_PX / s) as f64) {
-                        self.panning = false;
-                    } else if let Some(i) = self.result.sheets[sheet_idx].iter().rposition(|p| nest::placed_contains(&self.parts, p, w)).filter(|_| !self.manual_mode) {
-                        self.checkpoint();
-                        let pl = self.result.sheets[sheet_idx][i];
-                        self.sel_placed = Some(i);
-                        self.sel_part = Some(pl.part);
-                        self.drag = Some(DragState { idx: i, orig: pl, grab: [w[0] - pl.x, w[1] - pl.y], valid: true });
-                        self.panning = false;
-                    } else {
-                        self.panning = true;
-                    }
-                }
-            }
-            if resp.dragged_by(egui::PointerButton::Primary) {
-                if self.cut_drag.is_some() {
-                    if let Some(pp) = resp.interact_pointer_pos() {
-                        self.cut_drag_move(to_w(pp));
-                    }
-                } else if self.panning {
-                    self.pan += resp.drag_delta();
-                } else if let (Some(d), Some(pp)) = (self.drag.as_ref(), resp.interact_pointer_pos()) {
-                    let w = to_w(pp);
-                    let idx = d.idx;
-                    let mut c = self.result.sheets[sheet_idx][idx];
-                    c.x = (w[0] - d.grab[0]).round();
-                    c.y = (w[1] - d.grab[1]).round();
-                    let ok = self.placement_ok(sheet_idx, idx, &c);
-                    self.result.sheets[sheet_idx][idx] = c;
-                    if let Some(d) = self.drag.as_mut() {
-                        d.valid = ok;
-                    }
-                }
-            }
-            if resp.drag_stopped() {
-                self.cut_drag_end();
-                if let Some(d) = self.drag.take() {
-                    if !d.valid {
-                        self.undo.pop();
-                        self.result.sheets[sheet_idx][d.idx] = d.orig;
-                        self.status = "Part would collide or leave the sheet — moved back.".into();
-                    } else {
-                        let p = self.result.sheets[sheet_idx][d.idx];
-                        self.status = format!("Part moved to X {:.0}  Y {:.0}.", p.x, p.y);
-                    }
-                    self.refresh();
-                }
-                self.panning = false;
-            }
-            if resp.clicked() && !self.manual_mode {
-                if let Some(pp) = resp.interact_pointer_pos() {
-                    let w = to_w(pp);
-                    self.sel_placed = self.result.sheets[sheet_idx].iter().rposition(|p| nest::placed_contains(&self.parts, p, w));
-                    if let Some(i) = self.sel_placed {
-                        self.sel_part = Some(self.result.sheets[sheet_idx][i].part);
-                    }
-                }
-            }
+            // Select, drag (snap and slide), Ctrl+drag copies, window, pan (arrange_ui.rs).
+            self.sheet_pointer(ui, &resp, &to_w, s);
         } else if resp.dragged() {
             self.pan += resp.drag_delta();
         }
@@ -1688,7 +1649,7 @@ impl App {
             for (i, pl) in sheet.iter().enumerate() {
                 let part = &self.parts[pl.part];
                 let base = part_color(part.color);
-                let selected = self.sel_placed == Some(i);
+                let selected = self.is_selected(i);
                 let hovered = hover_w.is_some_and(|w| nest::placed_contains(&self.parts, pl, w));
                 if hovered {
                     self.hover_name = Some(format!(
@@ -1714,7 +1675,7 @@ impl App {
                 let drop = (1.0 - ease) * 14.0;
                 let fill = if hovered && !selected { base.gamma_multiply(1.2) } else { base };
                 let fill = if t < 1.0 { fill.gamma_multiply(ease) } else { fill };
-                let invalid = self.drag.as_ref().is_some_and(|d| d.idx == i && !d.valid);
+                let invalid = self.drag.as_ref().is_some_and(|d| !d.valid && d.sel.contains(&i));
                 let edge = if invalid {
                     Stroke::new(2.5, Color32::from_rgb(248, 80, 90))
                 } else if selected {
@@ -1805,6 +1766,9 @@ impl App {
                     }
                 }
             }
+        }
+        if has_sheet {
+            self.arrange_canvas(&painter, &to_s);
         }
         // Hover card next to the pointer.
         if let (Some(info), Some(hp), None, false) = (&self.hover_name, resp.hover_pos(), &self.drag, ghosting) {
@@ -2011,6 +1975,9 @@ impl eframe::App for App {
                 }
             }
         }
+        if self.shot.is_some() && self.frames == 60 {
+            self.shot_arrange();
+        }
         if let Some(path) = &self.shot {
             ctx.request_repaint();
             if self.frames == 120 {
@@ -2054,6 +2021,10 @@ impl eframe::App for App {
         });
         if !dropped.is_empty() {
             self.import_drawings(dropped);
+        }
+        if self.workspace == Workspace::Nesting {
+            // Alt/Ctrl + arrows, Ctrl+Q/W, M, Ctrl+E… on the selected parts.
+            self.sheet_keys(&ctx);
         }
         let typing = ctx.memory(|m| m.focused().is_some());
         if !typing {
@@ -2167,6 +2138,7 @@ impl eframe::App for App {
         self.radial_ui(&ctx);
         self.dock_overlay(&ctx);
         self.times_window(&ctx);
+        self.step_window(&ctx);
         self.pending_dialog(&ctx);
         self.joint_sizes_window(&ctx);
     }
@@ -2325,6 +2297,7 @@ fn main() -> eframe::Result {
                     "materials" => Materials,
                     "erp" | "integrations" => Integrations,
                     "folders" => Folders,
+                    "nesting" => Nesting,
                     _ => General,
                 };
                 app.open_settings(sec);
@@ -2421,6 +2394,10 @@ fn main() -> eframe::Result {
             if std::env::args().any(|a| a == "--nest-stock") {
                 app.run_nesting();
                 app.anim_pending = false;
+            }
+            // --units=inch: lengths in inches (screenshots; --select is applied in `ui`).
+            if std::env::args().any(|a| a == "--units=inch") {
+                app.cfg.nesting.units = units::LenUnit::Inch;
             }
             // --remnant-mark: the automatic mark on remnants on (screenshots).
             if std::env::args().any(|a| a == "--remnant-mark") {
@@ -2620,6 +2597,74 @@ mod tests {
         a.redo();
         assert_eq!(a.total_placed(), placed + 1);
         no_clashes(&a);
+    }
+
+    #[test]
+    fn a_selection_moves_turns_copies_and_goes_by_hand() {
+        // HM1–HM10 as the keys and buttons run them.
+        let mut a = App::new(None);
+        let r = |name: &str, color| Part { name: name.into(), shape: Shape::Rectangle, w: 200.0, h: 100.0, qty: 3, rotate: true, color, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
+        a.parts = vec![r("A", 0), r("B", 1)];
+        a.run_nesting();
+        assert_eq!(a.total_placed(), 6);
+        a.cur_sheet = 0;
+        a.set_selection(vec![0, 1]);
+        assert_eq!(a.selection(), vec![0, 1]);
+        let undo0 = a.undo.len();
+        // Ctrl + Up: they sit under a third part, so they stay; Ctrl + Right:
+        // to the right margin, together.
+        let before: Vec<Placed> = a.result.sheets[0].clone();
+        a.nudge(engine::arrange::Dir::Up, true, 10.0);
+        assert_eq!(a.result.sheets[0], before, "{}", a.status);
+        assert!(a.status.contains("they are at the part gap"), "{}", a.status);
+        a.nudge(engine::arrange::Dir::Right, true, 10.0);
+        let after = &a.result.sheets[0];
+        let dx = after[0].x - before[0].x;
+        assert!((after[0].x + after[0].w - (a.spec.w - a.spec.margin)).abs() < 1e-6, "{:?}", after[0]);
+        assert!(dx > 0.0 && (after[1].x - before[1].x - dx).abs() < 1e-9, "moved together");
+        no_clashes(&a);
+        // Alt + Left twice in a row: one undo step, 2 × the step.
+        let x = a.result.sheets[0][0].x;
+        a.nudge(engine::arrange::Dir::Left, false, 20.0);
+        a.nudge(engine::arrange::Dir::Left, false, 20.5);
+        assert!((x - a.result.sheets[0][0].x - 2.0 * a.cfg.nesting.step).abs() < 1e-6);
+        assert_eq!(a.undo.len(), undo0 + 2, "Ctrl+Right, then the Alt+Left run");
+        // Turn, copy and remove the pair.
+        a.turn_selected(1);
+        assert!(a.selection().iter().all(|&i| a.result.sheets[0][i].turns == 1));
+        no_clashes(&a);
+        a.duplicate_selected();
+        assert_eq!(a.total_placed(), 8);
+        assert_eq!(a.selection(), vec![6, 7], "the copies are selected");
+        no_clashes(&a);
+        a.remove_selected();
+        assert_eq!(a.total_placed(), 6);
+        assert!(a.selection().is_empty());
+        a.select_all_on_sheet();
+        assert_eq!(a.selection().len(), 6);
+    }
+
+    #[test]
+    fn alt_arrows_force_and_ctrl_arrows_always_keep_the_gap() {
+        // HM2, HM3: the step move doesn't test for parts; the slide always does,
+        // even with Collision off.
+        let mut a = App::new(None);
+        let r = Part { name: "A".into(), shape: Shape::Rectangle, w: 100.0, h: 100.0, qty: 2, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
+        a.parts = vec![r];
+        a.spec.gap = 6.35;
+        a.result = NestResult { sheets: vec![vec![Placed { part: 0, x: 100.0, y: 100.0, w: 100.0, h: 100.0, turns: 0, mirror: false }, Placed { part: 0, x: 210.0, y: 100.0, w: 100.0, h: 100.0, turns: 0, mirror: false }]], formats: vec![nest::SheetFormat::rect(2000.0, 1000.0)], method: String::new(), tried: 0 };
+        a.cur_sheet = 0;
+        a.collision = false;
+        a.set_selection(vec![1]);
+        a.nudge(engine::arrange::Dir::Left, true, 1.0);
+        assert!((a.result.sheets[0][1].x - 206.35).abs() < 1e-6, "Ctrl+Left stops at the gap: {:?}", a.result.sheets[0][1]);
+        a.collision = true;
+        a.cfg.nesting.step = 5.0;
+        a.nudge(engine::arrange::Dir::Left, false, 2.0);
+        assert!((a.result.sheets[0][1].x - 201.35).abs() < 1e-6, "Alt+Left moves the whole step");
+        assert!(a.status.starts_with('⚠') && a.status.contains("#1"), "{}", a.status);
+        a.nudge(engine::arrange::Dir::Right, true, 3.0);
+        assert!(a.result.sheets[0][1].x > 1500.0, "Ctrl+Right to the margin");
     }
 }
 

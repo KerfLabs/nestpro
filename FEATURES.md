@@ -50,15 +50,20 @@ original (or a real job).
 |---|---|---|---|---|
 | NST-2 | One Window: nest only inside a window you draw | Missing | ★★ | |
 | NST-3 | Unitary / Grid: a part onto a sheet of matching size | Missing | ★ | |
-| NST-4 | Advanced Copy (arrays), Place Near, Expand, Fit to borders | Partial | ★★ | Compact to left, snap while dropping |
+| NST-4 | Advanced Copy (arrays: window, multiple, grid), Place Near (parallel, perpendicular, sides, points, tangent, corner to a point), Expand, Fit to borders | Partial | ★★ | built: Compact to left, snap while dropping or dragging, Ctrl+arrow slide to the next part, copy of a selection (MECHANICS HM2, HM9, HM10) |
 | NST-5 | Nesting for common cut (shared edges) | Missing | ★★ | |
-| NST-6 | Snap points (end, mid, centre, intersection, tangent…), distance & angle, orthogonal | Missing | ★★ | |
+| NST-6 | Snap points (end, mid, centre, intersection, tangent…) for Move's reference and insertion points, Distance & Angle and Angle between three points on the sheet, orthogonal mode (F2) | Missing | ★★ | the gap snap while dragging is built (HM9) |
 | NST-7 | Macros (record and replay) | Missing | ★ | greyed in the app |
 | NST-8 | Grouping by several attributes at once (A786), start corner and direction | Missing | ★ | MECHANICS "Nesting parts grouped by attributes" |
 | NST-9 | Multi-torch | Missing | ★ | a CT1 setting |
 | NST-10 | Free rotation angles in automatic nesting (A014 / B058 angle steps); the strip nester tries quarter turns and mirror only | Missing | ★★ | ROADMAP, MECHANICS "True-shape strip nesting" |
 | NST-11 | Strip nester guesses: which sheet is "better" (no priority sets; complete sheet, then efficiency, then part area), the efficiency measure, 5 mm strips when the CT1 has no B057, the 0.05 mm rounding guard | Estimate | ★★ | MECHANICS "True-shape strip nesting", `nest::Fill::better_than`, `BAND_DEFAULT`, `BAND_GUARD` |
-| NST-12 | Remnants: a part's real outline must stay inside the remnant (the window's checks and the nester agree); copying a part on a remnant (`copy_spot`) still looks for a spot by box | Partial | ★ | `engine::part_fits_format`, `engine::copy_spot` |
+| NST-12 | Remnants: a part's real outline must stay inside the remnant (the window's checks and the nester agree); copying parts on a remnant (`copy_spot`) still looks for a spot by box | Partial | ★ | `engine::part_fits_format`, `engine::arrange::copy_spot` |
+| NST-14 | Turning placed parts by hand at any angle: the rotation step (Ctrl+E) with Ctrl+Q / Ctrl+W, 1/5/10/30/45° keys, a typed angle (Ctrl+T), turn to the minimum rectangle (Ctrl+G / Ctrl+F); turning while dragging. Placed parts only hold quarter turns (`nest::Placed::turns`), so this needs a free angle on every placed part (outline, CNC, texts) | Missing | ★★ | MECHANICS HM1, G3 |
+| NST-15 | Moving parts by hand — guesses to check against the original: window selection = parts wholly inside, the blocked drag sliding along, the 14 px snap reach on contours (the original's drag snap and its "closer point without collision" on drop weren't traced), the ring search for a free spot after a turn (the original searches when the part is put down), mirror about the selection's box centre, Alt+arrow kept on the sheet, the 80 px arrow-key pan and which of Page Up / Page Down zooms in | Estimate | ★★ | MECHANICS HM5–HM9, HM13 |
+| NST-18 | Remnant cut-outs and machine clamps as obstacles for Ctrl+arrow slides (the original stops at them too); "fit parts to the sheet border" (B078) off should keep half a gap more from the margin in manual moves | Missing | ★ | MECHANICS HM2 |
+| NST-16 | Inches everywhere: only the part gap, edge margin, moves and Settings → Nesting follow the units setting; sheet sizes, part sizes, coordinates in hover cards, the status bar and reports are still in mm | Partial | ★★ | MECHANICS HM12, `units.rs` |
+| NST-17 | Selection extras: Trap (polyline) selection, invert selection, select by part / all copies of a part, multihead groups (Alt+M) | Missing | ★ | MECHANICS HM7 |
 
 ## Technology (TEC)
 
@@ -180,6 +185,7 @@ original (or a real job).
 | AGT-3 | Agent operation for opening a BLM LC5 program set (`import-program`) | 2026-11-04 (`engine/imports.rs`) |
 | — | Agent operations on the window's stock: `stock`, `stock-book`, `sheet-add`, `sheet-change`, `sheet-delete`, `nest stock=` | 2026-11-04 (`engine/stockflow.rs`, MECHANICS SA1–SA6) |
 | — | Command line and MCP server on a shared engine; every ribbon command mapped | 2026-11-04 |
+| NST-13 | **Moving parts by hand**: several parts selected (Shift/Ctrl + click, window, Ctrl+E/Ctrl+A), moved together; Alt + arrows by the movement value (Ctrl+R), Ctrl + arrows slide to the next part at the part gap or the margin; drags snap to the gap and slide along parts; Ctrl + drag copies; turn (R, Ctrl+Q/W/9) and mirror (M, Shift+M) about the selection's centre; copy, remove a selection; Settings → Nesting with mm/inch (fractions), new jobs' part gap and edge margin, step, snap; agents' `slide`, `turn`, `mirror`, group `move` / `copy` | 2026-11-04 (`engine/arrange.rs`, `arrange_ui.rs`, `units.rs`, MECHANICS HM1–HM12) |
 | NST-1 | **True-shape nesting**: strip (band) profiles — parts hook into notches and drop into holes, every method fills each sheet and the best is kept; on the job's sheet, stock sheets and inside a remnant's real outline; agents' `nest` runs the same code | 2026-11-04 (`bands.rs`, `nest::nest_plan`, MECHANICS "True-shape strip nesting") |
 | REM-12 | Nesting on an irregular remnant follows its true shape (strips outside the outline are taken), no longer its free rectangles | 2026-11-04 (`bands::Sheet::keep_inside`) |
 | — | Automatic lead-ins by contour class and automatic micro-joints from the machine's CT1; agents' `leads` / `joints` set the same part technology the window does | 2026-11-04 (`leads.rs`, `joints.rs`, `engine::TechEdit`, MECHANICS AL1–AL11, AM1–AM6) |

@@ -258,6 +258,7 @@ impl App {
         }
         self.result.sheets[s].push(c);
         self.sel_placed = Some(self.result.sheets[s].len() - 1);
+        self.sel_more.clear();
         self.refresh();
         let left = self.parts[c.part].qty.saturating_sub(self.placed_of(c.part) as u32);
         let name = self.parts[c.part].name.clone();

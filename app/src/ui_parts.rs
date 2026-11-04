@@ -41,6 +41,8 @@ pub enum Icon {
     Remove,
     Clear,
     Collision,
+    Snap,
+    Mirror,
     Times,
     Program,
     CutPath,
@@ -252,6 +254,18 @@ pub fn draw_icon_with(p: &egui::Painter, r: Rect, icon: Icon, ink: Color32, acce
         Icon::Collision => {
             rr(Rect::from_min_size(v(-10.0, -10.0), Vec2::splat(13.0)), s);
             rr(Rect::from_min_size(v(-3.0, -3.0), Vec2::splat(13.0)), a);
+        }
+        Icon::Snap => {
+            // A part drawn to a wall, with the gap between them.
+            p.line_segment([v(-10.0, -10.0), v(-10.0, 10.0)], s);
+            rr(Rect::from_min_size(v(-4.0, -6.0), Vec2::new(14.0, 12.0)), s);
+            p.line_segment([v(-9.0, 0.0), v(-5.0, 0.0)], a);
+            poly(vec![v(-7.0, -2.5), v(-9.5, 0.0), v(-7.0, 2.5)], a);
+        }
+        Icon::Mirror => {
+            p.extend(EShape::dashed_line(&[v(0.0, -11.0), v(0.0, 11.0)], Stroke::new(1.3, accent), 2.5, 2.0));
+            poly(vec![v(-3.0, -7.0), v(-11.0, 6.0), v(-3.0, 6.0), v(-3.0, -7.0)], s);
+            poly(vec![v(3.0, -7.0), v(11.0, 6.0), v(3.0, 6.0), v(3.0, -7.0)], a);
         }
         Icon::Times => {
             p.circle_stroke(c, 9.0, s);
@@ -927,19 +941,30 @@ impl App {
             {
                 self.collision = !self.collision;
             }
-            if ribbon_button(ui, Icon::Copy, "Copy\npart", false, has).on_hover_text("Ctrl+D — place a copy in the first free spot").clicked() {
+            if ribbon_button(ui, Icon::Snap, "Snap", self.cfg.nesting.snap, true)
+                .on_hover_text("Dragged parts snap to one part gap from a neighbour or to the margin when they come near (hold Alt while dragging to place freely)")
+                .clicked()
+            {
+                self.cfg.nesting.snap = !self.cfg.nesting.snap;
+                self.save_prefs();
+            }
+            if ribbon_button(ui, Icon::Copy, "Copy\npart", false, has).on_hover_text("Ctrl+D — copy the selected parts to the first free spot (or Ctrl+drag them to where you want the copy)").clicked() {
                 self.duplicate_selected();
             }
-            if ribbon_button(ui, Icon::Rotate, "Rotate\n90°", false, has).clicked() {
+            if ribbon_button(ui, Icon::Rotate, "Rotate\n90°", false, has).on_hover_text("R / Ctrl+Q — turn left 90° about the selection's centre; Ctrl+W turns right").clicked() {
                 self.rotate_selected();
             }
-            if ribbon_button(ui, Icon::Remove, "Remove\npart", false, has).clicked() {
+            if ribbon_button(ui, Icon::Mirror, "Mirror", false, has).on_hover_text("M — mirror left↔right about the selection's centre; Shift+M top↔bottom").clicked() {
+                self.mirror_selected(true);
+            }
+            if ribbon_button(ui, Icon::Remove, "Remove\npart", false, has).on_hover_text("Del — take the selected parts off the sheet").clicked() {
                 self.remove_selected();
             }
             if ribbon_button(ui, Icon::Clear, "Clear\nsheets", false, has_sheets).clicked() {
                 self.clear();
             }
         });
+        ribbon_group(ui, "Move", |ui| self.move_group(ui, has));
         ribbon_group(ui, "Remnants", |ui| {
             if ribbon_button(ui, Icon::Compact, "Compact\nto left", false, has_sheets)
                 .on_hover_text("Slide parts left and down so one large remnant is left on the right")
@@ -1036,11 +1061,12 @@ line", false, has_sheets)
         });
         ribbon_group(ui, "Spacing", |ui| {
             egui::Grid::new("space_grid").num_columns(2).spacing([6.0, 8.0]).show(ui, |ui| {
-                ui.label("Edge margin");
-                changed |= ui.add(egui::DragValue::new(&mut self.spec.margin).range(0.0..=100.0).speed(0.5).suffix(" mm")).changed();
+                let u = self.cfg.nesting.units;
+                ui.label("Edge margin").on_hover_text("Distance every part keeps from the sheet edge (type 1/4 or 6.35mm…)");
+                changed |= crate::units::drag_len(ui, &mut self.spec.margin, u, 100.0).changed();
                 ui.end_row();
-                ui.label("Part gap");
-                changed |= ui.add(egui::DragValue::new(&mut self.spec.gap).range(0.0..=50.0).speed(0.2).suffix(" mm")).changed();
+                ui.label("Part gap").on_hover_text("Smallest distance between two parts (type 1/4 or 6.35mm…)");
+                changed |= crate::units::drag_len(ui, &mut self.spec.gap, u, 50.0).changed();
                 ui.end_row();
             });
             // The machine's gap and margin for this material and thickness
