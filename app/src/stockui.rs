@@ -466,6 +466,8 @@ impl App {
                         Some("empty")
                     } else if taken.get(t).is_some() {
                         Some("already in stock")
+                    } else if taken.reserved(t) {
+                        Some("kept for undo — a replaced remnant had this name")
                     } else if refs.iter().enumerate().any(|(j, o)| j != k && o == t) {
                         Some("used twice")
                     } else {
@@ -742,6 +744,41 @@ mod tests {
         a.stock_on_save();
         let s = Stock::load(&dir).unwrap();
         assert_eq!((s.get("1-1").unwrap().qty, s.get("1").unwrap().qty), (1, 2));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn undo_past_a_save_follows_the_remnants_in_stock() {
+        // RN4, RN6: completed-sheet remnants stored, a sheet re-nested and
+        // saved (its remnant replaced), then undone and saved again.
+        let (mut a, dir) = app_with_stock("renest-undo");
+        a.cfg.stock = stock::StockSettings { keep_completed: true, ..Default::default() };
+        a.run_nesting();
+        a.stock_on_save();
+        let ours = |a: &App| {
+            let mut v: Vec<String> = Stock::load(&dir).unwrap().items.into_iter().filter(|x| x.kind == crate::stock::Kind::NestRemnant && x.from_job != "old job").map(|x| x.reference).collect();
+            v.sort();
+            let mut m: Vec<String> = a.result.formats.iter().flat_map(|f| f.made.clone()).collect();
+            m.sort();
+            (v, m)
+        };
+        let (stored, tracked) = ours(&a);
+        assert!(!stored.is_empty());
+        assert_eq!(stored, tracked);
+        let k = a.result.sheets.len() - 1;
+        a.cur_sheet = k;
+        let layout = a.result.sheets[k].clone();
+        a.renest_sheet();
+        assert!(a.status.contains("nested again"), "{}", a.status);
+        a.stock_on_save();
+        let (stored2, tracked2) = ours(&a);
+        assert_eq!(stored2, tracked2);
+        a.undo();
+        assert_eq!(a.result.sheets[k], layout);
+        a.stock_on_save();
+        let (stored3, tracked3) = ours(&a);
+        assert_eq!(stored3, tracked3, "every stored remnant is the job's — none left behind");
+        assert_eq!(stored3.len(), stored.len());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -316,10 +316,13 @@ impl App {
     pub fn add_cut_line(&mut self, line: CutLine) -> bool {
         let kind = line.kind;
         let (parts, sheet) = (self.parts.clone(), self.sheet_now().to_vec());
+        // Its own undo step (undo brings back cut lines with the layout).
+        let before = self.snapshot();
         if let Err(e) = crate::engine::add_cut_line(&parts, &sheet, self.cut_list_mut(), line) {
             self.status = e;
             return false;
         }
+        self.push_undo(before);
         self.sel_cut = Some(self.cut_list().len() - 1);
         self.refresh();
         self.status = match (kind, self.remnant_info()) {
@@ -355,6 +358,7 @@ impl App {
                 return false;
             }
         }
+        self.checkpoint();
         let list = self.cut_list_mut();
         list.retain(|l| l.kind != CutKind::Remnant);
         list.extend(lines);
@@ -438,13 +442,17 @@ impl App {
     /// Put the automatic remnant line on every sheet that has none (Generate
     /// remnants after nesting).
     pub fn auto_lines_all_sheets(&mut self) {
+        for i in 0..self.result.sheets.len() {
+            self.auto_lines_sheet(i);
+        }
+    }
+
+    /// The automatic remnant line on sheet `i`, unless it already has one.
+    pub fn auto_lines_sheet(&mut self, i: usize) {
         let keep = self.cur_sheet;
         let ls = self.cfg.stock.line.clone();
-        for i in 0..self.result.sheets.len() {
-            self.cur_sheet = i;
-            if self.cut_list().iter().any(|l| l.kind == CutKind::Remnant) {
-                continue;
-            }
+        self.cur_sheet = i;
+        if !self.cut_list().iter().any(|l| l.kind == CutKind::Remnant) {
             let lines = crate::remline::auto_lines(&self.parts, self.sheet_now(), &self.cur_spec(), &ls, crate::kerf::kerf_mm(&self.cur_spec()) / 2.0);
             if !lines.is_empty() && lines.iter().all(|l| path_hits_part(&self.parts, self.sheet_now(), &l.pts).is_none()) {
                 self.cut_list_mut().extend(lines);
@@ -464,9 +472,9 @@ impl App {
 
     pub fn delete_cut_line(&mut self) {
         let Some(i) = self.sel_cut.take() else { return };
-        let list = self.cut_list_mut();
-        if i < list.len() {
-            list.remove(i);
+        if i < self.cut_list().len() {
+            self.checkpoint();
+            self.cut_list_mut().remove(i);
             self.refresh();
             self.status = "Cut line deleted.".into();
         }
@@ -516,6 +524,12 @@ impl App {
             }
             self.status = format!("The line would cut through part #{} — moved back.", k + 1);
         } else {
+            // Undo puts the line back where the drag started.
+            let mut before = self.snapshot();
+            if let Some(l) = before.cut_lines.get_mut(self.cur_sheet).and_then(|v| v.get_mut(i)).filter(|l| l.pts != orig) {
+                l.pts = orig;
+                self.push_undo(before);
+            }
             self.status = "Cut line moved.".into();
         }
         self.refresh();

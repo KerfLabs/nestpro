@@ -31,6 +31,7 @@ original (or a real job).
 | STK-12 | Agent booking (`stock-book`): an agent's job takes nothing from stock until booked; undo re-books rather than rolling the stock back | Estimate | ★ | own design, MECHANICS SA2, SA5 |
 | STK-14 | Best sheet format / combination: the search stops at the time limit between whole nestings (a single long nesting isn't cut short); which sheet counts as "better" follows ST13 as traced, the tie margins (1 mm² of waste) are the rebuild's | Estimate | ★ | MECHANICS ST13, BN6; `engine::stockflow::best_format` |
 | STK-15 | Remnants stored before remnant-line fingerprints existed are never remade when an old job's lines change (treated as unchanged) | Estimate | ★ | MECHANICS BN7 |
+| STK-16 | The stock file's record of replaced remnants (used by undo, RN6) is never pruned; it grows by one entry per replaced remnant. A clean-up (e.g. drop entries no open job can still undo to) is not built | Missing | ★ | MECHANICS RN6, `Stock::replaced` |
 | STK-13 | Remnants stored from a sheet stay in stock when that sheet is re-nested or deleted (only `stock-book release` takes them out) | Estimate | ★ | MECHANICS SA3; the original's behaviour not traced |
 
 ## Remnants (REM)
@@ -43,6 +44,7 @@ original (or a real job).
 | REM-7 | Modify edge: drag an orthogonal segment of a stepped line | Partial | ★ | straight lines can be dragged |
 | REM-9 | Remnant cut into squares (CT1 B420) | Missing | ★ | MECHANICS "Cut order by sheet zones" |
 | REM-10 | Remnant lines between group zones (A789/A790) | Missing | ★ | MECHANICS "Nesting parts grouped by attributes" |
+| REM-13 | Remnant marks preview their references by simulating the next store for every sheet up to the one shown, on each redraw while marks are on; cache it (per job state) if it shows on jobs with many sheets | Missing | ★ | MECHANICS RN6, `stockflow::remnant_refs` |
 
 ## Nesting (NST)
 
@@ -64,6 +66,7 @@ original (or a real job).
 | NST-18 | Remnant cut-outs and machine clamps as obstacles for Ctrl+arrow slides (the original stops at them too); "fit parts to the sheet border" (B078) off should keep half a gap more from the margin in manual moves | Missing | ★ | MECHANICS HM2 |
 | NST-16 | Inches everywhere: only the part gap, edge margin, moves and Settings → Nesting follow the units setting; sheet sizes, part sizes, coordinates in hover cards, the status bar and reports are still in mm | Partial | ★★ | MECHANICS HM12, `units.rs` |
 | NST-17 | Selection extras: Trap (polyline) selection, invert selection, select by part / all copies of a part, multihead groups (Alt+M) | Missing | ★ | MECHANICS HM7 |
+| NST-19 | "One Sheet (redo)" as the original does it: the rebuild's **Nest sheet** re-nests only the parts already on the sheet onto the same sheet (RN1); whether the original also pulls in parts not yet nested, and "Do All on selected sheets", weren't traced | Estimate | ★★ | MECHANICS RN1, RN2; ROADMAP Home tab |
 
 ## Technology (TEC)
 
@@ -194,6 +197,7 @@ original (or a real job).
 | AGT-3 | Agent operation for opening a BLM LC5 program set (`import-program`) | 2026-11-04 (`engine/imports.rs`) |
 | — | Agent operations on the window's stock: `stock`, `stock-book`, `sheet-add`, `sheet-change`, `sheet-delete`, `nest stock=` | 2026-11-04 (`engine/stockflow.rs`, MECHANICS SA1–SA6) |
 | — | Command line and MCP server on a shared engine; every ribbon command mapped | 2026-11-04 |
+| — | **Nest sheet**: re-nest only the current sheet's parts onto that sheet, other sheets untouched (ribbon, Nesting Explorer right-click, agents' `renest-sheet`) | 2026-11-04 (`engine::renest_sheet`, MECHANICS RN1–RN6: group zones, stock remnants rebuilt, undo keeps cut lines and follows the stock) |
 | NST-13 | **Moving parts by hand**: several parts selected (Shift/Ctrl + click, window, Ctrl+E/Ctrl+A), moved together; Alt + arrows by the movement value (Ctrl+R), Ctrl + arrows slide to the next part at the part gap or the margin; drags snap to the gap and slide along parts; Ctrl + drag copies; turn (R, Ctrl+Q/W/9) and mirror (M, Shift+M) about the selection's centre; copy, remove a selection; Settings → Nesting with mm/inch (fractions), new jobs' part gap and edge margin, step, snap; agents' `slide`, `turn`, `mirror`, group `move` / `copy` | 2026-11-04 (`engine/arrange.rs`, `arrange_ui.rs`, `units.rs`, MECHANICS HM1–HM12) |
 | NST-1 | **True-shape nesting**: strip (band) profiles — parts hook into notches and drop into holes, every method fills each sheet and the best is kept; on the job's sheet, stock sheets and inside a remnant's real outline; agents' `nest` runs the same code | 2026-11-04 (`bands.rs`, `nest::nest_plan`, MECHANICS "True-shape strip nesting") |
 | REM-12 | Nesting on an irregular remnant follows its true shape (strips outside the outline are taken), no longer its free rectangles | 2026-11-04 (`bands::Sheet::keep_inside`) |

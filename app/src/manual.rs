@@ -28,8 +28,11 @@ impl App {
         let s = self.cur_sheet;
         let Some(sheet) = self.result.sheets.get(s).cloned() else { return };
         let (parts, reverse) = (self.parts.clone(), self.manual_reverse);
+        // Each pick is its own undo step (undo restores the cut order, RN5).
+        let before = self.snapshot();
         match crate::engine::manual_pick(&parts, &sheet, self.manual_list(), p, tol, reverse) {
             Ok(msg) => {
+                self.push_undo(before);
                 self.refresh();
                 self.status = msg;
             }
@@ -38,13 +41,18 @@ impl App {
     }
 
     pub fn manual_undo(&mut self) {
-        if self.manual_list().pop().is_some() {
+        if !self.manual_list().is_empty() {
+            self.checkpoint();
+            self.manual_list().pop();
             self.refresh();
             self.status = "Last manual pick removed.".into();
         }
     }
 
     pub fn manual_clear(&mut self) {
+        if !self.manual_list().is_empty() {
+            self.checkpoint();
+        }
         self.manual_list().clear();
         self.refresh();
         self.status = "Manual cuts cleared — the whole sheet is cut automatically.".into();

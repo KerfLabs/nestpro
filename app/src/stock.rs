@@ -507,11 +507,17 @@ pub struct Stock {
     /// original's CONTCHP.cdr and CONTRET.cdr counters.
     pub sheet_counter: u64,
     pub remnant_counter: u64,
+    /// Remnants a job's store replaced (rebuilt for a changed sheet): old
+    /// reference → the ones made in its place (none when the sheet now has
+    /// no remnant). Undo follows these to the remnants that are really in
+    /// stock now (RN6); a remnant deleted by hand is never in here.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub replaced: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 impl Default for Stock {
     fn default() -> Self {
-        Stock { format: FORMAT.into(), version: VERSION, items: vec![], sheet_counter: 0, remnant_counter: 0 }
+        Stock { format: FORMAT.into(), version: VERSION, items: vec![], sheet_counter: 0, remnant_counter: 0, replaced: Default::default() }
     }
 }
 
@@ -782,7 +788,8 @@ impl Stock {
         loop {
             self.sheet_counter += 1;
             let r = base36(self.sheet_counter);
-            if self.get(&r).is_none() && !is_device_name(&r) {
+            // Names kept for undo's history are skipped too (RN6).
+            if self.get(&r).is_none() && !is_device_name(&r) && !self.in_replaced(&r) {
                 return r;
             }
         }
@@ -815,7 +822,9 @@ impl Stock {
         if format.trim().is_empty() {
             return self.next_remnant_ref(&v.sheet);
         }
-        expand_format(format, v, || self.next_remnant_number())
+        let r = expand_format(format, v, || self.next_remnant_number());
+        // A formatted name kept for undo's history (RN6): the next automatic one.
+        if self.reserved(&r) { self.next_remnant_ref(&v.sheet) } else { r }
     }
 
 
@@ -826,7 +835,7 @@ impl Stock {
             let suffix = self.next_remnant_number();
             let head: String = origin.chars().take(MAX_REF.saturating_sub(suffix.len() + 1)).collect();
             let r = if head.is_empty() { format!("R-{suffix}") } else { format!("{head}-{suffix}") };
-            if self.get(&r).is_none() {
+            if self.get(&r).is_none() && !self.in_replaced(&r) {
                 return r;
             }
         }
@@ -853,9 +862,25 @@ impl Stock {
         if self.get(&item.reference).is_some() {
             return Err(format!("There's already a sheet called {}.", item.reference));
         }
+        if self.reserved(&item.reference) {
+            return Err(format!("{} was the reference of a remnant that has since been replaced — pick another reference.", item.reference));
+        }
         let r = item.reference.clone();
         self.items.push(item);
         Ok(r)
+    }
+
+    /// Is this reference in the replacement history? (Automatic references
+    /// skip those, so the history stays whole.)
+    fn in_replaced(&self, reference: &str) -> bool {
+        self.replaced.contains_key(reference) || self.replaced.values().any(|v| v.iter().any(|r| r == reference))
+    }
+
+    /// A name a new item may not take: in the replacement history and not the
+    /// item still in stock under it. Undo follows the history by name, so a
+    /// new item under such a name would be taken for the old one (RN6).
+    pub fn reserved(&self, reference: &str) -> bool {
+        self.get(reference).is_none() && self.in_replaced(reference)
     }
 
     /// Store a remnant a nesting left (SS16–SS18): box size from its outline,
@@ -866,7 +891,8 @@ impl Stock {
     pub fn add_remnant(&mut self, outline: Outline, parent: &Item, qty: i32, reference: Option<String>, job: &str) -> String {
         let outline = outline.normalised();
         let (length, width) = outline.size();
-        let reference = reference.filter(|r| !r.trim().is_empty()).unwrap_or_else(|| self.next_remnant_ref(&parent.reference));
+        // A name kept for undo's history gets the next automatic one (RN6).
+        let reference = reference.filter(|r| !r.trim().is_empty() && !self.reserved(r)).unwrap_or_else(|| self.next_remnant_ref(&parent.reference));
         let (qty, locked) = if parent.quote { (0, true) } else { (qty.max(0), false) };
         if let Some(ex) = self.get_mut(&reference) {
             ex.qty = (ex.qty + qty).min(MAX_QTY);

@@ -927,6 +927,12 @@ impl App {
             if ribbon_button_ex(ui, Icon::NestAll, "Nest\nall", false, !self.parts.is_empty(), true).on_hover_text("Place every part (F5)").clicked() {
                 self.run_nesting();
             }
+            if ribbon_button(ui, Icon::NestAll, "Nest\nsheet", false, self.result.sheets.get(self.cur_sheet).is_some_and(|s| !s.is_empty()))
+                .on_hover_text("Nest only this sheet again: the parts already on it, on the same sheet — the other sheets stay as they are")
+                .clicked()
+            {
+                self.renest_sheet();
+            }
             let r = ribbon_button(ui, Icon::AddPart, "Add\npart", false, true);
             add_part_menu(self, &r);
             let can_open = self.sel_part.is_some_and(|i| i < self.parts.len());
@@ -1206,6 +1212,7 @@ Last run won with: {}.", level_summary(self.spec.nest_level()), self.result.meth
     pub fn nest_tree_body(&mut self, ui: &mut egui::Ui) {
         let mut pick_sheet = None;
         let mut pick_part = None;
+        let mut renest = None;
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing.y = 1.0;
             egui::CollapsingHeader::new(RichText::new(&self.job_name).strong())
@@ -1244,6 +1251,12 @@ Last run won with: {}.", level_summary(self.spec.nest_level()), self.result.meth
                         if resp.header_response.clicked() {
                             pick_sheet = Some(i);
                         }
+                        resp.header_response.context_menu(|ui| {
+                            if ui.button("Nest this sheet again").on_hover_text("Only the parts already on this sheet; the other sheets stay as they are").clicked() {
+                                renest = Some(i);
+                                ui.close();
+                            }
+                        });
                     }
                 });
         });
@@ -1252,6 +1265,10 @@ Last run won with: {}.", level_summary(self.spec.nest_level()), self.result.meth
         }
         if let Some(p) = pick_part {
             self.sel_part = Some(p);
+        }
+        if let Some(i) = renest {
+            self.select_sheet(i);
+            self.renest_sheet();
         }
     }
 

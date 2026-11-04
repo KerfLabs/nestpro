@@ -35,7 +35,7 @@ is **`FEATURES.md`** at the top of the repo; keep both in step.
 | Original | Rebuild | Pri |
 |---|---|---|
 | Sheets: New, Delete (current / subjob / job), Previous/Next/Go to, Change quantity, Change data, Unblock | Part — a stock sheet or remnant on the current sheet (Sheet stock window), previous/next, clear sheets; agents also have New / Change / Delete sheet (`sheet-add`, `sheet-change`, `sheet-delete`) | ★★ |
-| Nesting: Do All (on selected sheets / filling sheets), Active subjob, One Sheet (redo), Delete | Part — Nest all with 5 levels | |
+| Nesting: Do All (on selected sheets / filling sheets), Active subjob, One Sheet (redo), Delete | Part — Nest all with 5 levels; **Nest sheet** re-nests the current sheet with only its own parts (RN1, also right-click the sheet in the Nesting Explorer); Do All on selected sheets missing | |
 | **One Window** (nest only inside a window you draw) | Missing | ★★ |
 | **Place** / **Semi-Automatic** (one part at a time) | **Have** — Parts View ghost drop, Enter = auto-place one | |
 | Unitary / Grid (part onto a sheet of matching size) | Missing | ★ |

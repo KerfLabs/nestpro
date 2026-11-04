@@ -250,11 +250,32 @@ pub fn next_ref(s: &mut Stock, j: &JobSheets, f: &SheetFormat, i: usize, parent:
 }
 
 /// The references sheet `i`'s remnant pieces have, or will get when stored.
-pub fn remnant_refs(stock: &Stock, j: &JobSheets, f: &SheetFormat, i: usize, pieces: &[crate::stock::Outline], st: &StockSettings) -> Vec<String> {
-    if f.made.len() == pieces.len() {
+pub fn remnant_refs(stock: &Stock, j: &JobSheets, formats: &[SheetFormat], i: usize, pieces: &[crate::stock::Outline], st: &StockSettings) -> Vec<String> {
+    let f = formats.get(i).cloned().unwrap_or_else(|| SheetFormat::rect(j.spec.w, j.spec.h));
+    let lines = j.cut_lines.get(i).map_or(&[][..], |v| v.as_slice());
+    let sheet = j.sheets.get(i).map_or(&[][..], |v| v.as_slice());
+    let rebuild = stored_state(stock, &f, lines, sheet) == Stored::Rebuild;
+    if !rebuild && f.made.len() == pieces.len() {
         return f.made.clone();
     }
+    // What the next store names them: the sheets up to this one, in store
+    // order (the sheets after it don't change its names).
+    let upto = (i + 1).min(j.sheets.len());
+    let head = JobSheets { name: j.name, parts: j.parts, spec: j.spec, sheets: &j.sheets[..upto], cut_lines: &j.cut_lines[..upto.min(j.cut_lines.len())], material_name: j.material_name.clone() };
+    let named: Vec<String> = rows_from(stock, &head, &formats[..upto.min(formats.len())], st, false).into_iter().filter(|r| r.sheet == i).map(|r| r.reference).collect();
+    if named.len() == pieces.len() {
+        return named;
+    }
+    // Not stored by the next save (storing is off for it): a likely name.
+    let f = &f;
     let mut s = stock.clone();
+    if rebuild {
+        // As storing will: the sheet's old remnants go and keep their names (RN6).
+        for r in &f.made {
+            s.delete(r);
+            s.replaced.insert(r.clone(), vec![]);
+        }
+    }
     let parent = s.get(&f.stock_ref).cloned();
     pieces.iter().map(|o| next_ref(&mut s, j, f, i, parent.as_ref(), o, st)).collect()
 }
@@ -273,7 +294,7 @@ pub fn remnant_marks(stock: &Stock, j: &JobSheets, formats: &[SheetFormat], i: u
     let Some(sheet) = j.sheets.get(i) else { return vec![] };
     let f = formats.get(i).cloned().unwrap_or_else(|| SheetFormat::rect(j.spec.w, j.spec.h));
     let pieces = crate::remnant::sheet_remnants_cached(j.parts, sheet, &f, lines, crate::kerf::kerf_mm(&j.spec));
-    let refs = remnant_refs(stock, j, &f, i, &pieces, st);
+    let refs = remnant_refs(stock, j, formats, i, &pieces, st);
     let mut out = vec![];
     for (k, o) in pieces.iter().enumerate() {
         let (l, w) = o.size();
@@ -307,18 +328,110 @@ pub fn all_remnant_marks(dir: &Path, j: &JobSheets, formats: &[SheetFormat], st:
     (0..j.sheets.len()).map(|i| remnant_marks(&stock, j, formats, i, st)).collect()
 }
 
-/// A fingerprint of a sheet's remnant lines, to tell whether they changed
-/// since its remnants were stored (`SheetFormat::made_from`, ST12).
-pub fn lines_fingerprint(lines: &[CutLine]) -> u64 {
+/// A fingerprint of what a sheet's stored remnants were cut from
+/// (`SheetFormat::made_from`, ST12): its remnant lines — and, on a sheet
+/// without one (a completed sheet kept whole, its parts cut out), where its
+/// parts are, since moving or re-nesting them changes that remnant (RN4).
+/// Always odd; 0 = stored before fingerprints were kept.
+pub fn sheet_fingerprint(lines: &[CutLine], sheet: &[Placed]) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
+    let mut has_line = false;
     for l in lines.iter().filter(|l| l.kind == CutKind::Remnant) {
+        has_line = true;
         for p in &l.pts {
             p[0].to_bits().hash(&mut h);
             p[1].to_bits().hash(&mut h);
         }
     }
+    if !has_line {
+        for c in sheet {
+            (c.part, c.x.to_bits(), c.y.to_bits(), c.turns, c.mirror).hash(&mut h);
+        }
+    }
     h.finish() | 1
+}
+
+/// What older files stored for a sheet without a remnant line (the lines
+/// only, so nothing): read as "unchanged", as 0 is.
+fn legacy_no_line_fingerprint() -> u64 {
+    use std::hash::Hasher;
+    std::collections::hash_map::DefaultHasher::new().finish() | 1
+}
+
+/// Mark sheet remnants as cut from something else, so the next store
+/// rebuilds them (replacing the old ones while still unused, ST12): after a
+/// sheet is nested again (RN4).
+pub fn remnants_outdated(f: &mut SheetFormat) {
+    if !f.made.is_empty() {
+        f.made_from = OUTDATED;
+    }
+}
+
+/// Never a real fingerprint (those are odd).
+const OUTDATED: u64 = 2;
+
+/// Undo or redo past a store (RN6): the stock isn't rolled back. A restored
+/// sheet whose stored remnants a later store replaced (recorded in
+/// `Stock::replaced`) takes over what replaced them — followed through every
+/// later replacement to what is in stock now — marked out of date, so the
+/// next store rebuilds them for the restored layout instead of leaving them
+/// behind untracked; replaced by nothing, its remnants are made again. A
+/// remnant missing for any other reason (deleted by hand) is left alone, and
+/// a remnant another restored sheet still holds is never taken over.
+pub fn follow_stock(stock: &Stock, restored: &mut [SheetFormat]) {
+    // Each history entry is expanded once (`seen`), so shared descendants
+    // and any cycle cost nothing extra, however long the chain.
+    fn resolve(stock: &Stock, r: &str, seen: &mut Vec<String>, out: &mut Vec<String>) {
+        if seen.iter().any(|s| s == r) {
+            return;
+        }
+        seen.push(r.to_string());
+        match stock.replaced.get(r) {
+            Some(next) if stock.get(r).is_none() => {
+                for n in next {
+                    resolve(stock, n, seen, out);
+                }
+            }
+            _ => out.push(r.to_string()),
+        }
+    }
+    let held: Vec<String> = restored.iter().flat_map(|f| f.made.iter()).filter(|r| stock.get(r).is_some()).cloned().collect();
+    let mut taken: Vec<String> = vec![];
+    for f in restored.iter_mut() {
+        if !f.made.iter().any(|r| stock.get(r).is_none() && stock.replaced.contains_key(r)) {
+            continue;
+        }
+        let mut now = vec![];
+        for r in &f.made {
+            if stock.get(r).is_some() {
+                if !now.contains(r) {
+                    now.push(r.clone());
+                }
+                continue;
+            }
+            let (mut seen, mut found) = (vec![], vec![]);
+            resolve(stock, r, &mut seen, &mut found);
+            for n in found {
+                let live = stock.get(&n).is_some();
+                // Exclusive: never one another restored sheet holds or this
+                // pass already gave out.
+                if live && (held.contains(&n) || taken.contains(&n)) {
+                    continue;
+                }
+                if !now.contains(&n) {
+                    if live {
+                        taken.push(n.clone());
+                    }
+                    // A chain ending at a remnant deleted by hand keeps that
+                    // reference, so it isn't remade (as before).
+                    now.push(n);
+                }
+            }
+        }
+        f.made = now;
+        f.made_from = if f.made.is_empty() { 0 } else { OUTDATED };
+    }
 }
 
 /// One sheet's remnants to store: the new outlines and the remnants stored
@@ -347,6 +460,36 @@ pub struct NameRow {
 /// they changed, its old remnants are replaced — unless one of them has been
 /// used since: then they stay, and the sheet is in the second list.
 /// `formats` must have one per sheet.
+/// What storing will do with the remnants already stored from a sheet.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Stored {
+    /// None stored yet.
+    None,
+    /// Stored from what the sheet still is: left as they are.
+    Unchanged,
+    /// The sheet changed but one of them is already used: kept (ST12).
+    KeptUsed,
+    /// The sheet changed: they are replaced by new ones (ST12, RN4).
+    Rebuild,
+}
+
+/// One rule for storing and for previewing names (remnant marks), so the
+/// two never disagree.
+pub fn stored_state(stock_now: &Stock, f: &SheetFormat, lines: &[CutLine], sheet: &[Placed]) -> Stored {
+    if f.made.is_empty() {
+        return Stored::None;
+    }
+    let has_line = lines.iter().any(|l| l.kind == CutKind::Remnant);
+    if f.made_from == sheet_fingerprint(lines, sheet) || f.made_from == 0 || (!has_line && f.made_from == legacy_no_line_fingerprint()) {
+        // Unchanged (or stored before fingerprints were kept).
+        return Stored::Unchanged;
+    }
+    if !f.made.iter().all(|r| stock_now.get(r).is_some_and(|it| it.qty >= 1)) {
+        return Stored::KeptUsed;
+    }
+    Stored::Rebuild
+}
+
 pub fn pending_remnants(stock_now: &Stock, j: &JobSheets, formats: &[SheetFormat], st: &StockSettings, force_lines: bool) -> (Vec<Pending>, Vec<usize>) {
     let mut todo = vec![];
     let mut kept_used = vec![];
@@ -356,18 +499,15 @@ pub fn pending_remnants(stock_now: &Stock, j: &JobSheets, formats: &[SheetFormat
             continue;
         }
         let lines = j.cut_lines.get(i).map_or(&[][..], |v| v.as_slice());
-        let mut replace = vec![];
-        if !f.made.is_empty() {
-            if f.made_from == lines_fingerprint(lines) || f.made_from == 0 {
-                // Unchanged (or stored before fingerprints were kept).
-                continue;
-            }
-            if !f.made.iter().all(|r| stock_now.get(r).is_some_and(|it| it.qty >= 1)) {
+        let replace = match stored_state(stock_now, f, lines, &j.sheets[i]) {
+            Stored::Unchanged => continue,
+            Stored::KeptUsed => {
                 kept_used.push(i);
                 continue;
             }
-            replace = f.made.clone();
-        }
+            Stored::Rebuild => f.made.clone(),
+            Stored::None => vec![],
+        };
         let has_line = lines.iter().any(|l| l.kind == CutKind::Remnant);
         let want = (has_line && (st.remnants_on_save || force_lines)) || st.keep_completed;
         let pieces = if want { crate::remnant::sheet_remnants(j.parts, &j.sheets[i], f, lines, crate::kerf::kerf_mm(&j.spec), st.min_remnant_m2, st.keep_completed && !has_line) } else { vec![] };
@@ -386,12 +526,20 @@ fn origin_of(j: &JobSheets, f: &SheetFormat, i: usize) -> String {
 /// The new remnants storing would make, each with the reference it would get
 /// (the rows of the naming window, UI14; `stock-book status` for agents).
 pub fn remnant_rows(dir: &Path, j: &JobSheets, formats: &[SheetFormat], st: &StockSettings, force_lines: bool) -> Vec<NameRow> {
-    let mut s = Stock::load(dir).unwrap_or_default();
+    rows_from(&Stock::load(dir).unwrap_or_default(), j, formats, st, force_lines)
+}
+
+/// `remnant_rows` on a stock already loaded: storing simulated on a copy,
+/// sheet by sheet in store order, so every sheet's names follow the ones
+/// the sheets before it take (RN6).
+fn rows_from(stock: &Stock, j: &JobSheets, formats: &[SheetFormat], st: &StockSettings, force_lines: bool) -> Vec<NameRow> {
+    let mut s = stock.clone();
     let (todo, _) = pending_remnants(&s, j, formats, st, force_lines);
     let mut rows = vec![];
     for p in &todo {
         for r in &p.replace {
             s.delete(r);
+            s.replaced.insert(r.clone(), vec![]);
         }
         let f = &formats[p.sheet];
         let parent = s.get(&f.stock_ref).cloned();
@@ -443,6 +591,9 @@ pub fn make_remnants(dir: &Path, j: &JobSheets, formats: &mut Vec<SheetFormat>, 
         for p in &todo {
             for r in &p.replace {
                 s.delete(r);
+                // Kept from now on, so no replacement takes its name (RN6);
+                // the real successors are recorded below.
+                s.replaced.insert(r.clone(), vec![]);
             }
             let f = &fs[p.sheet];
             // The sheet it came from: its stock item, or a stand-in for a
@@ -461,14 +612,18 @@ pub fn make_remnants(dir: &Path, j: &JobSheets, formats: &mut Vec<SheetFormat>, 
                     let r = names.and_then(|m| m.get(&(p.sheet, k)).cloned()).unwrap_or_else(|| next_ref(s, j, f, p.sheet, Some(&parent), o, st));
                     s.add_remnant(o.clone(), &parent, 1, Some(r), j.name)
                 })
-                .collect();
+                .collect::<Vec<String>>();
+            // Remember what replaced what, for undo (RN6).
+            for r in &p.replace {
+                s.replaced.insert(r.clone(), refs.clone());
+            }
             out.push((p.sheet, refs));
         }
         Ok(out)
     })?;
     for (i, refs) in made {
         out.count += refs.len();
-        let fp = lines_fingerprint(j.cut_lines.get(i).map_or(&[][..], |v| v.as_slice()));
+        let fp = sheet_fingerprint(j.cut_lines.get(i).map_or(&[][..], |v| v.as_slice()), &j.sheets[i]);
         formats[i].made_from = if refs.is_empty() { 0 } else { fp };
         formats[i].made = refs;
     }
@@ -549,6 +704,236 @@ pub fn one_free(item: &Item, held: &BTreeMap<String, i32>, formats: &[SheetForma
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn undo_follows_only_recorded_replacements() {
+        // RN6
+        let mut st = Stock::default();
+        for r in ["Ra", "Rc", "Rb3"] {
+            st.items.push(Item::sheet(r, 0, 3.0, 500.0, 500.0, 1));
+        }
+        st.replaced.insert("Rb".into(), vec!["Rb2".into()]);
+        st.replaced.insert("Rb2".into(), vec!["Rb3".into()]);
+        let fmt = |refs: &[&str], fp: u64| SheetFormat { made: refs.iter().map(|r| r.to_string()).collect(), made_from: fp, ..SheetFormat::rect(2000.0, 1000.0) };
+        // A sheet deleted, then B re-nested twice: undo restores A, B, C.
+        // B follows its own chain, never C's remnant by position.
+        let mut r = vec![fmt(&["Ra"], 11), fmt(&["Rb"], 13), fmt(&["Rc"], 15)];
+        follow_stock(&st, &mut r);
+        assert_eq!((r[0].made.clone(), r[0].made_from), (vec!["Ra".to_string()], 11));
+        assert_eq!((r[1].made.clone(), r[1].made_from), (vec!["Rb3".to_string()], OUTDATED));
+        assert_eq!((r[2].made.clone(), r[2].made_from), (vec!["Rc".to_string()], 15));
+        // Deleted by hand (no record): left alone, so it isn't remade.
+        let mut r = vec![fmt(&["Gone"], 17)];
+        follow_stock(&st, &mut r);
+        assert_eq!((r[0].made.clone(), r[0].made_from), (vec!["Gone".to_string()], 17));
+        // Replaced by nothing: made again.
+        st.replaced.insert("Rn".into(), vec![]);
+        let mut r = vec![fmt(&["Rn"], 19)];
+        follow_stock(&st, &mut r);
+        assert_eq!((r[0].made.is_empty(), r[0].made_from), (true, 0));
+        // A remnant another restored sheet holds is never taken over.
+        st.replaced.insert("Rx".into(), vec!["Rc".into()]);
+        let mut r = vec![fmt(&["Rx"], 21), fmt(&["Rc"], 15)];
+        follow_stock(&st, &mut r);
+        assert_eq!((r[0].made.is_empty(), r[0].made_from), (true, 0));
+        assert_eq!(r[1].made, vec!["Rc".to_string()]);
+        // A long history of two-remnant sheets: every step is followed (no
+        // depth limit) and each entry expanded once (no blow-up).
+        let mut st = Stock::default();
+        for k in 0..100 {
+            let next = vec![format!("L{}a", k + 1), format!("L{}b", k + 1)];
+            st.replaced.insert(format!("L{k}a"), next.clone());
+            st.replaced.insert(format!("L{k}b"), next);
+        }
+        for r in ["L100a", "L100b"] {
+            st.items.push(Item::sheet(r, 0, 3.0, 500.0, 500.0, 1));
+        }
+        let mut r = vec![fmt(&["L0a", "L0b"], 23)];
+        let t = std::time::Instant::now();
+        follow_stock(&st, &mut r);
+        assert!(t.elapsed().as_secs() < 2);
+        assert_eq!(r[0].made, vec!["L100a".to_string(), "L100b".to_string()]);
+        // Names in the history are never given to a new item (A → B → C,
+        // C live): not the replaced one, not the middle one, so undo can't
+        // adopt an unrelated item and the chain to C stays whole.
+        let mut st = Stock::default();
+        st.replaced.insert("A".into(), vec!["B".into()]);
+        st.replaced.insert("B".into(), vec!["C".into()]);
+        st.items.push(Item::sheet("C", 0, 3.0, 500.0, 500.0, 1));
+        for name in ["A", "B"] {
+            assert!(st.add_sheet(Item::sheet(name, 0, 3.0, 500.0, 500.0, 1), true).unwrap_err().contains("replaced"));
+        }
+        let parent = Item::sheet("S", 0, 3.0, 2000.0, 1000.0, 1);
+        let sq = crate::stock::Outline { outer: vec![[0.0, 0.0], [100.0, 0.0], [100.0, 100.0], [0.0, 100.0]], holes: vec![] };
+        let got = st.add_remnant(sq.clone(), &parent, 1, Some("B".into()), "DEMO-001");
+        assert_ne!(got, "B", "a remnant asked to be called B gets another name");
+        let v = crate::stock::RefValues { sheet: "S".into(), ..Default::default() };
+        assert_ne!(st.remnant_ref_from("A", &v), "A", "a fixed format landing on a kept name too");
+        let mut r = vec![fmt(&["A"], 25)];
+        follow_stock(&st, &mut r);
+        assert_eq!((r[0].made.clone(), r[0].made_from), (vec!["C".to_string()], OUTDATED));
+        // Automatic sheet numbers skip kept names: blank references keep
+        // working, through the same stock update the window and agents use.
+        let dir = std::env::temp_dir().join(format!("nestpro-reserved-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut st = Stock::default();
+        st.replaced.insert("1".into(), vec!["R".into()]);
+        st.save(&dir).unwrap();
+        for _ in 0..2 {
+            let got = Stock::update(&dir, |s| s.add_sheet(Item::sheet("", 0, 3.0, 2000.0, 1000.0, 1), true)).unwrap();
+            assert_ne!(got, "1");
+        }
+        assert_eq!(Stock::load(&dir).unwrap().items.len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+        // Automatic references skip names still in the history.
+        let mut st = Stock::default();
+        let first = st.next_remnant_ref("S");
+        st.replaced.insert("X".into(), vec![format!("S-{}", crate::stock::base36(st.remnant_counter + 1))]);
+        let second = st.next_remnant_ref("S");
+        assert!(first != second && !st.replaced["X"].contains(&second), "{first} {second}");
+    }
+
+    #[test]
+    fn a_rebuilt_remnant_never_takes_its_predecessors_name() {
+        // RN6: a fixed reference format ("R"), the remnant rebuilt, the new
+        // one deleted by hand, then undo: it must not be remade.
+        let dir = std::env::temp_dir().join(format!("nestpro-selfloop-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        Stock::default().save(&dir).unwrap();
+        let part = Part { name: "P".into(), shape: nest::Shape::Rectangle, w: 100.0, h: 50.0, qty: 1, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
+        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
+        let st = StockSettings { keep_completed: true, auto_remnant_ref: true, remnant_ref_format: "R".into(), ..Default::default() };
+        let parts = [part];
+        let store = |sheet: Placed, formats: &mut Vec<SheetFormat>| {
+            let sheets = [vec![sheet]];
+            let j = JobSheets { name: "DEMO-001", parts: &parts, spec: &spec, sheets: &sheets, cut_lines: &[], material_name: String::new() };
+            make_remnants(&dir, &j, formats, &st, false, None).unwrap()
+        };
+        let p = Placed { part: 0, x: 10.0, y: 10.0, w: 100.0, h: 50.0, turns: 0, mirror: false };
+        let mut formats = vec![SheetFormat::rect(1000.0, 500.0)];
+        store(p, &mut formats);
+        assert_eq!(formats[0].made, vec!["R".to_string()]);
+        let first = formats.clone();
+        store(Placed { x: 400.0, ..p }, &mut formats);
+        let second = formats[0].made.clone();
+        assert_eq!(second.len(), 1);
+        assert_ne!(second[0], "R", "the replacement gets its own name");
+        let stock = Stock::load(&dir).unwrap();
+        assert_eq!(stock.replaced["R"], second, "R → its real successor, no self-loop");
+        // Deleted by hand, then undo to the first layout.
+        Stock::update(&dir, |s| {
+            s.delete(&second[0]);
+            Ok(())
+        })
+        .unwrap();
+        let stock = Stock::load(&dir).unwrap();
+        let mut restored = first;
+        follow_stock(&stock, &mut restored);
+        let sheets = [vec![p]];
+        let j = JobSheets { name: "DEMO-001", parts: &parts, spec: &spec, sheets: &sheets, cut_lines: &[], material_name: String::new() };
+        let (todo, _) = pending_remnants(&stock, &j, &restored, &st, false);
+        assert!(todo.is_empty(), "the hand-deleted remnant is not remade");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn marks_naming_and_storing_agree_on_a_rebuilt_remnant() {
+        // RN6: one remnant "R" stored from a remnant line; the sheet changes
+        // (still one piece). Marks, the naming suggestion and the stored name
+        // must all be the same new name, never the outgoing "R".
+        let dir = std::env::temp_dir().join(format!("nestpro-marknames-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        Stock::default().save(&dir).unwrap();
+        let part = Part { name: "P".into(), shape: nest::Shape::Rectangle, w: 100.0, h: 50.0, qty: 1, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
+        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
+        let st = StockSettings { remnants_on_save: true, auto_remnant_ref: true, remnant_ref_format: "R".into(), ..Default::default() };
+        let parts = [part];
+        let line = |x: f64| vec![CutLine { pts: vec![[x, 0.0], [x, 500.0]], kind: CutKind::Remnant }];
+        let p = Placed { part: 0, x: 10.0, y: 10.0, w: 100.0, h: 50.0, turns: 0, mirror: false };
+        let sheets = [vec![p]];
+        let mut formats = vec![SheetFormat::rect(1000.0, 500.0)];
+        let lines1 = [line(300.0)];
+        let j = JobSheets { name: "DEMO-001", parts: &parts, spec: &spec, sheets: &sheets, cut_lines: &lines1, material_name: String::new() };
+        make_remnants(&dir, &j, &mut formats, &st, false, None).unwrap();
+        assert_eq!(formats[0].made, vec!["R".to_string()]);
+        // The line moves: still one piece, to be rebuilt.
+        let lines2 = [line(400.0)];
+        let j = JobSheets { name: "DEMO-001", parts: &parts, spec: &spec, sheets: &sheets, cut_lines: &lines2, material_name: String::new() };
+        let stock = Stock::load(&dir).unwrap();
+        let pieces = crate::remnant::sheet_remnants(&parts, &sheets[0], &formats[0], &lines2[0], crate::kerf::kerf_mm(&spec), st.min_remnant_m2, false);
+        assert_eq!(pieces.len(), 1);
+        let marked = remnant_refs(&stock, &j, &formats, 0, &pieces, &st);
+        let suggested: Vec<String> = remnant_rows(&dir, &j, &formats, &st, false).into_iter().map(|r| r.reference).collect();
+        make_remnants(&dir, &j, &mut formats, &st, false, None).unwrap();
+        assert_ne!(marked, vec!["R".to_string()], "marks don't engrave the outgoing name");
+        assert_eq!(marked, suggested);
+        assert_eq!(marked, formats[0].made, "what is engraved is what is stored");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn marks_on_several_sheets_follow_the_store_order() {
+        // RN6: two sheets both storing (new or rebuilt) remnants with
+        // automatic numbers: each sheet's preview is what storing gives it.
+        let dir = std::env::temp_dir().join(format!("nestpro-marknames2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        Stock::default().save(&dir).unwrap();
+        let part = Part { name: "P".into(), shape: nest::Shape::Rectangle, w: 100.0, h: 50.0, qty: 2, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
+        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
+        let st = StockSettings { remnants_on_save: true, ..Default::default() };
+        let parts = [part];
+        let line = |x: f64| vec![CutLine { pts: vec![[x, 0.0], [x, 500.0]], kind: CutKind::Remnant }];
+        let p = Placed { part: 0, x: 10.0, y: 10.0, w: 100.0, h: 50.0, turns: 0, mirror: false };
+        let sheets = [vec![p], vec![p]];
+        let mut formats = vec![SheetFormat::rect(1000.0, 500.0), SheetFormat::rect(1000.0, 500.0)];
+        let check = |lines: &[Vec<CutLine>], formats: &mut Vec<SheetFormat>| {
+            let j = JobSheets { name: "DEMO-001", parts: &parts, spec: &spec, sheets: &sheets, cut_lines: lines, material_name: String::new() };
+            let stock = Stock::load(&dir).unwrap();
+            let marked: Vec<Vec<String>> = (0..2)
+                .map(|i| {
+                    let pieces = crate::remnant::sheet_remnants(&parts, &sheets[i], &formats[i], &lines[i], crate::kerf::kerf_mm(&spec), st.min_remnant_m2, false);
+                    remnant_refs(&stock, &j, formats, i, &pieces, &st)
+                })
+                .collect();
+            make_remnants(&dir, &j, formats, &st, false, None).unwrap();
+            assert_eq!(marked, vec![formats[0].made.clone(), formats[1].made.clone()]);
+            assert_ne!(formats[0].made, formats[1].made);
+        };
+        check(&[line(300.0), line(300.0)], &mut formats);
+        // Both lines move: both rebuilt, numbered on from the counter.
+        check(&[line(400.0), line(400.0)], &mut formats);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn completed_sheet_remnants_notice_parts_moving() {
+        // RN4: without a remnant line the stored remnant is the sheet less
+        // its parts, so moving them must make it be rebuilt.
+        let p = Placed { part: 0, x: 10.0, y: 10.0, w: 100.0, h: 50.0, turns: 0, mirror: false };
+        let moved = Placed { x: 300.0, ..p };
+        assert_ne!(sheet_fingerprint(&[], &[p]), sheet_fingerprint(&[], &[moved]));
+        let line = [CutLine { pts: vec![[900.0, 0.0], [900.0, 500.0]], kind: CutKind::Remnant }];
+        assert_eq!(sheet_fingerprint(&line, &[p]), sheet_fingerprint(&line, &[moved]), "a remnant line alone decides");
+        let part = Part { name: "R".into(), shape: nest::Shape::Rectangle, w: 100.0, h: 50.0, qty: 1, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
+        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
+        let st = StockSettings { keep_completed: true, ..Default::default() };
+        let stock = Stock::default();
+        let parts = [part];
+        let pending = |sheet: Vec<Placed>, made_from: u64| {
+            let sheets = [sheet];
+            let j = JobSheets { name: "DEMO-001", parts: &parts, spec: &spec, sheets: &sheets, cut_lines: &[], material_name: String::new() };
+            let f = SheetFormat { made: vec!["R-1".into()], made_from, ..SheetFormat::rect(1000.0, 500.0) };
+            let (todo, kept) = pending_remnants(&stock, &j, &[f], &st, false);
+            !todo.is_empty() || !kept.is_empty()
+        };
+        let fp = sheet_fingerprint(&[], &[p]);
+        assert!(!pending(vec![p], fp), "unchanged: nothing to redo");
+        assert!(pending(vec![moved], fp), "parts moved: the remnant is out of date");
+        assert!(!pending(vec![moved], legacy_no_line_fingerprint()), "older files stay quiet");
+        let mut f = SheetFormat { made: vec!["R-1".into()], made_from: legacy_no_line_fingerprint(), ..SheetFormat::rect(1000.0, 500.0) };
+        remnants_outdated(&mut f);
+        assert!(pending(vec![moved], f.made_from), "a re-nested sheet is redone even from an older file");
+    }
 
     #[test]
     fn reconciling_moves_each_reference_once() {
