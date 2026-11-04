@@ -277,7 +277,7 @@ impl App {
     fn erp_make_job(&mut self, im: Imported) {
         let integ = self.integ();
         let provider = integ.provider;
-        let mut spec = self.spec.clone();
+        let mut spec = crate::engine::with_prefs(&self.spec, &self.cfg);
         let mut notes = im.notes;
         if let Some(m) = &im.info {
             match erp::pick_material(&self.cfg, m) {

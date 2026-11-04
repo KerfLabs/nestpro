@@ -345,6 +345,47 @@ How the rebuild uses them (Nesting screen, Parts View):
 - Not imitated: free-angle turning by dragging around a point (our parts turn in 90° steps),
   snapping on the true outline instead of the box, and the sliding snap.
 
+## Moving parts by hand (selection, keys, snap)
+
+How placed parts are picked, nudged, slid, dragged, turned, mirrored and copied on the
+Nesting screen. Code: `engine/arrange.rs` (rules), `arrange_ui.rs` (mouse and keys).
+
+| # | Rule | |
+|---|------|---|
+| HM1 | **Keys on the nesting screen.** Alt + arrow moves the selection by the *movement value*; Ctrl + arrow moves it *to the end* in that direction; Ctrl+R sets the movement value. Ctrl+Q / Ctrl+W turn by the rotation step, + and − (Ctrl+E sets the step); Ctrl+1/5/0/3/4/9 turn 1/5/10/30/45/90°; Ctrl+T turns by a typed angle; Ctrl+D flips the direction of the fixed-angle keys; Ctrl+A / Ctrl+S mirror (X / Y); Ctrl+G turns to the minimum rectangle; Ctrl+M Move, Ctrl+C Copy, Del Delete; F2 orthogonal; F4–F8 zooms. In the original these keys work on the parts picked with Move (Ctrl+M); the rebuild applies them to the selected parts. | observed (the original's key table and its handlers) |
+| HM2 | **"To the end" stops one part gap before the next part, or at the sheet margin** — other parts (and in the original also remnant cut-outs and clamps) stop it whether Collision is on or off; the moved parts go as one rigid group. The original slides on its strip profile of the true contours (0.1 mm steps, X on strip edges) and refuses a move that would push the group sideways by a strip or more; the rebuild slides on the exact contours (holes too: a part in another part's hole stops at the hole's edge) and never moves sideways. Parts the selection already sits too close to don't hold it back when it moves away from them. | observed (handlers); exact-contour stop and the "too close" release: rebuild |
+| HM3 | **A move by the movement value has no collision test**: the group moves exactly that far and may end up closer than the gap or over another part. The rebuild keeps it inside the sheet and warns on the status line when it ends up closer than the gap. Agents' `slide by=` stops at the gap instead (agents never overlap parts). | no test: observed; staying on the sheet and the warning: rebuild |
+| HM4 | The movement value is kept in mm and shown in the user's units. Factory value **10 mm**; on first start the rebuild takes the value of the Lantek install it finds. | observed (factory configuration files) |
+| HM5 | A group of parts **turns about the centre of the box around all of them**. Turning keys don't test for collisions at the key press; the original then looks for a nearby spot without collision when the part is put down. The rebuild turns at once and searches rings around the turned group (every half part gap, at least 1 mm, out to the selection's size) for the nearest free spot. Positive angles turn counter-clockwise; when the original's turn-direction setting is off, its fixed-angle keys (Ctrl+1…9) turn clockwise — the rebuild's Ctrl+9 follows the same setting, taken from the install on first start. | centre, no test at the key press, direction: observed; search pattern: estimate |
+| HM6 | **Mirror** the selection left↔right (Symmetry X) or top↔bottom (Symmetry Y), about the centre of its box; only parts whose rotations allow mirroring. | commands: observed; about the box centre: estimate |
+| HM7 | **Window selection**: pressing on empty sheet and dragging draws a selection window; the parts **wholly inside** it are selected. | window: observed (manual); wholly inside: estimate |
+| HM8 | With Collision on, a part dragged into another doesn't overlap it: the original moves it back to the correct distance. The rebuild lets a blocked drag **slide**: from the last free position toward the pointer, along X then Y or Y then X (whichever ends nearer), stopping one gap before what is in the way. | keeping the distance: observed (manual); sliding: estimate |
+| HM9 | **Snap while dragging** placed parts: within the snap reach (14 px on screen) of a part — measured at the part gap, on the real contours — or of the margin, the selection moves in to sit exactly there, on each axis toward the nearer one. Hold Alt to drag without snapping. | extends G6; contour snap and reach: estimate |
+| HM10 | **Copying a selection**: Ctrl+D (ribbon Copy) puts a copy of all selected parts, keeping their layout, at the first free spot by their boxes, left first, then lowest; Ctrl + drag drags a copy instead. Each copy adds one to its part's order. | Copy command: observed; spot order and Ctrl+drag: rebuild |
+| HM11 | Parts being dragged can show the **part gap** as a dashed outline around them (the original's option to draw the moving parts grown by the part gap). Off at the factory; on first start the rebuild takes the install's setting. | observed option and default; look: rebuild |
+| HM13 | **Plain arrow keys move the view** (left/right/up/down) and **Page Down / Page Up zoom in / out**; the mouse wheel issues the same commands in the original. The rebuild pans 80 px per press and zooms by 2 (the original's default keyboard zoom factor). | keys: observed; pan step: estimate |
+| HM12 | **Settings → Nesting**: the part gap, edge margin and moves are shown and typed in mm or inches (fractions such as 1/4 accepted); new jobs start with the part gap and edge margin set there; the movement value, snapping, snap reach and the gap outline are set there too. | rebuild |
+
+How the rebuild uses them:
+
+- **Select**: click a part; Shift or Ctrl + click adds it to the selection or takes it out;
+  drag on empty sheet for a window (Shift or Ctrl adds to what is selected); Ctrl+E or Ctrl+A
+  selects every part on the sheet; Esc clears. Pan with the middle button or Space + drag.
+- **Keys** (HM1): Ctrl + arrows slide to the next part or the margin (HM2); Alt + arrows move
+  exactly by the step (HM3). Holding a key repeats the move; moves in a row make one undo step.
+  After each move the status line shows how much room is left in each direction. The ribbon's
+  **Move** group has the step box and slide buttons. Plain arrows and Page Down / Page Up move
+  and zoom the view (HM13). Ctrl+Q and R turn 90° left, Ctrl+W 90° right, Ctrl+9 90° in the
+  set direction (R on one part: its next allowed turn), M / Shift+M mirror (Ctrl+A / Ctrl+S in
+  the original; Ctrl+S saves here). Del removes the selection, Ctrl+D copies it (in the
+  original Ctrl+D flips the turn direction).
+- **Drag** (HM8–HM11): the selection moves together; with **Snap** on (ribbon) it snaps to the
+  gap near a part or the margin; when blocked it slides along; red outline = can't stay there
+  (moved back on release). Ctrl + drag drags a copy.
+- Not imitated yet: turning by steps other than 90° and by typed angles (the rebuild keeps parts
+  in quarter turns, FEATURES NST-14), the minimum-rectangle turn, Place Near, Expand, Fit and
+  Advanced Copy (NST-4), snap points and Distance & Angle on the sheet (NST-6), orthogonal mode.
+
 ## Manual machining (cutting picked contours by hand)
 
 The original keeps a sheet's machining as a list of instructions. Each cut contour carries a

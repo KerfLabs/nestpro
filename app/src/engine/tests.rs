@@ -675,3 +675,54 @@ fn verify_lists_a_hole_too_small_for_the_kerf() {
     assert!(format!("{v}").contains("no bigger than the 25.00 mm kerf"), "{v}");
     crate::ct1::set_thread_active(None);
 }
+
+#[test]
+fn an_agent_arranges_parts_by_hand() {
+    // HM1–HM10 through the operations: place, slide to the next part, nudge,
+    // move and copy a group, turn and mirror it.
+    let d = dir("arrange");
+    let jp = d.join("a.snjob");
+    let jp = jp.to_str().unwrap();
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(jp), json!({"w": 1000, "h": 500, "margin": 10, "gap": 6.35}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 100, "h": 40, "qty": 3}));
+    call(&mut s, "place", None, json!({"part": 1, "x": 50, "y": 100}));
+    call(&mut s, "place", None, json!({"part": 1, "x": 600, "y": 110}));
+    call(&mut s, "place", None, json!({"part": 1, "x": 600, "y": 300}));
+    let at = |n: usize| {
+        let j = jobfile::load(Path::new(jp)).unwrap();
+        j.sheets[0][n]
+    };
+    // Ctrl+arrow: #2 slides left to one part gap from #1.
+    let r = call(&mut s, "slide", None, json!({"item": 2, "dir": "left"}));
+    assert!(r["message"].as_str().unwrap().contains("meets the next part"), "{r}");
+    assert!((at(1).x - 156.35).abs() < 0.01, "{:?}", at(1));
+    assert!(err(&mut s, "slide", json!({"item": 2, "dir": "left"})).contains("part gap"));
+    // Alt+arrow: by a distance.
+    call(&mut s, "slide", None, json!({"items": "2,3", "dir": "up", "by": 6.35}));
+    assert!((at(1).y - 116.35).abs() < 0.01 && (at(2).y - 306.35).abs() < 0.01);
+    // A group move keeps the layout; refused onto another part.
+    call(&mut s, "move", None, json!({"items": "2-3", "dx": 100}));
+    assert!((at(1).x - 256.35).abs() < 0.01 && (at(2).x - 700.0).abs() < 0.01);
+    assert!(err(&mut s, "move", json!({"items": "2,3", "x": 60, "y": 100})).contains("overlap"));
+    // Turn and mirror a group about its centre.
+    call(&mut s, "turn", None, json!({"items": "1,2", "angle": -90}));
+    assert!(at(0).turns == 3 && at(1).turns == 3);
+    assert!(err(&mut s, "turn", json!({"item": 1, "angle": 45})).contains("90"));
+    assert!(err(&mut s, "mirror", json!({"items": "1,2"})).contains("mirrored"));
+    call(&mut s, "edit-part", None, json!({"part": 1, "mirror": true}));
+    call(&mut s, "mirror", None, json!({"items": "1,2", "axis": "y"}));
+    assert!(at(0).mirror && at(1).mirror);
+    // Copy a group: three new parts, every part clear of the others.
+    let r = call(&mut s, "copy", None, json!({"items": "1-3"}));
+    assert!(r["message"].as_str().unwrap().contains("#4–#6"), "{r}");
+    let j = jobfile::load(Path::new(jp)).unwrap();
+    assert_eq!(j.sheets[0].len(), 6);
+    assert_eq!(j.parts[0].qty, 6, "each copy adds one to the order");
+    for (i, a) in j.sheets[0].iter().enumerate() {
+        for b in &j.sheets[0][i + 1..] {
+            assert!(!crate::nest::clash_exact(&j.parts, a, b, 6.35 - 1e-6), "{a:?} {b:?}");
+        }
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}

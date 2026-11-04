@@ -123,6 +123,8 @@ const PARTS: Arg = a("parts", Ty::Parts, "Which parts: \"all\" (default), a part
 const PART: Arg = r("part", Ty::Parts, "The part: its number (from 1) or its name");
 const SHEET: Arg = a("sheet", Ty::Int, "Sheet number, from 1 (default 1)");
 const ITEM: Arg = r("item", Ty::Int, "The placed part's number on the sheet (#1, #2… as in info/render)");
+const ITEM_ONE: Arg = a("item", Ty::Int, "One placed part's number on the sheet (#1, #2… as in info/render); or use items");
+const ITEMS: Arg = a("items", Ty::Str, "Several placed parts that go together, e.g. \"1,3,5\" or \"2-4\" (or use item)");
 const SHAPES: &[&str] = &["rectangle", "plate-hole", "strip", "l-bracket", "disc", "flange", "gusset", "slotted-plate"];
 const MACHINES: &[&str] = &["laser", "plasma", "oxyfuel", "waterjet", "laserpunch", "punch"];
 const LEADS: &[&str] = &["machine", "perpendicular", "line", "arc", "line-arc", "corner"];
@@ -196,9 +198,22 @@ pub static OPS: &[Op] = &[
         PART, a("sheet", Ty::Str, "Sheet number from 1, or \"new\" (default: sheet 1, a new one if there is none)"), a("x", Ty::Num, "X of the box's lower-left corner, mm"), a("y", Ty::Num, "Y, mm"),
         a("angle", Ty::Int, "0, 90, 180 or 270"), a("mirror", Ty::Bool, "Mirrored"),
     ] },
-    Op { name: "move", group: "Nesting", kind: Kind::Write, help: "Move a placed part to x,y or by dx,dy (refused when it would collide or leave the sheet).", args: &[SHEET, ITEM, a("x", Ty::Num, "New X"), a("y", Ty::Num, "New Y"), a("dx", Ty::Num, "Move by X"), a("dy", Ty::Num, "Move by Y")] },
+    Op { name: "move", group: "Nesting", kind: Kind::Write, help: "Move a placed part (item) or several together (items) to x,y (the lower-left of their box) or by dx,dy (refused when it would collide or leave the sheet).", args: &[SHEET, ITEM_ONE, ITEMS, a("x", Ty::Num, "New X"), a("y", Ty::Num, "New Y"), a("dx", Ty::Num, "Move by X"), a("dy", Ty::Num, "Move by Y")] },
+    Op { name: "slide", group: "Nesting", kind: Kind::Write, help: "Slide placed parts left, right, up or down together: by a distance (stops early at the next part or the margin, never overlapping), or without `by` all the way until they meet the next part at the part gap (along the real contours) or the sheet margin — the original's Ctrl+arrow / Alt+arrow moves.", args: &[
+        SHEET, ITEM_ONE, ITEMS,
+        Arg { name: "dir", ty: Ty::Str, required: true, help: "Direction", choices: &["left", "right", "up", "down"] },
+        a("by", Ty::Num, "Distance in mm (omit = to the end)"),
+    ] },
     Op { name: "rotate", group: "Nesting", kind: Kind::Write, help: "Turn a placed part to its next allowed quarter turn, where there is room.", args: &[SHEET, ITEM] },
-    Op { name: "copy", group: "Nesting", kind: Kind::Write, help: "Copy a placed part into the first free spot on its sheet (the order grows by one).", args: &[SHEET, ITEM] },
+    Op { name: "turn", group: "Nesting", kind: Kind::Write, help: "Turn placed parts together about the centre of their box by 90° (counter-clockwise), -90° or 180°; when the turned group would overlap a part or leave the sheet it moves to the nearest free spot.", args: &[
+        SHEET, ITEM_ONE, ITEMS,
+        Arg { name: "angle", ty: Ty::Int, required: false, help: "90 (default, counter-clockwise), -90 or 180", choices: &[] },
+    ] },
+    Op { name: "mirror", group: "Nesting", kind: Kind::Write, help: "Mirror placed parts together about the centre of their box: axis x = left↔right (default), y = top↔bottom; moved to the nearest free spot when needed.", args: &[
+        SHEET, ITEM_ONE, ITEMS,
+        Arg { name: "axis", ty: Ty::Str, required: false, help: "x = left↔right (default), y = top↔bottom", choices: &["x", "y"] },
+    ] },
+    Op { name: "copy", group: "Nesting", kind: Kind::Write, help: "Copy a placed part (item), or several keeping their layout (items), into the first free spot on its sheet (each part's order grows by one per copy).", args: &[SHEET, ITEM_ONE, ITEMS] },
     Op { name: "unplace", group: "Nesting", kind: Kind::Write, help: "Take one placed part off its sheet.", args: &[SHEET, ITEM] },
     // --- technology ---
     Op { name: "leads", group: "Technology", kind: Kind::Write, help: "Lead-ins: auto (placed by contour class — round, rectangular or other part or hole: round ones at the keypad position's angle, rectangles at its corner or nearest side, other shapes at the nearest valid corner, else the middle of the nearest long-enough line), machine (lengths and position from the machine's CT1), or delete.", args: &[
@@ -492,6 +507,25 @@ fn sheet_idx(job: &JobFile, args: &Args) -> Result<usize, String> {
         return Err(format!("there is no sheet {k} (the job has {})", job.sheets.len()));
     }
     Ok(k as usize - 1)
+}
+
+/// "#2" or "#1, #3 and #5": placed parts by their numbers on the sheet.
+fn names(sel: &[usize]) -> String {
+    let v: Vec<String> = sel.iter().map(|i| format!("#{}", i + 1)).collect();
+    match v.len() {
+        0 => "nothing".into(),
+        1 => v[0].clone(),
+        n => format!("{} and {}", v[..n - 1].join(", "), v[n - 1]),
+    }
+}
+
+/// The placed parts named by `items` ("1,3,5", "2-4") or `item`.
+fn items_idx(job: &JobFile, s: usize, args: &Args) -> Result<Vec<usize>, String> {
+    match args.str("items") {
+        Some(list) => arrange::parse_items(&list, job.sheets[s].len()),
+        None if args.str("item").is_some() => Ok(vec![item_idx(job, s, args)?]),
+        None => Err("Name the placed parts: item=N or items=\"1,3,5\".".into()),
+    }
 }
 
 fn item_idx(job: &JobFile, s: usize, args: &Args) -> Result<usize, String> {
@@ -840,7 +874,7 @@ pub fn create(ctx: &Ctx, op_name: &str, default_name: &str, args: &Value) -> Res
         );
         return Ok((pj.into_jobfile(), m));
     }
-    let mut spec = default_spec();
+    let mut spec = with_prefs(&default_spec(), &ctx.cfg);
     set_spec_fields(&mut spec, &a, ctx)?;
     let mut job = JobFile::new_job(&a.str("name").unwrap_or_else(|| default_name.to_string()), spec);
     job.week = a.str("week").unwrap_or_default();
@@ -866,7 +900,7 @@ fn import_xml(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
     let mut notes = im.notes.clone();
     let mut jobs = vec![];
     for (xj, f) in im.jobs.into_iter().zip(&files) {
-        let mut spec = default_spec();
+        let mut spec = with_prefs(&default_spec(), &ctx.cfg);
         match xj.material {
             Some(m) => spec.material = m,
             None if !xj.material_text.is_empty() => notes.push(format!("{}: material '{}' isn't one of the app's — set to {}", xj.name, xj.material_text, cnc::MATERIALS[spec.material])),
@@ -1663,17 +1697,48 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
         }
         "move" => {
             let s = sheet_idx(job, &a)?;
-            let i = item_idx(job, s, &a)?;
-            let old = job.sheets[s][i];
-            let mut c = old;
-            c.x = a.num("x")?.unwrap_or(old.x) + a.num("dx")?.unwrap_or(0.0);
-            c.y = a.num("y")?.unwrap_or(old.y) + a.num("dy")?.unwrap_or(0.0);
-            if !placement_ok(&job.parts, &job.sheets[s], &job.spec, &job.format(s), Some(i), &c, true) {
-                return Err(format!("#{} can't go to X {:.1} Y {:.1}: it would overlap a part or leave the margin.", i + 1, c.x, c.y));
+            let sel = items_idx(job, s, &a)?;
+            let b = arrange::group_box(&job.sheets[s], &sel);
+            let d = [
+                a.num("x")?.map_or(0.0, |x| x - b[0]) + a.num("dx")?.unwrap_or(0.0),
+                a.num("y")?.map_or(0.0, |y| y - b[1]) + a.num("dy")?.unwrap_or(0.0),
+            ];
+            if !arrange::group_ok(&job.parts, &job.sheets[s], &sel, d, &job.spec.for_format(&job.format(s)), &job.format(s), true) {
+                return Err(format!("{} can't go to X {:.1} Y {:.1}: it would overlap a part or leave the margin.", names(&sel), b[0] + d[0], b[1] + d[1]));
             }
-            job.sheets[s][i] = c;
+            for &i in &sel {
+                job.sheets[s][i].x += d[0];
+                job.sheets[s][i].y += d[1];
+            }
             job.sheet_changed(s);
-            Ok(Outcome::msg(format!("Moved #{} '{}' to X {:.1} Y {:.1}.", i + 1, job.parts[c.part].name, c.x, c.y)))
+            let c = job.sheets[s][sel[0]];
+            Ok(Outcome::msg(if sel.len() == 1 {
+                format!("Moved #{} '{}' to X {:.1} Y {:.1}.", sel[0] + 1, job.parts[c.part].name, c.x, c.y)
+            } else {
+                format!("Moved {} to X {:.1} Y {:.1} (lower-left of their box).", names(&sel), b[0] + d[0], b[1] + d[1])
+            }))
+        }
+        "slide" => {
+            let s = sheet_idx(job, &a)?;
+            let sel = items_idx(job, s, &a)?;
+            let dir = arrange::Dir::parse(&a.need_str("dir")?).ok_or("dir: left, right, up or down")?;
+            let by = a.num("by")?;
+            if by.is_some_and(|b| b <= 0.0) {
+                return Err("by: give a distance above 0 (or leave it out to slide to the end).".into());
+            }
+            let f = job.format(s);
+            let t = arrange::slide(&job.parts, &mut job.sheets[s], &sel, dir, &job.spec, &f, by.unwrap_or(f64::INFINITY), true);
+            if t <= arrange::EPS {
+                return Err(format!("{} can't move {}: it already sits at the part gap from the next part or at the margin.", names(&sel), dir.name()));
+            }
+            job.sheet_changed(s);
+            let short = by.is_some_and(|b| t + 1e-6 < b);
+            Ok(Outcome::msg(format!(
+                "Slid {} {} {t:.2} mm{}.",
+                names(&sel),
+                dir.name(),
+                if by.is_none() || short { " — it now meets the next part at the gap, or the margin" } else { "" }
+            )))
         }
         "rotate" => {
             let s = sheet_idx(job, &a)?;
@@ -1687,15 +1752,50 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             job.sheet_changed(s);
             Ok(Outcome::msg(format!("Turned #{} to {}°.", i + 1, c.angle())))
         }
+        "turn" | "mirror" => {
+            let s = sheet_idx(job, &a)?;
+            let sel = items_idx(job, s, &a)?;
+            let f = job.format(s);
+            let (new, what) = if name == "turn" {
+                let q = match a.int("angle")?.unwrap_or(90) {
+                    90 | -270 => 1,
+                    180 | -180 => 2,
+                    -90 | 270 => 3,
+                    v => return Err(format!("angle: {v}° — parts turn by 90, -90 or 180.")),
+                };
+                (arrange::turn(&job.parts, &job.sheets[s], &sel, q, &job.spec, &f, true)?, format!("Turned {}", names(&sel)))
+            } else {
+                let vertical = match a.str("axis").as_deref().map(str::trim) {
+                    None | Some("x") | Some("X") => true,
+                    Some("y") | Some("Y") => false,
+                    Some(v) => return Err(format!("axis: '{v}' — x (left↔right) or y (top↔bottom).")),
+                };
+                (arrange::mirror(&job.parts, &job.sheets[s], &sel, vertical, &job.spec, &f, true)?, format!("Mirrored {}", names(&sel)))
+            };
+            for (k, &i) in sel.iter().enumerate() {
+                job.sheets[s][i] = new[k];
+            }
+            job.sheet_changed(s);
+            let b = arrange::group_box(&job.sheets[s], &sel);
+            Ok(Outcome::msg(format!("{what}; their box now starts at X {:.1} Y {:.1}.", b[0], b[1])))
+        }
         "copy" => {
             let s = sheet_idx(job, &a)?;
-            let i = item_idx(job, s, &a)?;
-            let src = job.sheets[s][i];
-            let c = copy_spot(&job.sheets[s], &job.spec, &job.format(s), src).ok_or("No free spot on this sheet for a copy.")?;
-            job.sheets[s].push(c);
-            job.parts[src.part].qty += 1;
+            let sel = items_idx(job, s, &a)?;
+            let f = job.format(s);
+            let d = arrange::copy_spot(&job.sheets[s], &sel, &job.spec, &f).ok_or("No free spot on this sheet for a copy.")?;
+            let first = job.sheets[s].len() + 1;
+            for c in arrange::copies(&job.sheets[s], &sel, d) {
+                job.parts[c.part].qty += 1;
+                job.sheets[s].push(c);
+            }
             job.sheet_changed(s);
-            Ok(Outcome::msg(format!("Copied {} to X {:.0} Y {:.0} as #{} (quantity now {}).", job.parts[src.part].name, c.x, c.y, job.sheets[s].len(), job.parts[src.part].qty)))
+            let c = job.sheets[s][first - 1];
+            Ok(Outcome::msg(if sel.len() == 1 {
+                format!("Copied {} to X {:.0} Y {:.0} as #{first} (quantity now {}).", job.parts[c.part].name, c.x, c.y, job.parts[c.part].qty)
+            } else {
+                format!("Copied {} as #{first}–#{} (each part's quantity grew by one per copy).", names(&sel), job.sheets[s].len())
+            }))
         }
         "unplace" => {
             let s = sheet_idx(job, &a)?;
@@ -2081,8 +2181,10 @@ pub const GUI_MAP: &[(&str, &str)] = &[
     ("Edit/Undo", "undo"),
     ("Edit/Redo", "gui: undo again from the session history instead"),
     ("Modify/Collision", "gui: agents always place with collision checking on"),
+    ("Modify/Snap", "gui: snapping only steers a mouse drag; agents give exact places (move, or slide to meet the next part)"),
     ("Modify/Copy\npart", "copy"),
     ("Modify/Rotate\n90°", "rotate"),
+    ("Modify/Mirror", "mirror"),
     ("Modify/Remove\npart", "unplace"),
     ("Modify/Clear\nsheets", "clear-sheets"),
     ("Remnants/Compact\nto left", "compact"),

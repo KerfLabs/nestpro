@@ -39,13 +39,13 @@ is **`FEATURES.md`** at the top of the repo; keep both in step.
 | **One Window** (nest only inside a window you draw) | Missing | ★★ |
 | **Place** / **Semi-Automatic** (one part at a time) | **Have** — Parts View ghost drop, Enter = auto-place one | |
 | Unitary / Grid (part onto a sheet of matching size) | Missing | ★ |
-| Collisions, Copy, Move | Have | |
-| **Advanced Copy** (arrays of a part), **Place Near**, **Expand**, **Fit** to borders | Part — Compact to left, approach snap while dropping | ★★ |
+| Collisions, Copy, Move | Have — several parts selected (click, Shift/Ctrl + click, window), moved, turned, mirrored and copied together; Alt + arrows move by a step, Ctrl + arrows slide to the next part at the part gap; drags snap and slide (Ctrl + drag copies); free-angle turning missing | ★★ |
+| **Advanced Copy** (arrays of a part), **Place Near**, **Expand**, **Fit** to borders | Part — Compact to left, snap while dropping or dragging, slide to the next part | ★★ |
 | **Nesting for common cut** (shared edges) | Missing | ★★ |
 | Margins toggle | Have (sheet margin) | |
 | Remnants: create (auto / semi-auto), draw edge, exact edge, rotate, reference | Have — nine automatic line shapes, semi-automatic (3 types), saved into stock on save, rotate/flip; reference points and marks missing | ★ |
 | Time and cost, Export data | Have | |
-| Snap points (end, mid, centre, intersection, tangent…), Distance & Angle, Orthogonal | Missing | ★★ |
+| Snap points (end, mid, centre, intersection, tangent…), Distance & Angle, Orthogonal | Missing (the part-gap snap while dragging is in) | ★★ |
 | Macros (record) | Missing | ★ |
 | **True-shape nesting** (parts interlock by outline) | Have — strip (band) profiles like the original's: parts hook into notches and drop into holes at every level, best method per sheet, on stock sheets and inside a remnant's real outline too (`bands.rs`, `nest::nest_plan`, MECHANICS "True-shape strip nesting"). Quarter turns only; free angles (A014/B058 steps) still missing | ★★ |
 
