@@ -40,8 +40,8 @@ fn len(path: &[P]) -> f64 {
     path.windows(2).map(|w| ((w[1][0] - w[0][0]).powi(2) + (w[1][1] - w[0][1]).powi(2)).sqrt()).sum()
 }
 
-/// The sheet's machining as timed operations, in program order: per part its
-/// markings first (once), then each contour — rapid to the pierce, then the
+/// The sheet's machining as timed operations, in program order: each part's
+/// markings first, then each contour — rapid to the pierce, then the
 /// lead-in and contour (or the punch hits). Each step takes the plan's time
 /// for it (MECHANICS "Machining time and speeds"), so the whole run lasts as
 /// long as the sheet's time.
@@ -50,19 +50,23 @@ pub fn ops(plan: &SheetPlan, part_names: &[String]) -> Vec<Op> {
     let rapid = |a: P, b: P| Op { kind: OpKind::Rapid, label: "Rapid".into(), path: vec![a, b], secs: tm.rapid(a, b) };
     let mut out = vec![];
     let mut pos: P = [0.0, 0.0];
-    let mut marked: Vec<usize> = vec![];
-    for (k, c) in plan.contours.iter().enumerate() {
-        let name = part_names.get(c.part_no - 1).cloned().unwrap_or_default();
-        if !marked.contains(&c.part_no) {
-            marked.push(c.part_no);
-            for (_, m) in plan.marks.iter().filter(|m| m.0 == c.part_no) {
-                if let Some(&s) = m.first() {
-                    out.push(rapid(pos, s));
-                    out.push(Op { kind: OpKind::Mark, label: format!("Mark contour : part {} ({name})", c.part_no), path: m.clone(), secs: tm.mark(m).total() });
-                    pos = *m.last().unwrap_or(&s);
-                }
+    let name_of = |no: usize| part_names.get(no.wrapping_sub(1)).cloned().unwrap_or_default();
+    // The markings in the plan's order: those due before contour `k`.
+    let mut next_mark = 0;
+    let mut marks_upto = |k: usize, out: &mut Vec<Op>, pos: &mut P| {
+        while next_mark < plan.marks.len() && plan.mark_before.get(next_mark).is_none_or(|&b| b <= k) {
+            let (no, m) = &plan.marks[next_mark];
+            if let Some(&s) = m.first() {
+                out.push(rapid(*pos, s));
+                out.push(Op { kind: OpKind::Mark, label: format!("Mark contour : part {no} ({})", name_of(*no)), path: m.clone(), secs: tm.mark(m).total() });
+                *pos = *m.last().unwrap_or(&s);
             }
+            next_mark += 1;
         }
+    };
+    for (k, c) in plan.contours.iter().enumerate() {
+        marks_upto(k, &mut out, &mut pos);
+        let name = name_of(c.part_no);
         if let Some(p) = &c.punch {
             // The same split as the plan's: rapids between hits, a fixed time per hit.
             for h in &p.hits {
@@ -89,6 +93,8 @@ pub fn ops(plan: &SheetPlan, part_names: &[String]) -> Vec<Op> {
         let start = c.points[0];
         pos = if c.closing { c.joint_leads.last().map_or(start, |l| *l.0.last().unwrap()) } else { c.lead_out.unwrap_or(start) };
     }
+    // Markings of parts none of whose contours are cut.
+    marks_upto(usize::MAX, &mut out, &mut pos);
     out
 }
 

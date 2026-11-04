@@ -368,6 +368,9 @@ impl Speeds {
     pub fn resolve(files: &SpeedFiles, keys: &Keys, active: Option<f64>, estimate: f64, active_mark: Option<f64>, rapid: Option<f64>) -> Speeds {
         use crate::cuttime::SpeedSource as Src;
         let ts = &files.time;
+        // A machine speed of 0 is no speed (like an empty table field, TT6).
+        let active = active.filter(|&v| v > 0.001);
+        let active_mark = active_mark.filter(|&v| v > 0.001);
         let picked = files.table.as_ref().and_then(|t| t.pick(keys).map(|(i, how)| (&t.records[i], how)));
         let fallback = active.unwrap_or(estimate);
         let mut cut = [fallback; 13];
@@ -503,5 +506,8 @@ mod tests {
         // No machine speed either: our estimate.
         let s = Speeds::resolve(&SpeedFiles::default(), &k, None, 4500.0, None, None);
         assert_eq!((s.cut_for(1), s.source.clone()), (4500.0, SpeedSource::Estimate));
+        // A machine speed of 0 is none (TT6): our estimate, never a feed of 0.
+        let s = Speeds::resolve(&SpeedFiles::default(), &k, Some(0.0), 4500.0, Some(0.0), None);
+        assert_eq!((s.cut_for(1), s.mark, s.source.clone()), (4500.0, 9000.0, SpeedSource::Estimate));
     }
 }

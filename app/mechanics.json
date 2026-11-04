@@ -3788,6 +3788,45 @@
   "group": "machining time and speeds",
   "value": "machine speeds, no accelerations, 1 s per mm per pierce, no head times",
   "source": "MECHANICS CTM16"
+ },
+ {
+  "name": "time by program replay",
+  "group": "machining time and speeds",
+  "value": "head down, beam runs (pierce, cut, beam off) with micro-joint jumps head-down, head up; markings before their part",
+  "source": "MECHANICS CTM1",
+  "estimated": true
+ },
+ {
+  "name": "cut accelerations",
+  "group": "machining time and speeds",
+  "value": "P record for every cut move (our contours are polylines)",
+  "source": "MECHANICS CTM4",
+  "estimated": true
+ },
+ {
+  "name": "corner feed reduction",
+  "group": "machining time and speeds",
+  "value": "L601-L612, only with D018 = 3; not built",
+  "source": "MECHANICS TT7"
+ },
+ {
+  "name": "change and start/end times",
+  "group": "machining time and speeds",
+  "value": "D002-D013, 12x12 quality table, L/M codes: not counted",
+  "source": "MECHANICS CTM13"
+ },
+ {
+  "name": "times card",
+  "group": "machining time and speeds",
+  "value": "machine time split into cutting, marking, rapids, pierces, head; speed source and time file named",
+  "source": "MECHANICS CTM15; own design"
+ },
+ {
+  "name": "zero values in the time file",
+  "group": "machining time and speeds",
+  "value": "acceleration or top speed <= 0 limits nothing; D168 < 0 = no corner slow-down",
+  "source": "MECHANICS CTM5, CTM6; estimate",
+  "estimated": true
  }
 ]
 }

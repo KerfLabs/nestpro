@@ -392,7 +392,7 @@ pub fn beam_runs(c: &Contour) -> Vec<Vec<P>> {
     runs
 }
 
-/// The kinds of time in a sheet's machining (CTM15), seconds.
+/// The kinds of time in a sheet's machining (CTM14), seconds.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct TimeSplit {
     pub cut: f64,
@@ -426,12 +426,14 @@ pub struct SheetPlan {
     pub kerf_issues: Vec<(usize, bool, String)>,
     /// Marking lines per part number (from drawing layers set to "Mark").
     pub marks: Vec<(usize, Vec<P>)>,
+    /// Per marking line: how many contours are cut before it (program order).
+    pub mark_before: Vec<usize>,
     pub mark_len: f64,
     pub cut_len: f64,
     pub rapid_len: f64,
     pub pierces: usize,
     pub seconds: f64,
-    /// `seconds` by kind (CTM15).
+    /// `seconds` by kind (CTM14).
     pub times: TimeSplit,
     /// How this sheet is timed: its speeds and the machine's time settings.
     pub timing: Timing,
@@ -643,7 +645,7 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
     let mut rapid_len = 0.0;
     let mut marks: Vec<(usize, Vec<P>)> = vec![];
     let mut mark_len = 0.0;
-    let mut joint_pierces = 0usize;
+    let mut mark_before: Vec<usize> = vec![];
     let mut pos: P = [0.0, 0.0];
     let jobs = cut_jobs(parts, placed, &order, manual);
     let mut marked = vec![false; placed.len()];
@@ -690,6 +692,7 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
                 times.rapid += timing.rapid(pos, pts[0]);
                 times += timing.mark(&pts);
                 pos = *pts.last().unwrap();
+                mark_before.push(contours.len());
                 marks.push((i + 1, pts));
             }
         }
@@ -705,6 +708,7 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
                 times.rapid += timing.rapid(pos, pts[0]);
                 times += timing.mark(&pts);
                 pos = *pts.last().unwrap();
+                mark_before.push(contours.len());
                 marks.push((i + 1, pts));
             }
         }
@@ -985,7 +989,6 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
                 Ok(None) => {}
             }
             let open_leads = con.joint_leads.len() - usize::from(con.closing);
-            joint_pierces += open_leads;
             for (o, b) in con.joint_leads.iter().take(open_leads) {
                 rapid_len += dist(*o.last().unwrap(), b[0]);
             }
@@ -1000,8 +1003,9 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
             contours.push(con);
         }
     }
-    let pierces = contours.iter().filter(|c| c.punch.is_none()).count() + joint_pierces;
-    SheetPlan { contours, kerf_issues, marks, mark_len, cut_len, rapid_len, pierces, seconds: times.total(), times, timing }
+    // Every beam-on is a pierce, joint re-pierces included (CTM10).
+    let pierces: usize = contours.iter().filter(|c| c.punch.is_none()).map(|c| beam_runs(c).len()).sum();
+    SheetPlan { contours, kerf_issues, marks, mark_before, mark_len, cut_len, rapid_len, pierces, seconds: times.total(), times, timing }
 }
 
 /// Write the sheet's machine program as ISO G-code.

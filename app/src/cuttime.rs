@@ -68,7 +68,9 @@ pub struct TimeSettings {
     /// D017 / D018: marking and cutting speed sources.
     pub mark_source: SpeedSource,
     pub cut_source: SpeedSource,
-    /// D168: speed through a 90° corner, mm/min (negative = the table's).
+    /// D168: speed through a 90° corner, mm/min. Negative = the technology
+    /// table's per-quality value, which isn't decoded: no slow-down then
+    /// (FEATURES MAC-21).
     pub v90: f64,
     /// D001 (with D169 = 1): beam-off time, s.
     pub cut_off: f64,
@@ -81,7 +83,7 @@ pub struct TimeSettings {
     pub arc_acc: Vec<Accel>,
     /// S001: jerk-limited (S-curve) moves. Timed with plain ramps here (FEATURES MAC-21).
     pub jerk: bool,
-    /// N001–N023: factors on each kind of time (CTM15); 1 = as computed.
+    /// N001–N023: factors on each kind of time (CTM14); 1 = as computed.
     pub factors: [f64; 23],
     /// The file the settings came from (None = the original's defaults).
     pub source: Option<std::path::PathBuf>,
@@ -112,10 +114,11 @@ impl Default for TimeSettings {
     }
 }
 
-/// Factor slots (N001…) for the kinds of time the app keeps (CTM15).
+/// Factor slots for the kinds of time the app keeps (CTM14): N001 rapids,
+/// N002 cutting, N007 marking, N008 pierces.
 pub const F_RAPID: usize = 0;
 pub const F_CUT: usize = 1;
-pub const F_MARK: usize = 3;
+pub const F_MARK: usize = 6;
 pub const F_PIERCE: usize = 7;
 
 impl TimeSettings {
@@ -162,7 +165,9 @@ impl TimeSettings {
                 (b'O' | b'P' | b'Q', _) => {
                     let v: Vec<f64> = vals.iter().filter_map(|v| v.parse().ok()).collect();
                     if v.len() >= 8 {
-                        let r = Accel { t_from: v[0], t_to: v[1], acc: [v[2], v[3]], dec: [v[4], v[5]], vmax: [v[6], v[7]] };
+                        // A value of 0 or less limits nothing (our reading of an unset field).
+                        let lim = |x: f64| if x > 1e-9 { x } else { NO_LIMIT };
+                        let r = Accel { t_from: v[0], t_to: v[1], acc: [lim(v[2]), lim(v[3])], dec: [lim(v[4]), lim(v[5])], vmax: [lim(v[6]), lim(v[7])] };
                         match b[0] {
                             b'O' => o.push(r),
                             b'P' => p.push(r),
@@ -199,12 +204,6 @@ impl TimeSettings {
         Some(s)
     }
 
-    /// The machine's time file: same name as its technology file, `.TM1`
-    /// (TM1); None when there is none.
-    pub fn beside(ct1: &Path) -> Option<TimeSettings> {
-        ["TM1", "tm1", "Tm1"].iter().map(|e| ct1.with_extension(e)).find(|p| p.is_file()).and_then(|p| TimeSettings::load(&p))
-    }
-
     /// One line for the window and agents: where the time settings came from.
     pub fn label(&self) -> String {
         let name = |p: &std::path::PathBuf| p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
@@ -239,6 +238,9 @@ pub fn axis_secs(d: f64, v: f64, v0: f64, v1: f64, a: f64, dc: f64) -> f64 {
     if d <= 1e-9 || v <= 1e-9 {
         return 0.0;
     }
+    // No (or a nonsense) acceleration limits nothing.
+    let a = if a > 1e-9 { a } else { NO_LIMIT };
+    let dc = if dc > 1e-9 { dc } else { NO_LIMIT };
     let (v0, v1) = (v0.min(v), v1.min(v));
     let s_acc = (v * v - v0 * v0) / (2.0 * a);
     let s_dec = (v * v - v1 * v1) / (2.0 * dc);
@@ -295,7 +297,8 @@ pub fn move_secs(p: P, q: P, f: f64, v0: f64, v1: f64, acc: &Accel) -> (f64, f64
 /// is, never above the feed `f`. A straight-on vertex keeps the feed; a full
 /// reversal stops.
 pub fn corner_speed(turn: f64, v90: f64, f: f64) -> f64 {
-    if v90 >= NO_LIMIT * 0.999 {
+    // No limit, or the table's (negative, not decoded): no slow-down.
+    if v90 >= NO_LIMIT * 0.999 || v90 < 0.0 {
         return f;
     }
     let s = (90.0 - turn / 2.0).to_radians().sin();
@@ -307,7 +310,7 @@ pub fn corner_speed(turn: f64, v90: f64, f: f64) -> f64 {
     }
     let r45 = std::f64::consts::FRAC_1_SQRT_2;
     let k = ((s / (1.0 - s)) / (r45 / (1.0 - r45))).sqrt();
-    (v90.max(0.0) * k).min(f)
+    (v90 * k).min(f)
 }
 
 /// A vertex that turns by no more than this many degrees is part of a curve
@@ -326,21 +329,46 @@ pub fn turn_deg(a: P, b: P, c: P) -> f64 {
     c.acos().to_degrees()
 }
 
+/// The deceleration along the path for a move from `p` to `q`: the axis
+/// that limits it sets it (mm/s²).
+fn path_dec(p: P, q: P, acc: &Accel) -> f64 {
+    let d = [(q[0] - p[0]).abs(), (q[1] - p[1]).abs()];
+    let l = (d[0] * d[0] + d[1] * d[1]).sqrt();
+    (0..2).filter(|&i| d[i] > 1e-9).map(|i| acc.dec[i] * l / d[i]).fold(f64::MAX, f64::min)
+}
+
 /// A cut along `path` at feed `f` mm/min, from rest to rest (CTM4, CTM5):
 /// each vertex slows the head to its corner speed (vertices that turn by no
-/// more than `TANGENT_DEG` keep the feed), the end stops it. Seconds.
+/// more than `TANGENT_DEG` keep the feed), the end stops it. Each vertex's
+/// speed is also held low enough to brake in time for the slower vertices
+/// further on (CTM2). Seconds.
 pub fn path_secs(path: &[P], f: f64, v90: f64, acc: &Accel) -> f64 {
-    let mut t = 0.0;
-    let mut v = 0.0;
-    for k in 0..path.len().saturating_sub(1) {
-        let exit = match path.get(k + 2) {
+    let n = path.len();
+    if n < 2 {
+        return 0.0;
+    }
+    // Speed limit at the end of each move (mm/min): its corner, 0 at the end.
+    let mut lim: Vec<f64> = (0..n - 1)
+        .map(|k| match path.get(k + 2) {
             None => 0.0,
             Some(&c) => {
                 let turn = turn_deg(path[k], path[k + 1], c);
                 if turn <= TANGENT_DEG { f } else { corner_speed(turn, v90, f) }
             }
-        };
-        let (dt, out) = move_secs(path[k], path[k + 1], f, v, exit, acc);
+        })
+        .collect();
+    // Look ahead: no faster than the head can brake to the next limit.
+    for k in (0..n.saturating_sub(2)).rev() {
+        let (p, q) = (path[k + 1], path[k + 2]);
+        let l = ((q[0] - p[0]).powi(2) + (q[1] - p[1]).powi(2)).sqrt();
+        let next = lim[k + 1] / 60.0;
+        let reach = (next * next + 2.0 * path_dec(p, q, acc) * l).sqrt() * 60.0;
+        lim[k] = lim[k].min(reach);
+    }
+    let mut t = 0.0;
+    let mut v = 0.0;
+    for k in 0..n - 1 {
+        let (dt, out) = move_secs(path[k], path[k + 1], f, v, lim[k], acc);
         t += dt;
         v = out;
     }
@@ -429,5 +457,32 @@ mod tests {
         // No Q record: arcs use the straight-cut record (CTM6).
         let p_only = TimeSettings::from_text("P001 0 10 5000 5000 5000 5000 60000 60000\n");
         assert_eq!(p_only.arc_acc, p_only.line_acc);
+    }
+
+    #[test]
+    fn the_head_brakes_in_time_for_a_corner_after_a_curve() {
+        // A long run of gentle bends (kept at the feed), then a tiny segment
+        // into a full stop: the braking starts on the bends before it (CTM2).
+        let s = template();
+        let a = Accel { acc: [500.0; 2], dec: [500.0; 2], ..accel_for(&s.line_acc, 3.0) };
+        let mut path: Vec<P> = (0..=40).map(|k| [k as f64 * 2.0, (k % 2) as f64 * 0.2]).collect();
+        path.push([80.2, 0.0]);
+        let t = path_secs(&path, 3000.0, s.v90, &a);
+        // From rest to rest over ~80 mm at 50 mm/s with 500 mm/s² ramps: at
+        // least the ramp time 0.1 s each way on top of length ÷ feed.
+        let len: f64 = path.windows(2).map(|w| ((w[1][0] - w[0][0]).powi(2) + (w[1][1] - w[0][1]).powi(2)).sqrt()).sum();
+        assert!(t >= len / 50.0 + 0.09, "{t} vs {}", len / 50.0);
+    }
+
+    #[test]
+    fn zero_values_in_the_time_file_limit_nothing() {
+        let s = TimeSettings::from_text("P001 0 999 0 0 0 0 0 0\nD168 -1\nN007 2\n");
+        let a = accel_for(&s.line_acc, 3.0);
+        let t = path_secs(&[[0.0, 0.0], [100.0, 0.0], [100.0, 50.0]], 3000.0, s.v90, &a);
+        assert!(t.is_finite() && (t - 3.0).abs() < 1e-3, "{t}");
+        // A negative 90° speed (the table's, not decoded) slows no corner.
+        assert_eq!(corner_speed(90.0, s.v90, 3000.0), 3000.0);
+        // N007 scales the marking time.
+        assert_eq!(s.factors[F_MARK], 2.0);
     }
 }
