@@ -1112,7 +1112,7 @@ mod kerf_tests {
     }
 
     fn contour(points: Vec<P>, inner: bool) -> crate::cnc::Contour {
-        crate::cnc::Contour { lead_in: points[0], lead_path: vec![], lead_out: None, lead_out_path: vec![], loops: vec![], points, inner, part_no: 1, joints: vec![], joint_leads: vec![], feed: 1000.0, manual: false, punch: None, overlap: 0.0, closing: false, comp: ContourComp::default(), quality: 1, time: Default::default() }
+        crate::cnc::Contour { lead_in: points[0], lead_path: vec![], lead_out: None, lead_out_path: vec![], loops: vec![], points, inner, part_no: 1, joints: vec![], joint_leads: vec![], feed: 1000.0, manual: false, punch: None, overlap: 0.0, closing: false, comp: ContourComp::default(), quality: 1, time: Default::default(), pierces: 0 }
     }
 
     fn opts(lead_mode: u8) -> SystemOpts {

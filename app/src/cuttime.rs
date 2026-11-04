@@ -230,6 +230,26 @@ pub fn accel_for(list: &[Accel], t: f64) -> Accel {
     list.iter().find(|a| a.t_from <= t && t <= a.t_to).copied().unwrap_or_default()
 }
 
+/// An acceleration of "no limit" (the time file's 99 999.999), or 0 or less,
+/// as infinite: the speed changes at once (CTM16).
+fn unlimited(a: f64) -> f64 {
+    if a <= 1e-9 || a >= NO_LIMIT * 0.999 { f64::INFINITY } else { a }
+}
+
+/// The feed the axes allow for a move from `p` to `q` at `f` mm/min: each
+/// axis's top speed caps its share (CTM2, CTM6).
+pub fn move_feed(p: P, q: P, f: f64, acc: &Accel) -> f64 {
+    let d = [(q[0] - p[0]).abs(), (q[1] - p[1]).abs()];
+    let l = (d[0] * d[0] + d[1] * d[1]).sqrt();
+    let mut feed = f;
+    for i in 0..2 {
+        if d[i] > 1e-9 && l > 1e-9 {
+            feed = feed.min(acc.vmax[i] * l / d[i]);
+        }
+    }
+    feed
+}
+
 /// Time for one axis to travel `d` mm, cruising at `v`, entering at `v0` and
 /// leaving at `v1` (mm/s), with acceleration `a` and deceleration `dc` (mm/s²)
 /// (CTM2): a speed ramp up, a cruise and a ramp down, or — when the move is too
@@ -238,16 +258,22 @@ pub fn axis_secs(d: f64, v: f64, v0: f64, v1: f64, a: f64, dc: f64) -> f64 {
     if d <= 1e-9 || v <= 1e-9 {
         return 0.0;
     }
-    // No (or a nonsense) acceleration limits nothing.
-    let a = if a > 1e-9 { a } else { NO_LIMIT };
-    let dc = if dc > 1e-9 { dc } else { NO_LIMIT };
+    // "No limit" (or a nonsense value): the speed changes at once (CTM16).
+    let (a, dc) = (unlimited(a), unlimited(dc));
     let (v0, v1) = (v0.min(v), v1.min(v));
     let s_acc = (v * v - v0 * v0) / (2.0 * a);
     let s_dec = (v * v - v1 * v1) / (2.0 * dc);
     if s_acc + s_dec <= d {
         return (v - v0) / a + (v - v1) / dc + (d - s_acc - s_dec) / v;
     }
-    let peak = ((v0 * v0 * dc + 2.0 * d * a * dc + v1 * v1 * a) / (a + dc)).sqrt();
+    // Too short to reach `v` (only possible with a finite ramp on one side).
+    let peak = if a.is_infinite() {
+        (v1 * v1 + 2.0 * dc * d).sqrt()
+    } else if dc.is_infinite() {
+        (v0 * v0 + 2.0 * a * d).sqrt()
+    } else {
+        ((v0 * v0 * dc + 2.0 * d * a * dc + v1 * v1 * a) / (a + dc)).sqrt()
+    };
     // An exit faster than the move can reach: no ramp down (CTM2 lowers the
     // exit instead; `move_secs` passes only reachable exits).
     let peak = peak.max(v0).max(v1);
@@ -264,20 +290,14 @@ pub fn move_secs(p: P, q: P, f: f64, v0: f64, v1: f64, acc: &Accel) -> (f64, f64
     if l <= 1e-9 || f <= 1e-9 {
         return (0.0, v0);
     }
-    // The feed the axes allow along this direction.
-    let mut feed = f;
-    for i in 0..2 {
-        if d[i] > 1e-9 {
-            feed = feed.min(acc.vmax[i] * l / d[i]);
-        }
-    }
+    let feed = move_feed(p, q, f, acc);
     let v0 = v0.min(feed);
     // The exit can't be faster than the move can speed up to (CTM2: the next
     // move's entry is lowered).
     let mut reach = f64::MAX;
     for i in 0..2 {
         if d[i] > 1e-9 {
-            let a_path = acc.acc[i] * l / d[i];
+            let a_path = unlimited(acc.acc[i]) * l / d[i];
             reach = reach.min((v0 / 60.0).powi(2) + 2.0 * a_path * l);
         }
     }
@@ -334,7 +354,7 @@ pub fn turn_deg(a: P, b: P, c: P) -> f64 {
 fn path_dec(p: P, q: P, acc: &Accel) -> f64 {
     let d = [(q[0] - p[0]).abs(), (q[1] - p[1]).abs()];
     let l = (d[0] * d[0] + d[1] * d[1]).sqrt();
-    (0..2).filter(|&i| d[i] > 1e-9).map(|i| acc.dec[i] * l / d[i]).fold(f64::MAX, f64::min)
+    (0..2).filter(|&i| d[i] > 1e-9).map(|i| unlimited(acc.dec[i]) * l / d[i]).fold(f64::INFINITY, f64::min)
 }
 
 /// A cut along `path` at feed `f` mm/min, from rest to rest (CTM4, CTM5):
@@ -357,6 +377,13 @@ pub fn path_secs(path: &[P], f: f64, v90: f64, acc: &Accel) -> f64 {
             }
         })
         .collect();
+    // A junction is no faster than either move's feed allows (axis top speeds).
+    for k in 0..n - 1 {
+        lim[k] = lim[k].min(move_feed(path[k], path[k + 1], f, acc));
+        if k + 2 < n {
+            lim[k] = lim[k].min(move_feed(path[k + 1], path[k + 2], f, acc));
+        }
+    }
     // Look ahead: no faster than the head can brake to the next limit.
     for k in (0..n.saturating_sub(2)).rev() {
         let (p, q) = (path[k + 1], path[k + 2]);
@@ -484,5 +511,25 @@ mod tests {
         assert_eq!(corner_speed(90.0, s.v90, 3000.0), 3000.0);
         // N007 scales the marking time.
         assert_eq!(s.factors[F_MARK], 2.0);
+    }
+
+    #[test]
+    fn an_axis_speed_limit_ahead_is_braked_for() {
+        // X fast, Y capped at 60 mm/min: the head has to slow to 60 before the
+        // turn onto Y, and that braking takes time (CTM2, CTM6).
+        let a = Accel { acc: [100.0; 2], dec: [100.0; 2], vmax: [6000.0, 60.0], ..Default::default() };
+        let t = path_secs(&[[0.0, 0.0], [1000.0, 0.0], [1000.0, 100.0]], 6000.0, NO_LIMIT, &a);
+        assert!((t - 110.99505).abs() < 1e-3, "{t}");
+    }
+
+    #[test]
+    fn no_limit_means_length_over_speed() {
+        // CTM16: with no time file a 1 mm rapid at 60 000 mm/min takes 1 ms.
+        let t = rapid_secs([0.0, 0.0], [1.0, 0.0], 60000.0, true, &Accel::default());
+        assert!((t - 0.001).abs() < 1e-9, "{t}");
+        // A finite deceleration only: the ramp down still counts.
+        let half = Accel { dec: [100.0; 2], ..Default::default() };
+        let t = path_secs(&[[0.0, 0.0], [100.0, 0.0]], 6000.0, NO_LIMIT, &half);
+        assert!((t - (1.0 + 0.5)).abs() < 1e-9, "{t}");
     }
 }

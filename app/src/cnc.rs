@@ -64,6 +64,8 @@ pub struct Contour {
     pub quality: usize,
     /// Its machining time by kind, rapid to it not included (CTM1–CTM12).
     pub time: TimeSplit,
+    /// Its pierces: one per beam run (CTM10); 0 when punched.
+    pub pierces: usize,
 }
 
 /// Point at distance `d` along the closed polyline `pts` (starting at pts[0]).
@@ -81,6 +83,38 @@ pub fn point_at(pts: &[P], d: f64) -> P {
         acc += l;
     }
     pts[0]
+}
+
+/// Points along a closed polyline at distances that never go backwards: one
+/// pass over the edges for a whole walk (`point_at` starts from the
+/// beginning every time).
+struct Walker<'a> {
+    pts: &'a [P],
+    edge: usize,
+    start: f64,
+}
+
+impl<'a> Walker<'a> {
+    fn new(pts: &'a [P]) -> Self {
+        Walker { pts, edge: 0, start: 0.0 }
+    }
+
+    /// The point at distance `d` from pts[0]; `d` at least the last asked.
+    fn at(&mut self, d: f64) -> P {
+        let n = self.pts.len();
+        while self.edge + 1 < n {
+            let l = dist(self.pts[self.edge], self.pts[(self.edge + 1) % n]);
+            if self.start + l >= d {
+                break;
+            }
+            self.start += l;
+            self.edge += 1;
+        }
+        let (a, b) = (self.pts[self.edge], self.pts[(self.edge + 1) % n]);
+        let l = dist(a, b);
+        let t = if l > 0.0 { ((d - self.start) / l).clamp(0.0, 1.0) } else { 0.0 };
+        [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
+    }
 }
 
 /// Sharp outer corners (interior angle at most this) get a loop (estimate).
@@ -337,14 +371,17 @@ pub fn beam_runs(c: &Contour) -> Vec<Vec<P>> {
     events.sort_by(|a, b| a.partial_cmp(b).unwrap());
     events.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
     let mut prev = 0.0;
+    let mut prev_pt = c.points[0];
+    let mut walk = Walker::new(&c.points);
     let mut beam_on = true;
     let mut done_joint: Option<usize> = None;
     let mut ended = false;
     for d in events {
+        let p = walk.at(d);
         let mid = (prev + d) / 2.0;
         let joint_k = c.joints.iter().position(|j| mid > j.0 && mid < j.1);
         if joint_k.is_some() && joint_k == done_joint {
-            prev = d;
+            (prev, prev_pt) = (d, p);
             continue;
         }
         if let Some((out, back)) = joint_k.and_then(|k| c.joint_leads.get(k)).filter(|_| beam_on) {
@@ -356,10 +393,9 @@ pub fn beam_runs(c: &Contour) -> Vec<Vec<P>> {
             }
             runs.push(std::mem::take(&mut run));
             run = back.iter().take(2).copied().collect();
-            prev = d;
+            (prev, prev_pt) = (d, p);
             continue;
         }
-        let p = point_at(&c.points, d);
         if joint_k.is_some() {
             if beam_on {
                 runs.push(std::mem::take(&mut run));
@@ -368,7 +404,7 @@ pub fn beam_runs(c: &Contour) -> Vec<Vec<P>> {
         } else {
             if !beam_on {
                 // Pierce again where the gap ends.
-                run = vec![point_at(&c.points, prev)];
+                run = vec![prev_pt];
                 beam_on = true;
             }
             run.push(p);
@@ -378,7 +414,7 @@ pub fn beam_runs(c: &Contour) -> Vec<Vec<P>> {
                 }
             }
         }
-        prev = d;
+        (prev, prev_pt) = (d, p);
     }
     if !ended && beam_on {
         if c.overlap > 0.0 {
@@ -485,7 +521,8 @@ impl Timing {
     /// One contour (CTM4, CTM5, CTM10–CTM12): head down, then each beam run —
     /// pierce, cut with the corner slow-downs, beam off — with the jumps over
     /// micro-joints between runs (head kept down), and the head up at the end.
-    pub fn contour(&self, c: &Contour) -> TimeSplit {
+    /// Also returns the contour's pierce count (its beam runs).
+    pub fn contour(&self, c: &Contour) -> (TimeSplit, usize) {
         let s = &self.settings;
         let mut t = TimeSplit::default();
         if let Some(p) = &c.punch {
@@ -493,7 +530,7 @@ impl Timing {
             for w in p.hits.windows(2) {
                 t.rapid += self.rapid(w[0], w[1]);
             }
-            return t;
+            return (t, 0);
         }
         let runs = beam_runs(c);
         let mut last: Option<P> = None;
@@ -509,7 +546,7 @@ impl Timing {
         if !runs.is_empty() {
             t.head += s.head_down + s.head_up;
         }
-        t
+        (t, runs.len())
     }
 }
 
@@ -746,8 +783,8 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
                     pos = h;
                 }
                 let first = p.hits.first().copied().unwrap_or(pts[0]);
-                let mut con = Contour { lead_in: first, lead_path: vec![], lead_out: None, lead_out_path: vec![], loops: vec![], points: pts, inner, part_no: i + 1, joints: vec![], joint_leads: vec![], feed, manual: man.is_some(), punch: Some(p), overlap: 0.0, closing: false, comp: Default::default(), quality: qn, time: TimeSplit::default() };
-                con.time = timing.contour(&con);
+                let mut con = Contour { lead_in: first, lead_path: vec![], lead_out: None, lead_out_path: vec![], loops: vec![], points: pts, inner, part_no: i + 1, joints: vec![], joint_leads: vec![], feed, manual: man.is_some(), punch: Some(p), overlap: 0.0, closing: false, comp: Default::default(), quality: qn, time: TimeSplit::default(), pierces: 0 };
+                (con.time, con.pierces) = timing.contour(&con);
                 times += con.time;
                 contours.push(con);
                 continue;
@@ -978,7 +1015,7 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
             // offset path in place of the drawn one (KC8–KC15).
             let side = crate::kerf::side_for(&pts, inner, true);
             let comp = crate::kerf::resolve(&mt.comp, spec.kerf, inner, qn, cutter_r, side);
-            let mut con = Contour { lead_in, lead_path: path, lead_out, lead_out_path, loops, points: pts, inner, part_no: i + 1, joints, joint_leads, feed, manual: man.is_some(), punch: None, overlap, closing, comp, quality: qn, time: TimeSplit::default() };
+            let mut con = Contour { lead_in, lead_path: path, lead_out, lead_out_path, loops, points: pts, inner, part_no: i + 1, joints, joint_leads, feed, manual: man.is_some(), punch: None, overlap, closing, comp, quality: qn, time: TimeSplit::default(), pierces: 0 };
             match crate::kerf::compensate(&mut con, &comp, &sys_opts) {
                 Err(t) => {
                     // Not cut at all: no pierce, no time (our check, KC18).
@@ -996,7 +1033,7 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
             times.rapid += timing.rapid(pos, con.lead_in);
             rapid_len += dist(pos, con.lead_in);
             cut_len += len;
-            con.time = timing.contour(&con);
+            (con.time, con.pierces) = timing.contour(&con);
             times += con.time;
             let start = con.points[0];
             pos = if con.closing { con.joint_leads.last().map_or(start, |l| *l.0.last().unwrap()) } else { con.lead_out.unwrap_or(start) };
@@ -1004,7 +1041,7 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
         }
     }
     // Every beam-on is a pierce, joint re-pierces included (CTM10).
-    let pierces: usize = contours.iter().filter(|c| c.punch.is_none()).map(|c| beam_runs(c).len()).sum();
+    let pierces: usize = contours.iter().map(|c| c.pierces).sum();
     SheetPlan { contours, kerf_issues, marks, mark_before, mark_len, cut_len, rapid_len, pierces, seconds: times.total(), times, timing }
 }
 
@@ -1049,8 +1086,18 @@ fn program_mm(sheet_no: usize, parts: &[Part], placed: &[Placed], spec: &SheetSp
         let _ = writeln!(s, "( KERF {:.2} MM - {how} )", 2.0 * c.comp.radius);
     }
     line(&mut s, "G90 G21 G17".into());
-    // The first contour's speed (CTM8); each lead-in sets its own.
-    line(&mut s, format!("F{:.0}", plan.contours.first().map_or(plan.timing.speeds.cut_for(1), |c| c.feed)));
+    // The first contour's speed (CTM8); every contour and marking with
+    // another speed sets its own.
+    let mut last_f = plan.contours.first().map_or(plan.timing.speeds.cut_for(1), |c| c.feed);
+    line(&mut s, format!("F{last_f:.0}"));
+    let feed_word = |last_f: &mut f64, f: f64| {
+        if (f - *last_f).abs() < 0.5 {
+            String::new()
+        } else {
+            *last_f = f;
+            format!(" F{f:.0}")
+        }
+    };
     // Control compensation (KC4, KC17): the side word and corrector go on the
     // first lead-in move and stay on while the next contour needs the same; G40
     // goes on the rapid to whatever needs none (a contour without it, marking,
@@ -1075,8 +1122,9 @@ fn program_mm(sheet_no: usize, parts: &[Part], placed: &[Placed], spec: &SheetSp
             for (_, m) in plan.marks.iter().filter(|m| m.0 == c.part_no && first_visit) {
                 line(&mut s, g0(&mut active, m[0]));
                 line(&mut s, "M10 ( MARK ON )".into());
-                for q in m.iter().skip(1) {
-                    line(&mut s, format!("G1 X{:.2} Y{:.2}", q[0], q[1]));
+                for (k, q) in m.iter().skip(1).enumerate() {
+                    let f = if k == 0 { feed_word(&mut last_f, plan.timing.speeds.mark) } else { String::new() };
+                    line(&mut s, format!("G1 X{:.2} Y{:.2}{f}", q[0], q[1]));
                 }
                 line(&mut s, "M11 ( MARK OFF )".into());
             }
@@ -1104,6 +1152,16 @@ fn program_mm(sheet_no: usize, parts: &[Part], placed: &[Placed], spec: &SheetSp
             }
             _ => String::new(),
         };
+        if c.lead_path.len() < 2 {
+            // No lead-in: the contour's speed on a block of its own before it.
+            let f = feed_word(&mut last_f, c.feed);
+            if !f.is_empty() {
+                line(&mut s, f.trim_start().to_string());
+            }
+        } else {
+            // The lead-in's first move carries it.
+            last_f = c.feed;
+        }
         if c.lead_path.len() < 2 && !comp_word.is_empty() {
             // No lead-in: the word on a block of its own before the contour.
             line(&mut s, comp_word.trim_end().to_string());
@@ -1154,9 +1212,11 @@ fn program_mm(sheet_no: usize, parts: &[Part], placed: &[Placed], spec: &SheetSp
         events.sort_by(|a, b| a.partial_cmp(b).unwrap());
         events.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
         let mut prev = 0.0;
+        let mut walk = Walker::new(&c.points);
         let mut beam_on = true;
         let mut done_joint: Option<usize> = None;
         for d in events {
+            let p = walk.at(d);
             let mid = (prev + d) / 2.0;
             let joint_k = c.joints.iter().position(|j| mid > j.0 && mid < j.1);
             let in_joint = joint_k.is_some();
@@ -1190,7 +1250,6 @@ fn program_mm(sheet_no: usize, parts: &[Part], placed: &[Placed], spec: &SheetSp
                 line(&mut s, "M07".into());
                 beam_on = true;
             }
-            let p = point_at(&c.points, d);
             line(&mut s, format!("{} X{:.2} Y{:.2}", if in_joint { "G0" } else { "G1" }, p[0], p[1]));
             // A loop at this corner: cut it before carrying on along the next side.
             if beam_on {
@@ -1742,6 +1801,11 @@ mod kerf_plan_tests {
 
     /// A 200 × 100 plate with a 6 mm hole, as one part without technology of its own.
     fn plate_with_hole(material: usize, thickness: f64) -> SheetPlan {
+        let (parts, placed, spec) = plate_job(material, thickness);
+        plan(&parts, &placed, &spec)
+    }
+
+    fn plate_job(material: usize, thickness: f64) -> (Vec<Part>, Vec<Placed>, SheetSpec) {
         let mut part = Part { name: "P".into(), shape: Shape::Rectangle, w: 200.0, h: 100.0, qty: 1, rotate: false, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
         let hole: Vec<P> = (0..48).map(|k| {
             let a = k as f64 * std::f64::consts::TAU / 48.0;
@@ -1751,7 +1815,7 @@ mod kerf_plan_tests {
         part.shape = Shape::Custom;
         let pl = Placed { part: 0, x: 50.0, y: 50.0, w: 200.0, h: 100.0, turns: 0, mirror: false };
         let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material, thickness, level: 3, machine: Default::default(), kerf: Default::default() };
-        plan(&[part], &[pl], &spec)
+        (vec![part], vec![pl], spec)
     }
 
     #[test]
@@ -1775,11 +1839,35 @@ mod kerf_plan_tests {
         assert!(out.time.cut > len / 9500.0 * 60.0 && out.time.cut < len / 9500.0 * 60.0 + 0.5, "{} vs {}", out.time.cut, len / 9500.0 * 60.0);
         assert!((p.seconds - p.times.total()).abs() < 1e-9);
         assert!(matches!(p.timing.speeds.source, crate::techtable::SpeedSource::Table(..)));
+        // Every contour is cut at its own speed, with or without a lead-in.
+        let (parts, placed, spec) = plate_job(1, 3.0);
+        let mut bare = plan(&parts, &placed, &spec);
+        for c in &mut bare.contours {
+            c.lead_path.clear();
+            c.lead_in = c.points[0];
+        }
+        let prog = program_mm(1, &parts, &placed, &spec, &bare, &[], false);
+        let feeds: Vec<&str> = prog.lines().filter_map(|l| l.split_whitespace().find(|w| w.starts_with('F') && w[1..].parse::<f64>().is_ok())).collect();
+        assert_eq!(feeds, vec!["F5000", "F9500"], "{prog}");
         // No table record for 5 mm: the machine's default speed for every contour.
         let p5 = plate_with_hole(1, 5.0);
         assert!(p5.contours.iter().all(|c| c.feed == 3000.0));
         assert_eq!(p5.timing.speeds.source, crate::techtable::SpeedSource::Machine);
         crate::ct1::set_thread_active(None);
+    }
+
+    #[test]
+    fn the_forward_walk_finds_the_same_points() {
+        // A contour with a plain joint and a joint with leads: the beam runs
+        // match a walk that measures every point from the start.
+        let mut p = plate_with_hole(0, 3.0);
+        let mut c = p.contours.remove(1);
+        c.joints = vec![(150.0, 151.0), (400.0, 401.0)];
+        c.joint_leads = vec![];
+        let runs = beam_runs(&c);
+        assert_eq!(runs.len(), 3);
+        assert!(dist(runs[1][0], point_at(&c.points, 151.0)) < 1e-9 && dist(runs[2][0], point_at(&c.points, 401.0)) < 1e-9);
+        assert!(dist(*runs[0].last().unwrap(), point_at(&c.points, 150.0)) < 1e-9);
     }
 
     #[test]
