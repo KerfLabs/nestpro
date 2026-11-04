@@ -2437,6 +2437,8 @@ fn main() -> eframe::Result {
             if std::env::args().any(|a| a == "--erp") {
                 app.workspace = Workspace::Jobs;
                 app.erp_demo();
+                // With --settings=erp the page is what is shown.
+                app.erp.open = !std::env::args().any(|a| a == "--settings=erp");
             }
             if want_dbb {
                 app.open_db_browser();

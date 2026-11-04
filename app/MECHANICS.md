@@ -1615,6 +1615,12 @@ from Fulcrum's public API (swagger v1). **Estimates** are marked.
 | F10 | Identical sheets → one plate with `count`; runtime = one sheet's estimated time | Fulcrum API `plates[].count`, `runtimeSeconds` |
 | F13 | First send makes one work order (needs review by default), later sends replace its nest | Fulcrum API `POST /api/work-orders`, `PUT …/nesting-setup` |
 | F14 | Sizes sent in inches by default (÷25.4, areas ÷645.16) | **estimate** (units aren't stated by the API: "as the nesting software reported it") |
+| F18 | Work orders are made by a **planner in the ERP** by default: the app lists them, opens a work-order step as a job and stores its nest on that step; it never makes one | design (shop setting) |
+| F19 | The other setting: the app makes the work order on the first send (F13) | design |
+| F20 | **Work stations**: each ERP operation can be mapped to one of the app's machines. Once any is mapped, only work on mapped operations is listed (work orders and waiting work); until then everything is. The window can show one machine's work only | design |
+| F21 | A job opened from the ERP gets the app machine of the equipment its step is scheduled on, else its operation's. The machine is app-wide: it becomes the active machine | design; app-wide machine is an **estimate** (FEATURES JOB-14) |
+| F22 | Planner mode, a job imported before its work order existed: Send nest looks at the unfinished work orders on the job's operation and uses the one step holding its job operations. None → nothing is sent ("the planner makes it"); several → nothing is sent, they are named | Fulcrum API `nestable-jobs/list` `workOrderOperations`, `work-orders/{id}/operations/list` |
+| F23 | Opening a work-order step takes the job operations the planner put on it (not the material group's); parts already nested on *another* step are left out | Fulcrum API `WorkOrderOperationDto.jobOperations` |
 
 
 

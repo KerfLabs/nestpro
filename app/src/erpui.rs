@@ -1,8 +1,9 @@
-//! ERP / MES on screen: the settings page (Settings → ERP / MES), the window
-//! listing work waiting to be nested, importing it as a job, and sending
-//! the nest back. The talking itself is in integrations/.
+//! ERP / MES on screen: the settings page (Settings → ERP / MES: token, who
+//! makes work orders, which operations run on which machine), the window
+//! (the planner's work orders and the work still waiting for one), opening
+//! work as a job, and sending the nest back. The talking is in integrations/.
 
-use crate::integrations::{self as erp, Connector, ErpJob, Group, GroupFilter, ImportPart, Integration, Provider, SendResult, Task, Units};
+use crate::integrations::{self as erp, Connector, ErpJob, Group, GroupFilter, ImportPart, Integration, Provider, SendResult, StationInfo, Task, Units, WorkOrderRef, WorkOrders};
 use crate::nest::{Part, Shape};
 use crate::settings_ui::{card, row, tile};
 use crate::theme::th;
@@ -16,6 +17,10 @@ use std::collections::BTreeSet;
 pub struct Imported {
     pub material: erp::Ref,
     pub operation: erp::Ref,
+    /// The work-order step it was opened from (planner's work orders).
+    pub work_order: Option<WorkOrderRef>,
+    /// The machine that step is scheduled on, if any.
+    pub equipment: erp::Ref,
     pub info: Option<erp::MaterialInfo>,
     /// Each part to make and its drawing's text (or why it couldn't be read).
     pub parts: Vec<(ImportPart, Result<String, String>)>,
@@ -28,9 +33,27 @@ struct SendFor {
     name: String,
 }
 
+/// The window's two lists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ErpTab {
+    /// Work orders (planner's) on this shop's operations.
+    WorkOrders,
+    /// Job operations not on a work order yet.
+    Waiting,
+}
+
 pub struct ErpUi {
     pub open: bool,
     pub provider: Provider,
+    pub tab: ErpTab,
+    /// Only work for this machine of the app's (empty = all of ours).
+    pub machine_filter: String,
+    /// Also list finished and cancelled work orders.
+    pub show_finished: bool,
+    /// Settings → ERP / MES: the system's operations, as last loaded.
+    pub station_info: Vec<StationInfo>,
+    pub stations_task: Option<Task<Vec<StationInfo>>>,
+    pub stations_msg: String,
     /// A token typed for this session only (never saved as text).
     pub session_token: String,
     /// The settings page's token box.
@@ -57,11 +80,18 @@ impl Default for ErpUi {
         ErpUi {
             open: false,
             provider: Provider::Fulcrum,
+            tab: ErpTab::WorkOrders,
+            machine_filter: String::new(),
+            show_finished: false,
+            station_info: vec![],
+            stations_task: None,
+            stations_msg: String::new(),
             session_token: String::new(),
             token_input: String::new(),
             check: None,
             check_msg: String::new(),
-            filter: GroupFilter { need_nesting: true, flat_only: true, search: String::new() },
+            // Everything on sheet and plate: each tab picks what it lists.
+            filter: GroupFilter { need_nesting: false, flat_only: true, search: String::new() },
             groups: vec![],
             loaded: false,
             load: None,
@@ -96,14 +126,36 @@ pub fn guess_role(layer: &str) -> crate::dxf::LayerRole {
 fn fetch(c: Box<dyn Connector>, group: Group, ops: Vec<(String, String, String)>) -> Result<Imported, String> {
     let wp = c.work_package(&ops)?;
     let info = wp.parts.iter().find_map(|p| p.material.clone());
-    let (plan, notes) = erp::plan_import(&wp);
+    let (plan, notes) = erp::plan_import(&wp, None);
     let mut cache: std::collections::HashMap<String, Result<String, String>> = Default::default();
     let mut parts = vec![];
     for p in plan {
         let text = cache.entry(p.drawing.id.clone()).or_insert_with(|| c.download(&p.drawing).map(|b| String::from_utf8_lossy(&b).into_owned())).clone();
         parts.push((p, text));
     }
-    Ok(Imported { material: group.material, operation: group.operation, info, parts, notes })
+    Ok(Imported { material: group.material, operation: group.operation, work_order: None, equipment: Default::default(), info, parts, notes })
+}
+
+/// Fetch a work-order step's cut list and drawings (F23): the job
+/// operations the step runs, as the planner grouped them.
+fn fetch_step(c: Box<dyn Connector>, group: Group, wo: erp::Ref, step_id: String) -> Result<Imported, String> {
+    let steps = c.work_order_steps(&wo.id)?;
+    let step = steps.into_iter().find(|s| s.id == step_id).ok_or_else(|| format!("Work order {} no longer has that step — refresh the list.", wo.name))?;
+    if step.job_ops.is_empty() {
+        return Err(format!("Work order {} runs no job operations on {} — nothing to nest.", wo.name, group.operation.name));
+    }
+    let ops: Vec<(String, String, String)> = step.job_ops.iter().map(|(j, _, o, itm)| (j.clone(), o.clone(), itm.clone())).collect();
+    let wp = c.work_package(&ops)?;
+    let info = wp.parts.iter().find_map(|p| p.material.clone());
+    let (plan, notes) = erp::plan_import(&wp, Some(&step.id));
+    let mut cache: std::collections::HashMap<String, Result<String, String>> = Default::default();
+    let mut parts = vec![];
+    for p in plan {
+        let text = cache.entry(p.drawing.id.clone()).or_insert_with(|| c.download(&p.drawing).map(|b| String::from_utf8_lossy(&b).into_owned())).clone();
+        parts.push((p, text));
+    }
+    let operation = if step.operation.id.is_empty() { group.operation } else { step.operation.clone() };
+    Ok(Imported { material: group.material, operation, work_order: Some(WorkOrderRef { id: wo.id, op_id: step.id, name: wo.name }), equipment: step.equipment, info, parts, notes })
 }
 
 /// Turn a drawing's text into a part for `ip`, in mm.
@@ -156,6 +208,9 @@ impl App {
     }
 
     pub fn open_erp(&mut self, p: Provider) {
+        if self.erp.provider != p || !self.erp.loaded {
+            self.erp.tab = if self.cfg.integration(p).work_orders == WorkOrders::Planner { ErpTab::WorkOrders } else { ErpTab::Waiting };
+        }
         self.erp.provider = p;
         self.erp.open = true;
         if !self.erp.loaded && self.erp.load.is_none() {
@@ -167,6 +222,38 @@ impl App {
         let (integ, session, f) = (self.integ(), self.erp.session_token.clone(), self.erp.filter.clone());
         let name = integ.provider.name();
         self.erp.load = Some(Task::spawn(format!("Asking {name} for work to nest…"), move || Self::connector_for(&integ, &session)?.groups(&f)));
+    }
+
+    /// Settings → ERP / MES: load the system's operations to map.
+    fn erp_load_stations(&mut self) {
+        let (integ, session) = (self.integ(), self.erp.session_token.clone());
+        self.erp.stations_msg = "Loading…".into();
+        self.erp.stations_task = Some(Task::spawn("stations", move || Self::connector_for(&integ, &session)?.stations()));
+    }
+
+    /// The job already open for a work-order step, if any.
+    pub fn erp_job_for_step(&self, step_id: &str) -> Option<usize> {
+        let on = |e: &Option<ErpJob>| e.as_ref().and_then(|l| l.work_order.as_ref()).is_some_and(|w| w.op_id == step_id);
+        if on(&self.erp_job) {
+            return Some(self.cur_job);
+        }
+        self.jobs.iter().position(|j| on(&j.erp))
+    }
+
+    /// Open a planner's work-order step as a job (or switch to it when it is
+    /// open already).
+    pub fn erp_open_step(&mut self, group: usize, nest: usize) {
+        let Some(g) = self.erp.groups.get(group).cloned() else { return };
+        let Some(n) = g.nests.get(nest).cloned() else { return };
+        if let Some(i) = self.erp_job_for_step(&n.op_id) {
+            self.open_job(i);
+            self.erp.msg = format!("Work order {} is open already as {} — switched to it.", n.work_order.name, self.job_name);
+            self.erp.msg_ok = true;
+            return;
+        }
+        let (integ, session) = (self.integ(), self.erp.session_token.clone());
+        let what = format!("Fetching work order {}: its parts and drawings…", n.work_order.name);
+        self.erp.import = Some(Task::spawn(what, move || fetch_step(Self::connector_for(&integ, &session)?, g, n.work_order, n.op_id)));
     }
 
     fn erp_test(&mut self) {
@@ -219,9 +306,26 @@ impl App {
             return;
         }
         self.color_seq += parts.len();
-        let base = if im.material.name.is_empty() { format!("{} job", provider.name()) } else { format!("{} {}", im.material.name, im.operation.name) };
+        let base = match (&im.work_order, im.material.name.is_empty()) {
+            (Some(w), false) => format!("{} {}", w.name, im.material.name),
+            (Some(w), true) => w.name.clone(),
+            (None, false) => format!("{} {}", im.material.name, im.operation.name),
+            (None, true) => format!("{} job", provider.name()),
+        };
         let name = self.unique_job_name(base.trim()).unwrap_or(base);
-        let link = ErpJob { provider, material_id: im.material.id.clone(), material_name: im.material.name.clone(), operation_id: im.operation.id.clone(), operation_name: im.operation.name.clone(), work_order: None, sent: None, sheet_item: String::new() };
+        let link = ErpJob { provider, material_id: im.material.id.clone(), material_name: im.material.name.clone(), operation_id: im.operation.id.clone(), operation_name: im.operation.name.clone(), work_order: im.work_order.clone(), sent: None, sheet_item: String::new() };
+        // The machine the work runs on (F21): the scheduled equipment's, else the operation's.
+        let mut machine_note = String::new();
+        if let Some(m) = integ.machine_for(&im.operation.id, &im.equipment.id) {
+            match self.cfg.machines.iter().position(|x| x.name == m) {
+                Some(k) => {
+                    // Applied (post, technology) with the next frame's settings pass.
+                    self.cfg.active_machine = k;
+                    machine_note = format!(" Machine: {m}.");
+                }
+                None => notes.push(format!("{} maps to machine \"{m}\", which isn't in Settings → Machines any more", if im.equipment.name.is_empty() { &im.operation.name } else { &im.equipment.name })),
+            }
+        }
         let (n, qty): (usize, u32) = (parts.len(), parts.iter().map(|p| p.qty).sum());
         self.store_job();
         self.jobs.push(Job {
@@ -243,7 +347,8 @@ impl App {
         self.open_job(i);
         self.job_path = None;
         self.erp.picked.clear();
-        self.erp.msg = format!("Made job {}: {n} part kind(s), {qty} parts, {} {} mm. Set the sheet size, then Nest all.", self.job_name, crate::cnc::MATERIALS.get(self.spec.material).copied().unwrap_or(""), self.spec.thickness);
+        let from = im.work_order.as_ref().map_or(String::new(), |w| format!(" from work order {}", w.name));
+        self.erp.msg = format!("Made job {}{from}: {n} part kind(s), {qty} parts, {} {} mm.{machine_note} Set the sheet size, then Nest all.", self.job_name, crate::cnc::MATERIALS.get(self.spec.material).copied().unwrap_or(""), self.spec.thickness);
         self.erp.msg_ok = true;
         self.erp.notes = notes;
         self.status = self.erp.msg.clone();
@@ -272,7 +377,31 @@ impl App {
             self.erp.notes.insert(0, "The parts changed since the last nesting — the sheets as they are now were sent.".into());
         }
         let what = format!("Sending {} sheet(s) to {}…", report.sheets.iter().map(|s| s.count).sum::<u32>(), provider.name());
-        let task = Task::spawn(what, move || Self::connector_for(&integ, &session)?.send_nest(&name, &link, &ops, &report));
+        let planner = integ.work_orders == WorkOrders::Planner;
+        let task = Task::spawn(what, move || {
+            let c = Self::connector_for(&integ, &session)?;
+            let mut link = link;
+            let mut found = vec![];
+            // F22: with planner-made work orders the app never makes one; it
+            // finds the planner's work order holding these job operations.
+            if planner && link.work_order.is_none() {
+                let a = erp::find_work_order(c.as_ref(), &link.operation_id, &ops)?;
+                match a.found {
+                    Some(w) => {
+                        found.push(format!("Found the planner's work order {} for this job.", w.name));
+                        if a.missing > 0 {
+                            found.push(format!("{} of the job's {} job operation(s) aren't on it; their parts are still in the nest.", a.missing, ops.len()));
+                        }
+                        link.work_order = Some(w);
+                    }
+                    None if a.several.is_empty() => return Err(format!("No work order holds this job's work yet. The planner makes it in {}; send again once it exists.", integ.provider.name())),
+                    None => return Err(format!("This job's work is on several work orders ({}). Open each from the Work orders list and nest it on its own.", a.several.join(", "))),
+                }
+            }
+            let mut r = c.send_nest(&name, &link, &ops, &report)?;
+            r.issues.splice(0..0, found);
+            Ok(r)
+        });
         self.erp.send = Some((task, SendFor { job: self.cur_job, name: self.job_name.clone() }));
     }
 
@@ -295,7 +424,7 @@ impl App {
                 let wo = r.work_order.as_ref().map_or(String::new(), |w| if w.name.is_empty() { w.id.clone() } else { w.name.clone() });
                 match &r.error {
                     None => {
-                        self.erp.msg = format!("{} {to_name}'s nest on work order {wo}{}.", if r.created { "Made a work order and stored" } else { "Replaced" }, if r.issues.is_empty() { String::new() } else { format!(" — {} remark(s)", r.issues.len()) }, to_name = to.name);
+                        self.erp.msg = format!("{} {to_name}'s nest on work order {wo}{}.", if r.created { "Made a work order and stored" } else { "Stored" }, if r.issues.is_empty() { String::new() } else { format!(" — {} remark(s)", r.issues.len()) }, to_name = to.name);
                         self.erp.msg_ok = true;
                     }
                     Some(e) => {
@@ -327,6 +456,19 @@ impl App {
                     Err(e) => format!("✗ {e}"),
                 };
                 self.erp.check = None;
+            }
+        }
+        if let Some(t) = &self.erp.stations_task {
+            busy = true;
+            if let Some(r) = t.poll() {
+                self.erp.stations_task = None;
+                match r {
+                    Ok(v) => {
+                        self.erp.stations_msg = format!("✓ {} operation(s), {} marked nestable.", v.len(), v.iter().filter(|s| s.nestable).count());
+                        self.erp.station_info = v;
+                    }
+                    Err(e) => self.erp.stations_msg = format!("✗ {e}"),
+                }
             }
         }
         if let Some(t) = &self.erp.load {
@@ -421,31 +563,92 @@ impl App {
         }
     }
 
+    /// Work on this operation is listed: one of ours (F20), and the
+    /// machine chosen at the top of the window, if any.
+    fn erp_shows(&self, integ: &Integration, op_id: &str) -> bool {
+        integ.ours(op_id) && (self.erp.machine_filter.is_empty() || integ.station_machine(op_id) == Some(self.erp.machine_filter.as_str()))
+    }
+
+    /// Work-order steps listed: (group, nest) indexes.
+    fn erp_wo_rows(&self, integ: &Integration) -> Vec<(usize, usize)> {
+        let mut v = vec![];
+        for (gi, g) in self.erp.groups.iter().enumerate() {
+            if !self.erp_shows(integ, &g.operation.id) {
+                continue;
+            }
+            for (ni, n) in g.nests.iter().enumerate() {
+                if self.erp.show_finished || !n.finished() {
+                    v.push((gi, ni));
+                }
+            }
+        }
+        v
+    }
+
+    /// Groups with work waiting for a work order.
+    fn erp_waiting_groups(&self, integ: &Integration) -> Vec<usize> {
+        (0..self.erp.groups.len()).filter(|&k| !self.erp.groups[k].open.is_empty() && self.erp_shows(integ, &self.erp.groups[k].operation.id)).collect()
+    }
+
     fn erp_window_body(&mut self, ui: &mut egui::Ui) {
         let t = th();
         let name = self.erp.provider.name();
-        // Filter bar.
+        let integ = self.integ();
+        let rows = self.erp_wo_rows(&integ);
+        let waiting = self.erp_waiting_groups(&integ);
+        let n_wait: usize = waiting.iter().map(|&k| self.erp.groups[k].open.len()).sum();
+        // Tabs, machine, filters.
         let mut refresh = false;
         ui.horizontal(|ui| {
-            let r = ui.add(egui::TextEdit::singleline(&mut self.erp.filter.search).desired_width(260.0).hint_text("Search job, customer, item, sales order…"));
+            ui.selectable_value(&mut self.erp.tab, ErpTab::WorkOrders, RichText::new(format!("Work orders ({})", rows.len())).strong());
+            ui.selectable_value(&mut self.erp.tab, ErpTab::Waiting, RichText::new(format!("Waiting for a work order ({n_wait})")).strong());
+            ui.separator();
+            let mut machines: Vec<String> = integ.stations.iter().chain(integ.equipment.iter()).map(|s| s.machine.clone()).collect();
+            machines.sort();
+            machines.dedup();
+            if !machines.is_empty() {
+                let shown = if self.erp.machine_filter.is_empty() { "All my machines".to_string() } else { self.erp.machine_filter.clone() };
+                egui::ComboBox::from_id_salt("erp_machine").selected_text(shown).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.erp.machine_filter, String::new(), "All my machines");
+                    for m in &machines {
+                        ui.selectable_value(&mut self.erp.machine_filter, m.clone(), m);
+                    }
+                });
+            }
+            let r = ui.add(egui::TextEdit::singleline(&mut self.erp.filter.search).desired_width(220.0).hint_text("Search job, customer, item, work order…"));
             if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 refresh = true;
             }
-            refresh |= ui.checkbox(&mut self.erp.filter.need_nesting, "Waiting only").changed();
-            refresh |= ui.checkbox(&mut self.erp.filter.flat_only, "Sheet & plate only").changed();
+            refresh |= ui.checkbox(&mut self.erp.filter.flat_only, "Sheet & plate").changed();
+            if self.erp.tab == ErpTab::WorkOrders {
+                ui.checkbox(&mut self.erp.show_finished, "Finished too");
+            }
             if ui.add_enabled(self.erp.load.is_none(), egui::Button::new("⟳ Refresh")).clicked() {
                 refresh = true;
             }
-            if ui.button("Settings…").on_hover_text("Settings → ERP / MES: address, token, units").clicked() {
+            if ui.button("Settings…").on_hover_text("Settings → ERP / MES: token, work stations, units").clicked() {
                 self.open_settings(crate::settings_ui::Section::Integrations);
             }
-            for task in [self.erp.load.as_ref().map(|t| &t.what), self.erp.import.as_ref().map(|t| &t.what), self.erp.send.as_ref().map(|t| &t.0.what)].into_iter().flatten() {
-                ui.add(egui::Spinner::new());
-                ui.label(RichText::new(task).color(t.text_dim));
-            }
         });
+        let tasks: Vec<&String> = [self.erp.load.as_ref().map(|t| &t.what), self.erp.import.as_ref().map(|t| &t.what), self.erp.send.as_ref().map(|t| &t.0.what)].into_iter().flatten().collect();
+        if !tasks.is_empty() {
+            ui.horizontal(|ui| {
+                for task in tasks {
+                    ui.add(egui::Spinner::new());
+                    ui.label(RichText::new(task).color(t.text_dim));
+                }
+            });
+        }
         if refresh && self.erp.load.is_none() {
             self.erp_refresh();
+        }
+        if !integ.is_mapped() {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("Showing every operation in {name}. Map the operations your machines run (lasers…) to see only their work.")).size(11.5).color(t.text_dim));
+                if ui.small_button("Map work stations…").clicked() {
+                    self.open_settings(crate::settings_ui::Section::Integrations);
+                }
+            });
         }
         if !self.erp.msg.is_empty() {
             ui.add_space(4.0);
@@ -465,22 +668,85 @@ impl App {
         ui.add_space(6.0);
         self.erp_job_card(ui);
         ui.add_space(6.0);
-        if self.erp.groups.is_empty() {
-            let msg = if self.erp.load.is_some() || !self.erp.loaded { format!("Loading from {name}…") } else { "Nothing waiting to be nested with these filters.".to_string() };
-            ui.label(RichText::new(msg).color(t.text_dim));
+        if self.erp.groups.is_empty() && (self.erp.load.is_some() || !self.erp.loaded) {
+            ui.label(RichText::new(format!("Loading from {name}…")).color(t.text_dim));
             return;
+        }
+        match self.erp.tab {
+            ErpTab::WorkOrders => self.erp_work_orders(ui, &integ, &rows),
+            ErpTab::Waiting => self.erp_waiting(ui, &integ, &waiting),
+        }
+    }
+
+    /// The planner's work orders on this shop's operations.
+    fn erp_work_orders(&mut self, ui: &mut egui::Ui, integ: &Integration, rows: &[(usize, usize)]) {
+        let t = th();
+        if rows.is_empty() {
+            let who = if integ.work_orders == WorkOrders::Planner { format!(" The planner makes them in {}.", integ.provider.name()) } else { String::new() };
+            ui.label(RichText::new(format!("No work orders on these operations yet.{who}")).color(t.text_dim));
+            return;
+        }
+        let mut open: Option<(usize, usize)> = None;
+        egui::ScrollArea::vertical().id_salt("erp_wos").auto_shrink([false, true]).show(ui, |ui| {
+            egui::Grid::new("erp_wo_grid").striped(true).spacing([16.0, 7.0]).show(ui, |ui| {
+                for c in ["Work order", "Status", "Step", "Material", "Operation", "Machine", "Nest", ""] {
+                    ui.label(RichText::new(c).size(11.5).strong().color(t.text_dim));
+                }
+                ui.end_row();
+                for &(gi, ni) in rows {
+                    let g = &self.erp.groups[gi];
+                    let n = &g.nests[ni];
+                    ui.label(RichText::new(&n.work_order.name).strong());
+                    ui.label(status_label(&n.status));
+                    ui.label(&n.op_status);
+                    ui.label(&g.material.name);
+                    ui.label(&g.operation.name);
+                    ui.label(integ.station_machine(&g.operation.id).unwrap_or("—"));
+                    if n.nested {
+                        ui.label(format!("{} sheet(s), {} parts, {}:{:02}", n.sheets, n.parts, (n.machine_s / 60.0) as u64, (n.machine_s % 60.0) as u64));
+                    } else {
+                        chip(ui, "to nest", t.accent_soft, t.accent_fg);
+                    }
+                    let is_open = self.erp_job_for_step(&n.op_id).is_some();
+                    let label = if is_open { "Switch to it" } else if n.nested { "Open (renest)" } else { "Open as job" };
+                    let tip = if n.nested && !is_open { "It has a nest already: sending again replaces it" } else { "Fetch its parts and drawings and make a job of them" };
+                    if ui.add_enabled(self.erp.import.is_none(), egui::Button::new(label)).on_hover_text(tip).clicked() {
+                        open = Some((gi, ni));
+                    }
+                    ui.end_row();
+                }
+            });
+        });
+        if let Some((gi, ni)) = open {
+            self.erp_open_step(gi, ni);
+        }
+    }
+
+    /// Job operations not on a work order yet, by material and operation.
+    fn erp_waiting(&mut self, ui: &mut egui::Ui, integ: &Integration, waiting: &[usize]) {
+        let t = th();
+        if waiting.is_empty() {
+            ui.label(RichText::new("Nothing waiting for a work order on these operations.").color(t.text_dim));
+            return;
+        }
+        if !waiting.contains(&self.erp.sel_group) {
+            self.erp.sel_group = waiting[0];
+            self.erp.picked.clear();
+        }
+        if integ.work_orders == WorkOrders::Planner {
+            ui.label(RichText::new(format!("Not on a work order yet. You can import it to plan a nest; Send nest stores it on the work order once the planner makes it in {}.", integ.provider.name())).size(11.5).color(t.text_dim));
         }
         let h = ui.available_height();
         ui.horizontal_top(|ui| {
             // Groups: one material on one operation.
             ui.vertical(|ui| {
                 ui.set_width(290.0);
-                ui.label(RichText::new(format!("{} group(s) · material + operation", self.erp.groups.len())).size(11.0).color(t.text_dim));
+                ui.label(RichText::new(format!("{} group(s) · material + operation", waiting.len())).size(11.0).color(t.text_dim));
                 egui::ScrollArea::vertical().id_salt("erp_groups").max_height(h - 20.0).show(ui, |ui| {
-                    for k in 0..self.erp.groups.len() {
+                    for &k in waiting {
                         let g = &self.erp.groups[k];
                         let sel = k == self.erp.sel_group;
-                        let sub = format!("{} · {} waiting · {} nest(s){}", g.operation.name, g.open.len(), g.nests.len(), if g.earliest_start.is_empty() { String::new() } else { format!(" · from {}", erp::day(&g.earliest_start)) });
+                        let sub = format!("{} · {} waiting{}", g.operation.name, g.open.len(), if g.earliest_start.is_empty() { String::new() } else { format!(" · from {}", erp::day(&g.earliest_start)) });
                         if group_tile(ui, sel, &g.material.name, &sub) && !sel {
                             self.erp.sel_group = k;
                             self.erp.picked.clear();
@@ -549,26 +815,6 @@ impl App {
                     ui.end_row();
                 }
             });
-            if !g.nests.is_empty() {
-                ui.add_space(10.0);
-                ui.label(RichText::new("Already on work orders").size(12.5).strong().color(t.text_strong));
-                egui::Grid::new("erp_nests_grid").striped(true).spacing([14.0, 4.0]).show(ui, |ui| {
-                    for c in ["Work order", "Status", "Operation", "Sheets", "Parts", "Machine time", "Nested"] {
-                        ui.label(RichText::new(c).size(11.5).strong().color(t.text_dim));
-                    }
-                    ui.end_row();
-                    for w in &g.nests {
-                        ui.label(&w.work_order.name);
-                        ui.label(&w.status);
-                        ui.label(&w.op_status);
-                        ui.label(w.sheets.to_string());
-                        ui.label(w.parts.to_string());
-                        ui.label(format!("{}:{:02}", (w.machine_s / 60.0) as u64, (w.machine_s % 60.0) as u64));
-                        ui.label(if w.nested { "yes" } else { "no" });
-                        ui.end_row();
-                    }
-                });
-            }
         });
     }
 
@@ -576,6 +822,7 @@ impl App {
     fn erp_job_card(&mut self, ui: &mut egui::Ui) {
         let t = th();
         let from_erp = self.parts.iter().filter(|p| !p.erp.is_empty()).count();
+        let planner = self.integ().work_orders == WorkOrders::Planner;
         let mut send = false;
         let mut forget = false;
         egui::Frame::new().fill(t.card).stroke(egui::Stroke::new(1.0, t.border)).corner_radius(8).inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
@@ -583,7 +830,7 @@ impl App {
             ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new(format!("Open job: {}", self.job_name)).strong().color(t.text_strong));
                 if from_erp == 0 {
-                    ui.label(RichText::new("— not from an ERP. Tick job operations below and import them to make one.").color(t.text_dim));
+                    ui.label(RichText::new(if planner { "— not from the ERP. Open a work order below to make one." } else { "— not from the ERP. Tick job operations below and import them to make one." }).color(t.text_dim));
                     return;
                 }
                 let placed: usize = self.result.sheets.iter().map(|s| s.len()).sum();
@@ -594,6 +841,7 @@ impl App {
                     }
                     match &l.work_order {
                         Some(w) => chip(ui, &format!("work order {}", if w.name.is_empty() { &w.id } else { &w.name }), t.ok_bg, t.ok_fg),
+                        None if planner => chip(ui, "waiting for the planner's work order", t.accent_soft, t.accent_fg),
                         None => chip(ui, "no work order yet", t.accent_soft, t.accent_fg),
                     };
                 }
@@ -610,11 +858,13 @@ impl App {
                     }
                 }
                 let busy = self.erp.send.is_some();
-                let label = if self.erp_job.as_ref().is_some_and(|l| l.work_order.is_some()) { "Send nest again" } else { "Send nest — make work order" };
+                let has_wo = self.erp_job.as_ref().is_some_and(|l| l.work_order.is_some());
+                let label = if has_wo { "Send nest to its work order" } else if planner { "Send nest — find the planner's work order" } else { "Send nest — make work order" };
                 if ui.add_enabled(self.erp_can_send() && !busy, egui::Button::new(RichText::new(label).strong())).on_hover_text(if self.result.sheets.is_empty() { "Nest the job first" } else { "Stores the sheets, the parts on each and how many go to each job operation" }).clicked() {
                     send = true;
                 }
-                if self.erp_job.as_ref().is_some_and(|l| l.work_order.is_some()) && ui.small_button("Forget work order").on_hover_text("The next send makes a new work order (use if it was deleted in the ERP)").clicked() {
+                let forget_tip = if planner { "The next send looks for the planner's work order again (use if it was replaced in the ERP)" } else { "The next send makes a new work order (use if it was deleted in the ERP)" };
+                if has_wo && ui.small_button("Forget work order").on_hover_text(forget_tip).clicked() {
                     forget = true;
                 }
                 if let Some(s) = self.erp_job.as_ref().and_then(|l| l.sent) {
@@ -718,15 +968,29 @@ impl App {
             });
         });
         ui.add_space(10.0);
+        card(ui, "Work orders", "Who groups the work and makes the work orders the nests go on.", |ui| {
+            let i = self.cfg.integration_mut(p);
+            row(ui, "Made by", |ui| {
+                ui.radio_value(&mut i.work_orders, WorkOrders::Planner, format!("The planner, in {}", p.name()));
+                ui.radio_value(&mut i.work_orders, WorkOrders::App, "This app, when a nest is sent");
+            });
+            if i.work_orders == WorkOrders::Planner {
+                ui.label(RichText::new("Open a work order from the list and nest it; Send nest stores the nest on that work order. Work imported before the planner made one goes to it once it exists. The app never makes work orders.").size(11.0).color(t.text_dim));
+            } else {
+                row(ui, "New work orders", |ui| {
+                    ui.radio_value(&mut i.approve, false, "Need review");
+                    ui.radio_value(&mut i.approve, true, "Approved");
+                });
+            }
+        });
+        ui.add_space(10.0);
+        self.settings_stations(ui, p);
+        ui.add_space(10.0);
         card(ui, "What is sent back", "With each nest: the sheets, the parts on each, how many go to each job operation, and what didn't fit.", |ui| {
             let i = self.cfg.integration_mut(p);
             row(ui, "Sizes in", |ui| {
                 ui.radio_value(&mut i.units, Units::Inch, "inches");
                 ui.radio_value(&mut i.units, Units::Millimeter, "millimetres");
-            });
-            row(ui, "New work orders", |ui| {
-                ui.radio_value(&mut i.approve, false, "Need review");
-                ui.radio_value(&mut i.approve, true, "Approved");
             });
             if p == Provider::Fulcrum {
                 row(ui, "Report the nest as", |ui| {
@@ -752,25 +1016,134 @@ impl App {
         }
     }
 
-    /// Screenshots: fill the window with made-up work (no network).
+    /// Settings → ERP / MES → Work stations: the system's operations (and the
+    /// machines they may run on) mapped to the app's machines.
+    fn settings_stations(&mut self, ui: &mut egui::Ui, p: Provider) {
+        let t = th();
+        let machines: Vec<String> = self.cfg.machines.iter().map(|m| m.name.clone()).collect();
+        let mut load = false;
+        // What to list: the loaded operations (nestable ones, or all when none
+        // is marked), plus mapped ones not in that list.
+        let integ = self.cfg.integration(p);
+        let any_nestable = self.erp.station_info.iter().any(|s| s.nestable);
+        let mut ops: Vec<StationInfo> = self.erp.station_info.iter().filter(|s| s.nestable || !any_nestable).cloned().collect();
+        for st in &integ.stations {
+            if !ops.iter().any(|o| o.op.id == st.id) {
+                ops.push(StationInfo { op: erp::Ref { id: st.id.clone(), name: st.name.clone() }, ..Default::default() });
+            }
+        }
+        let mut changes: Vec<(bool, erp::Ref, String)> = vec![];
+        card(ui, "Work stations", "Which of the shop's operations run on which of this app's machines. Only work on mapped operations is listed, and a job opened from it gets that machine.", |ui| {
+            ui.horizontal(|ui| {
+                if ui.add_enabled(self.erp.stations_task.is_none(), egui::Button::new(format!("Load operations from {}", p.name()))).clicked() {
+                    load = true;
+                }
+                if !self.erp.stations_msg.is_empty() {
+                    let col = if self.erp.stations_msg.starts_with('✗') { t.warn_fg } else { t.text_dim };
+                    ui.label(RichText::new(&self.erp.stations_msg).size(11.5).color(col));
+                }
+            });
+            if ops.is_empty() {
+                ui.label(RichText::new("Nothing mapped yet: every operation's work is listed.").size(11.5).color(t.text_dim));
+                return;
+            }
+            ui.add_space(4.0);
+            let pick = |ui: &mut egui::Ui, salt: String, cur: &str, none: &str| -> Option<String> {
+                let mut v = cur.to_string();
+                let shown = if v.is_empty() { none.to_string() } else { v.clone() };
+                egui::ComboBox::from_id_salt(salt).width(170.0).selected_text(shown).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut v, String::new(), none);
+                    for m in &machines {
+                        ui.selectable_value(&mut v, m.clone(), m);
+                    }
+                });
+                (v != cur).then_some(v)
+            };
+            egui::Grid::new("erp_stations").striped(true).spacing([16.0, 6.0]).show(ui, |ui| {
+                for c in [format!("{} operation", p.name()), "Runs on (its machines)".into(), "This app's machine".into()] {
+                    ui.label(RichText::new(c).size(11.5).strong().color(t.text_dim));
+                }
+                ui.end_row();
+                for o in &ops {
+                    ui.label(RichText::new(&o.op.name).strong());
+                    let wh: Vec<&str> = o.equipment.iter().chain(o.work_centers.iter()).map(|r| r.name.as_str()).collect();
+                    ui.label(RichText::new(if wh.is_empty() { "—".to_string() } else { wh.join(", ") }).size(11.5).color(t.text_dim));
+                    if let Some(m) = pick(ui, format!("st_{}", o.op.id), integ.station_machine(&o.op.id).unwrap_or(""), "— not ours —") {
+                        changes.push((false, o.op.clone(), m));
+                    }
+                    ui.end_row();
+                    // Its machines, when a step is scheduled on one of them.
+                    if integ.station_machine(&o.op.id).is_some() {
+                        for e in &o.equipment {
+                            ui.label(RichText::new(format!("    ↳ {}", e.name)).size(12.0));
+                            ui.label(RichText::new("when scheduled on this machine").size(11.0).color(t.text_dim));
+                            let cur = integ.equipment.iter().find(|x| x.id == e.id).map_or("", |x| x.machine.as_str());
+                            if let Some(m) = pick(ui, format!("eq_{}_{}", o.op.id, e.id), cur, "same as the operation") {
+                                changes.push((true, e.clone(), m));
+                            }
+                            ui.end_row();
+                        }
+                    }
+                }
+            });
+        });
+        let i = self.cfg.integration_mut(p);
+        for (eq, r, m) in changes {
+            i.set_station(eq, &r, &m);
+        }
+        if load {
+            self.erp_load_stations();
+        }
+    }
+
+    /// Screenshots: fill the window with made-up work (no network): two laser
+    /// operations mapped to the first machines, a saw that isn't ours.
     pub fn erp_demo(&mut self) {
         use erp::{NestRef, OpenOp, Ref};
         let r = |id: &str, n: &str| Ref { id: id.into(), name: n.into() };
         let op = |job: &str, item: &str, qty: f64, cust: &str, so: &str, due: &str| OpenOp { job: r(job, job), op_id: format!("{job}-{item}"), item_to_make_id: String::new(), item: r(item, item), qty, customer: cust.into(), sales_order: so.into(), due: due.into(), start: "2026-11-05T07:00:00Z".into(), rework: false, multi_material: false };
+        let wo = |n: &str, status: &str, step: &str, sheets: u32, parts: u32, s: f64| NestRef { work_order: r(&format!("wo-{n}"), n), op_id: format!("step-{n}"), status: status.into(), op_status: step.into(), sheets, parts, machine_s: s, nested: sheets > 0 };
+        let laser = r("op-laser", "Laser Cut");
+        let thin = r("op-thin", "Fiber Laser Thin");
         self.erp.groups = vec![
             Group {
                 material: r("SS-304-Sheet-0.25", "304 Stainless Sheet 1/4\""),
-                operation: r("laser", "Laser"),
+                operation: laser.clone(),
                 earliest_start: "2026-11-05T07:00:00Z".into(),
-                open: vec![op("J-1041", "BRK-118 Bracket", 24.0, "Acme Ag", "SO-1010", "2026-11-12"), op("J-1043", "PLT-22 Gusset", 60.0, "Acme Ag", "SO-1010", "2026-11-12"), op("J-1050", "CVR-9 Cover", 8.0, "Globex", "SO-1031", "2026-11-19")],
-                nests: vec![NestRef { work_order: r("wo", "WO-318"), op_id: "x".into(), status: "approved".into(), op_status: "Pending".into(), sheets: 3, parts: 46, machine_s: 2710.0, nested: true }],
+                open: vec![op("J-1050", "CVR-9 Cover", 8.0, "Globex", "SO-1031", "2026-11-19")],
+                nests: vec![wo("WO-318", "scheduled", "Ready", 0, 0, 0.0), wo("WO-311", "inProgress", "Running", 3, 46, 2710.0)],
             },
-            Group { material: r("A36-Plate-0.375", "A36 Plate 3/8\""), operation: r("laser", "Laser"), earliest_start: "2026-11-06T07:00:00Z".into(), open: vec![op("J-1047", "BASE-4 Base plate", 12.0, "Initech", "SO-1019", "2026-11-14")], nests: vec![] },
-            Group { material: r("AL-5052-Sheet-0.125", "5052 Aluminum 1/8\""), operation: r("laser", "Laser"), earliest_start: String::new(), open: vec![op("J-1052", "PNL-7 Panel", 30.0, "Globex", "SO-1031", "2026-11-21")], nests: vec![] },
+            Group { material: r("A36-Plate-0.375", "A36 Plate 3/8\""), operation: laser.clone(), earliest_start: "2026-11-06T07:00:00Z".into(), open: vec![], nests: vec![wo("WO-320", "approved", "Pending", 0, 0, 0.0)] },
+            Group { material: r("AL-5052-Sheet-0.125", "5052 Aluminum 1/8\""), operation: thin.clone(), earliest_start: String::new(), open: vec![op("J-1052", "PNL-7 Panel", 30.0, "Globex", "SO-1031", "2026-11-21")], nests: vec![wo("WO-322", "needsReview", "Pending", 0, 0, 0.0)] },
+            Group { material: r("A36-Bar-2x0.25", "A36 Flat Bar 2 x 1/4\""), operation: r("op-saw", "Saw"), earliest_start: String::new(), open: vec![op("J-1047", "BASE-4 Base plate", 12.0, "Initech", "SO-1019", "2026-11-14")], nests: vec![wo("WO-319", "approved", "Pending", 0, 0, 0.0)] },
         ];
+        let names: Vec<String> = self.cfg.machines.iter().map(|m| m.name.clone()).collect();
+        let first = names.first().cloned().unwrap_or_else(|| "Laser".into());
+        let second = names.get(1).cloned().unwrap_or_else(|| first.clone());
+        let i = self.cfg.integration_mut(Provider::Fulcrum);
+        i.set_station(false, &laser, &first);
+        i.set_station(false, &thin, &second);
+        self.erp.station_info = vec![
+            StationInfo { op: laser, nestable: true, work_centers: vec![r("wc1", "Laser cell")], equipment: vec![r("eq1", "Fiber 6 kW"), r("eq2", "Fiber 3 kW")] },
+            StationInfo { op: thin, nestable: true, work_centers: vec![r("wc1", "Laser cell")], equipment: vec![r("eq2", "Fiber 3 kW")] },
+        ];
+        self.erp.stations_msg = "✓ 6 operation(s), 2 marked nestable.".into();
         self.erp.loaded = true;
         self.erp.open = true;
-        self.erp.picked = self.erp.groups[0].open.iter().take(2).map(|o| (o.job.id.clone(), o.op_id.clone())).collect();
+        self.erp.tab = ErpTab::WorkOrders;
+    }
+}
+
+/// A work order's status in shop words.
+fn status_label(s: &str) -> &str {
+    match s {
+        "needsReview" => "needs review",
+        "approved" => "approved",
+        "scheduled" => "scheduled",
+        "inProgress" => "in progress",
+        "complete" => "complete",
+        "cancelled" => "cancelled",
+        x => x,
     }
 }
 
@@ -819,6 +1192,126 @@ mod tests {
         panic!("the request never finished");
     }
 
+    /// A laser operation with job operation jo1 waiting and the planner's
+    /// work order WO-318 holding it (ids are Fulcrum-sized, 24 characters).
+    const WO_ID: &str = "6650dddddddddddddddddddd";
+    const STEP_ID: &str = "6650eeeeeeeeeeeeeeeeeeee";
+    fn groups_with_wo(with_wo: bool) -> String {
+        let nests = if with_wo { format!(r#"[{{"workOrderOperationId":"{STEP_ID}","workOrder":{{"id":"{WO_ID}","name":"WO-318"}},"status":"scheduled","operationStatus":"Ready","sheetCount":0,"partCount":0,"machineTimeSeconds":0,"isNested":false}}]"#) } else { "[]".into() };
+        format!(
+            r#"{{"data":[{{"material":{{"id":"SS-304-Sheet-0.25","name":"304 SS 1/4\""}},"operation":{{"id":"op-laser","name":"Laser Cut"}},
+            "jobOperations":[{{"jobOperationId":"jo1","job":{{"id":"6650aaaaaaaaaaaaaaaaaaaa","name":"J-1001"}},"item":{{"id":"it1","name":"Bracket"}},"quantityToMake":12}}],
+            "workOrderOperations":{nests}}},
+            {{"material":{{"id":"A36-Bar","name":"A36 Flat Bar"}},"operation":{{"id":"op-saw","name":"Saw"}},"jobOperations":[],"workOrderOperations":[]}}],"hasNextPage":false}}"#
+        )
+    }
+    fn steps() -> String {
+        format!(r#"[{{"id":"{STEP_ID}","order":1,"status":"ready","operation":{{"id":"op-laser","name":"Laser Cut"}},"scheduledEquipment":{{"id":"eq-6k","name":"Fiber 6 kW"}},"isNested":false,"jobOperations":[{{"jobId":"6650aaaaaaaaaaaaaaaaaaaa","jobNumber":1001,"jobName":"J-1001","itemToMakeId":"itm1","jobOperationId":"jo1"}}]}}]"#)
+    }
+
+    /// A shop whose planner makes work orders, with the laser operation
+    /// mapped to "Fiber 1" and the 6 kW machine to "Fiber 2".
+    fn planner_app(url: String) -> App {
+        let mut a = App::new(None);
+        let mut i = Integration { base_url: url, units: Units::Inch, work_orders: WorkOrders::Planner, ..Integration::new(Provider::Fulcrum) };
+        i.set_station(false, &erp::Ref { id: "op-laser".into(), name: "Laser Cut".into() }, "Fiber 1");
+        i.set_station(true, &erp::Ref { id: "eq-6k".into(), name: "Fiber 6 kW".into() }, "Fiber 2");
+        *a.cfg.integration_mut(Provider::Fulcrum) = i;
+        a.cfg.machines = vec![crate::settings::Machine { name: "Fiber 1".into(), ..Default::default() }, crate::settings::Machine { name: "Fiber 2".into(), ..Default::default() }];
+        a.cfg.active_machine = 0;
+        a.erp.session_token = "tok".into();
+        a
+    }
+
+    fn mock_planner(with_wo: bool) -> (String, std::sync::Arc<std::sync::Mutex<Vec<(String, String, String)>>>) {
+        use crate::integrations::fulcrum::tests::MANIFEST;
+        crate::integrations::mock::mock(vec![
+            ("/api/nesting/nestable-jobs/list", 200, groups_with_wo(with_wo)),
+            ("/api/nesting/work-package-manifest", 200, MANIFEST.into()),
+            ("/api/attachments/6650bbbbbbbbbbbbbbbbbbbb/download", 200, PLATE_IN.into()),
+            ("/operations/list", 200, steps()),
+            ("/nesting-setup", 200, r#"{"validationIssues":[]}"#.into()),
+            ("/api/work-orders", 500, String::new()),
+        ])
+    }
+
+    #[test]
+    fn the_planners_work_order_opens_as_a_job_and_takes_its_nest() {
+        let (url, seen) = mock_planner(true);
+        let mut a = planner_app(url);
+        let ctx = egui::Context::default();
+        a.erp_refresh();
+        wait(&mut a, &ctx, |a| a.erp.load.is_none());
+        let integ = a.integ();
+        // F20: only the mapped laser operation's work is listed (not the saw).
+        assert_eq!(a.erp_wo_rows(&integ), vec![(0, 0)]);
+        assert_eq!(a.erp_waiting_groups(&integ), vec![0]);
+        a.erp_open_step(0, 0);
+        wait(&mut a, &ctx, |a| a.erp.import.is_none());
+        assert!(a.erp.msg_ok, "{} {:?}", a.erp.msg, a.erp.notes);
+        assert_eq!(a.job_name, "WO-318 304 SS 1/4\"");
+        let wo = a.erp_job.as_ref().unwrap().work_order.clone().unwrap();
+        assert_eq!((wo.id.as_str(), wo.op_id.as_str(), wo.name.as_str()), (WO_ID, STEP_ID, "WO-318"));
+        assert_eq!(a.cfg.machine().name, "Fiber 2", "F21: scheduled on the 6 kW machine");
+        assert_eq!((a.parts.len(), a.parts[0].qty), (1, 12));
+        // Opening it again switches to the job instead of making another.
+        let n = a.jobs.len();
+        a.erp_open_step(0, 0);
+        assert!(a.erp.import.is_none() && a.jobs.len() == n);
+
+        a.run_nesting();
+        a.erp_send();
+        wait(&mut a, &ctx, |a| a.erp.send.is_none());
+        assert!(a.erp.msg_ok, "{} {:?}", a.erp.msg, a.erp.notes);
+        let seen = seen.lock().unwrap();
+        assert!(!seen.iter().any(|s| s.0 == "POST /api/work-orders"), "the app never makes a work order");
+        assert!(seen.iter().any(|s| s.0 == format!("PUT /api/work-orders/{WO_ID}/operations/{STEP_ID}/nesting-setup")));
+    }
+
+    #[test]
+    fn work_imported_early_goes_to_the_planners_work_order_once_it_exists() {
+        // F22: imported from Waiting (no work order), sent once the planner made one.
+        let (url, seen) = mock_planner(true);
+        let mut a = planner_app(url);
+        let ctx = egui::Context::default();
+        a.erp_refresh();
+        wait(&mut a, &ctx, |a| a.erp.load.is_none());
+        a.erp.sel_group = 0;
+        a.erp.picked.insert(("6650aaaaaaaaaaaaaaaaaaaa".into(), "jo1".into()));
+        a.erp_import();
+        wait(&mut a, &ctx, |a| a.erp.import.is_none());
+        assert!(a.erp_job.as_ref().unwrap().work_order.is_none());
+        assert_eq!(a.cfg.machine().name, "Fiber 1", "the operation's machine");
+        a.run_nesting();
+        a.erp_send();
+        wait(&mut a, &ctx, |a| a.erp.send.is_none());
+        assert!(a.erp.msg_ok, "{} {:?}", a.erp.msg, a.erp.notes);
+        assert_eq!(a.erp_job.as_ref().unwrap().work_order.as_ref().unwrap().op_id, STEP_ID);
+        assert!(a.erp.notes.iter().any(|n| n.contains("WO-318")), "{:?}", a.erp.notes);
+        let seen = seen.lock().unwrap();
+        assert!(!seen.iter().any(|s| s.0 == "POST /api/work-orders"));
+        assert!(seen.iter().any(|s| s.0.starts_with("PUT ")));
+    }
+
+    #[test]
+    fn without_the_planners_work_order_nothing_is_sent() {
+        let (url, seen) = mock_planner(false);
+        let mut a = planner_app(url);
+        let ctx = egui::Context::default();
+        a.erp_refresh();
+        wait(&mut a, &ctx, |a| a.erp.load.is_none());
+        a.erp.picked.insert(("6650aaaaaaaaaaaaaaaaaaaa".into(), "jo1".into()));
+        a.erp_import();
+        wait(&mut a, &ctx, |a| a.erp.import.is_none());
+        a.run_nesting();
+        a.erp_send();
+        wait(&mut a, &ctx, |a| a.erp.send.is_none());
+        assert!(!a.erp.msg_ok && a.erp.msg.contains("planner makes it"), "{}", a.erp.msg);
+        assert!(a.erp_job.as_ref().unwrap().work_order.is_none());
+        let seen = seen.lock().unwrap();
+        assert!(!seen.iter().any(|s| s.0 == "POST /api/work-orders" || s.0.starts_with("PUT ")));
+    }
+
     #[test]
     fn import_nest_and_send_through_the_app() {
         use crate::integrations::fulcrum::tests::{GROUPS, MANIFEST};
@@ -832,7 +1325,8 @@ mod tests {
         ]);
         let mut a = App::new(None);
         let ctx = egui::Context::default();
-        *a.cfg.integration_mut(Provider::Fulcrum) = Integration { base_url: url, units: Units::Inch, ..Integration::new(Provider::Fulcrum) };
+        // This shop setting: the app makes the work order on the first send.
+        *a.cfg.integration_mut(Provider::Fulcrum) = Integration { base_url: url, units: Units::Inch, work_orders: WorkOrders::App, ..Integration::new(Provider::Fulcrum) };
         a.erp.session_token = "tok".into();
         let jobs_before = a.jobs.len();
 

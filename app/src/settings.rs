@@ -332,6 +332,14 @@ impl AppSettings {
                 i.approve,
                 esc(&i.software)
             );
+            s += &format!("work_orders = {}\n", i.work_orders.key());
+            // id|name|machine (the id never holds a bar; the machine is last).
+            for st in &i.stations {
+                s += &format!("station = {}|{}|{}\n", esc(&st.id), esc(&st.name), esc(&st.machine));
+            }
+            for st in &i.equipment {
+                s += &format!("equipment = {}|{}|{}\n", esc(&st.id), esc(&st.name), esc(&st.machine));
+            }
         }
         s
     }
@@ -430,6 +438,17 @@ impl AppSettings {
                             "drawing_units" => i.drawing_units = Units::from_key(&v),
                             "approve" => i.approve = v == "true",
                             "software" => i.software = v,
+                            "work_orders" => i.work_orders = crate::integrations::WorkOrders::from_key(&v),
+                            "station" | "equipment" => {
+                                if let Some((id, rest)) = v.split_once('|') {
+                                    if let Some((name, machine)) = rest.rsplit_once('|') {
+                                        let st = crate::integrations::Station { id: id.into(), name: name.into(), machine: machine.into() };
+                                        if !st.id.is_empty() && !st.machine.is_empty() {
+                                            if k == "station" { i.stations.push(st) } else { i.equipment.push(st) }
+                                        }
+                                    }
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -648,6 +667,9 @@ mod settings_tests {
                 drawing_units: crate::integrations::Units::Inch,
                 approve: true,
                 software: "lantek".into(),
+                work_orders: crate::integrations::WorkOrders::App,
+                stations: vec![crate::integrations::Station { id: "op1".into(), name: "Laser | fiber".into(), machine: "Fiber 1".into() }],
+                equipment: vec![crate::integrations::Station { id: "eq1".into(), name: "FL 6kW".into(), machine: "Fiber 2".into() }],
             }],
         };
         assert_eq!(AppSettings::parse(&s.to_text()), s);
