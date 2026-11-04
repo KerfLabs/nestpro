@@ -12,6 +12,7 @@ mod filewatch;
 mod mcp;
 mod ct1;
 mod joints;
+mod kerf;
 mod leads;
 mod xmlimport;
 mod jobtree;
@@ -465,7 +466,7 @@ impl App {
             job_name: "Sample job 1-3.0000".into(),
             parts: demo_parts(),
             sel_part: Some(1),
-            spec: SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default() },
+            spec: SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() },
             result: NestResult::default(),
             plans: vec![],
             program: String::new(),
@@ -1781,6 +1782,12 @@ impl App {
                             continue;
                         }
                         let st = to_s(c.points[0]);
+                        // System compensation: the beam's centre path beside the edge (KC8).
+                        if c.comp.system {
+                            let mut pts: Vec<Pos2> = c.points.iter().map(|&q| to_s(q)).collect();
+                            pts.push(pts[0]);
+                            painter.add(EShape::line(pts, Stroke::new(1.0, crate::partview::KERF_PATH)));
+                        }
                         // Lead-in as cut: line, line + arc, arc, or from a hole's centre.
                         let lp: Vec<Pos2> = c.lead_path.iter().map(|&q| to_s(q)).collect();
                         painter.add(EShape::line(lp, Stroke::new(1.6, Color32::WHITE)));
@@ -2558,6 +2565,10 @@ fn main() -> eframe::Result {
                 app.tab = Tab::Technology;
                 app.show_path = true;
                 app.zoom = 3.0;
+            }
+            // --sheet-tab (screenshots): the Sheet tab, e.g. its machine-table line.
+            if std::env::args().any(|a| a == "--sheet-tab") {
+                app.tab = Tab::Sheet;
             }
             if want_jobs {
                 app.workspace = Workspace::Jobs;

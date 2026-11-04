@@ -125,6 +125,9 @@ impl PostConfig {
     pub fn apply(&self, program: &str) -> String {
         let mut out = String::with_capacity(program.len());
         let mut n = self.first;
+        // One axis turned round mirrors the path, so the scrap side of every
+        // cut swaps: G41 ↔ G42 (KC2, our rule for the axis signs).
+        let mirrored = self.sign_x * self.sign_y < 0.0;
         for line in program.lines() {
             let (code, comment) = match line.find('(') {
                 Some(k) => (&line[..k], &line[k..]),
@@ -143,6 +146,7 @@ impl PostConfig {
                     ('X' | 'I', Some(v)) => toks.push(format!("{axis}{:.*}", self.decimals(), v / self.units * self.sign_x)),
                     ('Y' | 'J', Some(v)) => toks.push(format!("{axis}{:.*}", self.decimals(), v / self.units * self.sign_y)),
                     ('F', Some(v)) if self.units > 1.0 => toks.push(format!("F{:.1}", v / self.units)),
+                    ('G', Some(v)) if mirrored && (v == 41.0 || v == 42.0) => toks.push(if v == 41.0 { "G42".into() } else { "G41".into() }),
                     ('G', Some(v)) if self.units > 1.0 && (v - 21.0).abs() < 1e-9 => toks.push("G20".into()),
                     _ => toks.push(t.to_string()),
                 }
@@ -182,12 +186,14 @@ mod post_tests {
         let p = PostConfig::parse(cff, "test");
         assert_eq!((p.first, p.step, p.block_digits, p.zero_suppress), (3, 3, 5, 0));
         assert!(p.circles_one_move && p.sign_y < 0.0 && p.extension == ".TXT");
-        let out = p.apply("( HEAD )\nN10 G90 G21 G17\nN20 G0 X25.40 Y50.80\nN30 G1 X0 Y0 F2540 ( CUT )\n");
+        let out = p.apply("( HEAD )\nN10 G90 G21 G17\nN20 G0 X25.40 Y50.80\nN30 G1 X0 Y0 F2540 ( CUT )\nN40 G1 G42 D2 X1 Y1\n");
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines[0], "( HEAD )");
         assert_eq!(lines[1], "N00003 G90 G20 G17");
         assert_eq!(lines[2], "N00006 G0 X1.0000 Y-2.0000");
         assert_eq!(lines[3], "N00009 G1 X0.0000 Y-0.0000 F100.0 ( CUT )");
+        // Y turned round mirrors the path: the scrap side swaps.
+        assert_eq!(lines[4], "N00012 G1 G41 D2 X0.0394 Y-0.0394");
         // Expert's own template: N10, N20… in mm, .CNC files.
         let d = PostConfig::default();
         assert_eq!(d.block(10), "N10");

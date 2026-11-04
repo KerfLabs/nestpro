@@ -34,6 +34,9 @@ pub const PART_VIEW_PAUSE_S: f64 = 0.4;
 
 /// Zoom factor for a scroll: exp, so scrolling back by the same amount returns
 /// exactly to the old zoom (like the original's f and 1/f).
+/// Colour of the beam's centre path under system compensation.
+pub const KERF_PATH: Color32 = Color32::from_rgb(56, 220, 230);
+
 pub fn wheel_factor(scroll: f32) -> f32 {
     (scroll * WHEEL_ZOOM).exp()
 }
@@ -576,6 +579,12 @@ impl App {
                 }
                 continue;
             }
+            // System compensation: the beam's centre path, beside the part's edge (KC8).
+            if c.comp.system {
+                let mut pts: Vec<Pos2> = c.points.iter().map(|&q| to_s(q)).collect();
+                pts.push(pts[0]);
+                painter.add(EShape::line(pts, Stroke::new(1.2, KERF_PATH)));
+            }
             for (jk, &(a, b)) in c.joints.iter().enumerate() {
                 let pa = to_s(cnc::point_at(&c.points, a));
                 let pb = to_s(cnc::point_at(&c.points, b));
@@ -698,8 +707,14 @@ impl App {
                 plan.pierces,
                 plan.seconds
             ),
+            // Kerf compensation (KC1): width, kind, and what can't be cut.
+            format!(
+                "{}{}",
+                crate::kerf::status_line(&self.spec),
+                if plan.kerf_issues.is_empty() { String::new() } else { format!("  ·  {} contour(s) not fully cut", plan.kerf_issues.len()) }
+            ),
         ];
-        let card = Rect::from_min_size(rect.left_top() + Vec2::new(12.0, 12.0), Vec2::new(380.0, 84.0));
+        let card = Rect::from_min_size(rect.left_top() + Vec2::new(12.0, 12.0), Vec2::new(400.0, 101.0));
         if self.dv.info {
             painter.rect_filled(card, CornerRadius::same(10), th().overlay);
         }
@@ -709,7 +724,10 @@ impl App {
         }
         // Legend.
         let lg = rect.left_bottom() + Vec2::new(14.0, -18.0);
-        let items: [(&str, Color32); 4] = [("lead-in", Color32::WHITE), ("lead-out", Color32::from_rgb(129, 140, 248)), ("joint / loop", jcol), ("pierce", Color32::from_rgb(248, 80, 90))];
+        let mut items: Vec<(&str, Color32)> = vec![("lead-in", Color32::WHITE), ("lead-out", Color32::from_rgb(129, 140, 248)), ("joint / loop", jcol), ("pierce", Color32::from_rgb(248, 80, 90))];
+        if plan.contours.iter().any(|c| c.comp.system) {
+            items.push(("kerf path", KERF_PATH));
+        }
         let mut x = lg.x;
         for (name, col) in items {
             painter.line_segment([Pos2::new(x, lg.y), Pos2::new(x + 18.0, lg.y)], Stroke::new(2.0, col));
@@ -826,6 +844,9 @@ impl App {
                 );
                 ui.separator();
                 ui.label(format!("Part {} of {}", self.open_idx + 1, self.open_set.len()));
+                ui.separator();
+                let mt = crate::ct1::for_spec(&self.spec);
+                ui.label(RichText::new(mt.applied().map_or("Machine table: global".to_string(), |s| format!("Machine table {}", s.label()))).color(th().text_dim)).on_hover_text(mt.table_label());
             }
             ui.add_space(12.0);
             ui.label(RichText::new(&self.status).color(th().text_dim));

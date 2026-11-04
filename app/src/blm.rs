@@ -304,7 +304,9 @@ fn move_end(m: &Move) -> P {
 }
 
 /// One path (closed contour or open marking line) in the subprogram's form.
-fn write_path(s: &mut String, pts: &[P], closed: bool, lead: &[P], inner: bool, first: bool, mark: bool) {
+/// `comp` is the contour's compensation word on its first lead-in move
+/// (" G41" / " G42", or "" for none: system compensation or off; KC2).
+fn write_path(s: &mut String, pts: &[P], closed: bool, lead: &[P], comp: &str, first: bool, mark: bool) {
     let mut moves: Vec<P> = pts.to_vec();
     if closed && pts.len() > 1 {
         moves.push(pts[0]);
@@ -320,7 +322,7 @@ fn write_path(s: &mut String, pts: &[P], closed: bool, lead: &[P], inner: bool, 
     let _ = write!(s, "NEXT_L({},{},{},{},{})\r\n", coord(start[0]), coord(start[1]), if first { 0 } else { 1 }, pierce, quality);
     if has_lead {
         for (i, q) in lead.iter().enumerate().skip(1) {
-            let comp = if i == 1 { if inner { " G41" } else { " G42" } } else { "" };
+            let comp = if i == 1 { comp } else { "" };
             let _ = write!(s, "G01{comp} X{} Y{}\r\n", coord(q[0]), coord(q[1]));
         }
     }
@@ -365,13 +367,17 @@ pub fn subprogram(name: &str, plan: &SheetPlan, part_no: usize, origin: P) -> St
     let mut first = true;
     for (_, pts) in plan.marks.iter().filter(|m| m.0 == part_no) {
         let p: Vec<P> = pts.iter().map(|&q| rel(q)).collect();
-        write_path(&mut s, &p, false, &[], false, first, true);
+        write_path(&mut s, &p, false, &[], "", first, true);
         first = false;
     }
     for c in plan.contours.iter().filter(|c| c.part_no == part_no && c.punch.is_none()) {
         let p: Vec<P> = c.points.iter().map(|&q| rel(q)).collect();
         let lead: Vec<P> = c.lead_path.iter().map(|&q| rel(q)).collect();
-        write_path(&mut s, &p, true, &lead, c.inner, first, false);
+        // The side from the contour's real direction (KC2): a mirrored part
+        // or a clockwise drawing gets the other word. The LC5 post writes no
+        // corrector number.
+        let comp = c.comp.word().map_or(String::new(), |(side, _)| format!(" {}", side.word()));
+        write_path(&mut s, &p, true, &lead, &comp, first, false);
         first = false;
     }
     s.push_str("ENDGEO\r\nIF R16==1\r\n\t  STOPRE\r\n\t  R16=0\r\n   GOTOB CICLA\r\nENDIF\r\nENDPART\r\nRET\r\n");
@@ -464,7 +470,7 @@ pub fn cut_path_sub(pts: &[P], origin: P) -> String {
     let p: Vec<P> = pts.iter().map(|q| [q[0] - origin[0], q[1] - origin[1]]).collect();
     let mut s = String::from(";M01\r\nR16=chk_pret\r\nCICLA:\r\nINITPART(1)\r\n;\r\n");
     let mut body = String::new();
-    write_path(&mut body, &p, false, &[], false, true, false);
+    write_path(&mut body, &p, false, &[], "", true, false);
     s.push_str(&body);
     s.push_str("ENDGEO\r\nIF R16==1\r\n\t  STOPRE\r\n\t  R16=0\r\n   GOTOB CICLA\r\nENDIF\r\nENDPART\r\nRET\r\n");
     s
@@ -812,7 +818,7 @@ mod blm_tests {
     fn writes_the_lc5_set_and_a_readable_zip() {
         let parts = vec![Part { name: "BLANK".into(), shape: Shape::Rectangle, w: 100.0, h: 50.0, qty: 2, rotate: false, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
         let sheet = vec![Placed { part: 0, x: 10.0, y: 10.0, w: 100.0, h: 50.0, turns: 0, mirror: false }, Placed { part: 0, x: 10.0, y: 70.0, w: 100.0, h: 50.0, turns: 0, mirror: false }];
-        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 10.0, material: 1, thickness: 6.35, level: 3, machine: Default::default() };
+        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 10.0, material: 1, thickness: 6.35, level: 3, machine: Default::default(), kerf: Default::default() };
         let plan = cnc::plan(&parts, &sheet, &spec);
         let set = BlmSettings::for_spec(&spec, "LC5 YLS6000", "J-1");
         let s = sheet_set(1, &parts, &sheet, &spec, &plan, &[], &set);

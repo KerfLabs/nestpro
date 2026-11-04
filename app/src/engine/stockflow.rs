@@ -272,7 +272,7 @@ pub fn remnant_marks(stock: &Stock, j: &JobSheets, formats: &[SheetFormat], i: u
     }
     let Some(sheet) = j.sheets.get(i) else { return vec![] };
     let f = formats.get(i).cloned().unwrap_or_else(|| SheetFormat::rect(j.spec.w, j.spec.h));
-    let pieces = crate::remnant::sheet_remnants_cached(j.parts, sheet, &f, lines, crate::cutoff::KERF_MM);
+    let pieces = crate::remnant::sheet_remnants_cached(j.parts, sheet, &f, lines, crate::kerf::kerf_mm(&j.spec));
     let refs = remnant_refs(stock, j, &f, i, &pieces, st);
     let mut out = vec![];
     for (k, o) in pieces.iter().enumerate() {
@@ -370,7 +370,7 @@ pub fn pending_remnants(stock_now: &Stock, j: &JobSheets, formats: &[SheetFormat
         }
         let has_line = lines.iter().any(|l| l.kind == CutKind::Remnant);
         let want = (has_line && (st.remnants_on_save || force_lines)) || st.keep_completed;
-        let pieces = if want { crate::remnant::sheet_remnants(j.parts, &j.sheets[i], f, lines, crate::cutoff::KERF_MM, st.min_remnant_m2, st.keep_completed && !has_line) } else { vec![] };
+        let pieces = if want { crate::remnant::sheet_remnants(j.parts, &j.sheets[i], f, lines, crate::kerf::kerf_mm(&j.spec), st.min_remnant_m2, st.keep_completed && !has_line) } else { vec![] };
         if !pieces.is_empty() || !replace.is_empty() {
             todo.push(Pending { sheet: i, pieces, replace });
         }

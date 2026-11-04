@@ -10,7 +10,9 @@ use crate::App;
 use eframe::egui;
 use egui::{Align2, Color32, CornerRadius, FontId, Key, Pos2, Rect, RichText, Shape as EShape, Stroke, Vec2};
 
-/// Cut width (kerf) used to place the line half a cut clear of the gap.
+/// Cut width (kerf) when the machine file gives no cutter radius (our
+/// fallback). The real one is `kerf::kerf_mm`: twice the machine's or its
+/// material section's cutter radius.
 pub const KERF_MM: f64 = 0.3;
 /// A remnant narrower than this (or smaller than this × the sheet side) is scrap.
 pub const REMNANT_MIN_MM: f64 = 100.0;
@@ -91,14 +93,14 @@ pub fn polyline_dist(p: P, pts: &[P]) -> f64 {
 /// would be narrower than the minimum (the original refuses it, code 10).
 pub fn remnant_line_x(sheet: &[Placed], spec: &SheetSpec) -> Option<f64> {
     let ext = sheet.iter().map(|p| p.x + p.w).fold(spec.margin, f64::max);
-    let x = ext + spec.gap + KERF_MM * 0.5;
+    let x = ext + spec.gap + crate::kerf::kerf_mm(spec) * 0.5;
     (spec.w - x >= REMNANT_MIN_MM).then_some(x)
 }
 
 /// The same across Y (RM1).
 pub fn remnant_line_y(sheet: &[Placed], spec: &SheetSpec) -> Option<f64> {
     let ext = sheet.iter().map(|p| p.y + p.h).fold(spec.margin, f64::max);
-    let y = ext + spec.gap + KERF_MM * 0.5;
+    let y = ext + spec.gap + crate::kerf::kerf_mm(spec) * 0.5;
     (spec.h - y >= REMNANT_MIN_MM).then_some(y)
 }
 
@@ -155,7 +157,7 @@ pub fn exact_edge(sheet: &[Placed], spec: &SheetSpec, round: bool) -> Option<Cut
     if sheet.is_empty() {
         return None;
     }
-    let d = spec.gap + KERF_MM * 0.5;
+    let d = spec.gap + crate::kerf::kerf_mm(spec) * 0.5;
     let mut ys: Vec<f64> = vec![0.0, spec.h];
     for p in sheet {
         ys.push((p.y - d).max(0.0));
@@ -260,6 +262,7 @@ fn remnant_area_of(line: &[P], spec: &SheetSpec) -> f64 {
 /// every part's outline (RM4: the original checks contours against the
 /// remnant line). Returns the part index hit.
 pub fn path_hits_part(parts: &[Part], sheet: &[Placed], pts: &[P]) -> Option<usize> {
+    // Half the fallback kerf: the check has no sheet (our minimum clearance).
     let clear = KERF_MM * 0.5;
     for (i, pl) in sheet.iter().enumerate() {
         let (lo, hi) = (pts.iter().fold([f64::MAX; 2], |m, p| [m[0].min(p[0]), m[1].min(p[1])]), pts.iter().fold([f64::MIN; 2], |m, p| [m[0].max(p[0]), m[1].max(p[1])]));
@@ -335,7 +338,7 @@ impl App {
             return;
         }
         let ls = self.cfg.stock.line.clone();
-        let lines = crate::remline::auto_lines(&self.parts, self.sheet_now(), &self.cur_spec(), &ls, KERF_MM / 2.0);
+        let lines = crate::remline::auto_lines(&self.parts, self.sheet_now(), &self.cur_spec(), &ls, crate::kerf::kerf_mm(&self.cur_spec()) / 2.0);
         if lines.is_empty() {
             self.status = format!("No remnant: less than the minimum width ({:.0} mm) is left past the parts.", ls.min_width);
             return;
@@ -368,7 +371,7 @@ impl App {
     pub fn semi_auto_at(&mut self, mode: crate::remline::SemiMode, w: P) {
         let spec = self.cur_spec();
         let ls = self.cfg.stock.line.clone();
-        match crate::remline::semi_auto_lines(&self.parts, self.sheet_now(), spec.w, spec.h, mode, &ls, KERF_MM / 2.0, w, self.cfg.stock.min_remnant_m2) {
+        match crate::remline::semi_auto_lines(&self.parts, self.sheet_now(), spec.w, spec.h, mode, &ls, crate::kerf::kerf_mm(&spec) / 2.0, w, self.cfg.stock.min_remnant_m2) {
             Ok(lines) => {
                 if lines.iter().any(|l| path_hits_part(&self.parts, self.sheet_now(), &l.pts).is_some()) {
                     self.status = "That cut would touch a part — try a larger offset.".into();
@@ -442,7 +445,7 @@ impl App {
             if self.cut_list().iter().any(|l| l.kind == CutKind::Remnant) {
                 continue;
             }
-            let lines = crate::remline::auto_lines(&self.parts, self.sheet_now(), &self.cur_spec(), &ls, KERF_MM / 2.0);
+            let lines = crate::remline::auto_lines(&self.parts, self.sheet_now(), &self.cur_spec(), &ls, crate::kerf::kerf_mm(&self.cur_spec()) / 2.0);
             if !lines.is_empty() && lines.iter().all(|l| path_hits_part(&self.parts, self.sheet_now(), &l.pts).is_none()) {
                 self.cut_list_mut().extend(lines);
             }
@@ -475,7 +478,7 @@ impl App {
             return vec![];
         }
         let f = self.result.format(self.cur_sheet, &self.spec);
-        crate::remnant::sheet_remnants_cached(&self.parts, self.sheet_now(), &f, self.cut_list(), KERF_MM)
+        crate::remnant::sheet_remnants_cached(&self.parts, self.sheet_now(), &f, self.cut_list(), crate::kerf::kerf_mm(&self.cur_spec()))
     }
 
     /// (width, height, area) of the largest remnant on the current sheet.
@@ -804,7 +807,7 @@ mod cutoff_tests {
     use crate::nest::Shape;
 
     fn spec() -> SheetSpec {
-        SheetSpec { w: 2000.0, h: 1000.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default() }
+        SheetSpec { w: 2000.0, h: 1000.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() }
     }
     fn rect_part() -> Part {
         Part { name: "R".into(), shape: Shape::Rectangle, w: 500.0, h: 300.0, qty: 1, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }
@@ -853,7 +856,7 @@ mod cutoff_tests {
     #[test]
     fn remnant_lines_are_cut_last_in_the_program() {
         let lines = vec![CutLine { pts: vec![[600.0, 0.0], [600.0, 1000.0]], kind: CutKind::Remnant }, CutLine { pts: vec![[50.0, 900.0], [300.0, 900.0]], kind: CutKind::Free }];
-        let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default() };
+        let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
         let g = gcode_lines(&lines, &spec, 0.0);
         assert_eq!(g[0].0, "CUT LINE");
         assert_eq!(g[1].0, "REMNANT LINE");

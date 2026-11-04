@@ -1503,7 +1503,7 @@ What the original offers other programs:
 
 | # | Rule |
 |---|------|
-| MA1 | The material master is the SQL table **`DIS_MMTT_MMTT_00000100`**: `MatRef` (key), `IntRef` (internal reference `##MATEXP` + name + suffix), `IsMain`, a norm reference (NormRef), costs and scrap price. "Does it exist" = a select on MatRef. |
+| MA1 | The material master is the SQL table **`DIS_MMTT_MMTT_00000100`**: `MatRef` (key), `IntRef` (internal reference: `##MATEXP` + a four-digit material **catalogue number** + `##`, e.g. `##MATEXP0010##` for mild steel; **corrected by MTL2**: it is a number, not the name plus a suffix), `IsMain`, a norm reference (NormRef), costs and scrap price. "Does it exist" = a select on MatRef. |
 | MA2 | Thickness ranges per material are **`DIS_MMTT_MMTT_00000200`**: MatRef, MinThickness, MaxThickness, PriceDate, Price, Descrip, RecID, read ordered by MinThickness. A reference that isn't valid or a missing material gives error 100. |
 | MA3 | Looking up a material returns the cached material record when the name matches exactly, else 100. |
 | MA4 | Products carry their own `DIS_MatRef` and `DIS_Thickness` (see PK2). Nestings get the job's material/thickness, and a nesting's material and thickness can be rewritten. |
@@ -1803,3 +1803,112 @@ stock and remnants" above.
 | BN7 | Remaking changed remnants (ST12) is shared by the window's save and agents' `stock-book` / booked jobs: a fingerprint of the sheet's remnant lines is kept with its remnants (`made_from`); a sheet whose stored remnants carry no fingerprint (jobs saved before it existed) counts as unchanged, so opening and saving an old job doesn't remake its remnants. The note "changed, but already in use — kept" goes into the save's status note. | ST12; the no-fingerprint case is design |
 | BN8 | Naming new remnants: the window asks for references when "Prompt for references" is on (suggested `<origin>-<n>`, at most 40 characters, not empty, not in stock, not used twice; Cancel saves without storing remnants). Agents can't be asked: `stock-book mode=book refs=` gives them in the order `status` lists (`would_store_remnants`, with the suggested references); without refs they are numbered. | UI14 (window); agents: design |
 | BN9 | Reference formats and remnant marks (ST14, ST15) are shared by the window and the agent operations: suggested and stored references (`stock-book`), the single-sheet `program` and `export` all go through `engine::stockflow` (`next_ref`, `remnant_marks`), so a program has the same marks whichever made it. The material name for `[MAT]` / `#400` comes from the settings in both. |
+
+## Material and thickness sections of the machine file
+
+In shop terms: after the machine's own values, the technology file (CT1) can hold one
+section per material and thickness range. When the job's material and thickness fall in a
+section, that section's lead table, micro-joint table, joint width, pierce radius, part gap,
+kerf, margins and so on take over from the machine's values, so 1 mm sheet gets 2 mm leads
+and a 0.3 mm joint gap while 15 mm plate gets 13 mm leads and a 0.7 mm gap. A thickness
+that falls between two ranges keeps the machine's own values. `ct1.rs` (`parse_file`,
+`pick_section`, `codes_with_section`, `for_spec`).
+
+| ID | Rule (our words) | Observed / estimated |
+|---|---|---|
+| MTL1 | The file is read top to bottom. Lines outside the sections are the machine's own values. Every Z, Y, X or V line belongs to the section being read, and a `Z999` line closes it; only then is the section tested against the job. A section left open at the end of the file is never used. Sections come after the machine's values, so a fitting one overrides them. | Observed |
+| MTL2 | A section names its material by the material's **internal reference**: `##MATEXP` + a four-digit catalogue number + `##` (0010 mild steel, 0100 stainless steel, 0200 pure aluminium, 0210 aluminium-magnesium, 0300 galvanised steel, 0510 copper, 0590 brass), or by a plain material name. A reference with fewer digits (`##MATEXP10##`) is padded to four. A material with no internal reference is looked up by its name. Names compare exactly, upper/lower case included. A section named `*` fits every material. | Observed (padding of the job's reference); padding the file's names too is our estimate |
+| MTL3 | Thickness: a section fits when its "from" is negative (any thickness), or when from − 0.005 ≤ t ≤ to + 0.005. Both ends count; there is no nearest-range search, so a thickness in a gap between two ranges (1.65 mm between 0.4–1.6 and 1.7–2.1) fits none. | Observed |
+| MTL4 | The other keys: the gas number fits when equal or when the job gives none (0); lens, power, nozzle, pressure, abrasive flow and mixing-tube numbers fit within 0.01 or when the job's is 0.001 or less (not given); the abrasive when the job's is `*`, empty or equal; the configuration alias when the job's is empty or equal. | Observed |
+| MTL5 | The first fitting section in file order wins. Exception, when the machine marks default technologies (A093 on) and the job gives only material and thickness: a fitting section not marked default (Z350 off) is only a fallback. The first such one is kept while the search goes on, and a later fitting section marked default wins. | Observed |
+| MTL6 | No fitting section: the machine's own values stand, untouched. | Observed |
+| MTL7 | A fitting section replaces the **automatic lead tables of every quality** and the **micro-joint table** as a whole. What the section leaves out takes the built-in table values (our laser lead table; joint distance 100 mm), not the machine's. A quality with no lead table of its own copies quality 1. | Observed (replacement); the built-in fallbacks are inferred |
+| MTL8 | Code mapping. **Y n = E n** (lead tables of qualities 2–12 and their extras, same numbers). Quality 1's lead table is in Z: **Z n = B (n + 146)** for n = 54–124 (B200–B270), **Z132 = B271** (hole zone), **Z305 = B294** (pierce radius), **Z306 = B295** (shortest lead). **X n = F n** for 0–118 and 129–197 (joint records, size classes, distances by quality), but **X122 = F121** (fewest joints), **X123 = F122** (most) and **X125–X128 = F123–F126**; X119/X120 are not read. | Observed |
+| MTL9 | Single values a section replaces: Z003 cutting speed (A058), Z004 **cutter radius** = half the kerf (B002), Z005 sheet margin (A256, and it fills the other three first), Z007/Z008/Z009 top/left/right margins (A257–A259), Z130 remnant margin (A260), Z006 **part gap** (B056), Z335/Z336 a different Y gap (B096/B097), Z026–Z053 = B150–B177 (manual leads, overlap, **loop radius** Z033 = B157, joint leads and **joint width** Z034–Z040 = B158–B164, angle tolerances), Z125 corner rounding (B178), Z126–Z129 kill sharp edges (B179–B182), Z131 default **pierce radius** (B352), Z301 loop limit angle (B292). A value the section doesn't give keeps the machine's. | Observed (mapping); keeping the machine's value for a missing line is our estimate |
+| MTL10 | Z010/Z011/Z012 triples (one per hole-size band: from, to, technology index) pick a cutting technology for small holes by size. Read and counted, not used yet (FEATURES TEC-12). | Observed (read) |
+| MTL11 | Conditional groups (Z308 on → Z309–Z312 and X124; Z313 on → Z314–Z323; Z337 on → Z338; X125–X128 only when ≥ 0) carry values the app doesn't use; they are not carried over. | Observed (rule); not used |
+| MTL12 | V lines fill the per-class micro-joint records inside a section. No known file has them; not carried over (FEATURES TEC-14). | Observed (rule); not used |
+
+→ In the rebuild:
+- **Material keys** (MTL2): Settings → Materials → *Machine table*, one per material: mild
+  steel `0010`, stainless `0100`, aluminium `0210` (the aluminium-magnesium grades its
+  aliases name; pure aluminium is `0200`). Our choice, editable. A bare number is our
+  shorthand for the catalogue reference; empty = the material's name in programs.
+- **Gas, lens, nozzle and the other keys** (MTL4): our jobs carry none, so they count as
+  not given and only material and thickness decide. The machine's gas setting is a BLM
+  output number, not the file's gas number, so it is not used as a key. Design choice
+  (FEATURES TEC-10).
+- **Where the section is used**: the cut plan (automatic leads by contour class and
+  quality, joint distances, size classes), Technology → Lead-ins → Machine, Micro-joints →
+  Automatic and Settings → Machine values, and the agents' `leads mode=machine` /
+  `joints mode=auto`. The window's joint size classes (Micro-joints → Settings) still win
+  over the file's (TEC-9).
+- **Joint gap**: with a fitting section, Automatic micro-joints give every part that
+  section's joint gap (the plate's table decides). Without one, a part keeps its own gap as
+  before. Our choice.
+- **Part gap and margins** (Z006, Z005–Z009) are **never applied by themselves**: the sheet's
+  gap and margin stay the user's. The Sheet tab shows the machine's values for the current
+  material and thickness with a one-click *Use* button, and agents get them from
+  `machine-tech` and take them with `set-sheet machine_spacing=true`. The sheet has one
+  margin, so it takes the widest of the machine's four. Design choice (FEATURES TEC-11).
+- **Kerf** (Z004 / B002) and the section's corrector numbers (Z024 / Z025 = B124 / B125)
+  drive the kerf compensation (see "Kerf compensation" below). **Cutting speed, pierce
+  radius, Y gap** are read and shown only (`machine-tech`); times use the app's speed table.
+- The applied section shows on the Sheet tab (under the material) and in the Part view's
+  status line: "Machine table 0010 mild steel 2.2–3.2 mm", or "global".
+
+## Kerf compensation
+
+In shop terms: the beam cuts a strip one kerf wide, so to get a part to size its centre must
+run half a kerf (the **cutter radius**) on the scrap side: outside a part's outline, inside a
+hole. Either the **control** does it (the program keeps the drawn outline and writes G41/G42
+plus a **corrector number**, the CNC's tool-table slot that holds the radius) or the program
+carries the **offset path** itself (**system** compensation, no G41/G42). A machine may use
+either or both. `kerf.rs` (`side_for`, `resolve`, `offset_path`, `compensate`), used by the cut
+plan (`cnc::plan_manual`), so the drawing, the simulation, the times and every program follow
+the same path.
+
+| ID | Rule (our words) | Observed / estimated |
+|---|---|---|
+| KC1 | Two independent switches in the machine file: **system** compensation (B116, default off) and **control** compensation (B117, default on). Each cut contour gets a control side + corrector when control is on, and the offset path when system is on; both on = both. | Observed |
+| KC2 | **The side is the scrap side, from the contour's real cutting direction on the sheet.** Outside counter-clockwise → right (G42), clockwise → left (G41). Hole counter-clockwise → left (G41), clockwise → right (G42). An open path (marking) → off. Mirroring a part or reversing a contour flips its direction and therefore its side. | Observed |
+| KC3 | **Corrector numbers**: holes B124 (default 1), outsides B125 (default 2); a material section's Z024 / Z025 replace them. Marking → no compensation. | Observed |
+| KC4 | A compensation word is written only when the needed side or corrector changes; there is no cancel between two contours that need the same. Where the cancel (G40) goes is a post choice. | Observed (CAM side); the post's placement is ours, see below |
+| KC5 | **Quality-dependent table** (B748 on): quality q (1–12; any other number uses 1) picks its row B700+4(q−1) … B703+4(q−1): hole corrector, outside corrector, hole radius, outside radius. The mode for normal contours (B749) decides: 0 control with the row's corrector, 1 system with the row's radius, 2 both. A **negative radius flips the side** (the beam runs that far on the part's side). B750 / B751 are the same for common-cut contours. | Observed (mode 2 flipping the control side too is our estimate) |
+| KC6 | The **radius** of the offset: the quality row's (when the table is on and the row has one), else the machine's cutter radius **B002**, or the fitting material section's **Z004**. No offset when the radius is zero or the side is off. | Observed (order); our fallback when the file has no B002: 0.15 mm (0.3 mm kerf) |
+| KC7 | Common cut can switch the shared contours to system compensation (B191). Read only: the app has no common cut. | Observed (read) |
+| KC8 | System offset: every element moves r sideways; a round hole whose radius is not more than r (+ tolerance) has **no path** and is not cut. | Observed |
+| KC9 | Corners: an outside corner gets an **arc of radius r round the drawn corner**; an inside corner is **trimmed** where the two offsets cross. | Observed |
+| KC10 | **Corner mode A017** (units digit): **0 round** (keep the corner arc), **1 chamfer** (the line touching the arc at its middle, cut against the neighbours: two corners), **2 or more sharp** (the offsets run on until they meet). The tens digit (remove self-crossings) is not built. | Observed |
+| KC11 | Small features: an inside arc or element smaller than r is left out and its neighbours joined; the two walls of a **slot narrower than the kerf** are left out too, so the beam passes the slot by. Points closer than the tolerance are merged. | Observed |
+| KC12 | Micro-joint gaps keep their ends square to the edge: each end moves sideways with its edge, so a gap on a straight edge keeps its length (what offsetting each piece between gaps on its own gives). | Observed (pieces); doing it on one closed offset loop is ours, the same on straight edges |
+| KC13 | **Leads** (B752): **0** the lead-in and lead-out are offset with the contour and joined to it by the corner rules (with a straight lead square to an edge the cut then ends 2r before its start, where the lead-out's offset meets the contour's); **1** leads at a corner, **2** leads on an element, **3** both: the lead is moved unchanged by how far its end moved, and that corner is made sharp. | Observed |
+| KC14 | **Joint leads** (B753): 0 offset with their piece, 1 moved unchanged. | Observed |
+| KC15 | The **pierce point** moves with the lead: the rapid goes to the first point of the offset lead-in. | Observed |
+| KC16 | *Modify compensation* per contour (one contour, all holes, all outsides, all contours; left / right / off) is not built (FEATURES MAC-13). | Observed (not built) |
+| KC17 | With control compensation the word goes on the **first lead-in move**, so the CNC ramps the offset in along the lead-in. | Observed |
+| KC18 | **Our check** (the original's test for elements left uncut by compensation is not known): contours system compensation can't cut — holes no bigger than the kerf, contours narrower than the kerf everywhere — are left out of the plan (no pierce, no time) and listed; narrow slots and dropped inside arcs are listed as not cut fully. Verify Machining and the agents' `verify` / `compensation` show them. | Estimate (own design) |
+
+→ In the rebuild:
+- **The side fix** (KC2): the BLM LC5 post used to write G41 on every hole and G42 on every
+  outside. That was right only for contours running counter-clockwise; a mirrored part or a
+  clockwise drawing got the kerf on the part's side (parts a kerf small, holes a kerf big). Both
+  posts now take the side from the contour's direction on the sheet.
+- **Generic G-code post**: `G41 D1` / `G42 D2` on the first lead-in move when the side or
+  corrector changes; `G40` on the rapid to whatever needs none (a contour without control
+  compensation, marking, a free cut line) and on the way home. A contour without a lead-in gets
+  the word on a block of its own. A post that turns one axis round (A016 × A017 < 0) mirrors the
+  path, so G41 and G42 swap. Our choices.
+- **BLM LC5 post**: its format is kept (G41/G42 on the first lead-in move, no corrector word);
+  with system compensation only, no word and the offset path.
+- **The job's choice**: Machining → Compensation → *Kerf* (Drawing and Nesting modules):
+  *CN compensation* and *System compensation* toggles for the job, each defaulting to the machine
+  file's; *Use the machine's settings* clears them. They win over the machine's switches and the
+  quality table's mode (our rule). Stored in the job (`spec.kerf`); agents: `compensation`.
+- **Kerf elsewhere**: remnant lines, cut-off lines and remnant shapes use twice the machine's
+  cutter radius for the sheet's material and thickness (`kerf::kerf_mm`), else 0.3 mm; the
+  simulation shows that radius and draws cuts at least that wide.
+- **Where it shows**: the Part view draws the offset path (a thin cyan line beside the part's
+  edge) and its info card has "Kerf 0.30 mm · control (G41/G42, D1/D2)" or "… · system offset
+  (round corners)"; the sheet's cut path view draws the offset path too; programs carry a
+  `( KERF … )` comment.

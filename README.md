@@ -42,6 +42,8 @@ nestpro import-dxf jobs/frames.snjob --path="C:\Drawings\BR-100.dxf" --qty=20
 nestpro stock --mode=create --w=3000 --h=1500 --thickness=5 --material=steel --qty=10
 nestpro nest jobs/frames.snjob                      # takes sheets from stock (remnants first)
 nestpro leads jobs/frames.snjob --mode=machine
+nestpro machine-tech jobs/frames.snjob               # which material/thickness table of the machine file applies
+nestpro compensation jobs/frames.snjob --system=on   # kerf: offset path instead of G41/G42 (on/off/machine)
 nestpro remnant jobs/frames.snjob --mode=auto --sheet=1
 nestpro verify jobs/frames.snjob
 nestpro render jobs/frames.snjob --sheet=1          # PNG next to the job

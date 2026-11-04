@@ -27,9 +27,10 @@ impl App {
         self.edit_tech("Automatic lead-ins", |t, b| e.apply(t, b));
     }
 
-    /// The active machine's technology file (CT1), or the BLM file's values.
+    /// The active machine's technology file (CT1), or the BLM file's values,
+    /// for the job's material and thickness (its fitting section, MTL1–MTL7).
     pub fn machine_tech(&self) -> crate::ct1::MachineTech {
-        crate::ct1::MachineTech::for_machine(&self.cfg.machine(), &self.cfg.lantek_dir)
+        crate::ct1::for_spec(&self.spec)
     }
 
     pub fn machine_tech_tip(&self) -> String {
@@ -37,12 +38,13 @@ impl App {
         let q = mt.leads.quality(1);
         let classes: Vec<String> = crate::leads::CLASS_NAMES.iter().zip(q.recs.iter()).map(|(n, r)| format!("{n}: type {} ({} / {} mm)", r.kind, r.d_in, r.d_out)).collect();
         format!(
-            "The machine's lead-ins: {} mm in, {} mm out, {} mm overlap past the start, position {} ({}).\nTables by contour class (quality 1): {}",
+            "The machine's lead-ins: {} mm in, {} mm out, {} mm overlap past the start, position {} ({}).\n{}.\nTables by contour class (quality 1): {}",
             mt.lead_in,
             mt.lead_out,
             mt.overlap,
             mt.zone,
             mt.source.as_ref().map_or("built-in BLM values".to_string(), |p| p.display().to_string()),
+            mt.table_label(),
             classes.join(", ")
         )
     }
@@ -61,7 +63,7 @@ impl App {
     /// within the size class's fewest/most (Settings → count by size).
     pub fn auto_joints_now(&mut self) {
         let mt = self.machine_tech();
-        let e = TechEdit::AutoJoints { dist: mt.joint_dist, gap: mt.joint_gap, every: None };
+        let e = TechEdit::auto_joints(&mt, None);
         self.edit_tech("Automatic micro-joints", |t, b| e.apply(t, b));
     }
 
@@ -151,7 +153,7 @@ impl App {
             }
             if ribbon_button(ui, Icon::Grid, "Settings", self.show_joint_sizes, true).on_hover_text("Joint type (plain gap, with leads, at corners), gap width, lead distances and angle, and the automatic count by size").clicked() {
                 if !self.show_joint_sizes {
-                    self.auto_joints = crate::ct1::active().joint_sizes;
+                    self.auto_joints = crate::ct1::for_spec(&self.spec).joint_sizes;
                 }
                 self.show_joint_sizes = !self.show_joint_sizes;
             }
@@ -403,9 +405,7 @@ impl App {
         });
         // The size rules edited here act on the active machine's tables.
         if self.auto_joints != sizes_before {
-            let mut a = crate::ct1::active();
-            a.joint_sizes = self.auto_joints;
-            crate::ct1::set_active(a);
+            crate::ct1::set_joint_sizes(self.auto_joints);
         }
         if !open {
             self.show_joint_sizes = false;

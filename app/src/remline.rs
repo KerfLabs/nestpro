@@ -562,7 +562,7 @@ mod tests {
     use crate::nest::Shape;
 
     fn spec() -> SheetSpec {
-        SheetSpec { w: 3000.0, h: 1500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default() }
+        SheetSpec { w: 3000.0, h: 1500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() }
     }
     fn part(w: f64, h: f64) -> Part {
         Part { name: "A".into(), shape: Shape::Rectangle, w, h, qty: 1, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }

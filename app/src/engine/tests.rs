@@ -520,3 +520,158 @@ fn agent_booking_names_and_remakes_remnants() {
     assert_eq!(jobfile::load(Path::new(jp)).unwrap().formats[0].made, again);
     let _ = std::fs::remove_dir_all(&d);
 }
+
+// ---------------------------------------------------------------------------
+// The machine file's material × thickness sections (MTL1–MTL9), through the
+// agent operations. Each test puts a made-up machine file on its own thread.
+// ---------------------------------------------------------------------------
+
+fn demo_machine() {
+    crate::ct1::set_thread_active(Some(crate::ct1::MachineTech::from_text(&crate::ct1::demo_sections_file())));
+}
+
+#[test]
+fn an_agent_sees_which_machine_table_the_job_uses() {
+    demo_machine();
+    let d = dir("mtl_table");
+    let job = d.join("plate.snjob");
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"material": "mild steel", "thickness": 3, "gap": 5, "margin": 5}));
+    let r = call(&mut s, "machine-tech", None, json!({}));
+    assert_eq!(r["data"]["section"]["thickness_from"], 2.2, "{r}");
+    assert_eq!(r["data"]["table"], "Machine table: 0010 mild steel 2.2–3.2 mm");
+    assert_eq!((r["data"]["spacing"]["machine_gap"].as_f64(), r["data"]["spacing"]["machine_margin"].as_f64()), (Some(6.0), Some(12.0)));
+    assert_eq!(r["data"]["joints"]["gap"], 0.35);
+    assert!(r["message"].as_str().unwrap().contains("Machine part gap 6 mm"), "{r}");
+    // Between two ranges: the machine's own values.
+    let r = call(&mut s, "machine-tech", None, json!({"thickness": 1.65}));
+    assert!(r["data"]["section"].is_null(), "{r}");
+    assert!(r["data"]["table"].as_str().unwrap().contains("global"));
+    // Another material without touching the job.
+    let r = call(&mut s, "machine-tech", None, json!({"material": "stainless", "thickness": 8}));
+    assert_eq!(r["data"]["spacing"]["machine_gap"], 9.0, "{r}");
+    assert_eq!(jobfile::load(&job).unwrap().spec.material, 0);
+}
+
+#[test]
+fn use_machine_values_takes_the_plates_gap_and_margin() {
+    demo_machine();
+    let d = dir("mtl_spacing");
+    let job = d.join("plate.snjob");
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"material": "mild steel", "thickness": 3, "gap": 5, "margin": 5}));
+    // Changing the thickness alone never changes the sheet's spacing.
+    call(&mut s, "set-sheet", None, json!({"thickness": 15}));
+    let j = jobfile::load(&job).unwrap();
+    assert_eq!((j.spec.gap, j.spec.margin), (5.0, 5.0));
+    // The one-click action: the plate's gap and widest margin.
+    let r = call(&mut s, "set-sheet", None, json!({"machine_spacing": true}));
+    assert!(r["message"].as_str().unwrap().contains("Machine spacing"), "{r}");
+    let j = jobfile::load(&job).unwrap();
+    assert_eq!((j.spec.gap, j.spec.margin), (15.0, 10.0));
+    // A gap given in the same call wins over the machine's.
+    call(&mut s, "set-sheet", None, json!({"thickness": 3, "machine_spacing": true, "gap": 8}));
+    let j = jobfile::load(&job).unwrap();
+    assert_eq!((j.spec.gap, j.spec.margin), (8.0, 12.0));
+    // A machine with no spacing values refuses and says why.
+    crate::ct1::set_thread_active(Some(crate::ct1::MachineTech::default()));
+    let e = err(&mut s, "set-sheet", json!({"machine_spacing": true}));
+    assert!(e.contains("no part gap or margins"), "{e}");
+}
+
+#[test]
+fn leads_on_thick_plate_are_longer_than_on_thin_sheet() {
+    demo_machine();
+    let d = dir("mtl_leads");
+    let job = d.join("plate.snjob");
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 1000, "material": "mild steel", "thickness": 1}));
+    call(&mut s, "add-shape", None, json!({"shape": "plate-hole", "w": 300, "h": 200, "qty": 1}));
+    call(&mut s, "nest", None, json!({}));
+    let j = jobfile::load(&job).unwrap();
+    let longest = |thk: f64| {
+        let spec = SheetSpec { thickness: thk, ..j.spec_at(0) };
+        let plan = crate::cnc::plan(&j.parts, &j.sheets[0], &spec);
+        plan.contours.iter().map(|c| crate::leads::path_len(&c.lead_path)).fold(0.0, f64::max)
+    };
+    let (thin, thick, between) = (longest(1.0), longest(15.0), longest(1.65));
+    assert!(thin > 0.0 && thick > 3.0 * thin, "plate leads {thick} mm vs sheet leads {thin} mm");
+    // No section for 1.65 mm: the machine's own 7 mm tables, between the two.
+    assert!(between > thin && between < thick, "{thin} < {between} < {thick}");
+}
+
+#[test]
+fn automatic_joints_take_the_gap_of_the_plates_table() {
+    demo_machine();
+    let d = dir("mtl_joints");
+    let job = d.join("plate.snjob");
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"material": "mild steel", "thickness": 15}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 300, "h": 200, "qty": 1}));
+    call(&mut s, "joints", None, json!({"mode": "auto"}));
+    call(&mut s, "leads", None, json!({"mode": "machine"}));
+    let t = jobfile::load(&job).unwrap().parts[0].tech.unwrap();
+    assert_eq!((t.joint_width, t.lead_in), (0.70, 13.0));
+    // Thinner sheet, joints again: that range's gap.
+    call(&mut s, "set-sheet", None, json!({"thickness": 3}));
+    call(&mut s, "joints", None, json!({"mode": "auto"}));
+    assert_eq!(jobfile::load(&job).unwrap().parts[0].tech.unwrap().joint_width, 0.35);
+    // Between two ranges the part keeps its gap (the machine's own values, AM rules).
+    call(&mut s, "set-sheet", None, json!({"thickness": 1.65}));
+    call(&mut s, "joints", None, json!({"mode": "auto"}));
+    assert_eq!(jobfile::load(&job).unwrap().parts[0].tech.unwrap().joint_width, 0.35);
+}
+
+// ---------------------------------------------------------------------------
+// Kerf compensation through the agent operations (KC1–KC18).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn an_agent_reads_and_sets_the_kerf_compensation() {
+    crate::ct1::set_thread_active(None);
+    let d = dir("kerf_comp");
+    let job = d.join("plate.snjob");
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "mild steel", "thickness": 3}));
+    call(&mut s, "add-shape", None, json!({"shape": "plate-hole", "w": 100, "h": 60, "qty": 1}));
+    call(&mut s, "nest", None, json!({}));
+    // The machine's defaults: control compensation, hole D1, outside D2.
+    let r = call(&mut s, "compensation", None, json!({}));
+    assert!(r["data"]["status"].as_str().unwrap().contains("control (G41/G42, D1/D2)"), "{r}");
+    assert_eq!(r["data"]["job"]["control"], "machine");
+    let words: Vec<&str> = r["data"]["contours"].as_array().unwrap().iter().map(|c| c["word"].as_str().unwrap()).collect();
+    assert_eq!(words, vec!["G41 D1", "G42 D2"], "{r}");
+    // Switch the job to system compensation: offset path, no words.
+    let r = call(&mut s, "compensation", None, json!({"control": "off", "system": "on"}));
+    assert!(r["message"].as_str().unwrap().starts_with("Compensation set."), "{r}");
+    assert!(r["data"]["contours"].as_array().unwrap().iter().all(|c| c["word"].is_null() && c["offset_path"] == true), "{r}");
+    let saved = jobfile::load(&job).unwrap();
+    assert_eq!(saved.spec.kerf, crate::kerf::KerfChoice { control: Some(false), system: Some(true) });
+    let prog = call(&mut s, "program", None, json!({}));
+    let text = prog["data"]["program"].as_str().or(prog["message"].as_str()).unwrap_or_default().to_string();
+    assert!(!format!("{prog}").contains("G42") && format!("{prog}").contains("OFFSET PATH"), "{text}");
+    // Back to the machine's own settings.
+    call(&mut s, "compensation", None, json!({"control": "machine", "system": "machine"}));
+    assert_eq!(jobfile::load(&job).unwrap().spec.kerf, crate::kerf::KerfChoice::default());
+    let e = err(&mut s, "compensation", json!({"system": "maybe"}));
+    assert!(e.contains("on, off or machine") || e.contains("maybe"), "{e}");
+}
+
+#[test]
+fn verify_lists_a_hole_too_small_for_the_kerf() {
+    // A plasma-like kerf of 25 mm: the 24 mm hole can't be cut with an offset path.
+    crate::ct1::set_thread_active(Some(crate::ct1::MachineTech::from_text("B116 ON\nB117 OFF\nB002 12.5\n")));
+    let d = dir("kerf_small_hole");
+    let job = d.join("plate.snjob");
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "mild steel", "thickness": 3}));
+    call(&mut s, "add-shape", None, json!({"shape": "plate-hole", "w": 100, "h": 60, "qty": 1}));
+    call(&mut s, "nest", None, json!({}));
+    let r = call(&mut s, "compensation", None, json!({}));
+    assert_eq!(r["data"]["not_cut"].as_array().unwrap().len(), 1, "{r}");
+    assert_eq!(r["data"]["not_cut"][0]["hole"], true);
+    assert_eq!(r["data"]["contours"].as_array().unwrap().len(), 1, "only the outside is cut: {r}");
+    let v = call(&mut s, "verify", None, json!({}));
+    assert!(format!("{v}").contains("no bigger than the 25.00 mm kerf"), "{v}");
+    crate::ct1::set_thread_active(None);
+}

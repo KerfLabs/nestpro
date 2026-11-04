@@ -202,6 +202,8 @@ impl App {
     /// files, its output kind and gas; saves when anything changed.
     pub fn apply_settings(&mut self, force: bool) {
         let m = self.cfg.machine();
+        // Which machine-file section each material reads (MTL2).
+        crate::engine::install_material_keys(&self.cfg);
         if force || self.applied_machine.as_ref() != Some(&m) {
             let reload_post = force || self.applied_machine.as_ref().map(|a| &a.post_lib) != Some(&m.post_lib);
             if reload_post {
@@ -777,10 +779,13 @@ impl App {
         ui.label(RichText::new("The name and code each material gets in machine programs and job sheets.").size(11.5).color(th().text_dim));
         ui.add_space(8.0);
         card(ui, "Material names and codes", "Also called: other names a material goes by — grades, norms, shop names. When an import, a program or a file name uses one of them, it means this material (as Lantek's aliases).", |ui| {
-            egui::Grid::new("mat_codes").num_columns(4).spacing([16.0, 8.0]).show(ui, |ui| {
+            egui::Grid::new("mat_codes").num_columns(5).spacing([16.0, 8.0]).show(ui, |ui| {
                 ui.label(RichText::new("Material").strong());
                 ui.label(RichText::new("Name in programs").strong());
                 ui.label(RichText::new("Code").strong());
+                ui.label(RichText::new("Machine table").strong()).on_hover_text(
+                    "The material's key in the machine file's material and thickness sections: a catalogue number (0010 mild steel, 0100 stainless, 0200 pure aluminium, 0210 aluminium-magnesium, 0300 galvanised, 0510 copper, 0590 brass) or the name the file uses. Empty = the name in programs.",
+                );
                 ui.label(RichText::new("Also called (comma-separated)").strong());
                 ui.end_row();
                 for (i, m) in crate::cnc::MATERIALS.iter().enumerate() {
@@ -790,10 +795,14 @@ impl App {
                     if self.cfg.material_aliases.len() <= i {
                         self.cfg.material_aliases.push(crate::settings::default_material_aliases()[i].clone());
                     }
+                    if self.cfg.material_refs.len() <= i {
+                        self.cfg.material_refs.push(crate::settings::default_material_refs()[i].clone());
+                    }
                     ui.label(*m);
                     let (n, id) = &mut self.cfg.materials[i];
                     ui.add(egui::TextEdit::singleline(n).desired_width(160.0));
                     ui.add(egui::TextEdit::singleline(id).desired_width(80.0));
+                    ui.add(egui::TextEdit::singleline(&mut self.cfg.material_refs[i]).desired_width(80.0).hint_text("name"));
                     ui.add(egui::TextEdit::singleline(&mut self.cfg.material_aliases[i]).desired_width(320.0));
                     ui.end_row();
                 }
@@ -814,6 +823,7 @@ impl App {
             if ui.button("Reset to defaults").clicked() {
                 self.cfg.materials = crate::settings::default_materials();
                 self.cfg.material_aliases = crate::settings::default_material_aliases();
+                self.cfg.material_refs = crate::settings::default_material_refs();
             }
         });
     }
