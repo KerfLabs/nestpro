@@ -709,7 +709,8 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
         // A part that leaves the quality to the machine (no size ranges of its
         // own, Normal quality) takes the quality of the machine section's
         // size band (MTL10, TT8); else the part's (rule AL1).
-        let band = (cq.is_none() && tech.quality == CutQuality::Normal).then(|| mt.band_quality(r_eq)).flatten();
+        let own_ranges = tech.cut_ranges.iter().any(|c| c.on);
+        let band = (!own_ranges && tech.quality == CutQuality::Normal).then(|| mt.band_quality(r_eq)).flatten();
         let qn = band.unwrap_or_else(|| crate::leads::quality_number(cq.unwrap_or(tech.quality)));
         // The contour's cutting speed (CTM8).
         let feed = timing.feed(qn, cq.unwrap_or(tech.quality));
@@ -1849,6 +1850,15 @@ mod kerf_plan_tests {
         let prog = program_mm(1, &parts, &placed, &spec, &bare, &[], false);
         let feeds: Vec<&str> = prog.lines().filter_map(|l| l.split_whitespace().find(|w| w.starts_with('F') && w[1..].parse::<f64>().is_ok())).collect();
         assert_eq!(feeds, vec!["F5000", "F9500"], "{prog}");
+        // A part with size ranges of its own keeps its quality where none of
+        // its ranges fits: the machine's bands don't apply to it (MTL10).
+        let (mut parts, placed, spec) = plate_job(1, 3.0);
+        let mut ranges: [crate::nest::CutRange; 3] = Default::default();
+        ranges[0] = crate::nest::CutRange { on: true, min_r: 0.0, max_r: 5.0, quality: CutQuality::Fine };
+        parts[0].tech = Some(PartTech { cut_ranges: ranges, ..PartTech::default() });
+        let own = plan(&parts, &placed, &spec);
+        let q: Vec<usize> = own.contours.iter().map(|c| c.quality).collect();
+        assert_eq!(q, vec![crate::leads::quality_number(CutQuality::Fine), crate::leads::quality_number(PartTech::default().quality)]);
         // No table record for 5 mm: the machine's default speed for every contour.
         let p5 = plate_with_hole(1, 5.0);
         assert!(p5.contours.iter().all(|c| c.feed == 3000.0));
