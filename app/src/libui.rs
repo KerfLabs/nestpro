@@ -214,7 +214,7 @@ impl App {
     /// Ribbon group (Jobs screen): Library.
     pub fn ribbon_library(&mut self, ui: &mut egui::Ui) {
         ribbon_group(ui, "Library", |ui| {
-            if ribbon_button(ui, Icon::Numbers, "Library", self.libui.open, true).on_hover_text("This app's own product and job database — a folder you can share").clicked() {
+            if ribbon_button(ui, Icon::Library, "Library", self.libui.open, true).on_hover_text("This app's own product and job database — a folder you can share").clicked() {
                 self.libui.open = !self.libui.open;
                 if self.libui.open {
                     self.lib_refresh();
@@ -224,7 +224,7 @@ impl App {
                 Some(id) => format!("Save the open job over library job {id}"),
                 None => "Save the open job into the library".into(),
             };
-            if ribbon_button(ui, Icon::Export, "Save to\nlibrary", false, true).on_hover_text(tip).clicked() {
+            if ribbon_button(ui, Icon::LibrarySave, "Save to\nlibrary", false, true).on_hover_text(tip).clicked() {
                 self.save_job_to_library();
             }
         });
@@ -242,13 +242,16 @@ impl App {
         let mut add_part: Option<u64> = None;
         let mut delete: Option<(Kind, u64)> = None;
         let mut save_job = false;
+        let mut open_file = false;
         let mut save_parts = false;
         let mut rescan = false;
         let mut settings = false;
         let dir = self.library_dir();
-        egui::Window::new(RichText::new("Library").size(16.0).strong()).id(egui::Id::unique("library_window")).open(&mut open).default_size([900.0, 600.0]).collapsible(false).show(ctx, |ui| {
+        egui::Window::new(RichText::new("Library").size(16.0).strong()).id(egui::Id::unique("library_window")).pivot(egui::Align2::CENTER_TOP).default_pos(dialog_pos(ctx)).open(&mut open).default_size([760.0, 460.0]).collapsible(false).show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new(dir.display().to_string()).monospace().size(11.5).color(th().text_dim));
+                // The folder's own name (the full path on hover): where saved jobs go.
+                let short = dir.file_name().map_or_else(|| dir.display().to_string(), |n| n.to_string_lossy().to_string());
+                ui.label(RichText::new(format!("Library folder: {short}")).size(11.5).color(th().text_dim)).on_hover_text(dir.display().to_string());
                 if ui.small_button("Folder…").on_hover_text("Settings → Folders: put the library on a shared drive for the whole shop").clicked() {
                     settings = true;
                 }
@@ -268,12 +271,16 @@ impl App {
                 ui.add_space(12.0);
                 ui.add(egui::TextEdit::singleline(&mut self.libui.search).hint_text("🔍 Search name or folder").desired_width(240.0));
                 ui.add_space(12.0);
-                if self.libui.tab == 0 {
-                    if ui.button("Save open job").clicked() {
-                        save_job = true;
+                // An empty list offers this itself, in the middle of the window.
+                let empty = !self.libui.entries.iter().any(|e| e.kind == if self.libui.tab == 0 { Kind::Job } else { Kind::Product });
+                if !empty {
+                    if self.libui.tab == 0 {
+                        if ui.button("Save open job").clicked() {
+                            save_job = true;
+                        }
+                    } else if ui.button("Add open job's products").clicked() {
+                        save_parts = true;
                     }
-                } else if ui.button("Add open job's products").clicked() {
-                    save_parts = true;
                 }
             });
             ui.separator();
@@ -282,7 +289,32 @@ impl App {
             let mut rows: Vec<&Entry> = self.libui.entries.iter().filter(|e| e.kind == kind && (needle.is_empty() || e.name.to_lowercase().contains(&needle) || e.folder.to_lowercase().contains(&needle))).collect();
             rows.sort_by(|a, b| b.updated.cmp(&a.updated));
             if rows.is_empty() {
-                ui.label(RichText::new(if self.libui.entries.is_empty() { "The library is empty — save a job or add products to start it." } else { "Nothing matches." }).color(th().text_dim));
+                // Empty: say what the library is for and offer the next step.
+                ui.vertical_centered(|ui| {
+                    ui.add_space(40.0);
+                    let (msg, btn) = match (self.libui.entries.iter().any(|e| e.kind == kind), self.libui.tab) {
+                        (true, _) => ("Nothing matches the search.", None),
+                        (false, 0) => ("No jobs in the Library yet — it holds jobs saved with \"Save to library\", for every PC that shares this folder. Jobs saved with Save job are files: find them under Open job ▾ (recent jobs) or browse for one.", Some("Save open job to the Library")),
+                        _ => ("No products yet. Products can be added to any job from here.", Some("Add open job's products")),
+                    };
+                    ui.set_max_width(560.0);
+                    ui.label(RichText::new(msg).color(th().text));
+                    if let Some(b) = btn {
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            if ui.add(egui::Button::new(RichText::new(b).color(egui::Color32::WHITE)).fill(th().accent).min_size(egui::Vec2::new(0.0, 30.0))).clicked() {
+                                if self.libui.tab == 0 {
+                                    save_job = true;
+                                } else {
+                                    save_parts = true;
+                                }
+                            }
+                            if self.libui.tab == 0 && ui.add(egui::Button::new("Open a job file…").min_size(egui::Vec2::new(0.0, 30.0))).clicked() {
+                                open_file = true;
+                            }
+                        });
+                    }
+                });
             }
             let mats = crate::cnc::MATERIALS;
             egui::ScrollArea::vertical().id_salt("lib_rows").auto_shrink([false, false]).show_rows(ui, 30.0, rows.len(), |ui, range| {
@@ -330,6 +362,9 @@ impl App {
         if save_job {
             self.save_job_to_library();
         }
+        if open_file {
+            self.open_job_dialog();
+        }
         if save_parts {
             self.add_products_to_library();
         }
@@ -359,6 +394,28 @@ impl App {
         let needle = self.job_search.to_lowercase();
         let mut open: Option<u64> = None;
         ui.add_space(6.0);
+        // Job files opened or saved lately, next to the library's jobs, so a
+        // job saved with Save job is found here too.
+        let recent: Vec<String> = self.cfg.recent_jobs.clone();
+        let mut open_file: Option<std::path::PathBuf> = None;
+        if recent.is_empty() {
+            ui.label(RichText::new("📂 Job files — none yet").color(th().text_dim)).on_hover_text("Jobs you save with Save job, or open from a file, are listed here");
+        } else {
+            egui::CollapsingHeader::new(RichText::new(format!("📂 Recent job files ({})", recent.len())).strong()).id_salt("recent_files_root").default_open(true).show(ui, |ui| {
+                for r in &recent {
+                    let p = std::path::PathBuf::from(r);
+                    let name = p.file_stem().map_or(r.clone(), |n| n.to_string_lossy().to_string());
+                    let ok = p.exists();
+                    if ui.add_enabled(ok, egui::Button::new(name).frame(false)).on_hover_text(if ok { r.clone() } else { format!("{r}\n(moved or deleted)") }).clicked() {
+                        open_file = Some(p);
+                    }
+                }
+            });
+        }
+        if let Some(p) = open_file {
+            self.open_job_file(&p);
+        }
+        ui.add_space(4.0);
         if jobs.is_empty() {
             // One quiet line until the library has jobs.
             ui.label(RichText::new("📚 Saved jobs (Library) — none yet").color(th().text_dim))

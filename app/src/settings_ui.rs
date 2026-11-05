@@ -58,7 +58,7 @@ impl Section {
             Section::Materials => "Names and codes in programs",
             Section::Folders => "Imports and exports",
             Section::Integrations => "Fulcrum and other systems",
-            Section::About => "This rebuild",
+            Section::About => "Version and files",
         }
     }
     fn icon(self) -> &'static str {
@@ -102,7 +102,7 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Middle button / Space + drag", "Pan"),
     ("Mouse wheel", "Zoom"),
     ("Right-click (or S) on a part", "Quick ring: turn, turn back, copy on the pointer, mirror, delete, undo, fit (flick toward a tool, or click it)"),
-    ("Right-click (or S) on empty sheet", "Quick ring: select all, next / previous sheet, collisions on/off, compact, undo, redo, fit"),
+    ("Right-click (or S) on empty sheet", "Quick ring: re-nest sheet, cut off leftover, sheet stock, next / previous sheet, undo, redo, fit"),
     ("Right-click (or S) in the Part view", "Quick ring: lead-ins, micro-joints, texts, loops, fit"),
 ];
 
@@ -134,7 +134,7 @@ pub(crate) fn card<R>(ui: &mut egui::Ui, title: &str, sub: &str, body: impl FnOn
             ui.set_width(ui.available_width());
             ui.label(RichText::new(title).size(14.5).strong().color(t.text_strong));
             if !sub.is_empty() {
-                ui.label(RichText::new(sub).size(11.5).color(t.text_dim));
+                ui.label(RichText::new(sub).size(12.5).color(t.text_dim));
             }
             ui.add_space(8.0);
             body(ui)
@@ -167,7 +167,7 @@ fn file_row(ui: &mut egui::Ui, label: &str, path: &mut String, filter: (&str, &[
                 changed = true;
             }
         }
-        if !path.is_empty() && ui.small_button("✕").on_hover_text("Use the built-in values").clicked() {
+        if !path.is_empty() && ui.small_button("✖").on_hover_text("Use the built-in values").clicked() {
             path.clear();
             changed = true;
         }
@@ -269,9 +269,12 @@ impl App {
         let post_before = self.post.clone();
         egui::Window::new(RichText::new("Settings").size(16.0).strong())
             .id(egui::Id::unique("settings_window"))
+            .pivot(egui::Align2::CENTER_TOP)
+            .default_pos(crate::ui_parts::dialog_pos(ctx))
             .open(&mut open)
-            .default_size([1040.0, 680.0])
-            .min_size([820.0, 480.0])
+            // Fits between the ribbon and the status bar on a 1440 × 900 screen.
+            .default_size([1040.0, (ctx.content_rect().height() - 176.0 - 96.0).clamp(400.0, 680.0)])
+            .min_size([820.0, 400.0])
             .max_width(1200.0)
             .collapsible(false)
             .resizable(true)
@@ -282,7 +285,7 @@ impl App {
                         ui.set_width(200.0);
                         for (g, items) in Section::GROUPS {
                         ui.add_space(6.0);
-                        ui.label(RichText::new(g).size(10.5).strong().color(th().text_dim));
+                        ui.label(RichText::new(g).size(11.0).strong().color(th().text_dim));
                         ui.add_space(2.0);
                         for &s in items {
                             let sel = self.setui.section == s;
@@ -304,11 +307,10 @@ impl App {
                         }
                         }
                         ui.add_space(12.0);
-                        ui.label(RichText::new("Saved automatically to").size(10.5).color(th().text_dim));
-                        ui.label(RichText::new(AppSettings::file().display().to_string()).size(10.0).color(th().text_dim));
+                        ui.label(RichText::new("Changes are saved automatically").size(11.5).color(th().text_dim)).on_hover_text(AppSettings::file().display().to_string());
                     });
                     ui.separator();
-                    egui::ScrollArea::vertical().id_salt("settings_body").auto_shrink([false, false]).show(ui, |ui| ui.vertical(|ui| {
+                    let out = egui::ScrollArea::vertical().id_salt("settings_body").auto_shrink([false, false]).show(ui, |ui| ui.vertical(|ui| {
                         ui.set_max_width(ui.available_width() - 8.0);
                         match self.setui.section {
                             Section::General => self.settings_general(ui),
@@ -327,6 +329,7 @@ impl App {
                             ui.label(RichText::new(&self.setui.note).size(11.5).color(th().accent_fg));
                         }
                     }));
+                    crate::ui_parts::fade_if_more(ui, &out);
                 });
             });
         if !open {
@@ -377,7 +380,7 @@ impl App {
                             crate::filename::Field::Thickness => "3",
                             crate::filename::Field::Ignore => "JOB88",
                         }, sep)).collect();
-                        ui.label(RichText::new(format!("✓ e.g. {}.dxf", sample.concat())).size(11.5).color(th().text_dim));
+                        ui.label(RichText::new(format!("✔ e.g. {}.dxf", sample.concat())).size(11.5).color(th().text_dim));
                     }
                     Err(e) => {
                         ui.label(RichText::new(format!("⚠ {e}")).size(11.5).color(th().warn_fg));
@@ -400,9 +403,9 @@ impl App {
             });
         });
         ui.add_space(10.0);
-        card(ui, "Commands", "The original has commands this rebuild doesn't have yet.", |ui| {
+        card(ui, "Commands", "Some commands aren't available yet.", |ui| {
             ui.checkbox(&mut self.dv.show_unbuilt, "Show them greyed out in the ribbons");
-            if ui.button("What's still missing in the Drawing module…").clicked() {
+            if ui.button("Drawing commands coming soon…").clicked() {
                 self.dv.show_missing = true;
             }
         });
@@ -552,7 +555,7 @@ impl App {
         ui.add_space(10.0);
         card(ui, "Compared with the original", "", |ui| {
             ui.horizontal(|ui| {
-                if ui.button("What's still missing in the Drawing module…").clicked() {
+                if ui.button("Drawing commands coming soon…").clicked() {
                     self.dv.show_missing = true;
                 }
                 if ui.button("Lantek v44 new features — what they'd take…").clicked() {
@@ -667,7 +670,7 @@ impl App {
                 }
             });
             if !self.setui.test.is_empty() {
-                let col = if self.setui.test.starts_with('✓') { th().ok_fg } else { th().warn_fg };
+                let col = if self.setui.test.starts_with('✔') { th().ok_fg } else { th().warn_fg };
                 ui.label(RichText::new(&self.setui.test).color(col));
             }
         });
@@ -910,7 +913,7 @@ impl App {
                         self.cfg.export_dir = d.display().to_string();
                     }
                 }
-                if !self.cfg.export_dir.is_empty() && ui.small_button("✕").clicked() {
+                if !self.cfg.export_dir.is_empty() && ui.small_button("✖").clicked() {
                     self.cfg.export_dir.clear();
                 }
             });
@@ -935,7 +938,7 @@ impl App {
                         self.library_folder_changed();
                     }
                 }
-                if !self.cfg.library_dir.is_empty() && ui.small_button("✕").clicked() {
+                if !self.cfg.library_dir.is_empty() && ui.small_button("✖").clicked() {
                     self.cfg.library_dir.clear();
                     self.library_folder_changed();
                 }

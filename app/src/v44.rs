@@ -61,7 +61,7 @@ pub const SAFE_DIST_TOL: f64 = 0.01;
 
 /// Verify Machining result codes, as the original numbers them; the panel
 /// turns each code into its message (rule VM3; anything unknown reads as
-/// "all executed"). A sheet is correct when its only code is 0 (rule VM4).
+/// "no problems found"). A sheet is correct when its only code is 0 (rule VM4).
 pub const VERIFY_OK: u8 = 0;
 pub const ERR_OVERLAPS: u8 = 3;
 pub const ERR_OUT_OF_ZONE: u8 = 4;
@@ -97,7 +97,9 @@ pub fn verify_message(code: u8) -> &'static str {
         19 => "Collision avoidance has not been executed because there is machining of type:",
         20 => "Not enough separation between parts",
         OWN_CHECK => "Pierce check (this rebuild)",
-        _ => "All machining on the sheet has been executed",
+        // VM3: the no-problem result, in words that can't be read as "the
+        // sheet has been cut".
+        _ => "No problems found — all machining is in place",
     }
 }
 
@@ -255,8 +257,8 @@ impl App {
     /// Ribbon group in the nesting Machining tab.
     pub fn ribbon_verify(&mut self, ui: &mut egui::Ui) {
         let has = !self.result.sheets.is_empty();
-        ribbon_group(ui, "Verify", |ui| {
-            let r = crate::drawing::dropdown(ui, Icon::Collision, "Verify\nMachining", has).on_hover_text("Check the machining of this sheet or of every sheet: pierces in the scrap, holes first, safe distance between parts");
+        ribbon_group(ui, "Check", |ui| {
+            let r = crate::drawing::dropdown(ui, Icon::Verify, "Verify\nmachining", has).on_hover_text("Check the machining of this sheet or of every sheet: pierces in the scrap, holes first, safe distance between parts");
             egui::Popup::menu(&r).show(|ui| {
                 if ui.button("Verify machining in current sheet").clicked() {
                     self.nverify.all_sheets = false;
@@ -281,7 +283,9 @@ impl App {
         egui::Window::new("Verify Machining").open(&mut open).anchor(egui::Align2::RIGHT_TOP, [-16.0, 140.0]).default_width(330.0).collapsible(false).show(ctx, |ui| {
             let v = &self.nverify;
             let bad = v.sheets.iter().filter(|s| !s.1.is_empty()).count();
-            if v.sheets.len() > 1 {
+            // VM4/VM5: totals whenever all sheets were checked (even if there is
+            // only one), "Current sheet" when only the shown sheet was.
+            if v.sheets.len() > 1 || v.all_sheets {
                 // The original's totals (rule VM4).
                 ui.horizontal(|ui| {
                     chip(ui, &format!("Correct sheets: {}", v.sheets.len() - bad), th().ok_bg, th().ok_fg);
@@ -312,6 +316,8 @@ impl App {
                     }
                 }
             });
+            // VM3: say what was checked, so "no problems" isn't read as more.
+            ui.label(RichText::new("Checked: parts touching, overlapping or closer than the minimum distance; parts reaching outside the sheet; cut contours without lead-ins.").size(11.0).color(th().text_dim));
             ui.separator();
             let v = &mut self.nverify;
             ui.label(RichText::new("Sheet").strong());
@@ -431,7 +437,7 @@ mod v44_tests {
         assert_eq!(verify_message(bad[0].code), "Not enough separation between parts");
         // Touching parts are an overlap (code 3).
         assert_eq!(safe_distance_issues(&parts, &[pl(0.0), pl(100.0)], 5.0)[0].code, ERR_OVERLAPS);
-        assert_eq!(verify_message(VERIFY_OK), "All machining on the sheet has been executed");
+        assert_eq!(verify_message(VERIFY_OK), "No problems found — all machining is in place");
         // A part hanging off a 150 mm sheet is out of the work zone (code 4).
         assert_eq!(out_of_zone_issues(&parts, &[pl(0.0), pl(103.0)], 150.0, 100.0).len(), 1);
         let (a, b) = bad[0].at.unwrap();

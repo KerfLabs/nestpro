@@ -35,14 +35,6 @@ fn part_thumb(p: &egui::Painter, part: &Part, r: Rect) {
 impl App {
     pub fn ribbon_jobs(&mut self, ui: &mut egui::Ui) {
         let has_sheets = !self.result.sheets.is_empty();
-        ribbon_group(ui, "Modules", |ui| {
-            if ribbon_button_ex(ui, Icon::NestAll, "Nesting and\nmachining", false, true, true)
-                .on_hover_text("Open the open job's sheets on the nesting screen")
-                .clicked()
-            {
-                self.workspace = Workspace::Nesting;
-            }
-        });
         ribbon_group(ui, "Jobs", |ui| {
             if ribbon_button(ui, Icon::New, "New\njob", false, true).clicked() {
                 let week = self.jobs.get(self.cur_job).map_or("W01".to_string(), |j| j.week.clone());
@@ -55,21 +47,20 @@ impl App {
                 self.copy_job();
             }
             let saved = self.job_path.as_ref().map_or("not saved yet".to_string(), |p| p.display().to_string());
-            if ribbon_button(ui, Icon::Export, "Save\njob", false, true).on_hover_text(format!("Save the job — products, sheets and cut lines (Ctrl + S; Ctrl + Shift + S to choose where)\n{saved}")).clicked() {
+            if ribbon_button(ui, Icon::Save, "Save\njob", false, true).on_hover_text(format!("Save the job — products, sheets and cut lines (Ctrl + S; Ctrl + Shift + S to choose where)\n{saved}")).clicked() {
                 self.save_job(false);
             }
-            if ribbon_button(ui, Icon::Import, "Open\njob", false, true).on_hover_text("Open a saved job (.snjob) (Ctrl + O)").clicked() {
-                self.open_job_dialog();
-            }
+            let r = crate::drawing::dropdown(ui, Icon::Folder, "Open\njob", true).on_hover_text("Recent jobs, the Library, or any job file (Ctrl + O)");
+            egui::Popup::menu(&r).show(|ui| self.open_job_menu(ui));
         });
         ribbon_group(ui, "Sheets", |ui| {
-            if ribbon_button(ui, Icon::Grid, "Sheet\nstock", self.stockui.open, true).on_hover_text("Sheets and remnants in stock: quantities, priorities, locking, new sheets").clicked() {
+            if ribbon_button(ui, Icon::Stock, "Sheet\nstock", self.stockui.open, true).on_hover_text("Sheets and remnants in stock: quantities, priorities, locking, new sheets").clicked() {
                 self.stockui.open = !self.stockui.open;
                 self.stockui.loaded = false;
             }
         });
         ribbon_group(ui, "Status line", |ui| {
-            if ribbon_button(ui, Icon::Numbers, "Show labor\nticket", self.show_labor_ticket, true)
+            if ribbon_button(ui, Icon::Tag, "Show labor\nticket", self.show_labor_ticket, true)
                 .on_hover_text("Add the labor ticket to the product line in the status bar")
                 .clicked()
             {
@@ -77,7 +68,7 @@ impl App {
             }
         });
         ribbon_group(ui, "Import", |ui| {
-            if ribbon_button(ui, Icon::Import, "Drawings", false, true)
+            if ribbon_button(ui, Icon::Import, "Import\ndrawings", false, true)
                 .on_hover_text("Add part drawings: DXF, DWG, Lantek MEC, IGES, PDF, ESSI, DSTV or GEO files (or drop them on the window)")
                 .clicked()
             {
@@ -87,7 +78,7 @@ impl App {
         ribbon_group(ui, "Products", |ui| {
             let r = ribbon_button(ui, Icon::AddPart, "Add\nproduct", false, true);
             add_part_menu(self, &r);
-            if ribbon_button(ui, Icon::Import, "Parts from\nlibrary", self.libui.open && self.libui.tab == 1, true)
+            if ribbon_button(ui, Icon::LibraryAdd, "Parts from\nlibrary", self.libui.open && self.libui.tab == 1, true)
                 .on_hover_text("Preprogrammed parts kept in the library, with their technology")
                 .clicked()
             {
@@ -101,12 +92,12 @@ impl App {
             }
         });
         ribbon_group(ui, "Nest", |ui| {
-            if ribbon_button(ui, Icon::NestAll, "Nest\nall", false, !self.parts.is_empty()).on_hover_text("F5").clicked() {
+            if ribbon_button_ex(ui, Icon::NestAll, "Nest\nall", false, !self.parts.is_empty(), true).on_hover_text("F5").clicked() {
                 self.run_nesting();
             }
         });
         ribbon_group(ui, "Nesting", |ui| {
-            if ribbon_button(ui, Icon::Import, "Open\nprogram", false, true)
+            if ribbon_button(ui, Icon::Program, "Open CNC\nprogram", false, true)
                 .on_hover_text("Open a nesting from its machine programs (LC5 .zip / .XML / .SPF — Lantek's or this app's) to edit it")
                 .clicked()
             {
@@ -118,12 +109,12 @@ impl App {
         self.ribbon_library(ui);
         self.ribbon_erp(ui);
         self.ribbon_database(ui);
-        ribbon_group(ui, "Review", |ui| {
+        ribbon_group(ui, "Output", |ui| {
+            if ribbon_button(ui, Icon::Export, "Export\nCNC", false, has_sheets).on_hover_text(crate::export_tip(self)).clicked() {
+                self.export_checked();
+            }
             if ribbon_button(ui, Icon::Times, "Times and\ncosts", self.show_times, true).clicked() {
                 self.show_times = !self.show_times;
-            }
-            if ribbon_button(ui, Icon::Export, "Export\ndata", false, has_sheets).clicked() {
-                self.export();
             }
         });
     }
@@ -143,9 +134,11 @@ impl App {
                     }
                 });
             });
+        // The product list is the main work; the sheet thumbnails get what
+        // one row of cards needs (drag the edge for more).
         egui::Panel::bottom("sheet_area")
             .resizable(true)
-            .default_size(300.0)
+            .default_size(240.0)
             .min_size(180.0)
             .frame(egui::Frame::new().fill(th().panel))
             .show(ui, |ui| self.sheet_area(ui));
@@ -186,7 +179,7 @@ impl App {
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing.y = 2.0;
             // The jobs open right now (examples, new, opened from files or the library).
-            let root = egui::CollapsingHeader::new(RichText::new(format!("📂 Open jobs ({}) — this window", self.jobs.len())).strong()).id_salt("jobs_root").default_open(true).show(ui, |ui| {
+            let root = egui::CollapsingHeader::new(RichText::new(format!("Open jobs ({}) — this window", self.jobs.len())).strong()).id_salt("jobs_root").default_open(true).show(ui, |ui| {
                 for week in &weeks {
                     // Folder name being typed (New folder / Change name).
                     if let Some(crate::jobtree::TreeEdit::Folder { old, text }) = &edit {
@@ -205,7 +198,7 @@ impl App {
                             continue;
                         }
                     }
-                    let resp = egui::CollapsingHeader::new(format!("📁 {week}")).id_salt(("week", week)).default_open(true).show(ui, |ui| {
+                    let resp = egui::CollapsingHeader::new(week.to_string()).id_salt(("week", week)).default_open(true).show(ui, |ui| {
                         for (i, j) in self.jobs.iter().enumerate() {
                             if &j.week != week || (!needle.is_empty() && !j.name.to_lowercase().contains(&needle) && !week.to_lowercase().contains(&needle)) {
                                 continue;
@@ -384,7 +377,7 @@ impl App {
         }
         ui.add_space(6.0);
         let loading = self.dbb.pending.is_some();
-        let failed = self.dbb.status.starts_with('✗');
+        let failed = self.dbb.status.starts_with('✖');
         let mut connect = false;
         let mut settings = false;
         let mut show: Option<String> = None;
@@ -400,7 +393,7 @@ impl App {
                         connect = true;
                     }
                     if failed {
-                        ui.label(RichText::new("⚠").color(th().warn_fg)).on_hover_text(format!("{}\n{}", self.dbb.status.trim_start_matches("✗ "), dbquery_advice(&self.dbb.status)));
+                        ui.label(RichText::new("⚠").color(th().warn_fg)).on_hover_text(format!("{}\n{}", self.dbb.status.trim_start_matches("✖ "), dbquery_advice(&self.dbb.status)));
                     }
                 }
             });
@@ -433,7 +426,7 @@ impl App {
                         }
                     });
                     if failed && !loading {
-                        ui.label(RichText::new(self.dbb.status.trim_start_matches("✗ ")).size(10.5).color(th().warn_fg)).on_hover_text(dbquery_advice(&self.dbb.status));
+                        ui.label(RichText::new(self.dbb.status.trim_start_matches("✖ ")).size(10.5).color(th().warn_fg)).on_hover_text(dbquery_advice(&self.dbb.status));
                     }
                     return;
                 }
@@ -512,10 +505,20 @@ impl App {
         let util = if sheets > 0 { parts_area / self.total_sheet_area().max(1.0) * 100.0 } else { 0.0 };
         let secs: f64 = self.plans.iter().map(|p| p.seconds).sum();
         egui::Frame::new().inner_margin(egui::Margin::symmetric(10, 2)).show(ui, |ui| {
+            // Values that don't fit wrap onto a second line rather than being
+            // cut off: a job or part number cut short could pass for another one.
+            let label_w = ["Job", "Material", "Sheet", "Products", "Sheets", "Usage", "Cut time", "Nestings changed"]
+                .iter()
+                .map(|k| ui.painter().layout_no_wrap(k.to_string(), egui::TextStyle::Body.resolve(ui.style()), th().text_dim).size().x)
+                .fold(0.0, f32::max);
+            let value_w = (ui.available_width() - label_w - 12.0).max(60.0);
             egui::Grid::new("job_sum").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
                 let row = |ui: &mut egui::Ui, k: &str, v: String| {
                     ui.label(RichText::new(k).color(th().text_dim));
-                    ui.label(RichText::new(v).strong());
+                    ui.scope(|ui| {
+                        ui.set_max_width(value_w);
+                        ui.add(egui::Label::new(RichText::new(&v).strong()).wrap());
+                    });
                     ui.end_row();
                 };
                 row(ui, "Job", self.job_name.clone());
@@ -574,11 +577,17 @@ impl App {
                         ui.label(format!("{}", 101 + i));
                         ui.label("0");
                         let pend = p.qty.saturating_sub(nested[i]);
-                        let (bg, fg) = if pend == 0 { (th().ok_bg, th().ok_fg) } else { (th().warn_bg, th().warn_fg) };
-                        chip(ui, &format!("{pend}"), bg, fg);
+                        // Only parts still waiting stand out; 0 left is plain text.
+                        if pend == 0 {
+                            ui.label(RichText::new("0").color(th().text_dim));
+                        } else {
+                            chip(ui, &format!("{pend}"), th().warn_bg, th().warn_fg);
+                        }
                         ui.label(format!("{}", nested[i]));
                         match p.tech {
-                            Some(t) => chip(ui, &format!("Own · {} joints", t.micro_joints), th().accent_soft, th().accent_fg),
+                            Some(t) => {
+                                chip(ui, &format!("Own · {} joints", t.micro_joints), th().accent_soft, th().accent_fg);
+                            }
                             None => {
                                 ui.label(RichText::new("Automatic").color(th().text_dim));
                             }

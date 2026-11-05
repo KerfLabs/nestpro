@@ -127,6 +127,8 @@ impl App {
             return;
         }
         self.store_job();
+        // An opened part's technology commands work on that part.
+        self.tech_all = false;
         self.open_set = self.open_set_for(idx, self.open_scope);
         self.open_idx = self.open_set.iter().position(|&i| i == idx).unwrap_or(0);
         self.sel_part = Some(idx);
@@ -245,6 +247,31 @@ impl App {
         let plan = cnc::plan(&self.parts, &[placed], &self.spec);
 
         let (rect, resp) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
+        // The last check of this part stays in view (top right) until closed.
+        if let Some((pi, title, ok, lines)) = self.dv.check.clone().filter(|c| c.0 == idx) {
+            let _ = pi;
+            let mut close = false;
+            egui::Area::new(egui::Id::unique("part_check")).order(egui::Order::Foreground).fixed_pos(rect.right_top() + Vec2::new(-352.0, 12.0)).show(ui.ctx(), |ui| {
+                egui::Frame::new().fill(th().card).stroke(Stroke::new(1.0, th().border)).corner_radius(CornerRadius::same(10)).inner_margin(egui::Margin::same(12)).show(ui, |ui| {
+                    ui.set_width(316.0);
+                    ui.horizontal(|ui| {
+                        let (mark, col) = if ok { ("✔", th().ok_fg) } else { ("⚠", th().warn_fg) };
+                        ui.label(RichText::new(format!("{mark} {title}")).strong().color(col));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("✖").on_hover_text("Close").clicked() {
+                                close = true;
+                            }
+                        });
+                    });
+                    for l in &lines {
+                        ui.label(RichText::new(l).size(12.5));
+                    }
+                });
+            });
+            if close {
+                self.dv.check = None;
+            }
+        }
         let painter = ui.painter_at(rect);
         // The Drawing module's black background, or our gradient.
         let lantek = self.dv.lantek_colors;
@@ -772,37 +799,45 @@ impl App {
         }
     }
 
-    /// Zoom bar in the Part view's bottom-right corner: −, zoom %, +, Fit — and
-    /// a hint that the drawing can be moved.
+    /// Zoom pill in the Part view's right-hand margin, the same as on the
+    /// sheet: +, zoom %, −, Fit, then the previous view — and a hint that the
+    /// drawing can be moved.
     fn part_zoom_bar(&mut self, ui: &mut egui::Ui, rect: Rect) {
-        let items: [(&str, f32); 5] = [("‹", 30.0), ("−", 30.0), ("", 52.0), ("+", 30.0), ("Fit", 38.0)];
-        let total: f32 = items.iter().map(|i| i.1).sum::<f32>() + 8.0;
-        let bar = Rect::from_min_size(rect.right_bottom() + Vec2::new(-total - 14.0, -46.0), Vec2::new(total, 32.0));
+        let items: [(&str, f32); 5] = [("+", 32.0), ("", 22.0), ("−", 32.0), ("Fit", 32.0), ("↶", 30.0)];
+        let total: f32 = items.iter().map(|i| i.1).sum::<f32>() + 12.0;
+        let bw = 48.0;
+        let bar = Rect::from_min_size(Pos2::new(rect.right() - bw - 12.0, rect.center().y - total / 2.0), Vec2::new(bw, total));
         let p = ui.painter_at(rect);
-        p.rect_filled(bar.translate(Vec2::new(0.0, 2.0)), CornerRadius::same(16), Color32::from_black_alpha(60));
-        p.rect_filled(bar, CornerRadius::same(16), th().overlay);
-        let mut x = bar.left() + 4.0;
-        for (k, (label, wd)) in items.into_iter().enumerate() {
-            let r = Rect::from_min_size(Pos2::new(x, bar.top() + 3.0), Vec2::new(wd, 26.0));
-            x += wd;
+        p.rect_filled(bar.translate(Vec2::new(0.0, 3.0)), CornerRadius::same(14), Color32::from_black_alpha(60));
+        p.rect_filled(bar, CornerRadius::same(14), th().overlay);
+        p.rect_stroke(bar, CornerRadius::same(14), Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 40)), egui::StrokeKind::Inside);
+        let mut y = bar.top() + 6.0;
+        for (k, (label, h)) in items.into_iter().enumerate() {
+            let r = Rect::from_min_size(Pos2::new(bar.left() + 4.0, y), Vec2::new(bw - 8.0, h));
+            y += h;
             if label.is_empty() {
-                p.text(r.center(), Align2::CENTER_CENTER, format!("{:.0}%", self.part_zoom * 100.0), FontId::proportional(12.0), Color32::from_rgb(200, 205, 220));
+                p.text(r.center(), Align2::CENTER_CENTER, format!("{:.0}%", self.part_zoom * 100.0), FontId::proportional(11.5), Color32::WHITE);
                 continue;
             }
-            let resp = ui.interact(r, ui.scope_id().with(("part_zoom", k)), Sense::click());
-            if resp.hovered() {
-                p.rect_filled(r, CornerRadius::same(13), Color32::from_white_alpha(28));
+            if k == 4 {
+                p.line_segment([Pos2::new(bar.left() + 10.0, r.top() - 1.0), Pos2::new(bar.right() - 10.0, r.top() - 1.0)], Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 60)));
             }
-            p.text(r.center(), Align2::CENTER_CENTER, label, FontId::proportional(if label == "Fit" { 12.5 } else { 17.0 }), Color32::WHITE);
+            let resp = ui.interact(r, ui.scope_id().with(("part_zoom", k)), Sense::click());
+            let hov = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.1);
+            if hov > 0.0 {
+                p.rect_filled(r.shrink(1.0), CornerRadius::same(10), Color32::from_rgba_unmultiplied(255, 255, 255, (hov * 45.0) as u8));
+            }
+            let col = if resp.hovered() { Color32::from_rgb(199, 210, 254) } else { Color32::WHITE };
+            p.text(r.center(), Align2::CENTER_CENTER, label, FontId::proportional(if label == "Fit" { 11.5 } else { 18.0 }), col);
             let tip = match label {
-                "‹" => "Previous view",
+                "↶" => "Previous view",
                 "−" => "Zoom out",
                 "+" => "Zoom in",
                 _ => "Fit the part in the view",
             };
             if resp.on_hover_text(tip).clicked() {
                 match label {
-                    "‹" => self.previous_part_view(),
+                    "↶" => self.previous_part_view(),
                     "−" => {
                         self.push_part_view();
                         self.part_zoom = (self.part_zoom * (1.0 / ZOOM_STEP)).max(PART_ZOOM_MIN);
@@ -820,7 +855,7 @@ impl App {
             }
         }
         let g = p.layout_no_wrap("Scroll to zoom · middle-drag or Space + drag to move".into(), FontId::proportional(11.5), Color32::from_rgb(200, 205, 220));
-        let hint = Rect::from_min_size(Pos2::new(bar.left() - 10.0 - g.size().x - 20.0, bar.center().y - 12.0), g.size() + Vec2::new(20.0, 24.0 - g.size().y));
+        let hint = Rect::from_min_size(Pos2::new(rect.right() - 14.0 - g.size().x - 20.0, rect.bottom() - 46.0), g.size() + Vec2::new(20.0, 24.0 - g.size().y));
         p.rect_filled(hint, CornerRadius::same(12), th().overlay);
         p.galley(Pos2::new(hint.left() + 10.0, hint.center().y - g.size().y / 2.0), g, Color32::WHITE);
     }

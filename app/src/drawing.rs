@@ -77,6 +77,9 @@ pub struct DrawView {
     pub angle3: bool,
     /// The "What's still missing" window.
     pub show_missing: bool,
+    /// The last check of the shown part (Verify part / Verify machining):
+    /// part, title, passed, findings. Shown on the drawing until closed.
+    pub check: Option<(usize, String, bool, Vec<String>)>,
     /// Show the original's commands this rebuild doesn't have, greyed out. Off
     /// by default: the original leaves out commands that aren't available and
     /// drops groups and tabs left empty (rules RB4, RB5).
@@ -90,6 +93,8 @@ pub struct DrawView {
     pub sim: Option<usize>,
     pub sim_run: bool,
     pub sim_last: f64,
+    /// Seconds per contour while the simulation runs (the Speed group).
+    pub sim_step: f64,
     pub cursor: Option<P>,
 }
 
@@ -108,6 +113,7 @@ impl Default for DrawView {
             measure_on: false,
             angle3: false,
             show_missing: false,
+            check: None,
             show_unbuilt: false,
             std_shapes: false,
             measure: vec![],
@@ -116,6 +122,7 @@ impl Default for DrawView {
             sim: None,
             sim_run: false,
             sim_last: 0.0,
+            sim_step: SIM_STEP_S,
             cursor: None,
         }
     }
@@ -162,7 +169,7 @@ pub const BUILT: &[(&str, &str)] = &[
 ];
 
 fn soon(name: &str) -> String {
-    format!("{name} — in the original's Drawing module; not in this rebuild yet.")
+    format!("{name} — not available yet.")
 }
 
 /// Is the Utilities tab shown? None of its commands are built, so — like the
@@ -176,25 +183,41 @@ pub fn utility_tab_shown(v: &DrawView) -> bool {
 pub struct Mini {
     pub label: &'static str,
     pub enabled: bool,
-    /// Some(on) for an on/off setting (shows a dot), None for a command.
+    /// Some(on) for an on/off setting (shows a check box), None for a command.
     pub state: Option<bool>,
+    /// One of several tools that exclude each other (shows a radio dot).
+    pub radio: bool,
+    /// A command's small picture (on/off settings show their box instead).
+    pub icon: Option<Icon>,
     pub tip: String,
 }
 
+impl Mini {
+    pub fn with_icon(mut self, icon: Icon) -> Self {
+        self.icon = Some(icon);
+        self
+    }
+}
+
 pub fn act(label: &'static str, enabled: bool, tip: &str) -> Mini {
-    Mini { label, enabled, state: None, tip: tip.to_string() }
+    Mini { label, enabled, state: None, radio: false, icon: None, tip: tip.to_string() }
 }
 
 pub fn toggle(label: &'static str, on: bool, tip: &str) -> Mini {
-    Mini { label, enabled: true, state: Some(on), tip: tip.to_string() }
+    Mini { label, enabled: true, state: Some(on), radio: false, icon: None, tip: tip.to_string() }
+}
+
+/// One of a set of tools of which only one is on at a time.
+pub fn choice(label: &'static str, on: bool, tip: &str) -> Mini {
+    Mini { label, enabled: true, state: Some(on), radio: true, icon: None, tip: tip.to_string() }
 }
 
 /// Height of a small ribbon command; three fill a ribbon group exactly.
 pub const MINI_H: f32 = 22.0;
 
 /// Small commands stacked three to a column, lined up with the big buttons:
-/// text left-aligned, a soft highlight on hover, on/off settings with a dot
-/// (filled when on). Returns the clicked index.
+/// text left-aligned, a soft highlight on hover, on/off settings with a check
+/// box (ticked when on). Returns the clicked index.
 pub fn minis(ui: &mut egui::Ui, items: &[Mini]) -> Option<usize> {
     let t = th();
     let mut hit = None;
@@ -222,20 +245,35 @@ pub fn minis(ui: &mut egui::Ui, items: &[Mini]) -> Option<usize> {
                     } else if hover > 0.0 {
                         p.rect_filled(r, CornerRadius::same(6), with_alpha(t.hover, (hover * 255.0) as u8));
                     }
-                    let col = if !m.enabled { with_alpha(t.text_dim, 120) } else if on { t.accent_fg } else { t.text };
+                    let col = if !m.enabled { with_alpha(t.text_dim, 160) } else if on { t.accent_fg } else { t.text };
                     let dot = Pos2::new(r.left() + 11.0, r.center().y);
+                    // On/off settings show a check box (radio dots are for one-of-several choices).
+                    let bx = Rect::from_center_size(dot, Vec2::splat(11.0));
                     match m.state {
+                        Some(on) if m.radio => {
+                            p.circle_stroke(dot, 5.0, Stroke::new(1.2, if on { t.accent_fg } else { t.text_dim }));
+                            if on {
+                                p.circle_filled(dot, 2.8, t.accent_fg);
+                            }
+                        }
                         Some(true) => {
-                            p.circle_filled(dot, 4.0, t.accent_fg);
+                            p.rect_filled(bx, CornerRadius::same(3), t.accent);
+                            let s = Stroke::new(1.6, Color32::WHITE);
+                            p.line_segment([dot + Vec2::new(-3.0, 0.2), dot + Vec2::new(-0.8, 2.6)], s);
+                            p.line_segment([dot + Vec2::new(-0.8, 2.6), dot + Vec2::new(3.2, -2.4)], s);
                         }
                         Some(false) => {
-                            p.circle_stroke(dot, 3.5, Stroke::new(1.2, with_alpha(t.text_dim, 200)));
+                            p.rect_stroke(bx, CornerRadius::same(3), Stroke::new(1.2, t.text_dim), egui::StrokeKind::Inside);
                         }
+                        // A command: its small picture, if it has one.
                         None => {
-                            // A small chevron marks a command.
-                            let s = Stroke::new(1.4, col);
-                            p.line_segment([dot + Vec2::new(-2.0, -3.5), dot + Vec2::new(1.5, 0.0)], s);
-                            p.line_segment([dot + Vec2::new(1.5, 0.0), dot + Vec2::new(-2.0, 3.5)], s);
+                            if let Some(ic) = m.icon {
+                                let ir = Rect::from_center_size(dot + Vec2::new(1.0, 0.0), Vec2::splat(20.0));
+                                let (ink, acc) = if m.enabled { (t.text, t.accent_fg) } else { (with_alpha(t.text_dim, 150), with_alpha(t.text_dim, 150)) };
+                                // Drawn a little smaller than a big button's picture.
+                                let p2 = p.clone().with_clip_rect(r.expand(2.0));
+                                crate::ui_parts::draw_icon_with(&p2, ir, ic, ink, acc, false);
+                            }
                         }
                     }
                     p.text(Pos2::new(r.left() + 22.0, r.center().y), egui::Align2::LEFT_CENTER, m.label, font.clone(), col);
@@ -253,7 +291,8 @@ pub fn minis(ui: &mut egui::Ui, items: &[Mini]) -> Option<usize> {
 /// A big ribbon button that opens a menu (small caret under its label).
 pub fn dropdown(ui: &mut egui::Ui, icon: Icon, label: &str, enabled: bool) -> egui::Response {
     let r = ribbon_button(ui, icon, label, false, enabled);
-    let c = Pos2::new(r.rect.center().x, r.rect.bottom() - 7.0);
+    // Under a one-line label; beside the last line of a two-line one.
+    let c = if label.contains('\n') { Pos2::new(r.rect.right() - 6.0, r.rect.bottom() - 13.0) } else { Pos2::new(r.rect.center().x, r.rect.bottom() - 7.0) };
     let col = if enabled { th().text_dim } else { with_alpha(th().text_dim, 110) };
     ui.painter().add(egui::Shape::convex_polygon(vec![c + Vec2::new(-3.5, -2.0), c + Vec2::new(3.5, -2.0), c + Vec2::new(0.0, 2.0)], col, Stroke::NONE));
     r
@@ -274,7 +313,7 @@ pub fn soon_menu(r: &egui::Response, title: &str, items: &[&str]) {
             });
         }
         ui.add_space(4.0);
-        ui.label(RichText::new("In the original's Drawing module — not in this rebuild yet.").size(11.0).color(th().text_dim));
+        ui.label(RichText::new("Not available yet.").size(11.0).color(th().text_dim));
     });
 }
 
@@ -455,7 +494,7 @@ impl App {
             }
         });
         ribbon_group(ui, "Draw", |ui| {
-            let r = dropdown(ui, Icon::Fit, "Points", true).on_hover_text(format!("Access to points — snap: {}", self.dv.snap.label()));
+            let r = dropdown(ui, Icon::Points, "Points", true).on_hover_text(format!("Access to points — snap: {}", self.dv.snap.label()));
             egui::Popup::menu(&r).show(|ui| {
                 ui.label(RichText::new("Access to points").strong().color(th().text_strong));
                 for m in Snap::ALL {
@@ -476,7 +515,7 @@ impl App {
             }
             let r = dropdown(ui, Icon::AddPart, "Shapes", true);
             soon_menu(&r, "Draw", &["2D points", "Line segments", "Lines", "Continuous line/arc", "Arc segments", "Full circles", "Squares", "Rectangles", "Modified rectangles", "Polygons", "Obround slots", "Radial slots", "Ovals", "Ellipses", "Pulleys"]);
-            ribbon_button(ui, Icon::Remove, "Delete\nGeometry", false, false).on_hover_text(soon("Delete Geometry"));
+            ribbon_button(ui, Icon::Remove, "Delete\ngeometry", false, false).on_hover_text(soon("Delete Geometry"));
         });
         if self.dv.show_unbuilt {
         ribbon_group(ui, "Edit geometry", |ui| {
@@ -488,21 +527,32 @@ impl App {
             soon_menu(&r, "One-touch Figures", &["One-touch figures 1–12"]);
         });
         }
-        ribbon_group(ui, "Review", |ui| {
-            if ribbon_button(ui, Icon::Collision, "Verify\nPart", false, true).on_hover_text("Check the part's contours and texts").clicked() {
+        // Kept apart by kind: a check (a command), what is shown (on/off), and
+        // the measuring tools (one at a time).
+        ribbon_group(ui, "Check", |ui| {
+            if ribbon_button(ui, Icon::CheckDrawing, "Check\ngeometry", false, true).on_hover_text("Check the drawing itself: its contours (closed, not crossing) and texts. To check the machining (lead-ins, pierces, cut order), use Machining → Verify machining.").clicked() {
                 self.verify_part_now();
             }
-            let dist = self.dv.measure_on && !self.dv.angle3;
-            let ang = self.dv.measure_on && self.dv.angle3;
+        });
+        ribbon_group(ui, "Show", |ui| {
             let items = [
                 toggle("Time and cost", self.dv.info, "Show the cut length, pierces and time"),
-                toggle("View Geometry", self.dv.vertices, "Show every element's points and direction"),
-                toggle("Distance and Angle", dist, "Click two points (snaps to the Points mode)"),
-                toggle("Angle, 3 points", ang, "Angle between three points: a point, the corner, another point"),
+                toggle("View geometry", self.dv.vertices, "Show every element's points and direction"),
             ];
             match minis(ui, &items) {
                 Some(0) => self.dv.info = !self.dv.info,
                 Some(1) => self.dv.vertices = !self.dv.vertices,
+                _ => {}
+            }
+        });
+        ribbon_group(ui, "Measure", |ui| {
+            let dist = self.dv.measure_on && !self.dv.angle3;
+            let ang = self.dv.measure_on && self.dv.angle3;
+            let items = [
+                choice("Distance and angle", dist, "Click two points (snaps to the Points mode)"),
+                choice("Angle, 3 points", ang, "Angle between three points: a point, the corner, another point"),
+            ];
+            match minis(ui, &items).map(|k| k + 2) {
                 Some(k @ (2 | 3)) => {
                     let three = k == 3;
                     self.dv.measure_on = !(self.dv.measure_on && self.dv.angle3 == three);
@@ -517,7 +567,7 @@ impl App {
                 }
                 _ => {}
             }
-            if ribbon_button(ui, Icon::Grid, "Ortho-\ngonal", self.dv.ortho, true).on_hover_text("Orthogonal: measured points go straight across or straight up").clicked() {
+            if ribbon_button(ui, Icon::Ortho, "Orthogonal", self.dv.ortho, true).on_hover_text("Orthogonal: measured points go straight across or straight up").clicked() {
                 self.dv.ortho = !self.dv.ortho;
             }
         });
@@ -526,16 +576,18 @@ impl App {
                 let r = dropdown(ui, Icon::Program, "Macros", true);
                 soon_menu(&r, "Macros", &["Macros", "Record a macro"]);
             });
+            // "Coming soon" sits with the other unavailable commands, not in
+            // the everyday ribbon (Settings → General shows them).
+            self.missing_group(ui);
         }
-        self.missing_group(ui);
     }
 
     /// Ribbon group with the "What's still missing" button.
     fn missing_group(&mut self, ui: &mut egui::Ui) {
-        ribbon_group(ui, "Rebuild", |ui| {
+        ribbon_group(ui, "Help", |ui| {
             let n: usize = MISSING.iter().map(|g| g.2.len()).sum();
-            if ribbon_button(ui, Icon::Numbers, "Still\nmissing", self.dv.show_missing, true)
-                .on_hover_text(format!("{n} commands of the original's Drawing module aren't built yet — see the list"))
+            if ribbon_button(ui, Icon::Missing, "Coming\nsoon", self.dv.show_missing, true)
+                .on_hover_text(format!("{n} drawing commands that aren't available yet — see the list"))
                 .clicked()
             {
                 self.dv.show_missing = !self.dv.show_missing;
@@ -551,7 +603,7 @@ impl App {
         }
         let mut open = true;
         let total: usize = MISSING.iter().map(|g| g.2.len()).sum();
-        egui::Window::new("What's still missing in the Drawing module")
+        egui::Window::new("Drawing commands coming soon")
             .open(&mut open)
             .default_size([560.0, 560.0])
             .collapsible(false)
@@ -604,6 +656,8 @@ impl App {
         let Some(i) = self.shown_part() else { return };
         let probs = verify_part(&self.parts[i]);
         let g = self.parts[i].geometry();
+        let summary = format!("{} contour(s), {} element(s), {} text(s)", g.holes.len() + 1, nest::elements_of(&g).len(), self.parts[i].texts.len());
+        self.dv.check = Some((i, "Verify part".into(), probs.is_empty(), if probs.is_empty() { vec![format!("No problems — {summary}.")] } else { probs.clone() }));
         self.status = if probs.is_empty() {
             format!("Verify Part: OK — {} contour(s), {} element(s), {} text(s).", g.holes.len() + 1, nest::elements_of(&g).len(), self.parts[i].texts.len())
         } else {
@@ -613,11 +667,11 @@ impl App {
 
     fn ribbon_draw_machining(&mut self, ui: &mut egui::Ui) {
         ribbon_group(ui, "Machining", |ui| {
-            if ribbon_button_ex(ui, Icon::CutPath, "Automatic", self.dv.machining, true, true).on_hover_text("Machine the part automatically: cut order, pierces, leads").clicked() {
+            if ribbon_button_ex(ui, Icon::Toolpath, "Machine\npart", self.dv.machining, true, true).on_hover_text("Machine the part automatically: cut order, pierces, leads").clicked() {
                 self.dv.machining = true;
                 self.status = "Part machined automatically (holes first, then the outside).".into();
             }
-            if ribbon_button(ui, Icon::Remove, "Delete\ninstructions", false, self.dv.machining).clicked() {
+            if ribbon_button(ui, Icon::Remove, "Clear\nmachining", false, self.dv.machining).clicked() {
                 self.dv.machining = false;
                 self.dv.sim = None;
                 self.status = "Machining deleted — Automatic machines the part again.".into();
@@ -629,7 +683,7 @@ impl App {
             }
         });
         ribbon_group(ui, "Standard shapes", |ui| {
-            if ribbon_button(ui, Icon::Fit, "Recognise\nshapes", self.dv.std_shapes, true)
+            if ribbon_button(ui, Icon::Shapes, "Recognise\nshapes", self.dv.std_shapes, true)
                 .on_hover_text("Label each contour that is a standard shape (circle, rectangle, obround slot) — what a punch tool or cycle can do in one go")
                 .clicked()
             {
@@ -640,7 +694,7 @@ impl App {
             }
         });
         ribbon_group(ui, "Contours", |ui| {
-            let r = dropdown(ui, Icon::CutTech, "Contours", true);
+            let r = dropdown(ui, Icon::Contours, "Contours", true);
             egui::Popup::menu(&r).show(|ui| {
                 ui.label(RichText::new("Contours").strong().color(th().text_strong));
                 for (name, on) in [
@@ -675,23 +729,24 @@ impl App {
             soon_menu(&r, "Cycles", &["Simple cycle", "Circular cycle", "Linear cycle", "Grid cycle", "Irregular cycle", "Milling pockets", "Milling nibblings"]);
         });
         ribbon_group(ui, "Compensation", |ui| {
-            let r = dropdown(ui, Icon::CutPath, "Kerf", true).on_hover_text(crate::kerf::status_line(&self.spec));
+            let r = dropdown(ui, Icon::Kerf, "Kerf", true).on_hover_text(crate::kerf::status_line(&self.spec));
             egui::Popup::menu(&r).show(|ui| self.kerf_menu(ui));
         });
         if self.dv.show_unbuilt {
         ribbon_group(ui, "Settings", |ui| {
-            let r = dropdown(ui, Icon::Numbers, "Options", true);
+            let r = dropdown(ui, Icon::Gear, "Options", true);
             soon_menu(&r, "Options", &["Optimize", "Speed rates", "Postprocessor words", "Contour attributes"]);
             let r = dropdown(ui, Icon::Export, "Extraction", true);
             soon_menu(&r, "Component Extraction", &["Automatic", "Manual stop", "Manual trap", "Manual lift", "Semiautomatic stop / trap / lift", "Assign extractions", "Assign boxes"]);
         });
         }
-        ribbon_group(ui, "View", |ui| {
-            if ribbon_button(ui, Icon::Times, "Current\nstatus", self.dv.info, true).on_hover_text("Show the machining summary on the drawing").clicked() {
-                self.dv.info = !self.dv.info;
-            }
-            if ribbon_button(ui, Icon::Collision, "Verify\nMachining", false, self.dv.machining).on_hover_text("Check pierces are in the scrap and holes are cut first").clicked() {
+        // The same "Check" group as on the sheet's Machining tab.
+        ribbon_group(ui, "Check", |ui| {
+            if ribbon_button(ui, Icon::Verify, "Verify\nmachining", false, self.dv.machining).on_hover_text("Check pierces are in the scrap and holes are cut first").clicked() {
                 self.verify_machining_now();
+            }
+            if ribbon_button(ui, Icon::Info, "Current\nstatus", self.dv.info, true).on_hover_text("Show the machining summary on the drawing").clicked() {
+                self.dv.info = !self.dv.info;
             }
         });
     }
@@ -727,24 +782,34 @@ impl App {
     }
 
     /// Machine choice (combo + what it does). Returns true when it changed.
+    /// The machine the sheet is cut on (its kind: laser, plasma, punch…).
+    pub fn machine_combo(&mut self, ui: &mut egui::Ui, width: f32) -> bool {
+        let mut changed = false;
+        let cur = self.spec.machine;
+        egui::ComboBox::from_id_salt(("machine", ui.scope_id())).width(width).selected_text(cur.label()).show_ui(ui, |ui| {
+            for (k, group) in [("Cutting", crate::machine::Family::Cut), ("Punch + cut", crate::machine::Family::CutPunch), ("Punching", crate::machine::Family::Punch)] {
+                ui.label(RichText::new(k).size(11.0).color(th().text_dim));
+                for m in crate::machine::MachineKind::ALL.into_iter().filter(|m| m.family() == group) {
+                    if ui.selectable_label(cur == m, m.label()).on_hover_text(m.describe()).clicked() && cur != m {
+                        self.spec.machine = m;
+                        changed = true;
+                    }
+                }
+            }
+        });
+        if changed {
+            self.status = format!("Machine: {} — {}.", self.spec.machine.label(), self.spec.machine.describe().to_lowercase());
+        }
+        changed
+    }
+
     pub fn machine_picker(&mut self, ui: &mut egui::Ui) -> bool {
         let mut changed = false;
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 3.0;
             ui.spacing_mut().interact_size.y = 21.0;
             ui.add_space(6.0);
-            let cur = self.spec.machine;
-            egui::ComboBox::from_id_salt(("machine", ui.scope_id())).width(150.0).selected_text(cur.label()).show_ui(ui, |ui| {
-                for (k, group) in [("Cutting", crate::machine::Family::Cut), ("Punch + cut", crate::machine::Family::CutPunch), ("Punching", crate::machine::Family::Punch)] {
-                    ui.label(RichText::new(k).size(11.0).color(th().text_dim));
-                    for m in crate::machine::MachineKind::ALL.into_iter().filter(|m| m.family() == group) {
-                        if ui.selectable_label(cur == m, m.label()).on_hover_text(m.describe()).clicked() && cur != m {
-                            self.spec.machine = m;
-                            changed = true;
-                        }
-                    }
-                }
-            });
+            changed = self.machine_combo(ui, 150.0);
             let fam = match self.spec.machine.family() {
                 crate::machine::Family::Cut => "cuts every contour",
                 crate::machine::Family::CutPunch => "punches standard holes",
@@ -752,9 +817,6 @@ impl App {
             };
             ui.label(RichText::new(fam).size(11.0).color(th().text_dim)).on_hover_text(self.spec.machine.describe());
         });
-        if changed {
-            self.status = format!("Machine: {} — {}.", self.spec.machine.label(), self.spec.machine.describe().to_lowercase());
-        }
         changed
     }
 
@@ -764,6 +826,12 @@ impl App {
         let pl = nest::Placed { part: i, x: 0.0, y: 0.0, w, h, turns: 0, mirror: false };
         let plan = cnc::plan(&self.parts, &[pl], &self.spec);
         let probs = verify_machining(&plan);
+        self.dv.check = Some((
+            i,
+            "Verify machining".into(),
+            probs.is_empty(),
+            if probs.is_empty() { vec![format!("No problems — {} contour(s), every pierce in the scrap, holes before the outside.", plan.contours.len())] } else { probs.clone() },
+        ));
         self.status = if probs.is_empty() {
             format!("Verify the Machining: OK — {} contour(s), every pierce in the scrap, holes before the outside.", plan.contours.len())
         } else {
@@ -775,10 +843,10 @@ impl App {
         ribbon_group(ui, "Display", |ui| {
             let items = [
                 toggle("Axis", self.dv.axes, "Red dashed axes through the drawing origin"),
-                toggle("Color Display", self.dv.lantek_colors, "The original's colours: black background, yellow contours, green marking"),
-                toggle("Machining Window", self.show_program, "The part's machine program"),
-                toggle("Full Screen", self.dv.full_screen, "Hide the side panels"),
-                act("Restore Panels", true, "Put the side panels back where they started"),
+                toggle("Classic colours", self.dv.lantek_colors, "The original's colours: black background, yellow contours, green marking"),
+                toggle("Machining window", self.show_program, "The part's machine program"),
+                toggle("Full screen", self.dv.full_screen, "Hide the side panels"),
+                act("Restore panels", true, "Put the side panels back where they started").with_icon(Icon::Panels),
             ];
             let items: Vec<Mini> = if self.dv.show_unbuilt { items.into_iter().chain([act("3D view", false, &soon("3D view of the part"))]).collect() } else { items.into_iter().collect() };
             match minis(ui, &items) {
@@ -811,16 +879,16 @@ impl App {
             });
         });
         ribbon_group(ui, "Zoom", |ui| {
-            if ribbon_button(ui, Icon::Fit, "Zoom\nAll", false, true).clicked() {
+            if ribbon_button(ui, Icon::Fit, "Zoom\nall", false, true).clicked() {
                 self.push_part_view();
                 self.part_zoom = 1.0;
                 self.part_pan = Vec2::ZERO;
             }
             let items = [
-                toggle("Zoom Window", self.dv.zoom_window, "Drag a box to zoom to it"),
-                act("Zoom Previous", !self.part_view_hist.is_empty(), "Back to the view before"),
-                act("Zoom In", true, "Zoom in"),
-                act("Zoom Out", true, "Zoom out"),
+                toggle("Zoom window", self.dv.zoom_window, "Drag a box to zoom to it"),
+                act("Zoom previous", !self.part_view_hist.is_empty(), "Back to the view before").with_icon(Icon::Undo),
+                act("Zoom in", true, "Zoom in").with_icon(Icon::ZoomIn),
+                act("Zoom out", true, "Zoom out").with_icon(Icon::ZoomOut),
             ];
             match minis(ui, &items) {
                 Some(0) => {
@@ -839,17 +907,6 @@ impl App {
                 _ => {}
             }
         });
-        ribbon_group(ui, "Appearance", |ui| {
-            let dark = crate::theme::is_dark();
-            if ribbon_button(ui, Icon::Sun, "Light", !dark, true).clicked() {
-                crate::theme::set_dark(ui.ctx(), false);
-                self.follow_system = false;
-            }
-            if ribbon_button(ui, Icon::Moon, "Dark", dark, true).clicked() {
-                crate::theme::set_dark(ui.ctx(), true);
-                self.follow_system = false;
-            }
-        });
     }
 
     fn ribbon_draw_sim(&mut self, ui: &mut egui::Ui) {
@@ -860,29 +917,29 @@ impl App {
         let on = self.dv.machining;
         ribbon_group(ui, "Simulate", |ui| {
             let k = self.dv.sim.unwrap_or(0);
-            if ribbon_button(ui, Icon::Prev, "Beginning", false, on).clicked() {
+            if ribbon_button(ui, Icon::SkipStart, "Beginning", false, on).clicked() {
                 self.dv.sim = Some(0);
                 self.dv.sim_run = false;
             }
-            if ribbon_button(ui, Icon::Undo, "Previous", false, on && k > 0).clicked() {
+            if ribbon_button(ui, Icon::StepBack, "Previous", false, on && k > 0).clicked() {
                 self.dv.sim = Some(k.saturating_sub(1));
                 self.dv.sim_run = false;
             }
-            if ribbon_button_ex(ui, Icon::NestAll, if self.dv.sim_run { "Pause" } else { "Run" }, self.dv.sim_run, on, true).clicked() {
+            if ribbon_button_ex(ui, if self.dv.sim_run { Icon::Pause } else { Icon::Play }, if self.dv.sim_run { "Pause" } else { "Run" }, self.dv.sim_run, on, true).clicked() {
                 if self.dv.sim.is_none_or(|s| s >= n) {
                     self.dv.sim = Some(0);
                 }
                 self.dv.sim_run = !self.dv.sim_run;
             }
-            if ribbon_button(ui, Icon::Redo, "Next", false, on && k < n).clicked() {
+            if ribbon_button(ui, Icon::StepFwd, "Next", false, on && k < n).clicked() {
                 self.dv.sim = Some((k + 1).min(n));
                 self.dv.sim_run = false;
             }
-            if ribbon_button(ui, Icon::Next, "End", false, on).clicked() {
+            if ribbon_button(ui, Icon::SkipEnd, "End", false, on).clicked() {
                 self.dv.sim = Some(n);
                 self.dv.sim_run = false;
             }
-            if ribbon_button(ui, Icon::Clear, "Stop", false, self.dv.sim.is_some()).clicked() {
+            if ribbon_button(ui, Icon::Stop, "Stop", false, self.dv.sim.is_some()).clicked() {
                 self.dv.sim = None;
                 self.dv.sim_run = false;
             }
@@ -895,6 +952,25 @@ impl App {
                 ui.label(RichText::new(txt).size(12.0).color(th().text_dim));
             });
         });
+        // The same Speed group as the sheet's simulation, in contours per second.
+        ribbon_group(ui, "Speed", |ui| {
+            ui.vertical(|ui| {
+                ui.add_space(8.0);
+                let label = |s: f64| match s {
+                    s if s >= 1.4 => "Slow",
+                    s if s >= 0.6 => "Normal",
+                    _ => "Fast",
+                };
+                egui::ComboBox::from_id_salt("part_sim_speed").width(90.0).selected_text(label(self.dv.sim_step)).show_ui(ui, |ui| {
+                    for (s, t) in [(1.5, "Slow — a contour every 1.5 s"), (SIM_STEP_S, "Normal — every 0.7 s"), (0.25, "Fast — every 0.25 s")] {
+                        if ui.selectable_label((self.dv.sim_step - s).abs() < 1e-9, t).clicked() {
+                            self.dv.sim_step = s;
+                        }
+                    }
+                });
+                ui.label(RichText::new("Simulation speed").size(12.0).color(th().text_dim));
+            });
+        });
         if !self.dv.show_unbuilt {
             return;
         }
@@ -905,8 +981,8 @@ impl App {
     }
 
     fn ribbon_draw_notes(&mut self, ui: &mut egui::Ui) {
-        ribbon_group(ui, "Dimension Notes", |ui| {
-            if ribbon_button(ui, Icon::Fit, "Automatic", self.dv.dims, true).on_hover_text("Overall width and height of the part").clicked() {
+        ribbon_group(ui, "Dimension notes", |ui| {
+            if ribbon_button(ui, Icon::Dimension, "Auto\ndimensions", self.dv.dims, true).on_hover_text("Overall width and height of the part").clicked() {
                 self.dv.dims = true;
             }
             if ribbon_button(ui, Icon::Remove, "Delete", false, self.dv.dims).clicked() {
@@ -914,7 +990,7 @@ impl App {
             }
         });
         ribbon_group(ui, "Texts", |ui| {
-            if ribbon_button(ui, Icon::CutTech, "Texts", false, true).on_hover_text("Write a text on the part").clicked() {
+            if ribbon_button(ui, Icon::Text, "Texts", false, true).on_hover_text("Write a text on the part").clicked() {
                 let at = ui.ctx().content_rect().center();
                 self.open_text_editor(at, crate::textedit::TextTarget::New { on_element: false });
             }
@@ -927,7 +1003,7 @@ impl App {
             }
         });
         ribbon_group(ui, "View", |ui| {
-            if ribbon_button(ui, Icon::Numbers, "Text and\nDimensions", self.dv.texts_dims, true).clicked() {
+            if ribbon_button(ui, Icon::Text, "Texts and\ndimensions", self.dv.texts_dims, true).clicked() {
                 self.dv.texts_dims = !self.dv.texts_dims;
             }
         });
@@ -939,9 +1015,9 @@ impl App {
             return;
         }
         ribbon_group(ui, "Utilities", |ui| {
-            let r = dropdown(ui, Icon::Compact, "Bevels", true);
+            let r = dropdown(ui, Icon::Bevel, "Bevels", true);
             soon_menu(&r, "Bevels", &["Cut of double or triple bevels"]);
-            let r = dropdown(ui, Icon::CutPath, "Contours", true);
+            let r = dropdown(ui, Icon::Contours, "Contours", true);
             soon_menu(&r, "Contours", &["Partial cut of a contour", "Add arcs in pockets", "Add arcs in pockets manually"]);
             let r = dropdown(ui, Icon::Copy, "Compare", true);
             soon_menu(&r, "Geometry", &["Compare geometries", "Bitmap", "Mosaic", "Open Drafting"]);
@@ -957,7 +1033,7 @@ impl App {
             return;
         }
         ctx.request_repaint();
-        if now - self.dv.sim_last >= SIM_STEP_S {
+        if now - self.dv.sim_last >= self.dv.sim_step {
             self.dv.sim_last = now;
             let k = self.dv.sim.unwrap_or(0) + 1;
             self.dv.sim = Some(k.min(n));

@@ -63,14 +63,14 @@ impl App {
         let has = !self.result.sheets.is_empty();
         let picks = self.manual_cuts.get(self.cur_sheet).map_or(0, |v| v.len());
         ribbon_group(ui, "Manual cutting", |ui| {
-            if ribbon_button(ui, Icon::CutPath, "Pick\ncontours", self.manual_mode, has)
+            if ribbon_button(ui, Icon::PickOrder, "Pick\ncontours", self.manual_mode, has)
                 .on_hover_text("Click contours on the sheet in the order they should be cut. The cut starts where you click; holes of a part are always cut before its outside.")
                 .clicked()
             {
                 self.manual_mode = !self.manual_mode;
                 self.status = if self.manual_mode { "Manual cutting: click contours in cutting order (Esc to stop).".into() } else { String::new() };
             }
-            if ribbon_button(ui, Icon::Rotate, "Reverse\ndirection", self.manual_reverse, has)
+            if ribbon_button(ui, Icon::Reverse, "Reverse\ndirection", self.manual_reverse, has)
                 .on_hover_text("Cut the next picked contours the other way round (Shift+click does it for one pick)")
                 .clicked()
             {

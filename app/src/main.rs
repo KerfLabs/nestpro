@@ -137,6 +137,11 @@ pub enum Pending {
     DxfLayers { files: Vec<formats::Incoming>, roles: std::collections::BTreeMap<String, dxf::LayerRole> },
     /// The open job's file was changed outside the app while it also changed here.
     JobFileChanged { path: PathBuf },
+    /// Export CNC: what will be written, where and for which machine, shown
+    /// before writing; with the sheets that have overlapping parts or parts off
+    /// the sheet: (sheet index, overlapping pairs, parts off the sheet).
+    /// `checks`: Verify machining's findings per sheet (sheet, problems).
+    ExportReview { problems: Vec<(usize, usize, usize)>, checks: Vec<(usize, usize)> },
 }
 
 /// Answers to "this part has technology" (the original's choices, rule T2).
@@ -204,6 +209,13 @@ pub struct App {
     /// Pairs of parts on the shown sheet that touch or overlap (QR6), worked
     /// out on every change.
     pub overlaps: Vec<(usize, usize)>,
+    /// The last export (folder, file names, warning), shown on the sheet
+    /// until closed so the files can be found.
+    pub last_export: Option<(PathBuf, Vec<String>, Option<String>)>,
+    /// A placed part to bring to the middle of the view (Show next problem).
+    pub focus_placed: Option<usize>,
+    /// Which problem part "Show next" shows next.
+    pub problem_cursor: usize,
     /// Copies on the pointer from the quick ring's Copy (QR4).
     pub carry: Option<arrange_ui::Carry>,
     pub show_path: bool,
@@ -253,6 +265,16 @@ pub struct App {
     pub lead_choice: nest::LeadType,
     pub lead_pos: u8,
     pub tech_all: bool,
+    /// The scope picked by hand on the sheet (Nesting): None until then,
+    /// when the technology commands work on all part types.
+    pub tech_nest_all: Option<bool>,
+    /// Screenshots only (--open-job-menu): show the Open job list as if opened.
+    pub demo_open_menu: bool,
+    /// Parts View scrolls this part's tile into view once (e.g. after import).
+    pub scroll_to_part: Option<usize>,
+    /// What the last import or automatic technology command did, shown as a
+    /// card on the drawing with the next steps, until closed.
+    pub result_card: Option<ResultCard>,
     pub auto_joints: nest::AutoJoints,
     pub show_joint_sizes: bool,
     /// Cut Technology → By size window.
@@ -507,6 +529,9 @@ impl App {
             bottom: BottomTab::PartsView,
             collision: true,
             overlaps: vec![],
+            last_export: None,
+            focus_placed: None,
+            problem_cursor: 0,
             carry: None,
             show_path: false,
             show_numbers: false,
@@ -547,6 +572,10 @@ impl App {
             lead_choice: nest::LeadType::Machine,
             lead_pos: 1,
             tech_all: false,
+            tech_nest_all: None,
+            demo_open_menu: false,
+            scroll_to_part: None,
+            result_card: None,
             auto_joints: nest::AutoJoints::default(),
             show_joint_sizes: false,
             show_cut_ranges: false,
@@ -777,6 +806,7 @@ impl App {
                 // An agent's one-step undo copy is from before this save: undoing
                 // to it would drop what was just saved.
                 let _ = std::fs::remove_file(engine::session::backup_path(path));
+                self.note_recent_job(path);
                 self.status = format!("Saved job {} to {}{stock_note}", self.job_name, path.display());
             }
             Err(e) => self.status = format!("Couldn't save the job: {e}"),
@@ -808,12 +838,114 @@ impl App {
         self.link_job_file(path, &disk);
         self.store_job();
         self.mark_job_saved(self.cur_job);
+        self.note_recent_job(path);
         self.status = format!("Opened job {} from {} — {} product(s), {} sheet(s).", self.job_name, path.display(), self.parts.len(), self.result.sheets.len());
     }
 
     pub fn open_job_dialog(&mut self) {
-        if let Some(f) = rfd::FileDialog::new().add_filter("Sheet nesting job", &[jobfile::EXT]).pick_file() {
+        // Starts where jobs are saved by default.
+        let dir = self.cfg.recent_jobs.first().and_then(|p| PathBuf::from(p).parent().map(|d| d.to_path_buf())).unwrap_or_else(|| self.export_dir());
+        if let Some(f) = rfd::FileDialog::new().add_filter("Sheet nesting job", &[jobfile::EXT]).set_directory(&dir).pick_file() {
             self.open_job_file(&f);
+        }
+    }
+
+    /// A job file just opened or saved goes to the top of the recent list.
+    pub fn note_recent_job(&mut self, path: &std::path::Path) {
+        let p = path.display().to_string();
+        self.cfg.recent_jobs.retain(|r| r != &p);
+        self.cfg.recent_jobs.insert(0, p);
+        self.cfg.recent_jobs.truncate(8);
+        let _ = self.cfg.save();
+    }
+
+    /// The Open job menu: recent job files, the library, or any file.
+    pub fn open_job_menu(&mut self, ui: &mut egui::Ui) {
+        ui.set_min_width(380.0);
+        if !self.libui.loaded {
+            self.lib_refresh();
+        }
+        // One list of the jobs saved lately, wherever they were saved — job
+        // files and the Library's jobs — newest first.
+        enum Src {
+            File(PathBuf),
+            Lib(u64),
+        }
+        let mut rows: Vec<(u64, String, String, Src, bool)> = vec![];
+        for r in &self.cfg.recent_jobs {
+            let p = PathBuf::from(r);
+            let name = p.file_stem().map_or(r.clone(), |n| n.to_string_lossy().to_string());
+            let folder = p.parent().map(|d| d.display().to_string()).unwrap_or_default();
+            let t = std::fs::metadata(&p).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
+            let exists = p.exists();
+            rows.push((t, name, folder, Src::File(p), exists));
+        }
+        for e in self.libui.entries.iter().filter(|e| e.kind == library::Kind::Job) {
+            let what = format!("{} {} mm · {} sheet(s){}", cnc::MATERIALS[e.material.min(2)], e.thickness, e.count_b, if e.folder.is_empty() { String::new() } else { format!(" · {}", e.folder) });
+            rows.push((e.updated, e.name.clone(), what, Src::Lib(e.id), true));
+        }
+        rows.sort_by(|a, b| b.0.cmp(&a.0));
+        ui.label(RichText::new("Recent jobs").strong().color(th().text_strong));
+        ui.label(RichText::new("Job files and Library jobs together, newest first").size(11.5).color(th().text_dim));
+        if rows.is_empty() {
+            ui.label(RichText::new("None yet — jobs you save or open show up here.").size(12.0).color(th().text_dim));
+        }
+        let id = egui::Id::unique("open_job_search");
+        let mut needle = ui.data_mut(|d| d.get_temp::<String>(id)).unwrap_or_default();
+        if rows.len() > 6 {
+            ui.add(egui::TextEdit::singleline(&mut needle).hint_text("🔍 Find a job…").desired_width(f32::INFINITY));
+            ui.data_mut(|d| d.insert_temp(id, needle.clone()));
+        }
+        let n = needle.to_lowercase();
+        let mut open_file = None;
+        let mut open_lib = None;
+        let when = |t: u64| {
+            if t == 0 {
+                return String::new();
+            }
+            let days = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()).saturating_sub(t)) / 86_400;
+            match days {
+                0 => "today".to_string(),
+                1 => "yesterday".to_string(),
+                d => format!("{d} days ago"),
+            }
+        };
+        egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+            for (t, name, detail, src, exists) in rows.iter().filter(|r| n.is_empty() || r.1.to_lowercase().contains(&n) || r.2.to_lowercase().contains(&n)).take(14) {
+                let (badge, tip) = match src {
+                    Src::File(p) => ("File", if *exists { p.display().to_string() } else { format!("{}\n(moved or deleted)", p.display()) }),
+                    Src::Lib(_) => ("Library", format!("Saved to the Library ({})", self.library_dir().display())),
+                };
+                ui.horizontal(|ui| {
+                    let resp = ui.add_enabled(*exists, egui::Button::new(RichText::new(name).strong()).frame(false)).on_hover_text(tip);
+                    ui.label(RichText::new(badge).size(10.5).color(th().text_dim).background_color(th().panel));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(RichText::new(when(*t)).size(11.0).color(th().text_dim));
+                    });
+                    if resp.clicked() {
+                        match src {
+                            Src::File(p) => open_file = Some(p.clone()),
+                            Src::Lib(id) => open_lib = Some(*id),
+                        }
+                    }
+                });
+                ui.label(RichText::new(detail).size(11.5).color(th().text_dim));
+                ui.add_space(2.0);
+            }
+        });
+        ui.separator();
+        if ui_parts::menu_row(ui, "📂", "Browse for a job file…", "Ctrl + O") {
+            self.open_job_dialog();
+        }
+        if ui_parts::menu_row(ui, "📚", "Library…", "all saved jobs and products") {
+            self.libui.open = true;
+            self.libui.tab = 0;
+        }
+        if let Some(p) = open_file {
+            self.open_job_file(&p);
+        }
+        if let Some(id) = open_lib {
+            self.open_library_job(id);
         }
     }
 
@@ -996,6 +1128,28 @@ impl App {
         } else {
             format!("Imported {added} drawing(s). {}", notes.join(" · "))
         };
+        // The same, as a card on the drawing with the next steps.
+        let first = self.parts.len() - added;
+        let new = &self.parts[first..];
+        let pcs: u32 = new.iter().map(|p| p.qty).sum();
+        let mut names: Vec<String> = new.iter().take(4).map(|p| format!("{} × {}", p.name, p.qty)).collect();
+        if added > 4 {
+            names.push(format!("and {} more", added - 4));
+        }
+        let mut lines = vec![
+            names.join(" · "),
+            format!("Material {} {} mm — the job's; change it before nesting if it's wrong.", cnc::MATERIALS[self.spec.material.min(2)], self.spec.thickness),
+        ];
+        lines.extend(notes.iter().take(4).cloned());
+        if added > 0 {
+            self.scroll_to_part = Some(first);
+        }
+        self.result_card = Some(ResultCard {
+            title: if added == 0 { "Nothing imported".to_string() } else { format!("Imported {added} drawing(s) — {added} new part type(s), {pcs} pcs") },
+            lines: if added == 0 { notes.clone() } else { lines },
+            warn: added == 0 || !notes.is_empty(),
+            actions: if added == 0 { vec![] } else { vec![("Nest all".to_string(), CardAct::NestAll), ("Show new parts".to_string(), CardAct::ShowPart(first)), ("Material and sheet".to_string(), CardAct::SheetTab)] },
+        });
     }
 
     /// Finish drawings that waited for the layer question.
@@ -1115,6 +1269,7 @@ impl App {
             Pending::NestedSpecChange { .. } => "Nested parts will change",
             Pending::DxfLayers { .. } => "Drawing layers",
             Pending::JobFileChanged { .. } => "Job changed on disk",
+            Pending::ExportReview { .. } => "Export CNC programs",
         };
         egui::Window::new(title)
             .collapsible(false)
@@ -1123,6 +1278,101 @@ impl App {
             .show(ctx, |ui| {
                 ui.set_max_width(420.0);
                 match p {
+                    Pending::ExportReview { problems, checks } => {
+                        // What will be written, for which machine and where.
+                        let n = self.result.sheets.len();
+                        let dir = self.export_dir().join(engine::safe_name(&self.job_name));
+                        let names: Vec<String> = (0..n).map(|k| self.cnc_name(k + 1)).collect();
+                        let shown = names.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+                        let more = if n > 3 { format!(" and {} more", n - 3) } else { String::new() };
+                        egui::Grid::new("export_review").num_columns(2).spacing([14.0, 6.0]).show(ui, |ui| {
+                            ui.label(RichText::new("Sheets").color(th().text_dim));
+                            ui.label(RichText::new(format!("all {n} sheet(s) of {}", self.job_name)).strong());
+                            ui.end_row();
+                            // Both can be changed here, without leaving the review.
+                            ui.label(RichText::new("Machine").color(th().text_dim));
+                            if self.machine_combo(ui, 200.0) {
+                                self.refresh();
+                            }
+                            ui.end_row();
+                            ui.label(RichText::new("Post-processor").color(th().text_dim));
+                            self.output_combo(ui, 200.0);
+                            ui.end_row();
+                            ui.label(RichText::new("Files").color(th().text_dim));
+                            ui.label(format!("{shown}{more}, and a parts report (.csv)"));
+                            ui.end_row();
+                            ui.label(RichText::new("Folder").color(th().text_dim));
+                            ui.label(RichText::new(dir.display().to_string()).monospace().size(12.0));
+                            ui.end_row();
+                        });
+                        ui.add_space(4.0);
+                        ui.label(RichText::new("The programs follow each sheet's machining as Cutting path shows it — lead-ins, cut order, and your hand-picked order where you set one.").size(12.0).color(th().text_dim));
+                        // Verify machining, run for this review on every sheet.
+                        if checks.is_empty() {
+                            ui.label(RichText::new(format!("✔ Verify machining: all {n} sheet(s) pass (overlaps, part gap, off the sheet, lead-ins)")).size(12.5).color(th().ok_fg));
+                        } else {
+                            let total: usize = checks.iter().map(|c| c.1).sum();
+                            let which = checks.iter().map(|c| (c.0 + 1).to_string()).collect::<Vec<_>>().join(", ");
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(RichText::new(format!("⚠ Verify machining: {total} problem(s) on sheet {which}")).size(12.5).color(th().warn_fg));
+                                if ui.link("Show them").clicked() {
+                                    self.nverify.all_sheets = true;
+                                    self.verify_nest();
+                                    close = true;
+                                }
+                            });
+                        }
+                        // Files of an earlier export of this job that will be replaced, said plainly.
+                        let old = std::fs::read_dir(&dir).map_or(0, |rd| rd.flatten().filter(|e| e.path().is_file()).count());
+                        if old > 0 {
+                            ui.label(RichText::new(format!("⚠ This folder already has {old} file(s) from an earlier export of this job — they will be replaced.")).size(12.5).color(th().warn_fg));
+                        }
+                        if !problems.is_empty() {
+                            ui.add_space(6.0);
+                            ui.label(RichText::new("These sheets would cut parts into each other or past the sheet:").color(Color32::from_rgb(185, 28, 28)));
+                            for &(k, pairs, off) in &problems {
+                                let mut w = vec![];
+                                if pairs > 0 {
+                                    w.push(format!("{pairs} overlap(s)"));
+                                }
+                                if off > 0 {
+                                    w.push(format!("{off} part(s) off the sheet"));
+                                }
+                                ui.label(RichText::new(format!("Sheet {}: {}", k + 1, w.join(", "))).strong().color(Color32::from_rgb(185, 28, 28)));
+                            }
+                        }
+                        ui.add_space(10.0);
+                        ui.horizontal(|ui| {
+                            if problems.is_empty() {
+                                let old = std::fs::read_dir(&dir).map_or(0, |rd| rd.flatten().filter(|e| e.path().is_file()).count());
+                                let label = if old > 0 { format!("Replace and export {n} program(s)") } else { format!("Export {n} program(s)") };
+                                let primary = egui::Button::new(RichText::new(label).color(Color32::WHITE).strong()).fill(th().accent);
+                                if ui.add(primary).clicked() {
+                                    self.export();
+                                    close = true;
+                                }
+                            } else {
+                                let first = problems.first().map_or(0, |s| s.0);
+                                let primary = egui::Button::new(RichText::new(format!("Show sheet {}", first + 1)).color(Color32::WHITE).strong()).fill(th().accent);
+                                if ui.add(primary).on_hover_text("Go to the sheet; the parts in the way are drawn in red").clicked() {
+                                    self.workspace = Workspace::Nesting;
+                                    self.select_sheet(first);
+                                    close = true;
+                                }
+                                if ui.button("Export anyway").clicked() {
+                                    self.export();
+                                    close = true;
+                                }
+                            }
+                            if ui.button("Change folder…").on_hover_text("Settings → Folders").clicked() {
+                                self.open_settings(settings_ui::Section::Folders);
+                                close = true;
+                            }
+                            if ui.button("Cancel").clicked() {
+                                close = true;
+                            }
+                        });
+                    }
                     Pending::TechPartEdit { idx, draft } => {
                         let (name, items) = self.parts.get(idx).map_or((String::new(), 0), |q| (q.name.clone(), q.tech.map_or(0, |t| t.items())));
                         ui.label(format!(
@@ -1303,6 +1553,7 @@ impl App {
             let cur = self.snapshot();
             self.redo.push(cur);
             self.restore(s);
+            self.result_card = None;
             self.status = "Undone.".into();
         }
     }
@@ -1312,6 +1563,7 @@ impl App {
             let cur = self.snapshot();
             self.undo.push(cur);
             self.restore(s);
+            self.result_card = None;
             self.status = "Redone.".into();
         }
     }
@@ -1386,6 +1638,41 @@ impl App {
         }
     }
 
+    /// Where Export CNC writes, for its tooltip: all sheets, the folder, the format.
+    pub fn export_dir(&self) -> PathBuf {
+        if !self.cfg.export_dir.is_empty() { PathBuf::from(&self.cfg.export_dir) } else { library::documents_dir() }
+    }
+
+    /// Export CNC from the ribbon: a review first — the sheets, the machine and
+    /// output, the folder and file names — and every sheet checked, so a
+    /// program that cuts parts into each other is never written unnoticed.
+    pub fn export_checked(&mut self) {
+        let mut bad = vec![];
+        for (k, sheet) in self.result.sheets.iter().enumerate() {
+            let spec = self.sheet_spec(k);
+            let pairs = engine::overlapping(&self.parts, sheet, &spec).len();
+            let off = sheet.iter().filter(|p| !spec.fits(p)).count();
+            if pairs > 0 || off > 0 {
+                bad.push((k, pairs, off));
+            }
+        }
+        if self.result.sheets.is_empty() {
+            self.status = "Nothing to export — nest first.".into();
+            return;
+        }
+        // Verify machining on every sheet, so the review can say it passed.
+        self.refresh();
+        let need = self.safe_need();
+        let checks: Vec<(usize, usize)> = (0..self.result.sheets.len())
+            .filter_map(|k| {
+                let (sheet, plan) = (self.result.sheets.get(k)?, self.plans.get(k)?);
+                let n = engine::verify_sheet(&self.parts, sheet, &self.sheet_spec(k), plan, self.nverify.check_safe.then_some(need)).len();
+                (n > 0).then_some((k, n))
+            })
+            .collect();
+        self.pending = Some(Pending::ExportReview { problems: bad, checks });
+    }
+
     pub fn export(&mut self) {
         // Nothing nested: engine::export says so (and removes the job's old programs).
         // Settings → Folders, or Documents\Sheet Nesting.
@@ -1398,6 +1685,10 @@ impl App {
         let blm = self.blm_now();
         let marks: Vec<Vec<Vec<nest::P>>> = (0..self.result.sheets.len()).map(|k| self.remnant_marks(k)).collect();
         let res = engine::export(&base, &self.job_name, &self.parts, &self.result.sheets, &self.result.formats, &self.plans, &self.spec, &self.cut_lines, &marks, &self.post, Some(&blm), self.cfg.stock.line.edge_offset);
+        if let Ok(ex) = &res {
+            let names = ex.files.iter().filter_map(|f| f.file_name().map(|n| n.to_string_lossy().to_string())).collect();
+            self.last_export = Some((ex.dir.clone(), names, ex.warning.clone()));
+        }
         self.status = match res {
             Ok(ex) if ex.warning.is_some() => format!("Exported, but {}.", ex.warning.unwrap_or_default()),
             Ok(ex) if self.blm.on => format!("Exported {} BLM LC5 program set(s) (.zip + .XML) and a parts report to {}", self.result.sheets.len(), ex.dir.display()),
@@ -1412,6 +1703,10 @@ impl App {
         // Groups in their own zones; else from the sheet stock when it has
         // sheets for this job, else the job's sheet size; then contour
         // compaction on rectangular sheets.
+        // Hand work that a new nesting replaces: said in the status line, so
+        // nobody loses it without knowing (Ctrl+Z brings it back).
+        let lost_order = self.manual_cuts.iter().filter(|s| !s.is_empty()).count();
+        let lost_lines: usize = self.cut_lines.iter().map(|s| s.len()).sum();
         self.result = engine::nest_all(&self.parts, &self.spec, self.group_nest, Some(&self.stock_use()));
         self.manual_cuts.clear();
         self.ssim = None;
@@ -1433,6 +1728,16 @@ impl App {
         } else {
             format!("{} of {} parts nested — some are larger than the sheet.", placed, need)
         };
+        let mut lost = vec![];
+        if lost_order > 0 {
+            lost.push(format!("the hand-picked cut order on {lost_order} sheet(s)"));
+        }
+        if lost_lines > 0 {
+            lost.push(format!("{lost_lines} cut / remnant line(s)"));
+        }
+        if !lost.is_empty() {
+            self.status += &format!(" Removed {} — Ctrl+Z brings them back.", lost.join(" and "));
+        }
     }
 
     /// Nest only the sheet on screen again (RN1): the parts already on it, on
@@ -1713,6 +2018,17 @@ impl App {
         let cspec = self.cur_spec();
         let cformat = self.result.format(self.cur_sheet, &self.spec);
         let fit = ((view.width() - 40.0) / cspec.w as f32).min((view.height() - 24.0) / cspec.h as f32).max(0.0001);
+        // Show next problem: zoom in a little and put that part in the middle.
+        if let Some(i) = self.focus_placed.take() {
+            if let Some(p) = self.result.sheets.get(self.cur_sheet).and_then(|sh| sh.get(i)) {
+                self.zoom = self.zoom.max(2.5);
+                let s = fit * self.zoom;
+                let (cx, cy) = ((p.x + p.w / 2.0) as f32, (p.y + p.h / 2.0) as f32);
+                self.pan = Vec2::new(cspec.w as f32 * s / 2.0 - cx * s, cy * s - cspec.h as f32 * s / 2.0);
+                self.sel_placed = Some(i);
+                self.sel_more.clear();
+            }
+        }
         let mut s = fit * self.zoom;
         let origin_for = |s: f32, pan: Vec2, spec: &SheetSpec| view.center() + pan + Vec2::new(-(spec.w as f32) * s / 2.0, spec.h as f32 * s / 2.0);
         let mut o = origin_for(s, self.pan, &cspec);
@@ -1963,6 +2279,17 @@ impl App {
         if has_sheet {
             self.verify_canvas(&painter, &to_s);
             self.overlap_canvas(&painter, rect, &to_s);
+            // The warning leads to each part in the way, one click at a time.
+            let bad = self.problem_parts();
+            if !bad.is_empty() {
+                let b = Rect::from_center_size(Pos2::new(rect.center().x, rect.top() + 50.0), Vec2::new(170.0, 26.0));
+                let k = self.problem_cursor % bad.len();
+                let label = format!("Show problem {} of {} ▸", k + 1, bad.len());
+                if ui.put(b, egui::Button::new(RichText::new(label).strong())).on_hover_text("Zoom to the next part that overlaps another or sticks out past the sheet, and select it").clicked() {
+                    self.focus_placed = Some(bad[k]);
+                    self.problem_cursor = k + 1;
+                }
+            }
         }
         if has_sheet || self.cut_tool.is_some() {
             self.cut_canvas(ui, &painter, &resp, &to_s, &to_w, s);
@@ -2020,8 +2347,8 @@ impl App {
                 }
                 if resp.clicked() {
                     match k {
-                        0 => self.zoom = (self.zoom / 1.25).max(0.3),
-                        2 => self.zoom = (self.zoom * 1.25).min(40.0),
+                        0 => self.zoom = (self.zoom * 1.25).min(40.0),
+                        2 => self.zoom = (self.zoom / 1.25).max(0.3),
                         3 => {
                             self.zoom = 1.0;
                             self.pan = Vec2::ZERO;
@@ -2058,12 +2385,136 @@ impl App {
             );
         }
 
+        // --- what the active tool wants next, in view (not only in the status bar) ---
+        let hint = if self.ghost.is_some() {
+            Some("Click to drop the part  ·  R or Space turns it  ·  M mirrors  ·  Enter finds a free spot  ·  Esc or right-click cancels")
+        } else if self.manual_mode {
+            Some("Click the contours in the order to cut them  ·  Esc ends")
+        } else {
+            match self.cut_tool {
+                Some(cutoff::CutTool::Straight) => Some("Click where the cut line starts, then where it ends  ·  Esc stops"),
+                Some(cutoff::CutTool::Path) => Some("Click the corners of the cut path  ·  double-click or Enter finishes  ·  Esc stops"),
+                Some(cutoff::CutTool::Semi(_)) => Some("Click an empty area to make it a remnant  ·  Esc stops"),
+                None => None,
+            }
+        };
+        if let Some(h) = hint {
+            let galley = painter.layout_no_wrap(h.to_string(), FontId::proportional(13.0), Color32::WHITE);
+            let size = galley.size() + Vec2::new(28.0, 14.0);
+            // At the top of the drawing, out of the way of the work; when the
+            // pointer comes near it, it moves to the bottom.
+            let top = Rect::from_center_size(Pos2::new(rect.center().x, rect.top() + 12.0 + size.y / 2.0), size);
+            let near = ui.ctx().pointer_hover_pos().is_some_and(|p| top.expand(40.0).contains(p));
+            let pill = if near { Rect::from_center_size(Pos2::new(rect.center().x, rect.bottom() - 24.0 - size.y / 2.0), size) } else { top };
+            painter.rect_filled(pill, CornerRadius::same(10), th().overlay);
+            painter.galley(pill.min + Vec2::new(14.0, 7.0), galley, Color32::WHITE);
+        }
+
+        // --- what the last import / technology command did, with next steps ---
+        let mut tech_card_h = 0.0;
+        if let Some(card) = self.result_card.clone() {
+            let mut close = false;
+            let mut act = None;
+            let r = egui::Area::new(egui::Id::unique("result_card")).order(egui::Order::Foreground).fixed_pos(rect.left_top() + Vec2::new(12.0, 12.0)).show(ui.ctx(), |ui| {
+                egui::Frame::new().fill(th().card).stroke(Stroke::new(1.0, th().border)).corner_radius(CornerRadius::same(10)).inner_margin(egui::Margin::same(12)).show(ui, |ui| {
+                    ui.set_max_width(360.0);
+                    ui.horizontal(|ui| {
+                        let (mark, col) = if card.warn { ("⚠", th().warn_fg) } else { ("✔", th().ok_fg) };
+                        ui.label(RichText::new(format!("{mark} {}", card.title)).strong().color(col));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("✖").on_hover_text("Close").clicked() {
+                                close = true;
+                            }
+                        });
+                    });
+                    for l in &card.lines {
+                        ui.label(RichText::new(l).size(12.0).color(th().text_dim));
+                    }
+                    if !card.actions.is_empty() {
+                        ui.add_space(2.0);
+                        ui.horizontal(|ui| {
+                            for (k, (label, a)) in card.actions.iter().enumerate() {
+                                let b = if k == 0 { egui::Button::new(RichText::new(label).color(Color32::WHITE).strong()).fill(th().accent) } else { egui::Button::new(label) };
+                                if ui.add(b).on_hover_text(a.tip()).clicked() {
+                                    act = Some(*a);
+                                }
+                            }
+                        });
+                    }
+                });
+            });
+            tech_card_h = r.response.rect.height() + 8.0;
+            if close {
+                self.result_card = None;
+            }
+            if let Some(a) = act {
+                self.result_card = None;
+                match a {
+                    CardAct::TechAll(k) => {
+                        self.tech_all = true;
+                        if self.workspace == Workspace::Nesting {
+                            self.tech_nest_all = Some(true);
+                        }
+                        self.run_tech(k);
+                    }
+                    CardAct::NestAll => self.run_nesting(),
+                    CardAct::ShowPart(i) => {
+                        self.sel_part = Some(i);
+                        self.scroll_to_part = Some(i);
+                        // Keep the card: it still says what came in.
+                        self.result_card = Some(card.clone());
+                    }
+                    CardAct::SheetTab => self.tab = Tab::Sheet,
+                }
+            }
+        }
+
+        // --- the last export: where the files went, until closed ---
+        if let Some((dir, files, warning)) = self.last_export.clone() {
+            let mut close = false;
+            egui::Area::new(egui::Id::unique("last_export")).order(egui::Order::Foreground).fixed_pos(rect.left_top() + Vec2::new(12.0, 12.0 + tech_card_h)).show(ui.ctx(), |ui| {
+                egui::Frame::new().fill(th().card).stroke(Stroke::new(1.0, th().border)).corner_radius(CornerRadius::same(10)).inner_margin(egui::Margin::same(12)).show(ui, |ui| {
+                    ui.set_max_width(330.0);
+                    ui.horizontal(|ui| {
+                        let (ok_col, title) = if warning.is_some() { (th().warn_fg, "Programs written — with a warning") } else { (th().ok_fg, "Programs written") };
+                        ui.label(RichText::new(format!("✔ {title}")).strong().color(ok_col));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("✖").on_hover_text("Close").clicked() {
+                                close = true;
+                            }
+                        });
+                    });
+                    let shown: Vec<&String> = files.iter().take(4).collect();
+                    for f in &shown {
+                        ui.label(RichText::new(f.as_str()).monospace().size(12.0));
+                    }
+                    if files.len() > shown.len() {
+                        ui.label(RichText::new(format!("and {} more", files.len() - shown.len())).size(12.0).color(th().text_dim));
+                    }
+                    ui.label(RichText::new(dir.display().to_string()).size(11.5).color(th().text_dim));
+                    if let Some(w) = &warning {
+                        ui.label(RichText::new(w).size(12.0).color(th().warn_fg));
+                    }
+                    ui.add_space(4.0);
+                    if ui.button("📂 Open folder").clicked() {
+                        open_folder(&dir);
+                    }
+                });
+            });
+            if close {
+                self.last_export = None;
+            }
+        }
+
         // --- pop-up notices (bottom-right), fade out after a few seconds ---
-        self.toasts.retain(|t| now - t.1 < 4.0);
+        // Long messages (an export's folder, what a nesting removed) stay longer.
+        let life = |m: &str| (4.0 + m.len() as f64 / 40.0).min(9.0);
+        self.toasts.retain(|t| now - t.1 < life(&t.0));
         let mut y = rect.bottom() - 14.0;
         for (msg, t0) in self.toasts.iter().rev().take(3) {
             let age = (now - t0) as f32;
-            let alpha = if age < 0.2 { age / 0.2 } else if age > 3.4 { ((4.0 - age) / 0.6).max(0.0) } else { 1.0 };
+            let end = life(msg) as f32;
+            let alpha = if age < 0.2 { age / 0.2 } else if age > end - 0.6 { ((end - age) / 0.6).max(0.0) } else { 1.0 };
             let galley = painter.layout(msg.clone(), FontId::proportional(12.5), Color32::WHITE, 420.0);
             let size = galley.size() + Vec2::new(28.0, 14.0);
             let slide = (1.0 - alpha) * 12.0;
@@ -2126,6 +2577,11 @@ impl eframe::App for App {
         self.settings_window(&ctx);
         self.library_window(&ctx);
         self.stock_window(&ctx);
+        if self.demo_open_menu {
+            egui::Area::new(egui::Id::unique("demo_open_menu")).order(egui::Order::Foreground).fixed_pos(Pos2::new(8.0, 138.0)).show(&ctx, |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| self.open_job_menu(ui));
+            });
+        }
         self.erp_window(&ctx);
         self.naming_window(&ctx);
         self.db_browser(&ctx);
@@ -2236,7 +2692,10 @@ impl eframe::App for App {
             .frame(egui::Frame::new().fill(th().chrome).inner_margin(egui::Margin { left: 0, right: 0, top: 3, bottom: 0 }))
             .show_separator_line(false)
             .show(ui, |ui| self.ribbon_tabs(ui));
+        // One fixed height for every tab, so the drawing never jumps when
+        // switching tabs.
         egui::Panel::top("ribbon")
+            .exact_size(crate::ui_parts::RIBBON_H)
             .frame(
                 egui::Frame::new()
                     .fill(th().chrome)
@@ -2285,10 +2744,11 @@ impl eframe::App for App {
                     self.parts_search_bar(ui);
                 });
             });
+        // Sized to one row of part cards; drag the edge for more.
         egui::Panel::bottom("parts_view")
             .resizable(true)
-            .default_size(178.0)
-            .min_size(178.0)
+            .default_size(142.0)
+            .min_size(120.0)
             .frame(egui::Frame::new().fill(th().panel))
             .show(ui, |ui| self.parts_view(ui));
         if self.show_program {
@@ -2319,13 +2779,27 @@ impl App {
                 .open(&mut open)
                 .collapsible(false)
                 .resizable(false)
-                .anchor(Align2::RIGHT_TOP, Vec2::new(-24.0, 140.0))
+                .anchor(Align2::RIGHT_TOP, Vec2::new(-24.0, 176.0))
                 .show(ctx, |ui| self.results(ui));
             if !open {
                 self.show_times = false;
             }
         }
     }
+}
+
+/// Show a folder in the computer's file manager (Explorer on Windows).
+pub fn open_folder(dir: &std::path::Path) {
+    let prog = if cfg!(windows) { "explorer" } else if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    let _ = std::process::Command::new(prog).arg(dir).spawn();
+}
+
+/// The Export CNC tooltip: what is written (every sheet), in which format and
+/// where, so nobody has to guess before or after exporting.
+pub fn export_tip(app: &App) -> String {
+    let n = app.result.sheets.len();
+    let what = if app.blm.on { "BLM LC5 program set" } else { "CNC program" };
+    format!("Writes a {what} for each of the {n} sheet(s), plus a parts report, to\n{}\n(Settings → Folders to change it).", app.export_dir().display())
 }
 
 fn main() -> eframe::Result {
@@ -2581,9 +3055,21 @@ fn main() -> eframe::Result {
                     app.auto_remnant_edge();
                 }
             }
+            // --stock-demo (screenshots): two made-up sheets in the stock, the
+            // smaller one picked, so the window shows a real choice.
+            if std::env::args().any(|a| a == "--stock-demo") {
+                let (m, t) = (app.spec.material, app.spec.thickness);
+                let _ = stock::Stock::update(&app.library_dir(), |s| {
+                    s.add_sheet(stock::Item::sheet("DEMO-S1", m, t, 2000.0, 1000.0, 5), true)?;
+                    let mut r = stock::Item::sheet("DEMO-R1", m, t, 1200.0, 1000.0, 1);
+                    r.kind = stock::Kind::UserRemnant;
+                    s.add_sheet(r, true)
+                });
+                app.stockui.sel = Some("DEMO-R1".into());
+            }
             if std::env::args().any(|a| a == "--stock") {
                 app.stockui.open = true;
-                app.stockui.show_options = true;
+                app.stockui.show_options = std::env::args().any(|a| a == "--stock-options");
             }
             // --erp: the ERP window filled with made-up work (screenshots, no network).
             if std::env::args().any(|a| a == "--erp") {
@@ -2639,7 +3125,8 @@ fn main() -> eframe::Result {
                 }
             }
             if want_manual && !app.result.sheets.is_empty() {
-                app.tab = Tab::Sheet;
+                // Pick contours is on the Machining tab, with Undo pick and Clear.
+                app.tab = Tab::Machining;
                 app.manual_mode = true;
                 let picks: Vec<nest::P> = app.result.sheets[0].iter().take(3).map(|p| [p.x + p.w * 0.5, p.y]).collect();
                 for (k, p) in picks.into_iter().enumerate() {
@@ -2740,6 +3227,45 @@ fn main() -> eframe::Result {
             if want_jobs {
                 app.workspace = Workspace::Jobs;
             }
+            // --export-review / --part-check (screenshots): the Export CNC
+            // review, or Verify machining's result on the opened part.
+            if std::env::args().any(|a| a == "--export-review") {
+                app.export_checked();
+            }
+            if std::env::args().any(|a| a == "--part-check") {
+                app.verify_machining_now();
+            }
+            // --import-card (screenshots): the card after importing the last
+            // two parts' drawings. --open-job-menu: the Open job list, with a
+            // job file and a Library job saved under the (temporary) home.
+            if std::env::args().any(|a| a == "--import-card") {
+                // Two new drawings (made-up references), not yet nested.
+                for (k, name) in ["DEMO-101", "DEMO-102"].into_iter().enumerate() {
+                    if let Some(mut p) = app.parts.get(k * 3).cloned() {
+                        p.name = name.into();
+                        p.qty = [6, 4][k];
+                        p.color = app.color_seq_next();
+                        app.parts.push(p);
+                    }
+                }
+                app.finish_import(2.min(app.parts.len()), vec![]);
+            }
+            if std::env::args().any(|a| a == "--open-job-menu") {
+                let dir = library::documents_dir();
+                let _ = std::fs::create_dir_all(&dir);
+                app.save_job_to(&dir.join("DEMO-002 base plates.snjob"));
+                app.save_job_to_library();
+                app.demo_open_menu = true;
+            }
+            // --tech-result (screenshots): Auto lead-ins run on one part type,
+            // with its result card and "Apply to all".
+            if std::env::args().any(|a| a == "--tech-result") {
+                app.tab = Tab::Technology;
+                app.sel_part = Some(1.min(app.parts.len().saturating_sub(1)));
+                app.tech_all = false;
+                app.tech_nest_all = Some(false);
+                app.run_tech(techui::TechRerun::AutoLeads);
+            }
             Ok(Box::new(app))
         }),
     );
@@ -2747,6 +3273,39 @@ fn main() -> eframe::Result {
         eprintln!("window error: {e}");
     }
     res
+}
+
+/// A short "what just happened" card on the drawing, with the next steps.
+#[derive(Clone, Debug)]
+pub struct ResultCard {
+    pub title: String,
+    pub lines: Vec<String>,
+    /// Something went wrong or needs a look (orange, not green).
+    pub warn: bool,
+    /// Buttons: the first is the main one.
+    pub actions: Vec<(String, CardAct)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CardAct {
+    /// Run the technology command again on every part type.
+    TechAll(techui::TechRerun),
+    NestAll,
+    /// Pick this part and bring its tile into view in Parts View.
+    ShowPart(usize),
+    /// The Sheet tab: material, thickness, sheet.
+    SheetTab,
+}
+
+impl CardAct {
+    fn tip(self) -> &'static str {
+        match self {
+            CardAct::TechAll(_) => "Run the same command on every part type in the job (Ctrl + Z undoes it)",
+            CardAct::NestAll => "Nest all the job's parts (F5)",
+            CardAct::ShowPart(_) => "Pick the first new part and show its tile in Parts View",
+            CardAct::SheetTab => "Open the Sheet tab: material, thickness and sheet size",
+        }
+    }
 }
 
 #[cfg(test)]

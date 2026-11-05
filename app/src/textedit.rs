@@ -166,7 +166,7 @@ impl App {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(title).strong().color(th().text_strong));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.small_button("✕").on_hover_text("Cancel (Esc)").clicked() {
+                            if ui.small_button("✖").on_hover_text("Cancel (Esc)").clicked() {
                                 cancel = true;
                             }
                         });

@@ -1491,7 +1491,7 @@
   {
    "name": "correct sheet message",
    "group": "verify",
-   "value": "All machining on the sheet has been executed",
+   "value": "No problems found — all machining is in place",
    "source": "MECHANICS VM3"
   },
   {
@@ -3837,7 +3837,7 @@
  {
   "name": "quick ring on empty sheet",
   "group": "quick ring",
-  "value": "select all, redo, next sheet, collisions on/off, compact, undo, previous sheet, fit (clockwise from the top)",
+  "value": "re-nest sheet, redo, next sheet, cut off leftover, sheet stock, undo, previous sheet, fit (clockwise from the top)",
   "source": "MECHANICS QR1"
  },
  {
@@ -3873,8 +3873,26 @@
  {
   "name": "export with overlapping parts",
   "group": "quick ring",
-  "value": "programs written, with a warning naming sheet and parts",
+  "value": "from the ribbon: asked first (QR8); written anyway or by agents: a warning naming sheet and parts",
   "source": "MECHANICS QR6"
+ },
+ {
+  "name": "sheet with overlaps or parts off the sheet",
+  "group": "quick ring",
+  "value": "never shown as all nested: red summary chip with both counts, red \"!\" on the parts' cards",
+  "source": "MECHANICS QR7"
+ },
+ {
+  "name": "Export CNC with problem sheets",
+  "group": "quick ring",
+  "value": "lists each sheet's overlaps and parts off the sheet; Show sheet / Export anyway / Cancel",
+  "source": "MECHANICS QR8"
+ },
+ {
+  "name": "Nest all replacing hand work",
+  "group": "quick ring",
+  "value": "message names the cleared cut order and cut / remnant lines and that Ctrl + Z restores them",
+  "source": "MECHANICS QR9"
  },
  {
   "name": "Nest sheet: parts nested",
@@ -4562,6 +4580,36 @@
   "group": "agents",
   "value": true,
   "source": "MECHANICS AG3"
+ },
+ {
+  "name": "use stock item and re-nest",
+  "group": "nesting one sheet again",
+  "value": "all or nothing: the sheet takes the item and its parts are re-nested, or nothing changes and the message says why; the main choice when parts would no longer fit",
+  "source": "MECHANICS RN7"
+ },
+ {
+  "name": "technology scope on the sheet",
+  "group": "technology",
+  "value": "all part types until This part type is picked by hand; the choice is kept, picking a part doesn't change it; the ring on a part works on that part type",
+  "source": "MECHANICS Apply to"
+ },
+ {
+  "name": "stock row double-click",
+  "group": "nesting one sheet again",
+  "value": "same as the main button: re-nests (all or nothing) when parts would no longer fit",
+  "source": "MECHANICS RN7"
+ },
+ {
+  "name": "import result card",
+  "group": "quick ring",
+  "value": "drawings, new part types and pieces, the job's material, notes; Nest all / Material and sheet",
+  "source": "MECHANICS QR10"
+ },
+ {
+  "name": "open job list",
+  "group": "quick ring",
+  "value": "job files and Library jobs together, newest first, marked File / Library; search above six",
+  "source": "MECHANICS QR11"
  }
 ]
 }

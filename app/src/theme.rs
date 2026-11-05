@@ -15,6 +15,9 @@ pub struct Theme {
     /// Pane title bars.
     pub pane_header: Color32,
     pub border: Color32,
+    /// Outline of fields, check boxes and plain buttons: dark enough that an
+    /// empty check box is still clearly a box.
+    pub control_edge: Color32,
     pub text: Color32,
     pub text_strong: Color32,
     pub text_dim: Color32,
@@ -50,9 +53,10 @@ pub const LIGHT: Theme = Theme {
     chrome: Color32::from_rgb(255, 255, 255),
     pane_header: Color32::from_rgb(249, 249, 251),
     border: Color32::from_rgb(228, 228, 233),
+    control_edge: Color32::from_rgb(178, 178, 190),
     text: Color32::from_rgb(39, 39, 46),
     text_strong: Color32::from_rgb(18, 18, 23),
-    text_dim: Color32::from_rgb(113, 113, 125),
+    text_dim: Color32::from_rgb(96, 96, 108),
     hover: Color32::from_rgb(243, 243, 246),
     pressed: Color32::from_rgb(230, 230, 236),
     accent: Color32::from_rgb(79, 70, 229),
@@ -81,9 +85,10 @@ pub const DARK: Theme = Theme {
     chrome: Color32::from_rgb(17, 17, 21),
     pane_header: Color32::from_rgb(22, 22, 27),
     border: Color32::from_rgb(38, 38, 45),
+    control_edge: Color32::from_rgb(78, 78, 90),
     text: Color32::from_rgb(220, 220, 226),
     text_strong: Color32::from_rgb(244, 244, 247),
-    text_dim: Color32::from_rgb(139, 139, 150),
+    text_dim: Color32::from_rgb(162, 162, 174),
     hover: Color32::from_rgb(30, 30, 37),
     pressed: Color32::from_rgb(40, 40, 48),
     accent: Color32::from_rgb(99, 102, 241),
@@ -146,7 +151,7 @@ pub fn set_dark(ctx: &egui::Context, dark: bool) {
         st.expansion = 0.0;
     }
     w.noninteractive.corner_radius = r;
-    w.inactive.bg_stroke = Stroke::NONE;
+    w.inactive.bg_stroke = Stroke::new(1.0, t.control_edge);
     w.inactive.fg_stroke = Stroke::new(1.0, t.text);
     w.hovered.bg_stroke = Stroke::new(1.0, t.accent_border);
     w.hovered.fg_stroke = Stroke::new(1.5, t.text_strong);
@@ -158,6 +163,15 @@ pub fn set_dark(ctx: &egui::Context, dark: bool) {
     ctx.all_styles_mut(|s| {
         s.visuals = v.clone();
         s.spacing.button_padding = Vec2::new(10.0, 4.0);
+        // Scroll bars stay visible whenever there is more to scroll to, so a
+        // window that continues below its edge says so.
+        s.spacing.scroll = egui::style::ScrollStyle::solid();
+        // A size up from egui's defaults: read at arm's length on a shop PC.
+        use egui::{FontFamily, FontId, TextStyle};
+        s.text_styles.insert(TextStyle::Small, FontId::new(11.5, FontFamily::Proportional));
+        s.text_styles.insert(TextStyle::Body, FontId::new(13.5, FontFamily::Proportional));
+        s.text_styles.insert(TextStyle::Button, FontId::new(13.5, FontFamily::Proportional));
+        s.text_styles.insert(TextStyle::Monospace, FontId::new(13.0, FontFamily::Monospace));
         s.spacing.interact_size.y = 24.0;
     });
 }

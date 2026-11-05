@@ -8,6 +8,10 @@ repository = "https://github.com/KerfLabs/nestpro"
 
 [dependencies]
 eframe = "0.37.0"
+# egui's own monochrome emoji fonts, bundled, so the few symbols in labels
+# (search, folder, warning, check) look the same on every PC instead of
+# depending on which fonts the computer has.
+egui = { version = "0.37.0", default-features = false, features = ["monochrome_emoji_fonts"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 rfd = "0.17.2"
 miniz_oxide = "0.8.9"

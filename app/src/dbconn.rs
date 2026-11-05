@@ -178,20 +178,20 @@ pub fn test_reach(db: &LantekDb) -> String {
     let port = match &inst {
         Some(i) => match browser_port(&host, i) {
             Ok(p) => p,
-            Err(e) => return format!("✗ {e}."),
+            Err(e) => return format!("✖ {e}."),
         },
         None => SQL_DEFAULT_PORT,
     };
     let addrs: Vec<SocketAddr> = match (host.as_str(), port).to_socket_addrs() {
         Ok(a) => a.collect(),
-        Err(e) => return format!("✗ can't find {host}: {e}."),
+        Err(e) => return format!("✖ can't find {host}: {e}."),
     };
     for a in &addrs {
         if TcpStream::connect_timeout(a, Duration::from_secs(TEST_TIMEOUT_S)).is_ok() {
-            return format!("✓ {} answers on TCP {port}{}.", host, inst.map_or(String::new(), |i| format!(" (instance {i})")));
+            return format!("✔ {} answers on TCP {port}{}.", host, inst.map_or(String::new(), |i| format!(" (instance {i})")));
         }
     }
-    format!("✗ {host} doesn't accept connections on TCP {port}.")
+    format!("✖ {host} doesn't accept connections on TCP {port}.")
 }
 
 #[cfg(test)]

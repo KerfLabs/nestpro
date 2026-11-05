@@ -146,7 +146,7 @@ impl App {
                     }
                     fn folder(ui: &mut egui::Ui, tree: &dbquery::JobTree, k: usize, row: &dyn Fn(&mut egui::Ui, usize, &mut Option<(String, usize)>), pick: &mut Option<(String, usize)>, found: bool) {
                         let f = &tree.folders[k];
-                        egui::CollapsingHeader::new(RichText::new(format!("📁 {}  ({})", f.name, f.jobs.len())).size(12.0)).id_salt(("dbfolder", &f.id, found)).default_open(found).show(ui, |ui| {
+                        egui::CollapsingHeader::new(RichText::new(format!("{}  ({})", f.name, f.jobs.len())).size(12.0)).id_salt(("dbfolder", &f.id, found)).default_open(found).show(ui, |ui| {
                             for &c in &f.children {
                                 folder(ui, tree, c, row, pick, false);
                             }
@@ -243,7 +243,7 @@ impl App {
                             self.dbb.job_view = v;
                             self.dbb.job_data = t;
                         }
-                        (_, Err(e)) => self.dbb.status = format!("✗ {e}"),
+                        (_, Err(e)) => self.dbb.status = format!("✖ {e}"),
                     }
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => ctx.request_repaint_after(std::time::Duration::from_millis(200)),
@@ -303,7 +303,7 @@ impl App {
                 }
                 chip(ui, "read-only", th().ok_bg, th().ok_fg);
             });
-            let col = if self.dbb.status.starts_with('✗') { th().warn_fg } else { th().text_dim };
+            let col = if self.dbb.status.starts_with('✖') { th().warn_fg } else { th().text_dim };
             ui.label(RichText::new(&self.dbb.status).size(11.5).color(col));
             if let Some(a) = dbquery::advice(&self.dbb.status) {
                 ui.label(RichText::new(a).size(11.5).color(th().text));

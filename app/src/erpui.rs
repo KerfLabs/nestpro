@@ -452,8 +452,8 @@ impl App {
             busy = true;
             if let Some(r) = t.poll() {
                 self.erp.check_msg = match r {
-                    Ok(s) => format!("✓ {s}"),
-                    Err(e) => format!("✗ {e}"),
+                    Ok(s) => format!("✔ {s}"),
+                    Err(e) => format!("✖ {e}"),
                 };
                 self.erp.check = None;
             }
@@ -464,10 +464,10 @@ impl App {
                 self.erp.stations_task = None;
                 match r {
                     Ok(v) => {
-                        self.erp.stations_msg = format!("✓ {} operation(s), {} marked nestable.", v.len(), v.iter().filter(|s| s.nestable).count());
+                        self.erp.stations_msg = format!("✔ {} operation(s), {} marked nestable.", v.len(), v.iter().filter(|s| s.nestable).count());
                         self.erp.station_info = v;
                     }
-                    Err(e) => self.erp.stations_msg = format!("✗ {e}"),
+                    Err(e) => self.erp.stations_msg = format!("✖ {e}"),
                 }
             }
         }
@@ -528,7 +528,7 @@ impl App {
         }
         ribbon_group(ui, "ERP / MES", |ui| {
             for p in on {
-                if ribbon_button(ui, Icon::Import, &format!("{}\njobs", p.name()), self.erp.open && self.erp.provider == p, true).on_hover_text(format!("Work waiting to be nested in {} — import it as a job", p.name())).clicked() {
+                if ribbon_button(ui, Icon::WorkOrders, &format!("{}\njobs", p.name()), self.erp.open && self.erp.provider == p, true).on_hover_text(format!("Work waiting to be nested in {} — import it as a job", p.name())).clicked() {
                     if self.erp.open && self.erp.provider == p {
                         self.erp.open = false;
                     } else {
@@ -552,6 +552,8 @@ impl App {
         let mut open = true;
         let name = self.erp.provider.name();
         egui::Window::new(RichText::new(format!("{name} — work to nest")).size(16.0).strong())
+            .pivot(egui::Align2::CENTER_TOP)
+            .default_pos(crate::ui_parts::dialog_pos(ctx))
             .id(egui::Id::unique("erp_window"))
             .open(&mut open)
             .default_size([1080.0, 640.0])
@@ -930,7 +932,7 @@ impl App {
                                 self.erp.token_input.clear();
                                 self.erp.check_msg = "Token remembered (encrypted for your Windows account).".into();
                             }
-                            Err(e) => self.erp.check_msg = format!("✗ {e}"),
+                            Err(e) => self.erp.check_msg = format!("✖ {e}"),
                         }
                     }
                 }
@@ -962,7 +964,7 @@ impl App {
                     test = true;
                 }
                 if !self.erp.check_msg.is_empty() {
-                    let col = if self.erp.check_msg.starts_with('✗') { t.warn_fg } else { t.ok_fg };
+                    let col = if self.erp.check_msg.starts_with('✖') { t.warn_fg } else { t.ok_fg };
                     ui.label(RichText::new(&self.erp.check_msg).color(col));
                 }
             });
@@ -1039,7 +1041,7 @@ impl App {
                     load = true;
                 }
                 if !self.erp.stations_msg.is_empty() {
-                    let col = if self.erp.stations_msg.starts_with('✗') { t.warn_fg } else { t.text_dim };
+                    let col = if self.erp.stations_msg.starts_with('✖') { t.warn_fg } else { t.text_dim };
                     ui.label(RichText::new(&self.erp.stations_msg).size(11.5).color(col));
                 }
             });
@@ -1127,7 +1129,7 @@ impl App {
             StationInfo { op: laser, nestable: true, work_centers: vec![r("wc1", "Laser cell")], equipment: vec![r("eq1", "Fiber 6 kW"), r("eq2", "Fiber 3 kW")] },
             StationInfo { op: thin, nestable: true, work_centers: vec![r("wc1", "Laser cell")], equipment: vec![r("eq2", "Fiber 3 kW")] },
         ];
-        self.erp.stations_msg = "✓ 6 operation(s), 2 marked nestable.".into();
+        self.erp.stations_msg = "✔ 6 operation(s), 2 marked nestable.".into();
         self.erp.loaded = true;
         self.erp.open = true;
         self.erp.tab = ErpTab::WorkOrders;
