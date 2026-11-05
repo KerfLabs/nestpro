@@ -117,8 +117,22 @@ DXF import and export, and the default automatic lead and micro-joint settings.
 
 How the rebuild uses them:
 
-- **Joining tolerance 0.01 mm** (`dxf::JOIN_TOL`, D4). Open pieces whose ends are further
-  apart than that stay open and are reported.
+- **Joining tolerance 0.01 mm** (`dxf::JOIN_TOL`, D4). Then, among the chains still open only,
+  gaps up to **0.5 mm** are closed with a straight piece (`dxf::CLOSE_TOL`, IM8: the original's
+  importers have "close contours" on with 0.5 mm, DXF included) — to the nearest open end, or back
+  to the chain's own start when that is nearer — and reported ("N gap(s) up to 0.5 mm closed").
+  Contours that close at 0.01 mm are never touched by this, so a loose line near an outline can't
+  take a piece of it. Pieces that still don't meet stay open and are reported.
+- **What is read** (JOB-20): lines, arcs, circles, polylines (with bulges, old and new style),
+  ellipses, splines, TEXT/MTEXT and block inserts, through the same geometry step as DWG, so DW7–DW12
+  apply to DXF too: each object's own plane (an extrusion of 0,0,−1 mirrors it), blocks exploded with
+  insert point, rotation, scale and grid (objects on layer 0 take the insert's layer), ellipses and
+  splines within 0.1 mm, smoothed polylines without their frame points, meshes skipped. Dimensions,
+  points, hatches, attributes, viewports, leaders, tolerances, wipeouts and images are annotations
+  and left out without a note; other unknown objects are named in the import notes.
+- **Model space only (DX1)**: objects marked as paper space (title blocks, sheet borders) are left
+  out and counted in the notes ("N paper-space objects"); agents and code can ask for them
+  (`dxfread::Options::paper_space`). Estimated, as DW6.
 - **Arc smoothness 0.1 mm** (`dxf::ARC_CHORD_ERR`, D4): arcs, circles and bulges are split
   so no straight piece strays more than 0.1 mm from the true arc.
 - **Layers (D5)**: a drawing with more than one layer opens "Drawing layers". Every layer
@@ -141,6 +155,155 @@ are unnamed, and a 10 mm lead wouldn't fit the 5 mm part gap, so the 5 mm automa
 stays. Also the meaning of the 120° angles and the 8 lead type codes, the joint value 100.0,
 the bending hand-off itself (D2: no bending software here), and splines and ellipses (not
 read yet).
+
+# Importing part drawings: DWG, MEC, IGES, PDF, ESSI, DSTV, GEO
+
+Besides DXF, the original imports part drawings through a family of converters, one per format,
+that share one set of options. The rebuild reads each format itself (`src/formats/`) and turns it
+into the same drawing the DXF reader makes, so joining, outline and holes, layer roles (Cut / Mark /
+Leave out) and part data from the file name follow the DXF rules above. The file's format is
+picked by its extension and checked against its content (a DWG named `.dxf` is still read as DWG).
+Window: Import drawings (Jobs and Nesting ribbons) or drop files on the window; agents:
+`import-drawing` / `drawing-layers` (`import-dxf` / `dxf-layers` still work).
+
+What the file itself says about the part is used: its quantity (before the file name's), and its
+material and thickness are compared with the job's and reported when they differ. A file holding
+several parts (a Lantek nesting, a VULCAN program) gives one part each, named by the file or
+numbered `<file>-1`, `<file>-2`…
+
+Every reader takes untrusted files: a damaged or hostile file gives a plain-word message, never
+a crash or a hang, and a file over a reader's limits (millions of points or objects, endless
+nesting, huge declared sizes) is refused whole — no part comes in quietly missing a contour.
+
+### Shared converter options
+
+| # | Rule | |
+|---|------|---|
+| IM1 | Part name: 1 automatic, 2 from the file (ESSI/GEO: the file name; DSTV: from header lines, DS9), 3 ask. Default 2. | observed |
+| IM2 | Default material and machine are empty. A material read from a file is kept only if the material table has it. | observed |
+| IM3 | Default thickness 0.8 mm and quantity 1, used when the file gives none. | observed |
+| IM4 | All rotations allowed by default (plain and mirrored 0/90/180/270, other angles). | observed |
+| IM5 | Imported parts go into the active job; the drawing is previewed. | observed |
+| IM6 | Catalogue item off (price 0); filler part, hole filler, "unit parts only" and draft off; priority 0. | observed |
+| IM7 | Linear tolerance 0.01 mm (ESSI 0.1, which is also its program unit); angular tolerance 0.1°. | observed (values), estimated (ESSI) |
+| IM8 | Open contours are closed within 0.5 mm; largest radius 99 999.999; discretisation 10 mm; verify and smoothing off. | observed |
+| IM9 | Detect equal parts off; order contours off (when on: outer clockwise, inner counter-clockwise). | observed |
+
+Every format joins at 0.01 mm and then closes gaps up to 0.5 mm (IM8, as for DXF above; how the
+original closes a gap — a new straight piece or moving an end — isn't traced). Asking for a name,
+equal-part detection and per-import defaults aren't built (FEATURES JOB-18).
+
+### DWG
+
+| # | Rule | |
+|---|------|---|
+| DW1 | A DWG becomes the same drawing the DXF reader makes. (The original converts it to an R12 DXF and runs its DXF import.) | observed |
+| DW2 | AutoCAD R13, R14, 2000, 2004, 2007, 2010, 2013 and 2018 files are read directly; R12 and older are refused with "save it as DXF". | observed |
+| DW3 | Objects are found through the file's handle map, so erased objects still in the file are never imported. | observed |
+| DW4 | Compressed sections (2004 and 2007 kinds) are unpacked; the 2007 error-correction bytes are dropped. | observed |
+| DW5 | A damaged object is skipped and counted; the rest of the drawing imports. | estimated |
+| DW6 | Model space only (paper space is an option); block contents appear only where a block is inserted. | estimated |
+| DW7 | Each object's own plane is applied: an extrusion of 0,0,−1 mirrors X (circles, arcs, polylines, texts, inserts). | observed |
+| DW8 | Block inserts are exploded, up to 16 levels, with insert point, rotation, X/Y/Z scale and extrusion from the block's base point; grid inserts are expanded; objects on layer 0 inside a block take the insert's layer. | observed; layer 0 estimated |
+| DW9 | Ellipses are split into straight pieces within 0.1 mm; a full ellipse is a closed piece. | estimated |
+| DW10 | Splines with control points are evaluated exactly and split within 0.1 mm; splines with fit points only get a smooth cubic through them; closed when the ends meet or flagged closed. | estimated |
+| DW11 | TEXT and MTEXT become texts (position, height, angle) without formatting codes; %%c, %%d, %%p become Ø, °, ±. Attributes aren't imported. | observed (attributes off), estimated |
+| DW12 | Smoothed 2D polylines leave out their frame points; 3D polylines are laid flat; mesh and polyface polylines are skipped. | estimated |
+| DW13 | Invisible objects are kept (as the original's converter does). | observed |
+| DW14 | Numbers are millimetres, no unit conversion. | observed |
+| DW15 | Bad input never crashes the program; the message names the AutoCAD version and says to save as DXF. A drawing over the import limits (5 million points, 2 million objects, a block grid of more than 10 000 copies) is refused whole — DXF too — so no contour goes missing from a part that seems imported. | estimated (limits own design) |
+| DW16 | When a file can't be read, an installed ODA File Converter or `dwg2dxf` converts it to DXF, which is then read. | estimated |
+
+### Lantek part files (.mec)
+
+Continues MF1–MF3 below ("Lantek's own file format").
+
+| # | Rule | |
+|---|------|---|
+| MF4 | Version 8: each line after the version line is the hex text of one encrypted line (Blowfish, CBC, 16-byte key, the chain starting again from zero on every line); the plain line is padded with spaces to a multiple of 8 bytes. | observed |
+| MF5 | Version 9: everything after the version line is one encrypted block (AES-128, CBC, PKCS#7 padding, fixed key and IV). Copies kept in memory hold the same as base64. | observed |
+| MF6 | Decrypted, the file is an ordinary version-7 file read by the same record reader. The newest plain minor version is 7.3. | observed |
+| MF7 | The rebuild ships no keys. It reads them from a key file `lantek-keys.txt` in the settings folder, else finds them in the shop's own Lantek install (Settings → Lantek folder, then `LANTEK_DIR` or `C:\Lantek\Expert`): every program library in the folder is searched for 16-byte values built with four 32-bit stores in a row, once per run of the app. The first source whose keys open the file wins; of a source's candidates, the one whose output starts with a numeric record is used. Without keys the message says how to fix it. | observed (how the keys are built), own design |
+| MF8 | One record per line, the first number its type: `1` line (two end points), `2` arc (centre, radius, start angle and signed sweep in degrees, negative = clockwise, end points), `3` circle (centre, radius). | observed; sweep sign estimated, checked on samples |
+| MF9 | `90` bounding box, `91` counters, `92` a 4×4 placement matrix (identity in every file seen, not applied), `999` end. | observed |
+| MF10 | `16 n` applies to the next element only; in nesting files 2 marks outer contours and 1 inner ones. | observed (scope), estimated (meaning) |
+| MF11 | `21 n` applies to the next element only; `21 1` marks the lead-in line, which is left out. | observed (scope), estimated (meaning) |
+| MF12 | Records 61–63, 71–73 (copies of a contour's first and last element) and 33, 81 (member lists) are bookkeeping and draw nothing. | observed |
+| MF13 | "A" in place of a number means no value. Part data: `31 2 1137` material, the third value of `31 2 1090` thickness, `31 2 1145` part name. | estimated |
+| MF14 | A file with several outer contours (a nesting) becomes one part per outer contour with what lies inside it; equal shapes become one part with a quantity. | own design |
+| MF15 | Coordinates are millimetres. | estimated |
+
+### ESSI cutting programs
+
+| # | Rule | |
+|---|------|---|
+| ES1 | A line is read by how many +/- signs it has: none = function code, one = code with a value, two = straight move, five = arc; others are ignored. Each number runs from its sign to the next; empty = 0. Moves are relative. | observed |
+| ES2 | One program unit is 0.1 mm. | observed |
+| ES3 | Control dialects: ESSI (.CNC; comment 3/4, rapid 5/6, oxy 7/8, plasma 53/54, punch mark 9/10, powder 110/111), BURNY (no rapid or plasma codes, powder 13/14), ESAB (.MPG, adds inkjet labels 223–226), MESSER (.LOS, no plasma), VULCAN (.DAT, several parts). Picked by extension, else ESSI; agents: `dialect=`. | observed; by extension own design |
+| ES4 | Arc: end and centre relative to the start; a last sign `-` = clockwise, else counter-clockwise; start = end is a full circle. | observed |
+| ES5 | With the torch on (oxy or plasma) a move is cut; otherwise it goes on the active marker's layer (torch mark, pen, punch, powder in that order). | observed |
+| ES6 | Straight moves are drawn with the torch on outside rapid, or with a marker on (in rapid too). Arcs are always drawn (outside any tool: as cut). Torch on/off without a move is a pierce point, not read. | observed; arcs outside a tool estimated |
+| ES7 | Between comment start and end only those two codes count. | observed |
+| ES8 | Kerf, tool-table and end codes don't change the shape. | observed |
+| ES9 | VULCAN: a part ends at ` 0`, the file at ` NO MORE SHEETS`; ` JOB:`, ` SHEET NO.`, ` GAUGE:`, ` MATRL:` give the name `JOB-n`, thickness and material. | observed |
+| ES10 | ESAB inkjet label: the line after code 224 is the text; height from the inkjet size table (40–90 mm), angle in 1/100°. | observed; placement estimated |
+
+### DSTV plates (.nc1)
+
+| # | Rule | |
+|---|------|---|
+| DS1 | Header lines are read by position; without an outer contour the plate is length × height. | observed |
+| DS2 | Only plates (profile code B) import; beams, angles and channels are refused with a message. | observed |
+| DS3 | Block codes in column 1, `**` a comment; data from column 3: face letter, numbers each optionally followed by a letter; a blank face or letter repeats the previous one. Unknown blocks are skipped. | observed; skipping own choice |
+| DS4 | A contour point with radius r ≠ 0 starts the shorter arc to the next point, counter-clockwise when r > 0 on the front face (reversed on the rear). Points marked `t`/`w` with a radius are notches and left out. | observed |
+| DS5 | Holes are circles; `l` after the depth = a slotted hole stretched by length and width and turned by the angle; `m` after y = a marked hole. | observed; angle in degrees estimated |
+| DS6 | Holes with radius ≤ 0 are points (not read). | observed |
+| DS7 | Only the front and rear faces are read; a contour on both keeps the front's; rear-face marking is left out. | observed |
+| DS8 | Material = header line 5, quantity = line 6, thickness = the web thickness (line 13). | observed |
+| DS9 | The name can be built from header lines (`4`, `1+'-'+4`); default the file name. | observed |
+| DS10 | `SI` numbering becomes marked text (height from the file). | observed; marked estimated |
+| DS11 | `PU` powder marking and `KO` marking are drawn as marking; saw cuts, bends and `PR` aren't drawn. | observed |
+
+### GEO drawings
+
+| # | Rule | |
+|---|------|---|
+| GE1 | TRUMPF GEO (with `#~` sections) and pen-code GEO are told apart by content; plotter-command files (PLT/PLA) are refused. | estimated |
+| GE2 | TRUMPF: points are defined once and used by number; `LIN` two points, `ARC` centre/start/end and direction (> 0 counter-clockwise), `CIR` centre and radius; an undefined point fails the import. | observed |
+| GE3 | Element kind 1 cut, 2 not cut, 3 marking, 4 bend line, others cut. Not-cut elements and bend lines are left out. | observed |
+| GE4 | Header line 8 = 2 means inches (× 25.4). | observed |
+| GE5 | Header line 19 = material, line 20 = thickness. | observed |
+| GE6 | `TXT` gives height, angle, insertion point and text lines; kind 3 is marked text. | observed; field order and line spacing estimated |
+| GE8 | Pen-code GEO: 7/−7 cut, −5 mark, 5 points, 8 pen up, 9/99 end; two numbers = move, five = arc (x y cx cy r, r ≥ 0 counter-clockwise; ends within 0.01 = full circle). | observed |
+
+### IGES drawings
+
+| # | Rule | |
+|---|------|---|
+| IG1 | IGES is read as fixed 80-column records (Start, Global, Directory, Parameter, Terminate); each directory entry is two records of nine 8-column fields, its status digits giving hidden / dependent / use / hierarchy; parameters are free-format with Hollerith strings. | observed |
+| IG2 | Lengths are converted to millimetres by the Global section's units flag (or its unit name when the flag is 3). | estimated |
+| IG3 | Read: line (110), circular arc (100; start and end within 0.01 mm = full circle), copious data (106 forms 0–3, 11–13, 63, points joined), parametric spline (112), rational B-spline (126). The rebuild also reads composite curves (102, once), ellipses (104), notes (212, as text) and subfigure instances (408, exploded). Points, dimensions and annotation forms are left out as in DXF; surfaces and solids are left out and reported. | observed (the original's list), own (extras) |
+| IG4 | Each entity's transformation matrix (124) is applied, nested ones too; a matrix whose third row is the X or Y axis has its columns turned so the drawing lies in XY. Drawing views aren't used. | observed |
+| IG5 | The level number is the layer name. | own design |
+| IG6 | Hidden entities, physically dependent ones, parameter-space curves and members of composite curves or subfigure definitions aren't drawn on their own, so nothing is drawn twice. | own design |
+| IG7 | Splines become straight pieces no longer than 10 mm and within 0.1 mm of the curve; arcs use the 0.1 mm arc smoothness. | observed (10 mm), own (0.1 mm) |
+| IG8 | A drawing flat in XZ or YZ without a matrix is laid into XY. | own design |
+
+### PDF drawings (vector)
+
+The original has no PDF reader of its own: it runs a bundled PDF-to-DXF converter and imports the DXF.
+
+| # | Rule | |
+|---|------|---|
+| PD1 | PDF units are points: 1 pt = 25.4/72 mm. A page that sets its own unit (UserUnit, in points) scales everything on it; a unit that can't be read refuses the file. | observed (points), own (UserUnit) |
+| PD2 | Drawing scale: real size = drawing size × scale, default 1:1. | observed |
+| PD3 | All pages go side by side, left to right, in one drawing, each starting where the previous page's media box ends; optionally one part per page (`<file> page 2`). | observed (side by side), estimated (no gap) |
+| PD4 | One layer per line colour. The original numbers them 0, 1, 2… in order of first use; the rebuild names them by colour ("Black", "Red", "Colour #FF8000"; within 16/255 of a basic colour gets its name). PDF layers (optional content) or a single layer can be chosen instead. | observed (by colour), own (names, other modes) |
+| PD5 | Stroked paths are the geometry; shapes that are only filled are left out unless asked for, white fills always; clipping paths aren't drawn. | estimated |
+| PD6 | Curves become straight pieces within 0.1 mm. (The original's converter fits circles and ellipses back.) | own design |
+| PD7 | Text stays text (simple fonts only); invisible text is skipped. | observed (text kept), own (font limits) |
+| PD8 | Protected, damaged and non-PDF files are refused in plain words; a broken cross-reference table is recovered by scanning the file. | own design |
+| PD9 | Form XObjects are drawn through their matrix; images and shadings are skipped and reported. | estimated |
 
 # Part Technology tab (Lead-in/Lead-outs, Micro-Joints, Loops, Cut Technology)
 
@@ -425,7 +588,7 @@ How the rebuild uses them (Sheet tab → **Manual cutting**):
   G-code and shown with M1, M2… badges and a direction arrow. Every other contour follows
   automatically.
 - While picking, dragging only pans the view (parts don't move). Nesting again clears the
-  picks.
+  picks, and so does taking parts off the sheet or removing a product from the job (MM7).
 - Not imitated: open manual paths and joining them (MM5/MM6), common cuts, islands, and the
   standard-shape macros.
 
@@ -531,7 +694,8 @@ A005, A011, A012, A015, A016, A017 and A019. The rebuild follows this for the st
   Arrays start from 2 + A015 parts.
 - **Holes**: a placed part only takes its material out of the sheet's free strips, so smaller
   parts drop into its holes during normal nesting, at every level (holes over B076). Parts
-  inside another part are cut first.
+  inside another part are cut first; with parts in the holes of parts in holes (rings in rings)
+  the most deeply nested goes first (CO1).
 - **Corners** (A017, level 5): not used by the strip engine (it always nests from the lower left).
 - **Rotations** (R1): the Part Properties have the 0/90/180/270° buttons and "may be flipped".
   Placements store quarter turns and a mirror flag; turning a placed part steps to the next
@@ -898,6 +1062,8 @@ How the rebuild uses them:
   then down (3 passes), until its contour is one gap from another contour or the margin. Parts
   stop at the real edge, so L-brackets and gussets tuck into each other's notches. Where edges
   are slanted the slide backs off (14 bisection steps) until the true clearance holds.
+  Compaction works on whole rectangular sheets only: on a remnant with an outline *Compact* is
+  refused (CP1), as it would slide parts toward the box's corner, where there may be no material.
 - **Dragging, dropping and the ghost** use the contour test, and the ghost's approach snap slides
   to the nearest contour within reach (then once across, into corners and notches).
 - **Picking** a part on the sheet follows its outline, so the right part is picked where boxes
@@ -1086,6 +1252,16 @@ cut-off line (read from the example; `20u, −10u` is inferred from one vertical
 | BL12 | Start: approach point outside by **Z039** on edges 1/2 (x or y − Z039) and by **Z040** on 3/4 (+ Z040); cut start inside by **Z040** on 1/2 (+) and **Z039** on 3/4 (−). With PS1 Z016 = 3 (LT9) the approach isn't a `G0` move but goes into `NEXT_L(start,0,0,3,1,start − approach,approach)`; otherwise `SPYOUT`, `DO $A_OUT[7]=1`, `G0 X.. Y..`. Then `G01 G40 X.. Y..`, `PROFILE`. |
 | BL13 | End: cut to **10 mm** inside the end edge, `HD_DWN_OFF` (Z016 = 3 only), then out past the edge by Z040 (edges 3/4) or Z039 (1/2). |
 
+### BLM LC5 — compensation without a lead-in, repeated parts, stale programs
+
+| # | Rule | Source |
+|---|------|--------|
+| BL24 | A contour **without a lead-in** still gets its G41/G42: with PS1 **Z028** above 0.1 mm (4 mm in the shop's file) the first straight move is split, `G01 G4x` to Z028 along it (at most half of it), then `PROFILE`, then the rest of the move. A contour that starts with an arc gets a zero-length `G01 G4x` at its start first. The rebuild reads Z028 from the PS1 (built-in 4). | Observed |
+| BL37 | Copies of a part share one subprogram only when their **whole machining is the same** relative to their corner (turn, mirror, start point, leads). A copy whose lead was moved, for example clear of a neighbour, gets its own subprogram; otherwise it would be cut with the first copy's lead. | Rebuild |
+| KC19 | A post that turns one axis round swaps **G2 and G3** as well as G41 and G42; an arc that kept its word would cut the rest of the circle. | Rebuild |
+| CO1 | **Cut order with parts in holes**: the part inside the most other parts' boxes is cut first, so with rings in rings the innermost goes first and no hole drops with an uncut part in it. | Rebuild |
+| EXP1 | **Export CNC replaces the job's programs**: in the job's export folder, programs this job wrote earlier and this export didn't (sheets that are gone, or the other format, plain G-code vs. LC5 `.zip` / `.XML`) are removed, so nobody runs a sheet that no longer exists; with no sheets left, exporting refuses and removes them all. Other files are left alone. Remnant marks and cut lines run at their own speed (marking speed, or the normal cutting speed), not the last contour's. | Rebuild |
+
 The rebuild reads Z039, Z040, Z043 from `MchFiles\PstAdi06.PS1` and A005 from `PstAdi06.CF1` at export
 (`blm::adi()`; built-in 10 / 10 / 119.9 / 0.005 if the files are missing), classifies trim ends by
 edge and writes BL12–BL13 exactly (the example's FINAL_CUT is reproduced line for line by a test).
@@ -1241,6 +1417,14 @@ nesting whose LC5 programs (`<name>.zip` / `.XML` / `.SPF`) are next to it, list
 comes from those programs, since the .nxp itself has none (NX4). The program reader accepts both `ORIG`
 and `TRANS` + `AROT` placements (NX6), turning the part by the angle.
 
+| # | Rule (rebuild: reading LC5 programs back) | Source |
+|---|------|--------|
+| NX7 | `LASTLINE`'s 4th value is the move: **1** straight, **2 / 3** an arc as G02 / G03 with its centre at the start + (9th, 10th) values. The original's posts end round holes and slots on such an arc; it's read back as an arc. | Rebuild (from the post's output) |
+| NX8 | A contour **without a lead-in** (BL24) starts at the pierce point: its first piece, before `PROFILE`, carries G41/G42. Read back, a path that returns to the pierce point is closed there. | Rebuild |
+| NX9 | Opening one sheet's `.SPF` from a folder that holds several sheets' programs opens that sheet. | Rebuild |
+| IU1 | **DXF units**: a drawing's `$INSUNITS` header (1 inch, 2 foot, 4 mm, 5 cm, 6 m) is applied when it's read, in every import. Arcs are cut into straight pieces within 0.1 mm of the real curve in mm (not 0.1 of the drawing's unit). A DXF or DWG that doesn't say is read in the app's unit (Settings → Nesting: mm or inch), as the original takes a drawing's numbers in its system units (DXFASYSW / DWGASYSW `A089 0`, observed); drawings from the ERP integration use its own drawing unit. A DWG's own unit isn't read yet, so a DWG is always in the app's unit. | Rebuild |
+| PP1 | **Looking never changes**: the number boxes in part and sheet properties keep their limits for typing and dragging only; a value outside them (a quantity of 1000, an 8 mm disc, a sheet over 3 m) is shown as it is. | Rebuild |
+
 
 ## How Lantek stores nestings (and how this app saves jobs)
 
@@ -1269,10 +1453,11 @@ newer layout is refused.
 | MF2 | **Encrypted when the major version is above 7.** The rest of the file is then lines of hex, encrypted with Lantek's own keys. |
 | MF3 | The sample files shipped with the original are encrypted (sample part machinings are 8.1, tool files 8.00). An older 32-bit component still writes 7.00 (plain). |
 
-The rebuild does **not** decrypt these: that would mean taking Lantek's encryption keys out of its program.
-Open program recognises a Lantek file by MF1 (by extension .mec / .chp / .ret, or by its first line
-under any name) and explains, with the file's version, that Lantek encrypts it and that the nesting's
-LC5 programs or a DXF export open here instead (MF2).
+Import drawings reads Lantek part files (.mec), plain or encrypted, with keys found in the shop's own
+Lantek install (MF4–MF15, "Importing part drawings"). Open program still doesn't open them as a
+nesting: it recognises a Lantek file by MF1 (by extension .mec / .chp / .ret, or by its first line
+under any name) and says to import its parts with Import drawings, or to open the nesting's LC5
+programs.
 
 ## The app's own library (product and job database)
 
@@ -1510,6 +1695,22 @@ Folders here are one level deep; Cut/Paste/Find/Organize/Export are not built.
 → The rebuild keeps the active job as the open job's **library record** (`settings.ini` → `active_job`, kept in step each frame):
 - At start that saved job is opened again and made current (`jobtree::active_job_id`; an empty or unreadable record means none, as in AJ2, read up to ACTIVE_JOB_LINE_MAX = 40 characters). If it can't be found the record is cleared.
 - Job right-click → **Close** takes a saved job out of Open jobs (AJ3); it stays under Saved jobs (Library). An unsaved job can't be closed silently: save it first or Delete it.
+
+| # | Rule (rebuild: keeping work safe) | Source |
+|---|------|--------|
+| SV1 | Each open job remembers what it looked like when last **saved or opened**. A job that no longer matches has **unsaved changes**; one never saved counts when it has parts or nestings. The example jobs count as saved. | Rebuild |
+| SV2 | **Closing the window** with unsaved jobs asks first, naming them: *Go back and save* or *Close without saving*. **Close** on a job with unsaved changes is refused like an unsaved job (save it, or Delete it to drop them). | Rebuild |
+| SV3 | A job's file and library record stay with that job: **deleting or closing** the open job shows the next job with its own file, and a **copy** has no file and no record, so saving it asks where. Changing the **Library folder** forgets the open jobs' record numbers (they'd name other jobs in the new folder); they're saved as new records there. | Rebuild |
+| SV4 | **Save** checks the job's file first: when another program (an agent) changed it since the window read or wrote it, nothing is written and the window asks which version to keep. A save from the window removes the agents' one-step undo copy (`<job>.snjob~`), and an agent session that finds its job changed by someone else drops its undo steps, so an undo never goes back past someone else's change. | Rebuild |
+| SV5 | Job files and the settings file are written to a temporary file and then renamed over the old one, so a crash or a full disk never leaves half a file. | Rebuild |
+| SV6 | **Nesting from stock never invents a sheet**: with nothing in stock for the job and "use the job's sheet size when stock runs out" off (agents: `nest stock=only`), nothing is nested. When the minimum efficiency drops every stock sheet, the last nesting is kept. | Rebuild |
+| SV7 | **Saving or booking takes the sheets first**, then stores the new remnants. When the sheets can't be taken (another job took the last one), no remnant is stored and the note says so; saving again retries. | Rebuild |
+| SV8 | A **copy** of a job holds no stock and owns no remnants: it takes its own sheets when it's saved. | Rebuild |
+| CP1 | **Compact** is refused on a remnant with an outline (window and agents' `compact`). | Rebuild |
+| MM7 | Taking parts off a sheet clears that sheet's **hand-picked cut order**; removing a product clears every sheet's. The placements are renumbered, so the picks would land on other parts. | Rebuild |
+| AG1 | An agent operation that **refuses** leaves the job exactly as it was, in the session too (nothing it set before refusing is saved by a later change). | Rebuild |
+| AG2 | `edit-part` changes only the sizes it's given (at least 0.5 mm, as in the window); a **disc's** diameter sets both. | Rebuild |
+| AG3 | MCP: a `job` that isn't the job file's path (text) is refused, never dropped (the call would otherwise land on the job already open). | Rebuild |
 - Open jobs vs Saved jobs: Expert keeps every job in its database and has one active job. The rebuild keeps several jobs open in the window (Open jobs) and saves them to its own library (Saved jobs); the active job is the one shown.
 
 
@@ -1967,9 +2168,10 @@ the same path.
   corrector changes; `G40` on the rapid to whatever needs none (a contour without control
   compensation, marking, a free cut line) and on the way home. A contour without a lead-in gets
   the word on a block of its own. A post that turns one axis round (A016 × A017 < 0) mirrors the
-  path, so G41 and G42 swap. Our choices.
+  path, so G41 and G42 swap, and so do G2 and G3 (KC19). Our choices.
 - **BLM LC5 post**: its format is kept (G41/G42 on the first lead-in move, no corrector word);
-  with system compensation only, no word and the offset path.
+  a contour without a lead-in gets it on a short move before `PROFILE` (BL24); with system
+  compensation only, no word and the offset path.
 - **The job's choice**: Machining → Compensation → *Kerf* (Drawing and Nesting modules):
   *CN compensation* and *System compensation* toggles for the job, each defaulting to the machine
   file's; *Use the machine's settings* clears them. They win over the machine's switches and the

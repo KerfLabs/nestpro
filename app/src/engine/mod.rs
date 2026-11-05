@@ -130,7 +130,11 @@ impl Ctx {
     /// Built-in values only (tests).
     #[cfg(test)]
     pub fn builtin() -> Ctx {
-        let mut c = Ctx::from_settings(AppSettings::default());
+        // Built-in machine values only, never the tables of a Lantek install on
+        // this PC (LANTEK_DIR or C:\Lantek\Expert): they would be set for every
+        // test running at the same time.
+        let cfg = AppSettings { lantek_dir: std::env::temp_dir().join("nestpro_test_no_lantek").to_string_lossy().into_owned(), ..AppSettings::default() };
+        let mut c = Ctx::from_settings(cfg);
         // Never the shop's real stock: an empty library of the test's own.
         c.library_dir = std::env::temp_dir().join(format!("nestpro_test_nolib_{}_{:?}", std::process::id(), std::thread::current().id()));
         c
@@ -181,12 +185,25 @@ pub fn next_color(parts: &[Part]) -> usize {
     parts.iter().map(|p| p.color + 1).max().unwrap_or(0)
 }
 
-/// Build a part from a DXF drawing with the given layer roles. Part data in the
-/// file name (Settings → name format) gives the reference and quantity; the
-/// reference gets the prefix/suffix (at most 40 characters). Returns the part
-/// and notes about what was left out or doesn't match the job.
-pub fn part_from_drawing(cfg: &AppSettings, spec: &SheetSpec, name: &str, d: &dxf::Drawing, roles: &BTreeMap<String, dxf::LayerRole>, color: usize) -> Result<(Part, Vec<String>), String> {
-    let (g, rep) = dxf::build(d, roles).map_err(|e| format!("{name}: {e}"))?;
+/// The app material a material text names: its name, code or an alias; then a
+/// grade that starts with an alias holding a digit ("S355J2" → the material
+/// with alias S355); then a look-alike name (as the XML import does).
+pub fn material_like(cfg: &AppSettings, text: &str) -> Option<usize> {
+    let t = text.trim().to_lowercase();
+    cfg.material_for(text)
+        .or_else(|| {
+            (0..cnc::MATERIALS.len()).find(|&i| {
+                cfg.material_aliases.get(i).is_some_and(|a| {
+                    a.split(',').map(|x| x.trim().to_lowercase()).any(|x| x.len() >= 3 && x.chars().any(|c| c.is_ascii_digit()) && t.starts_with(&x))
+                })
+            })
+        })
+        .or_else(|| crate::xmlimport::material_index(text, &cnc::MATERIALS, &cfg.materials))
+}
+
+/// What a drawing's import left out or changed, for the user (every format's
+/// skipped objects, open pieces, closed gaps, outlines outside the part).
+pub fn import_notes(name: &str, rep: &dxf::ImportReport) -> Vec<String> {
     let mut notes = vec![];
     if !rep.skipped.is_empty() {
         notes.push(format!("{name}: ignored {}", rep.skipped.join(", ")));
@@ -194,28 +211,59 @@ pub fn part_from_drawing(cfg: &AppSettings, spec: &SheetSpec, name: &str, d: &dx
     if rep.open_pieces > 0 {
         notes.push(format!("{name}: {} open piece(s) left out", rep.open_pieces));
     }
+    if rep.gaps_closed > 0 {
+        notes.push(format!("{name}: {} gap(s) up to 0.5 mm closed", rep.gaps_closed));
+    }
     if rep.outside_loops > 0 {
         notes.push(format!("{name}: {} outline(s) outside the part left out", rep.outside_loops));
     }
-    // Part data from the file name (v44 "Text definition in the file name").
-    let (reference, qty) = match crate::filename::parse_format(&cfg.name_format).ok().and_then(|f| crate::filename::read(&f, name)) {
-        Some(fd) => {
-            let mut info = vec![];
-            if let Some(m) = &fd.material {
-                if cfg.material_for(m) != Some(spec.material) {
-                    info.push(format!("material {m}"));
-                }
-            }
-            if let Some(t) = fd.thickness.filter(|t| (t - spec.thickness).abs() > 1e-6) {
-                info.push(format!("thickness {t} mm"));
-            }
-            if !info.is_empty() {
-                notes.push(format!("{name}: the name says {} (the job is {} {} mm)", info.join(", "), cnc::MATERIALS.get(spec.material).copied().unwrap_or(""), spec.thickness));
-            }
-            (fd.reference.unwrap_or_else(|| name.to_string()), fd.quantity.unwrap_or(1).max(1))
+    notes
+}
+
+/// "material …, thickness … mm" where part data (from a file name or a file)
+/// doesn't match the job; `None` when it does or says nothing.
+fn spec_mismatch(cfg: &AppSettings, spec: &SheetSpec, material: Option<&str>, thickness: Option<f64>) -> Option<String> {
+    let mut info = vec![];
+    if let Some(m) = material.filter(|m| !m.trim().is_empty()) {
+        if material_like(cfg, m) != Some(spec.material) {
+            info.push(format!("material {}", m.trim()));
         }
-        None => (name.to_string(), 1),
+    }
+    if let Some(t) = thickness.filter(|t| *t > 0.0 && (t - spec.thickness).abs() > 1e-6) {
+        info.push(format!("thickness {t} mm"));
+    }
+    (!info.is_empty()).then(|| format!("{} (the job is {} {} mm)", info.join(", "), cnc::MATERIALS.get(spec.material).copied().unwrap_or(""), spec.thickness))
+}
+
+/// Build a part from a drawing with the given layer roles and the part data its
+/// file carries (DSTV header, MEC record…). `file` is the file's name (without
+/// extension): Settings → name format reads part data from it. `name` is the
+/// part's own name — the same as `file` for a one-part file, else the numbered
+/// or file-given name of one part of it, which is then the reference as it is.
+/// The quantity is the file's, then the file name's, then 1; the reference gets
+/// the prefix/suffix (at most 40 characters). Returns the part and notes about
+/// what was left out or doesn't match the job.
+#[allow(clippy::too_many_arguments)]
+pub fn part_from_read(cfg: &AppSettings, spec: &SheetSpec, file: &str, name: &str, d: &dxf::Drawing, meta: &crate::formats::Meta, roles: &BTreeMap<String, dxf::LayerRole>, color: usize) -> Result<(Part, Vec<String>), String> {
+    let (g, rep) = dxf::build(d, roles).map_err(|e| format!("{name}: {e}"))?;
+    let mut notes = import_notes(name, &rep);
+    // Part data from the file name (v44 "Text definition in the file name") —
+    // the real file name, never a part's numbered name ("DEMO-2" isn't quantity 2).
+    let fd = crate::filename::parse_format(&cfg.name_format).ok().and_then(|f| crate::filename::read(&f, file));
+    let one_part = name == file;
+    let (reference, qty) = match fd {
+        Some(fd) => {
+            if let Some(m) = spec_mismatch(cfg, spec, fd.material.as_deref(), fd.thickness) {
+                notes.push(format!("{name}: the name says {m}"));
+            }
+            let reference = if one_part { fd.reference.unwrap_or_else(|| file.to_string()) } else { name.to_string() };
+            (reference, meta.qty.or(fd.quantity).unwrap_or(1).max(1))
+        }
+        None => (name.to_string(), meta.qty.unwrap_or(1).max(1)),
     };
+    if let Some(m) = spec_mismatch(cfg, spec, meta.material.as_deref(), meta.thickness) {
+        notes.push(format!("{name}: the file says {m}"));
+    }
     // Prefix + name + suffix, at most 40 characters (FN5).
     let reference = crate::filename::part_reference(&cfg.ref_prefix, &reference, &cfg.ref_suffix);
     let part = Part {
@@ -234,17 +282,6 @@ pub fn part_from_drawing(cfg: &AppSettings, spec: &SheetSpec, name: &str, d: &dx
         rots: Default::default(),
     };
     Ok((part, notes))
-}
-
-/// Every layer of the drawings as Cut, the original's default role (code 13).
-pub fn default_roles<'a>(drawings: impl IntoIterator<Item = &'a dxf::Drawing>) -> BTreeMap<String, dxf::LayerRole> {
-    let mut roles = BTreeMap::new();
-    for d in drawings {
-        for l in d.layers().keys() {
-            roles.insert(l.clone(), dxf::LayerRole::Cut);
-        }
-    }
-    roles
 }
 
 /// Take part `idx` out of the job; placed copies go with it and later parts
@@ -309,6 +346,10 @@ pub fn nest_all(parts: &[Part], spec: &SheetSpec, group_nest: bool, stock: Optio
     }
     r
 }
+
+/// Compact on a remnant: it slides parts toward the lower-left corner of the
+/// sheet's box, where a shaped remnant may have no material (CP1).
+pub const COMPACT_REMNANT: &str = "Compact works on whole rectangular sheets only — on a remnant it could slide parts off its outline. Move them by hand, or Nest sheet.";
 
 /// Re-nest one sheet (RN1): only the parts already on it, onto the same sheet
 /// (same format, remnant outline included), by the same automatic level as
@@ -780,14 +821,32 @@ pub fn safe_name(s: &str) -> String {
     s.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '.' { c } else { '_' }).collect()
 }
 
+/// Programs an earlier export of this job wrote that this one didn't (`kept`:
+/// a sheet that's gone, or the other program format) are removed, so nobody
+/// runs a sheet that no longer exists (EXP1).
+fn remove_stale_programs(dir: &Path, job_name: &str, post: &crate::post::PostConfig, blm: Option<&crate::blm::BlmSettings>, kept: &[PathBuf]) -> std::io::Result<()> {
+    let blm_job = blm.map_or(job_name, |b| b.job.as_str());
+    for k in 1..=999 {
+        let nest = crate::blm::nest_name(blm_job, k);
+        for f in [dir.join(post.file_name(job_name, k)), dir.join(format!("{nest}.zip")), dir.join(format!("{nest}.XML"))] {
+            if !kept.contains(&f) && f.is_file() {
+                std::fs::remove_file(&f)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Write every sheet's machine program (G-code, or BLM LC5 sets) and the CSV
 /// parts report into `base\<job>`.
 #[allow(clippy::too_many_arguments)]
 pub fn export(base: &Path, job_name: &str, parts: &[Part], sheets: &[Vec<Placed>], formats: &[SheetFormat], plans: &[SheetPlan], job_spec: &SheetSpec, cuts: &[Vec<CutLine>], marks: &[Vec<Vec<crate::nest::P>>], post: &crate::post::PostConfig, blm: Option<&crate::blm::BlmSettings>, bridge: f64) -> Result<Exported, String> {
+    let dir = base.join(safe_name(job_name));
     if sheets.is_empty() {
+        // The job's earlier programs would still be there to run.
+        let _ = remove_stale_programs(&dir, job_name, post, blm, &[]);
         return Err("Nothing to export — nest first.".into());
     }
-    let dir = base.join(safe_name(job_name));
     let mut files = vec![];
     let mut warning = None;
     let res = (|| -> std::io::Result<()> {
@@ -810,6 +869,7 @@ pub fn export(base: &Path, job_name: &str, parts: &[Part], sheets: &[Vec<Placed>
             std::fs::write(&f, program(k + 1, parts, s, spec, pl, c, marks.get(k).map_or(&[][..], |v| v.as_slice()), post, bridge))?;
             files.push(f);
         }
+        remove_stale_programs(&dir, job_name, post, blm, &files)?;
         let mut csv = String::from("reference,shape,width_mm,height_mm,quantity,nested\n");
         for (i, p) in parts.iter().enumerate() {
             csv.push_str(&format!("{},{},{:.1},{:.1},{},{}\n", p.name.replace(',', " "), p.shape.label(), p.w, p.h, p.qty, placed_count(sheets, i)));

@@ -56,6 +56,10 @@ pub const TRIM_STOP_BEFORE_END: f64 = 10.0;
 /// that edge (mm; the high edges are "at or past the sheet size").
 pub const TRIM_EDGE_TOL: f64 = 0.5;
 
+/// A contour without a lead-in: how far along its first straight move the
+/// compensation word's own move runs before `PROFILE` (PS1 Z028; BL24).
+pub const NO_LEAD_COMP_RUN: f64 = 4.0;
+
 /// The BLM post's settings this writer uses, read from the post's own files
 /// in the install (MchFiles\PstAdi06.PS1 / .CF1); the constants above when
 /// the files aren't there.
@@ -68,11 +72,13 @@ pub struct AdiParams {
     pub corner_deg: f64,
     /// CF1 A005.
     pub arc_tol: f64,
+    /// Z028.
+    pub no_lead_run: f64,
 }
 
 impl Default for AdiParams {
     fn default() -> Self {
-        AdiParams { trim_neg: TRIM_NEG, trim_pos: TRIM_POS, corner_deg: CORNER_MAX_ANGLE_DEG, arc_tol: ARC_TOL }
+        AdiParams { trim_neg: TRIM_NEG, trim_pos: TRIM_POS, corner_deg: CORNER_MAX_ANGLE_DEG, arc_tol: ARC_TOL, no_lead_run: NO_LEAD_COMP_RUN }
     }
 }
 
@@ -89,6 +95,7 @@ impl AdiParams {
             trim_pos: setting(ps1, "Z040").unwrap_or(d.trim_pos),
             corner_deg: setting(ps1, "Z043").unwrap_or(d.corner_deg),
             arc_tol: setting(cf1, "A005").filter(|v| *v > 0.0).unwrap_or(d.arc_tol),
+            no_lead_run: setting(ps1, "Z028").unwrap_or(d.no_lead_run),
         }
     }
 }
@@ -326,11 +333,27 @@ fn write_path(s: &mut String, pts: &[P], closed: bool, lead: &[P], comp: &str, f
             let _ = write!(s, "G01{comp} X{} Y{}\r\n", coord(q[0]), coord(q[1]));
         }
     }
-    s.push_str("PROFILE\r\n");
     let n = moves.len();
     // Everything but the last move (that one is LASTLINE), arcs as G02/G03
     // with I/J from the arc's start to its centre, as in the LC5 example.
     let body = fit_moves(&moves[..n - 1]);
+    if !has_lead && !mark && !comp.is_empty() {
+        // No lead-in to carry the compensation word (BL24): it goes on a move
+        // Z028 along the first straight (at most half of it) before PROFILE,
+        // or on a zero-length move when the contour starts with an arc.
+        let a = moves[0];
+        let run = adi().no_lead_run;
+        let to = match body.first() {
+            Some(&Move::Line(b)) if run > 0.1 => {
+                let len = ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt();
+                let t = run.min(len / 2.0) / len;
+                [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]
+            }
+            _ => a,
+        };
+        let _ = write!(s, "G01{comp} X{} Y{}\r\n", coord(to[0]), coord(to[1]));
+    }
+    s.push_str("PROFILE\r\n");
     let mut from = moves[0];
     let mut idx = 0usize;
     for (k, mv) in body.iter().enumerate() {
@@ -501,28 +524,29 @@ fn bounds(parts: &[Part], sheet: &[Placed]) -> (P, P) {
 /// Build the BLM program set for one sheet.
 pub fn sheet_set(sheet_no: usize, parts: &[Part], sheet: &[Placed], spec: &SheetSpec, plan: &SheetPlan, cuts: &[crate::cutoff::CutLine], set: &BlmSettings) -> BlmSet {
     let nest = nest_name(&set.job, sheet_no);
-    // One subprogram per part as placed (part, turns, mirror).
-    let mut variants: Vec<(usize, u8, bool)> = vec![];
+    let origin_of = |i: usize| bounds(parts, &sheet[i..i + 1]).0;
+    // One subprogram per part as machined: copies share one only when their
+    // whole path (turn, mirror, start, leads) is the same relative to their
+    // corner — a copy whose lead was moved clear of a neighbour gets its own.
+    let mut variants: Vec<(usize, String)> = vec![];
     let mut sub_of = vec![0usize; sheet.len()];
     for (i, pl) in sheet.iter().enumerate() {
-        let key = (pl.part, pl.turns, pl.mirror);
-        sub_of[i] = match variants.iter().position(|v| *v == key) {
+        let text = subprogram(&parts[pl.part].name, plan, i + 1, origin_of(i));
+        sub_of[i] = match variants.iter().position(|v| v.0 == pl.part && v.1 == text) {
             Some(k) => k,
             None => {
-                variants.push(key);
+                variants.push((pl.part, text));
                 variants.len() - 1
             }
         };
     }
-    let origin_of = |i: usize| bounds(parts, &sheet[i..i + 1]).0;
     let mut spf = vec![];
     let mut subs = vec![];
-    for (k, v) in variants.iter().enumerate() {
-        let i = sub_of.iter().position(|&x| x == k).unwrap_or(0);
+    for (k, (part, text)) in variants.iter().enumerate() {
         let name = sub_name(&nest, k + 1);
-        let pname = parts[v.0].name.clone();
-        subs.push((name.clone(), pname.clone(), sheet.iter().enumerate().filter(|(j, _)| sub_of[*j] == k).count(), v.0));
-        spf.push((format!("{name}.SPF"), subprogram(&pname, plan, i + 1, origin_of(i))));
+        let pname = parts[*part].name.clone();
+        subs.push((name.clone(), pname, sub_of.iter().filter(|&&x| x == k).count(), *part));
+        spf.push((format!("{name}.SPF"), text.clone()));
     }
     let (_, hi) = if sheet.is_empty() { ([0.0, 0.0], [0.0, 0.0]) } else { bounds(parts, sheet) };
     let (mut xmax, mut ymax) = (hi[0].max(0.0), hi[1].max(0.0));
@@ -794,7 +818,7 @@ mod blm_tests {
     #[test]
     fn reads_the_posts_own_settings_and_trims_by_edge() {
         let p = AdiParams::parse("Z039 12.0 ; neg\nZ040 8.0 ; pos\nZ043 100.0 ;\n", "A005 0.01 ;\n");
-        assert_eq!(p, AdiParams { trim_neg: 12.0, trim_pos: 8.0, corner_deg: 100.0, arc_tol: 0.01 });
+        assert_eq!(p, AdiParams { trim_neg: 12.0, trim_pos: 8.0, corner_deg: 100.0, arc_tol: 0.01, no_lead_run: NO_LEAD_COMP_RUN });
         assert_eq!(AdiParams::parse("", ""), AdiParams::default());
         assert_eq!(trim_side([0.0, 300.0], 1000.0, 500.0), Some(1));
         assert_eq!(trim_side([300.0, 500.0], 1000.0, 500.0), Some(4));

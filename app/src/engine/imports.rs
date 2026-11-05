@@ -67,10 +67,22 @@ pub fn xml_import(cfg: &AppSettings, lib: Option<&crate::library::Library>, path
                 Some(f) => {
                     let fp = PathBuf::from(f.trim());
                     let fp = if fp.is_absolute() { fp } else { dir.join(fp) };
-                    match std::fs::read(&fp).map_err(|e| e.to_string()).and_then(|b| dxf::read(&String::from_utf8_lossy(&b))) {
-                        // Every layer cut (the import has no layer roles).
-                        Ok(d) => match dxf::build(&d, &default_roles([&d])) {
-                            Ok((g, _)) => Some(Part {
+                    // Any drawing format, one part per product: a file holding several
+                    // parts (a Lantek nesting, a VULCAN program) can't stand for one.
+                    let one = crate::formats::read_file(&fp, None, cfg).and_then(|mut v| {
+                        if v.len() == 1 {
+                            Ok(v.swap_remove(0))
+                        } else {
+                            Err(format!("{} holds {} parts, and a product takes one drawing — import the file with Import drawings instead", fp.display(), v.len()))
+                        }
+                    });
+                    match one {
+                        // Every layer cut, except a format's marking layers (the import has no layer roles).
+                        Ok(rp) => match dxf::build(&rp.drawing, &crate::formats::default_roles([&rp])) {
+                            Ok((g, rep)) => {
+                                // What the drawing's import left out, named per product.
+                                out.notes.extend(super::import_notes(&p.reference, &rep));
+                                Some(Part {
                                 name: name.clone(),
                                 shape: Shape::Custom,
                                 w: g.w,
@@ -84,14 +96,16 @@ pub fn xml_import(cfg: &AppSettings, lib: Option<&crate::library::Library>, path
                                 rots: Default::default(),
                                 group: String::new(),
                                 erp: vec![],
-                            }),
+                            })
+                            }
                             Err(e) => {
                                 out.notes.push(format!("{}: {e}", p.reference));
                                 None
                             }
                         },
                         Err(e) => {
-                            out.notes.push(format!("{}: drawing {} — {e}", p.reference, fp.display()));
+                            // The message already names the drawing's file.
+                            out.notes.push(format!("{}: {e}", p.reference));
                             None
                         }
                     }

@@ -41,9 +41,9 @@ fn an_agent_programs_a_job_from_parts_to_cnc() {
     let mut s = Session::new(Ctx::builtin());
     call(&mut s, "add-shape", Some(jp), json!({"shape": "disc", "w": 200, "qty": 6, "name": "Disc-200"}));
     call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 300, "h": 120, "qty": 4}));
-    let layers = call(&mut s, "dxf-layers", None, json!({"path": dxf.to_str().unwrap()}));
-    assert!(layers["data"].as_object().is_some_and(|m| m.contains_key("MARK")), "{layers}");
-    let r = call(&mut s, "import-dxf", None, json!({"path": dxf.to_str().unwrap(), "layers": "MARK=mark", "qty": 3}));
+    let layers = call(&mut s, "drawing-layers", None, json!({"path": dxf.to_str().unwrap()}));
+    assert!(layers["data"]["layers"].as_object().is_some_and(|m| m.contains_key("MARK")), "{layers}");
+    let r = call(&mut s, "import-drawing", None, json!({"path": dxf.to_str().unwrap(), "layers": "MARK=mark", "qty": 3}));
     assert_eq!(r["data"]["added"][0]["qty"], 3, "{r}");
     let saved = jobfile::load(&job).unwrap();
     assert_eq!(saved.parts.len(), 3);
@@ -256,6 +256,16 @@ fn an_order_comes_in_as_xml_and_a_machine_program_comes_back_as_a_job() {
     assert_eq!(j.sheets.len(), 1);
     assert_eq!(j.sheets[0].len(), steel.parts[0].qty.min(j.sheets[0].len() as u32) as usize);
     assert!(!j.parts.is_empty() && j.spec.thickness == 3.0);
+    // Exported again as plain G-code: the LC5 set it replaces is gone, so no
+    // stale program is left in the folder to run.
+    let e2 = call(&mut s, "export", Some(files[0].as_str().unwrap()), json!({"dir": d.join("cnc").to_str().unwrap()}));
+    assert!(!Path::new(&zip).exists() && !Path::new(&zip.replace(".zip", ".XML")).exists());
+    assert!(e2["files"].as_array().unwrap().iter().all(|f| Path::new(f.as_str().unwrap()).exists()));
+    // Every sheet gone: exporting refuses, and takes the old programs away.
+    call(&mut s, "clear-sheets", Some(files[0].as_str().unwrap()), json!({}));
+    assert!(err(&mut s, "export", json!({"dir": d.join("cnc").to_str().unwrap()})).contains("Nothing to export"));
+    let prog = e2["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).find(|f| !f.ends_with(".csv")).unwrap().to_string();
+    assert!(!Path::new(&prog).exists(), "{prog}");
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -597,6 +607,68 @@ fn agent_booking_names_and_remakes_remnants() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// A refused operation changes nothing, not even in the session; an edited
+/// disc changes its whole diameter and a quantity edit leaves sizes alone; an
+/// MCP call with a job that isn't a path is refused, not run on the open job.
+#[test]
+fn refusals_change_nothing_and_edits_change_only_what_was_asked() {
+    let d = dir("refusals");
+    let jp = d.join("r.snjob");
+    let jp = jp.to_str().unwrap();
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(jp), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut s, "add-shape", None, json!({"shape": "disc", "w": 100, "qty": 1}));
+    call(&mut s, "nest", None, json!({"stock": "off"}));
+    let kerf = s.job.as_ref().unwrap().spec.kerf;
+    err(&mut s, "compensation", json!({"system": "on", "sheet": 999}));
+    assert_eq!(s.job.as_ref().unwrap().spec.kerf, kerf, "refused: nothing kept");
+    call(&mut s, "edit-part", None, json!({"part": 1, "w": 200}));
+    let p = &jobfile::load(Path::new(jp)).unwrap().parts[0];
+    assert_eq!((p.w, p.h), (200.0, 200.0), "a disc's diameter is both sizes");
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 100, "h": 100, "qty": 1}));
+    s.job.as_mut().unwrap().parts[1].w = 0.5;
+    call(&mut s, "edit-part", None, json!({"part": 2, "qty": 10}));
+    assert_eq!(jobfile::load(Path::new(jp)).unwrap().parts[1].w, 0.5, "a quantity edit leaves the size");
+    let r = crate::mcp::handle(&mut s, &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "clear-sheets", "arguments": {"job": 123}}})).unwrap();
+    assert_eq!(r["result"]["isError"], true, "{r}");
+    assert!(!jobfile::load(Path::new(jp)).unwrap().sheets.is_empty(), "the open job wasn't touched");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Stock only, nothing in stock: no sheet is made up. Two jobs nested on the
+/// last sheet: the second booking takes nothing and stores no remnants of a
+/// sheet it couldn't take.
+#[test]
+fn stock_only_never_invents_a_sheet_and_a_failed_booking_stores_no_remnants() {
+    let d = dir("stock_last");
+    let ctx = stock_ctx(&d);
+    let lib = ctx.library_dir.clone();
+    let mut s = Session::new(ctx);
+    let (ja, jb) = (d.join("a.snjob"), d.join("b.snjob"));
+    let (ja, jb) = (ja.to_str().unwrap(), jb.to_str().unwrap());
+    call(&mut s, "new", Some(ja), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 300, "h": 200, "qty": 2}));
+    call(&mut s, "nest", None, json!({"stock": "only"}));
+    assert!(jobfile::load(Path::new(ja)).unwrap().sheets.iter().all(|s| s.is_empty()));
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "LAST", "w": 2000, "h": 1000, "thickness": 3, "qty": 1}));
+    for jp in [ja, jb] {
+        if jp == jb {
+            call(&mut s, "new", Some(jb), json!({"w": 2000, "h": 1000, "thickness": 3}));
+            call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 300, "h": 200, "qty": 2}));
+        }
+        call(&mut s, "nest", Some(jp), json!({"stock": "only"}));
+        assert_eq!(jobfile::load(Path::new(jp)).unwrap().formats[0].stock_ref, "LAST");
+        call(&mut s, "remnant", None, json!({"mode": "line", "x": 800.0}));
+    }
+    call(&mut s, "stock-book", Some(ja), json!({"mode": "book"}));
+    let remnants = |lib: &Path| crate::stock::Stock::load(lib).unwrap().items.iter().filter(|x| x.kind.is_remnant()).count();
+    assert_eq!(remnants(&lib), 1);
+    let r = call(&mut s, "stock-book", Some(jb), json!({"mode": "book"}));
+    assert!(r["message"].as_str().unwrap().contains("remnants not stored"), "{r}");
+    assert_eq!(remnants(&lib), 1, "no remnant of a sheet that wasn't taken");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 // ---------------------------------------------------------------------------
 // The machine file's material × thickness sections (MTL1–MTL9), through the
 // agent operations. Each test puts a made-up machine file on its own thread.
@@ -893,4 +965,93 @@ fn an_agent_turns_a_part_back_to_its_previous_turn() {
     call(&mut s, "rotate", None, json!({"sheet": 1, "item": 1}));
     assert_eq!(angle(&mut s), a0, "and the next turn brings it back");
     let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_agent_imports_dstv_and_essi_drawings() {
+    let d = dir("formats");
+    let job = d.join("plates.snjob");
+    let jp = job.to_str().unwrap();
+    // A made-up DSTV plate: 300 × 200, 10 mm S355, 3 off, one round hole.
+    let nc1 = "ST\n** demo\n  DEMO-001\n  D-10\n  1\n  P7\n  S355J2\n  3\n  PL10*200\n  B\n    300.00\n    200.00\n     10.00\n     10.00\n     10.00\n\
+      0.00\n     15.70\n      0.000\n      0.000\n      0.000\n      0.000\n      0.000\n  \n  \n  \n  \n\
+AK\n  v       0.00u      0.00       0.00\n        300.00       0.00       0.00\n        300.00     200.00       0.00\n          0.00     200.00       0.00\n          0.00       0.00       0.00\n\
+BO\n  v     150.00s    100.00      22.00       0.00\nKO\n  v     100.00u    150.00       0.00\n        150.00     150.00       0.00\nEN\n";
+    std::fs::write(d.join("DEMO-PLATE.nc1"), nc1).unwrap();
+    // A made-up ESSI program (0.1 mm units): a 100 × 50 rectangle cut with the oxy torch.
+    std::fs::write(d.join("DEMO-RECT.CNC"), "%\n7\n+1000+0\n+0+500\n-1000+0\n+0-500\n8\n0\n").unwrap();
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(jp), json!({"w": 1500, "h": 1000, "material": "steel", "thickness": 10}));
+
+    // The DSTV marking block starts as mark.
+    let layers = call(&mut s, "drawing-layers", None, json!({"path": d.join("DEMO-PLATE.nc1").to_str().unwrap()}));
+    assert_eq!(layers["data"]["default_roles"][crate::formats::dstv::KO], "Mark", "{layers}");
+
+    let paths = format!("{};{}", d.join("DEMO-PLATE.nc1").display(), d.join("DEMO-RECT.CNC").display());
+    let r = call(&mut s, "import-drawing", None, json!({"path": paths}));
+    let added = r["data"]["added"].as_array().unwrap();
+    assert_eq!(added.len(), 2, "{r}");
+    // DS8: the quantity comes from the file's header.
+    assert_eq!((added[0]["w"].as_f64(), added[0]["h"].as_f64(), added[0]["qty"].as_u64(), added[0]["holes"].as_u64()), (Some(300.0), Some(200.0), Some(3), Some(1)), "{r}");
+    // ES2: 0.1 mm per program unit.
+    assert_eq!((added[1]["w"].as_f64(), added[1]["h"].as_f64(), added[1]["qty"].as_u64()), (Some(100.0), Some(50.0), Some(1)), "{r}");
+    // S355J2 is a mild-steel grade and the plate is 10 mm: nothing to report.
+    assert!(!r["data"]["notes"].to_string().contains("the file says"), "{r}");
+    let saved = jobfile::load(&job).unwrap();
+    assert_eq!(saved.parts.len(), 2);
+    assert!(saved.parts[0].custom.as_ref().is_some_and(|c| !c.marks.is_empty()), "the KO marking comes in as marking");
+
+    // A file that is no drawing is refused in plain words.
+    std::fs::write(d.join("notes.txt"), "hello").unwrap();
+    let e = err(&mut s, "import-drawing", json!({"path": d.join("notes.txt").to_str().unwrap()}));
+    assert!(e.contains("not a drawing"), "{e}");
+}
+
+#[test]
+fn parts_of_one_file_keep_their_own_names() {
+    // With name format [Reference]-[Quantity], "DEMO-2" (the second part of DEMO)
+    // must not read as reference DEMO, quantity 2: part data comes from the file name.
+    let mut cfg = AppSettings::default();
+    cfg.name_format = "[Reference]-[Quantity]".into();
+    let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
+    let square = |x: f64| crate::dxf::Piece { layer: "0".into(), pts: vec![[x, 0.0], [x + 10.0, 0.0], [x + 10.0, 10.0], [x, 10.0]], closed: true };
+    let part = |x: f64| crate::formats::ReadPart { drawing: crate::dxf::Drawing { pieces: vec![square(x)], ..Default::default() }, meta: Default::default(), mark_layers: vec![] };
+    let inc = crate::formats::incoming("DEMO", vec![part(0.0), part(50.0)]);
+    let names: Vec<(String, u32)> = inc
+        .iter()
+        .map(|i| {
+            let (p, _) = part_from_read(&cfg, &spec, &i.file, &i.name, &i.part.drawing, &i.part.meta, &Default::default(), 0).unwrap();
+            (p.name, p.qty)
+        })
+        .collect();
+    assert_eq!(names, vec![("DEMO-1".to_string(), 1), ("DEMO-2".to_string(), 1)]);
+    // A one-part file still reads its name: BRACKET-40 is BRACKET, 40 off.
+    let one = crate::formats::incoming("BRACKET-40", vec![part(0.0)]);
+    let (p, _) = part_from_read(&cfg, &spec, &one[0].file, &one[0].name, &one[0].part.drawing, &one[0].part.meta, &Default::default(), 0).unwrap();
+    assert_eq!((p.name.as_str(), p.qty), ("BRACKET", 40));
+    // Steel grades count as the material of their alias.
+    assert_eq!(material_like(&cfg, "S355J2"), Some(0));
+    assert_eq!(material_like(&cfg, "Unobtainium"), None);
+}
+
+#[test]
+fn the_xml_import_names_what_a_drawing_lost_and_refuses_multi_part_files() {
+    let d = dir("xmlnotes");
+    // A plate whose second object is damaged, and a Lantek file with two different parts.
+    std::fs::write(d.join("plate.dxf"), "0\nSECTION\n2\nENTITIES\n0\nCIRCLE\n8\n0\n10\n0\n20\n0\n30\n0\n40\n50\n0\nLINE\n8\n0\n10\n0\n20\n0\n11\nbad\n21\n5\n0\nENDSEC\n0\nEOF\n").unwrap();
+    std::fs::write(d.join("nest.mec"), "0 FILEMECLT 7.00\n3 0 0 0 50 50 40\n3 1 0 0 200 50 30\n999\n").unwrap();
+    let xml = d.join("order.xml");
+    std::fs::write(
+        &xml,
+        r#"<?xml version="1.0"?><Import>
+  <Product Reference="DEMO-1" Material="Mild steel" Thickness="3" Quantity="2" Fich="plate.dxf"/>
+  <Product Reference="DEMO-2" Material="Mild steel" Thickness="3" Quantity="2" Fich="nest.mec"/>
+</Import>"#,
+    )
+    .unwrap();
+    let im = imports::xml_import(&AppSettings::default(), None, &xml, 0).unwrap();
+    let notes = im.notes.join(" | ");
+    assert!(notes.contains("DEMO-1: ignored damaged LINE"), "{notes}");
+    assert!(notes.contains("DEMO-2") && notes.contains("holds 2 parts"), "{notes}");
+    assert_eq!(im.added, 1);
 }

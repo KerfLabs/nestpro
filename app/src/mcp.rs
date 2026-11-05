@@ -14,7 +14,7 @@ const PROTOCOLS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 /// How an agent should work with the tools (sent at initialize).
 pub const INSTRUCTIONS: &str = "Sheet Nesting (nestpro) — 2D cutting CAM for laser/plasma/oxyfuel/waterjet, a rebuild of Lantek Expert's cutting workflow.\n\
 Work like a CAM programmer: 1) `new` (job file path, sheet size, material, thickness) or pass an existing job path; an order from another system comes in with `import_xml` (Lantek import XML, one job file per material and thickness), and a machine program set back into a job with `import_program`; \
-2) add parts: `import_dxf` (check `dxf_layers` first for multi-layer drawings) and/or `add_shape`, set quantities with `edit_part`; \
+2) add parts: `import_drawing` (DXF, DWG, MEC, IGES, PDF, ESSI, DSTV, GEO; check `drawing_layers` first for multi-layer drawings) and/or `add_shape`, set quantities with `edit_part`; \
 3) sheets: `stock` mode=list shows the sheets and remnants on the rack (create/add them there); `nest` takes them from stock in the stock's order (remnants first) and uses the job's own sheet when none are stocked; `sheet_add`/`sheet_change` pick a sheet by hand. Then look: `info` (usage, missing parts, which stock sheet each is) and `render` (a picture of the sheet); fix by hand with `place`/`move`/`rotate`/`unplace`/`compact` if needed; \
 4) technology: `leads` (machine or auto), `joints`, `loops`, `cut_tech`, `tech_set`, `text`, or per element with `part_info` + `lead_at`/`joint_at`; \
 5) machining: `cut_order` (optional manual order), `remnant` to keep the leftover, `verify` until every sheet is correct; \
@@ -96,8 +96,14 @@ pub fn handle(s: &mut Session, m: &Value) -> Option<Value> {
         "tools/call" => {
             let name = params.get("name").and_then(Value::as_str).unwrap_or("");
             let mut args = params.get("arguments").cloned().unwrap_or(json!({}));
-            let job = args.as_object_mut().and_then(|o| o.remove("job")).and_then(|v| v.as_str().map(String::from));
-            ok(match s.call(name, job.as_deref(), &args) {
+            // A job given as something other than its file's path is refused,
+            // not dropped (or the call would land on the job already open).
+            let job = match args.as_object_mut().and_then(|o| o.remove("job")) {
+                None | Some(Value::Null) => Ok(None),
+                Some(Value::String(p)) => Ok(Some(p)),
+                Some(_) => Err("job must be the job file's path, as text".to_string()),
+            };
+            ok(match job.and_then(|job| s.call(name, job.as_deref(), &args)) {
                 Ok(r) => {
                     let mut content = vec![json!({"type": "text", "text": serde_json::to_string_pretty(&r.json).unwrap_or_default()})];
                     if let Some(png) = r.image {

@@ -3912,6 +3912,656 @@
   "group": "nesting one sheet again",
   "value": "a restored sheet follows the stock's record of what replaced its remnants, takes those over (out of date) and they are rebuilt; hand-deleted remnants are not remade",
   "source": "MECHANICS RN6"
+ },
+ {
+  "name": "DWG read like DXF",
+  "group": "DWG import",
+  "value": "same drawing as DXF; DXF rules apply",
+  "source": "MECHANICS DW1"
+ },
+ {
+  "name": "DWG versions read",
+  "group": "DWG import",
+  "value": "R13, R14, 2000, 2004, 2007, 2010, 2013, 2018; R12 and older refused",
+  "source": "MECHANICS DW2"
+ },
+ {
+  "name": "DWG objects via handle map",
+  "group": "DWG import",
+  "value": "erased objects never imported",
+  "source": "MECHANICS DW3"
+ },
+ {
+  "name": "DWG section compression",
+  "group": "DWG import",
+  "value": "2004 and 2007 kinds; 2007 check bytes dropped",
+  "source": "MECHANICS DW4"
+ },
+ {
+  "name": "DWG damaged objects",
+  "group": "DWG import",
+  "value": "skipped and counted",
+  "source": "MECHANICS DW5; estimate",
+  "estimated": true
+ },
+ {
+  "name": "DWG space imported",
+  "group": "DWG import",
+  "value": "model space (paper space optional)",
+  "source": "MECHANICS DW6; estimate",
+  "estimated": true
+ },
+ {
+  "name": "DWG object plane",
+  "group": "DWG import",
+  "value": "extrusion 0,0,-1 mirrors X",
+  "source": "MECHANICS DW7"
+ },
+ {
+  "name": "DWG block inserts",
+  "group": "DWG import",
+  "value": "exploded, 16 levels; layer 0 takes the insert's layer",
+  "source": "MECHANICS DW8"
+ },
+ {
+  "name": "DWG ellipse smoothness",
+  "group": "DWG import",
+  "value": "0.1 mm",
+  "source": "MECHANICS DW9; estimate",
+  "estimated": true
+ },
+ {
+  "name": "DWG spline smoothness",
+  "group": "DWG import",
+  "value": "0.1 mm; fit-point splines get a cubic",
+  "source": "MECHANICS DW10; estimate",
+  "estimated": true
+ },
+ {
+  "name": "DWG texts",
+  "group": "DWG import",
+  "value": "TEXT/MTEXT kept without codes; attributes off",
+  "source": "MECHANICS DW11"
+ },
+ {
+  "name": "DWG smoothed polylines",
+  "group": "DWG import",
+  "value": "frame points left out; 3D laid flat; meshes skipped",
+  "source": "MECHANICS DW12; estimate",
+  "estimated": true
+ },
+ {
+  "name": "DWG invisible objects",
+  "group": "DWG import",
+  "value": "kept",
+  "source": "MECHANICS DW13"
+ },
+ {
+  "name": "DWG units",
+  "group": "DWG import",
+  "value": "mm, no conversion",
+  "source": "MECHANICS DW14"
+ },
+ {
+  "name": "DWG bad input",
+  "group": "DWG import",
+  "value": "never crashes; plain-word message",
+  "source": "MECHANICS DW15; estimate",
+  "estimated": true
+ },
+ {
+  "name": "DWG converter fallback",
+  "group": "DWG import",
+  "value": "ODA File Converter or dwg2dxf, then the DXF reader",
+  "source": "MECHANICS DW16; estimate",
+  "estimated": true
+ },
+ {
+  "name": "Version-8 Lantek file encryption",
+  "group": "Lantek files",
+  "value": "Blowfish-CBC per line, hex text, chain from zero per line, space padding to 8",
+  "source": "MECHANICS MF4"
+ },
+ {
+  "name": "Version-9 Lantek file encryption",
+  "group": "Lantek files",
+  "value": "AES-128-CBC over the body after the first line, PKCS#7",
+  "source": "MECHANICS MF5"
+ },
+ {
+  "name": "Decrypted Lantek file",
+  "group": "Lantek files",
+  "value": "plain version 7.x text, same records; newest plain 7.3",
+  "source": "MECHANICS MF6"
+ },
+ {
+  "name": "Keys for encrypted Lantek files",
+  "group": "Lantek files",
+  "value": "found in the shop's Lantek install or lantek-keys.txt; none shipped",
+  "source": "MECHANICS MF7"
+ },
+ {
+  "name": "Lantek geometry records",
+  "group": "Lantek files",
+  "value": "1 line, 2 arc (signed sweep in degrees), 3 circle",
+  "source": "MECHANICS MF8"
+ },
+ {
+  "name": "Lantek header records",
+  "group": "Lantek files",
+  "value": "90 bounding box, 91 counters, 92 placement matrix (not applied), 999 end",
+  "source": "MECHANICS MF9"
+ },
+ {
+  "name": "Lantek contour side attribute",
+  "group": "Lantek files",
+  "value": "16 n on the next element: 2 outer, 1 inner",
+  "source": "MECHANICS MF10; estimate",
+  "estimated": true
+ },
+ {
+  "name": "Lantek lead-in attribute",
+  "group": "Lantek files",
+  "value": "21 1 on the next element = lead-in, left out",
+  "source": "MECHANICS MF11; estimate",
+  "estimated": true
+ },
+ {
+  "name": "Lantek bookkeeping records",
+  "group": "Lantek files",
+  "value": "61-63, 71-73, 33, 81 not drawn",
+  "source": "MECHANICS MF12"
+ },
+ {
+  "name": "Part data in Lantek files",
+  "group": "Lantek files",
+  "value": "31 2 1137 material, 31 2 1090 thickness (3rd value), 31 2 1145 name; A = no value",
+  "source": "MECHANICS MF13; estimate",
+  "estimated": true
+ },
+ {
+  "name": "Lantek nesting file import",
+  "group": "Lantek files",
+  "value": "one part per outer contour; equal shapes merged with a quantity",
+  "source": "MECHANICS MF14; estimate",
+  "estimated": true
+ },
+ {
+  "name": "Lantek file units",
+  "group": "Lantek files",
+  "value": "mm",
+  "source": "MECHANICS MF15; estimate",
+  "estimated": true
+ },
+ {
+  "name": "Converter import: part name",
+  "group": "drawing import",
+  "value": "2 from the file (1 auto, 3 ask)",
+  "source": "MECHANICS IM1"
+ },
+ {
+  "name": "Converter import: unknown material",
+  "group": "drawing import",
+  "value": "left blank",
+  "source": "MECHANICS IM2"
+ },
+ {
+  "name": "Converter import: default thickness",
+  "group": "drawing import",
+  "value": "0.8 mm",
+  "source": "MECHANICS IM3"
+ },
+ {
+  "name": "Converter import: default quantity",
+  "group": "drawing import",
+  "value": "1",
+  "source": "MECHANICS IM3"
+ },
+ {
+  "name": "Converter import: rotations",
+  "group": "drawing import",
+  "value": "all allowed",
+  "source": "MECHANICS IM4"
+ },
+ {
+  "name": "Converter import: into the active job",
+  "group": "drawing import",
+  "value": true,
+  "source": "MECHANICS IM5"
+ },
+ {
+  "name": "Converter import: catalogue item",
+  "group": "drawing import",
+  "value": "off, price 0",
+  "source": "MECHANICS IM6"
+ },
+ {
+  "name": "Converter import: linear tolerance",
+  "group": "drawing import",
+  "value": "0.01 mm (ESSI 0.1)",
+  "source": "MECHANICS IM7"
+ },
+ {
+  "name": "Converter import: angular tolerance",
+  "group": "drawing import",
+  "value": "0.1 deg",
+  "source": "MECHANICS IM7"
+ },
+ {
+  "name": "Converter import: open contour closing",
+  "group": "drawing import",
+  "value": "0.5 mm",
+  "source": "MECHANICS IM8"
+ },
+ {
+  "name": "Converter import: detect equal parts",
+  "group": "drawing import",
+  "value": false,
+  "source": "MECHANICS IM9"
+ },
+ {
+  "name": "ESSI line classes",
+  "group": "ESSI",
+  "value": "0 signs code, 1 code+value, 2 move, 5 arc",
+  "source": "MECHANICS ES1"
+ },
+ {
+  "name": "ESSI unit",
+  "group": "ESSI",
+  "value": "0.1 mm",
+  "source": "MECHANICS ES2"
+ },
+ {
+  "name": "ESSI dialects",
+  "group": "ESSI",
+  "value": "ESSI, BURNY, ESAB (.MPG), MESSER (.LOS), VULCAN (.DAT); default ESSI",
+  "source": "MECHANICS ES3"
+ },
+ {
+  "name": "ESSI arc direction",
+  "group": "ESSI",
+  "value": "last sign '-' clockwise",
+  "source": "MECHANICS ES4"
+ },
+ {
+  "name": "ESSI tool layers",
+  "group": "ESSI",
+  "value": "torch = cut; else torch mark, pen, punch, powder",
+  "source": "MECHANICS ES5"
+ },
+ {
+  "name": "ESSI drawn moves",
+  "group": "ESSI",
+  "value": "torch on outside rapid, or a marker on",
+  "source": "MECHANICS ES6"
+ },
+ {
+  "name": "ESSI comments",
+  "group": "ESSI",
+  "value": "codes 3..4: only those two count",
+  "source": "MECHANICS ES7"
+ },
+ {
+  "name": "ESSI VULCAN parts",
+  "group": "ESSI",
+  "value": "name JOB-sheet, GAUGE thickness, MATRL material",
+  "source": "MECHANICS ES9"
+ },
+ {
+  "name": "ESSI ESAB inkjet sizes",
+  "group": "ESSI",
+  "value": "40, 50, 60, 70, 80, 90 mm",
+  "source": "MECHANICS ES10"
+ },
+ {
+  "name": "DSTV header lines",
+  "group": "DSTV",
+  "value": "5 material, 6 qty, 8 profile code, 9 length, 10 height, 13 thickness",
+  "source": "MECHANICS DS1"
+ },
+ {
+  "name": "DSTV plates only",
+  "group": "DSTV",
+  "value": "profile code B",
+  "source": "MECHANICS DS2"
+ },
+ {
+  "name": "DSTV contour arcs",
+  "group": "DSTV",
+  "value": "r > 0 counter-clockwise on the front face, shorter arc",
+  "source": "MECHANICS DS4"
+ },
+ {
+  "name": "DSTV slotted hole",
+  "group": "DSTV",
+  "value": "'l' after the depth: length, width, angle",
+  "source": "MECHANICS DS5"
+ },
+ {
+  "name": "DSTV point holes",
+  "group": "DSTV",
+  "value": "radius <= 0, not read",
+  "source": "MECHANICS DS6"
+ },
+ {
+  "name": "DSTV faces",
+  "group": "DSTV",
+  "value": "front and rear; rear marking left out",
+  "source": "MECHANICS DS7"
+ },
+ {
+  "name": "DSTV part name",
+  "group": "DSTV",
+  "value": "header expression, default the file name",
+  "source": "MECHANICS DS9"
+ },
+ {
+  "name": "DSTV numbering",
+  "group": "DSTV",
+  "value": "SI = marked text",
+  "source": "MECHANICS DS10; estimate",
+  "estimated": true
+ },
+ {
+  "name": "GEO kinds",
+  "group": "GEO",
+  "value": "TRUMPF (#~ sections) or pen-code by content; plotter commands refused",
+  "source": "MECHANICS GE1; estimate",
+  "estimated": true
+ },
+ {
+  "name": "GEO arc",
+  "group": "GEO",
+  "value": "centre, start, end; direction > 0 counter-clockwise",
+  "source": "MECHANICS GE2"
+ },
+ {
+  "name": "GEO element kinds",
+  "group": "GEO",
+  "value": "1 cut, 2 not cut, 3 mark, 4 bend line",
+  "source": "MECHANICS GE3"
+ },
+ {
+  "name": "GEO inch header",
+  "group": "GEO",
+  "value": "line 8 = 2 -> x25.4",
+  "source": "MECHANICS GE4"
+ },
+ {
+  "name": "GEO material and thickness",
+  "group": "GEO",
+  "value": "header lines 19 and 20",
+  "source": "MECHANICS GE5"
+ },
+ {
+  "name": "Pen-code GEO codes",
+  "group": "GEO",
+  "value": "7/-7 cut, -5 mark, 5 points, 8 pen up, 9/99 end",
+  "source": "MECHANICS GE8"
+ },
+ {
+  "name": "IGES record layout",
+  "group": "IGES import",
+  "value": "80-column S/G/D/P/T records; directory entry 2 records x 9 fields of 8",
+  "source": "MECHANICS IG1"
+ },
+ {
+  "name": "IGES units",
+  "group": "IGES import",
+  "value": "Global units flag (or unit name) -> mm",
+  "source": "MECHANICS IG2; estimate",
+  "estimated": true
+ },
+ {
+  "name": "IGES entities read",
+  "group": "IGES import",
+  "value": "110, 100, 106, 112, 126 (+102, 104, 212 text, 408 exploded); surfaces reported",
+  "source": "MECHANICS IG3"
+ },
+ {
+  "name": "IGES matrices",
+  "group": "IGES import",
+  "value": "124 applied, nested; third row X or Y axis -> laid flat",
+  "source": "MECHANICS IG4"
+ },
+ {
+  "name": "IGES layers",
+  "group": "IGES import",
+  "value": "level number",
+  "source": "MECHANICS IG5"
+ },
+ {
+  "name": "IGES no duplicates",
+  "group": "IGES import",
+  "value": "hidden, dependent, parameter-space, 102/308 members not drawn alone",
+  "source": "MECHANICS IG6"
+ },
+ {
+  "name": "IGES spline pieces",
+  "group": "IGES import",
+  "value": "<= 10 mm and within 0.1 mm",
+  "source": "MECHANICS IG7"
+ },
+ {
+  "name": "IGES lay flat",
+  "group": "IGES import",
+  "value": "XZ/YZ drawing without a matrix -> XY",
+  "source": "MECHANICS IG8"
+ },
+ {
+  "name": "PDF unit",
+  "group": "PDF import",
+  "value": "1 pt = 25.4/72 mm",
+  "source": "MECHANICS PD1"
+ },
+ {
+  "name": "PDF scale",
+  "group": "PDF import",
+  "value": 1,
+  "source": "MECHANICS PD2"
+ },
+ {
+  "name": "PDF pages",
+  "group": "PDF import",
+  "value": "side by side left to right, no gap; option one part per page",
+  "source": "MECHANICS PD3; estimate",
+  "estimated": true
+ },
+ {
+  "name": "PDF layers",
+  "group": "PDF import",
+  "value": "by line colour (named); options PDF layers, one layer",
+  "source": "MECHANICS PD4"
+ },
+ {
+  "name": "PDF fills",
+  "group": "PDF import",
+  "value": "stroked paths only; fill-only shapes left out (white always)",
+  "source": "MECHANICS PD5; estimate",
+  "estimated": true
+ },
+ {
+  "name": "PDF curve smoothness",
+  "group": "PDF import",
+  "value": "0.1 mm",
+  "source": "MECHANICS PD6"
+ },
+ {
+  "name": "PDF text",
+  "group": "PDF import",
+  "value": "kept as text; simple fonts only",
+  "source": "MECHANICS PD7"
+ },
+ {
+  "name": "PDF refusals",
+  "group": "PDF import",
+  "value": "protected / damaged / not PDF -> plain-word message",
+  "source": "MECHANICS PD8"
+ },
+ {
+  "name": "PDF forms and images",
+  "group": "PDF import",
+  "value": "forms through their matrix; images skipped",
+  "source": "MECHANICS PD9; estimate",
+  "estimated": true
+ },
+ {
+  "name": "DXF objects read",
+  "group": "DXF import",
+  "value": "lines, arcs, circles, polylines, ellipses, splines, texts, block inserts; object planes applied (same step as DWG)",
+  "source": "MECHANICS JOB-20; DW7-DW12"
+ },
+ {
+  "name": "DXF paper space",
+  "group": "DXF import",
+  "value": "left out, counted in the notes",
+  "source": "MECHANICS DX1; estimate",
+  "estimated": true
+ },
+ {
+  "name": "gap closing scope",
+  "group": "drawing import",
+  "value": "only chains still open after joining at 0.01 mm",
+  "source": "MECHANICS IM8; own design"
+ },
+ {
+  "name": "compensation word without a lead-in: run along the first straight before PROFILE (PS1 Z028)",
+  "group": "blm",
+  "value": 4.0,
+  "unit": "mm",
+  "source": "MECHANICS BL24; observed: PS1 file Z028"
+ },
+ {
+  "name": "copies share a subprogram only when their whole machining is the same",
+  "group": "blm",
+  "value": true,
+  "source": "MECHANICS BL37"
+ },
+ {
+  "name": "one axis turned round swaps G2/G3 as well as G41/G42",
+  "group": "kerf compensation",
+  "value": true,
+  "source": "MECHANICS KC19"
+ },
+ {
+  "name": "parts in holes are cut deepest first",
+  "group": "cut order",
+  "value": true,
+  "source": "MECHANICS CO1"
+ },
+ {
+  "name": "export removes this job's programs it didn't write again",
+  "group": "export",
+  "value": true,
+  "source": "MECHANICS EXP1"
+ },
+ {
+  "name": "unsaved changes = differs from the job as last saved or opened",
+  "group": "saving",
+  "value": true,
+  "source": "MECHANICS SV1"
+ },
+ {
+  "name": "closing the window with unsaved jobs asks first",
+  "group": "saving",
+  "value": true,
+  "source": "MECHANICS SV2"
+ },
+ {
+  "name": "a job's file and library record stay with that job (delete, close, copy, other library folder)",
+  "group": "saving",
+  "value": true,
+  "source": "MECHANICS SV3"
+ },
+ {
+  "name": "save refuses to write over a file another program changed",
+  "group": "saving",
+  "value": true,
+  "source": "MECHANICS SV4"
+ },
+ {
+  "name": "job and settings files written through a temporary file",
+  "group": "saving",
+  "value": true,
+  "source": "MECHANICS SV5"
+ },
+ {
+  "name": "stock only with nothing in stock nests nothing (no made-up sheet)",
+  "group": "saving",
+  "value": true,
+  "source": "MECHANICS SV6"
+ },
+ {
+  "name": "sheets are taken before remnants are stored; no remnants when taking fails",
+  "group": "saving",
+  "value": true,
+  "source": "MECHANICS SV7"
+ },
+ {
+  "name": "a copied job holds no stock and owns no remnants",
+  "group": "saving",
+  "value": true,
+  "source": "MECHANICS SV8"
+ },
+ {
+  "name": "compact refused on a remnant with an outline",
+  "group": "nesting",
+  "value": true,
+  "source": "MECHANICS CP1"
+ },
+ {
+  "name": "taking parts off a sheet / removing a product clears hand-picked cut order",
+  "group": "manual machining",
+  "value": true,
+  "source": "MECHANICS MM7"
+ },
+ {
+  "name": "LASTLINE type 2/3 read back as an arc (centre = start + 9th/10th values)",
+  "group": "program import",
+  "value": true,
+  "source": "MECHANICS NX7"
+ },
+ {
+  "name": "a contour returning to its pierce point (no lead-in) is closed there",
+  "group": "program import",
+  "value": true,
+  "source": "MECHANICS NX8"
+ },
+ {
+  "name": "the picked sheet SPF is opened, not the first in its folder",
+  "group": "program import",
+  "value": true,
+  "source": "MECHANICS NX9"
+ },
+ {
+  "name": "DXF $INSUNITS applied on import (1 in, 2 ft, 4 mm, 5 cm, 6 m); none (and every DWG) = the app's unit (Settings → Nesting), as the original's A089 0",
+  "group": "import",
+  "value": true,
+  "source": "MECHANICS IU1"
+ },
+ {
+  "name": "property boxes don't clamp values they only show",
+  "group": "parts",
+  "value": true,
+  "source": "MECHANICS PP1"
+ },
+ {
+  "name": "a refused agent operation leaves the job as it was (session included)",
+  "group": "agents",
+  "value": true,
+  "source": "MECHANICS AG1"
+ },
+ {
+  "name": "edit-part changes only the sizes given; a disc's diameter sets both",
+  "group": "agents",
+  "value": true,
+  "source": "MECHANICS AG2"
+ },
+ {
+  "name": "MCP job argument must be the file path as text",
+  "group": "agents",
+  "value": true,
+  "source": "MECHANICS AG3"
  }
 ]
 }

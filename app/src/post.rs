@@ -126,7 +126,8 @@ impl PostConfig {
         let mut out = String::with_capacity(program.len());
         let mut n = self.first;
         // One axis turned round mirrors the path, so the scrap side of every
-        // cut swaps: G41 ↔ G42 (KC2, our rule for the axis signs).
+        // cut swaps: G41 ↔ G42 (KC2, our rule for the axis signs), and every
+        // arc turns the other way: G2 ↔ G3.
         let mirrored = self.sign_x * self.sign_y < 0.0;
         for line in program.lines() {
             let (code, comment) = match line.find('(') {
@@ -147,6 +148,7 @@ impl PostConfig {
                     ('Y' | 'J', Some(v)) => toks.push(format!("{axis}{:.*}", self.decimals(), v / self.units * self.sign_y)),
                     ('F', Some(v)) if self.units > 1.0 => toks.push(format!("F{:.1}", v / self.units)),
                     ('G', Some(v)) if mirrored && (v == 41.0 || v == 42.0) => toks.push(if v == 41.0 { "G42".into() } else { "G41".into() }),
+                    ('G', Some(v)) if mirrored && (v == 2.0 || v == 3.0) => toks.push(if v == 2.0 { "G3".into() } else { "G2".into() }),
                     ('G', Some(v)) if self.units > 1.0 && (v - 21.0).abs() < 1e-9 => toks.push("G20".into()),
                     _ => toks.push(t.to_string()),
                 }
@@ -194,6 +196,9 @@ mod post_tests {
         assert_eq!(lines[3], "N00009 G1 X0.0000 Y-0.0000 F100.0 ( CUT )");
         // Y turned round mirrors the path: the scrap side swaps.
         assert_eq!(lines[4], "N00012 G1 G41 D2 X0.0394 Y-0.0394");
+        // ... and an arc turns the other way, or it would cut the rest of the circle.
+        let arc = p.apply("N10 G3 X0 Y0 I25.4 J0\nN20 G02 X0 Y0 I25.4 J0\n");
+        assert_eq!(arc.lines().map(|l| l.split(' ').nth(1).unwrap()).collect::<Vec<_>>(), vec!["G2", "G3"], "{arc}");
         // Expert's own template: N10, N20… in mm, .CNC files.
         let d = PostConfig::default();
         assert_eq!(d.block(10), "N10");

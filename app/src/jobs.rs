@@ -77,8 +77,8 @@ impl App {
             }
         });
         ribbon_group(ui, "Import", |ui| {
-            if ribbon_button(ui, Icon::Import, "DXF", false, true)
-                .on_hover_text("Add part drawings from DXF files (or drop them on the window)")
+            if ribbon_button(ui, Icon::Import, "Drawings", false, true)
+                .on_hover_text("Add part drawings: DXF, DWG, Lantek MEC, IGES, PDF, ESSI, DSTV or GEO files (or drop them on the window)")
                 .clicked()
             {
                 self.import_dialog();

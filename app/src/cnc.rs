@@ -642,11 +642,13 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
     let mut order = Vec::new();
     let mut at: P = [0.0, 0.0];
     // A part nested inside another part's hole is cut before that part,
-    // or it would drop with the scrap of the hole.
-    let inside_other = |i: usize| {
+    // or it would drop with the scrap of the hole. With parts in holes of
+    // parts in holes (rings in rings) the deepest goes first.
+    let depth = |i: usize| {
         let p = &placed[i];
-        placed.iter().enumerate().any(|(j, o)| j != i && o.contains([p.x, p.y]) && o.contains([p.x + p.w, p.y + p.h]))
+        placed.iter().enumerate().filter(|(j, o)| *j != i && o.contains([p.x, p.y]) && o.contains([p.x + p.w, p.y + p.h])).count()
     };
+    let inside_other = |i: usize| depth(i) > 0;
     // Zone by zone (rules CZ4, CZ5): the parts of each zone, nearest first,
     // with parts sitting in another part's hole before the rest.
     // The machine's tables for this sheet's material and thickness (MTL1–MTL7).
@@ -664,7 +666,7 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
             .filter(|&(_, &i)| in_zone(i) || inside_other(i))
             .map(|(k, &i)| {
                 let p = &placed[i];
-                let first = if inside_other(i) { 0.0 } else { 1e9 };
+                let first = -(depth(i) as f64) * 1e9;
                 (k, first + dist(at, [p.x, p.y]))
             })
             .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
@@ -1281,8 +1283,11 @@ fn program_mm(sheet_no: usize, parts: &[Part], placed: &[Placed], spec: &SheetSp
         let _ = writeln!(s, "( {label} )");
         line(&mut s, g0(&mut active, *first));
         line(&mut s, if mark { "M10 ( MARK ON )".into() } else { "M07 ( PIERCE )".into() });
+        // Its own speed, not the last contour's: marking, or the plain cut.
+        let mut f = feed_word(&mut last_f, if mark { plan.timing.speeds.mark } else { plan.timing.speeds.cut_for(1) });
         for q in pts.iter().skip(1) {
-            line(&mut s, format!("G1 X{:.2} Y{:.2}", q[0], q[1]));
+            line(&mut s, format!("G1 X{:.2} Y{:.2}{f}", q[0], q[1]));
+            f.clear();
         }
         line(&mut s, if mark { "M11 ( MARK OFF )".into() } else { "M08".into() });
     }
@@ -1905,5 +1910,61 @@ mod kerf_plan_tests {
         assert_eq!(feeds, vec![5000.0, 9500.0], "{}", p.timing.speeds.label());
         assert_eq!(p.times.pierce, 0.0);
         crate::ct1::set_thread_active(None);
+    }
+
+    #[test]
+    fn rings_in_rings_are_cut_from_the_inside_out() {
+        crate::ct1::set_thread_active(None);
+        // A frame in a frame's hole with a part in its hole: the innermost
+        // first, or the middle frame's hole drops with the uncut part in it.
+        let parts = vec![part(Shape::Rectangle, 300.0, 300.0, None)];
+        let placed = vec![at(10.0, 10.0, 300.0, 300.0, false), at(50.0, 50.0, 200.0, 200.0, false), at(100.0, 100.0, 50.0, 50.0, false)];
+        let p = plan(&parts, &placed, &spec());
+        let mut order: Vec<usize> = p.contours.iter().map(|c| c.part_no).collect();
+        order.dedup();
+        assert_eq!(order, vec![3, 2, 1]);
+    }
+
+    #[test]
+    fn remnant_marks_and_lines_run_at_their_own_speed() {
+        crate::ct1::set_thread_active(None);
+        let parts = vec![part(Shape::Rectangle, 100.0, 60.0, None)];
+        let placed = vec![at(10.0, 10.0, 100.0, 60.0, false)];
+        let mut p = plan(&parts, &placed, &spec());
+        for c in &mut p.contours {
+            c.feed = 1234.0;
+        }
+        let lines = vec![("REMNANT MARK".to_string(), vec![[200.0, 0.0], [200.0, 10.0]]), ("REMNANT LINE".to_string(), vec![[300.0, 0.0], [300.0, 500.0]])];
+        let prog = program_mm(1, &parts, &placed, &spec(), &p, &lines, false);
+        let tail = &prog[prog.find("( REMNANT MARK )").unwrap()..];
+        let feeds: Vec<&str> = tail.lines().filter_map(|l| l.split_whitespace().find(|w| w.starts_with('F'))).collect();
+        assert_eq!(feeds, vec![format!("F{:.0}", p.timing.speeds.mark), format!("F{:.0}", p.timing.speeds.cut_for(1))], "{prog}");
+    }
+
+    #[test]
+    fn blm_without_a_lead_in_still_compensates_and_copies_keep_their_own_leads() {
+        crate::ct1::set_thread_active(None);
+        let parts = vec![part(Shape::Rectangle, 100.0, 100.0, None)];
+        let placed = vec![at(50.0, 50.0, 100.0, 100.0, false), at(250.0, 50.0, 100.0, 100.0, false)];
+        let mut p = plan(&parts, &placed, &spec());
+        // BL24: no lead-in, control compensation on: the word goes on a short
+        // move along the first straight before PROFILE.
+        let mut bare = plan(&parts, &placed, &spec());
+        for c in &mut bare.contours {
+            c.lead_path.clear();
+            c.comp.control = true;
+            c.comp.side = Side::Right;
+        }
+        let sub = crate::blm::subprogram("P", &bare, 1, [50.0, 50.0]);
+        let at_profile = sub.find("PROFILE").unwrap();
+        assert!(sub[..at_profile].contains("G01 G42 X"), "{sub}");
+        // Two copies whose leads differ get a subprogram each.
+        let set = crate::blm::BlmSettings::for_spec(&spec(), "LC5", "J");
+        let one = crate::blm::sheet_set(1, &parts, &placed, &spec(), &p, &[], &set);
+        assert_eq!(one.spf.iter().filter(|f| f.0.contains("70")).count(), 1, "same leads: one subprogram");
+        let c2 = p.contours.iter_mut().find(|c| c.part_no == 2).unwrap();
+        c2.lead_path[0][0] -= 3.0;
+        let two = crate::blm::sheet_set(1, &parts, &placed, &spec(), &p, &[], &set);
+        assert_eq!(two.spf.iter().filter(|f| f.0.contains("70")).count(), 2, "{:?}", two.spf.iter().map(|f| &f.0).collect::<Vec<_>>());
     }
 }

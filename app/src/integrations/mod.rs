@@ -741,7 +741,12 @@ pub fn dxf_units_mm(text: &str) -> Option<f64> {
     let lines: Vec<&str> = text.lines().map(str::trim).collect();
     let i = lines.iter().position(|l| *l == "$INSUNITS")?;
     // Next group: "70" then the value.
-    let v: i32 = lines.get(i + 2)?.parse().ok()?;
+    insunits_mm(lines.get(i + 2)?.parse().ok()?)
+}
+
+/// mm per drawing unit for a DXF / DWG `$INSUNITS` value (None: unitless or
+/// a unit we don't map).
+pub fn insunits_mm(v: i32) -> Option<f64> {
     match v {
         1 => Some(25.4),
         2 => Some(304.8),
