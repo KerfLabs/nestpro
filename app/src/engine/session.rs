@@ -53,9 +53,12 @@ impl Session {
             return Ok(());
         }
         let j = jobfile::load(path).map_err(|e| format!("Couldn't open {}: {e}", path.display()))?;
-        if !same {
-            self.undo.clear();
+        if same && self.job.is_some() {
+            // Changed on disk by someone else (the window, another agent):
+            // undoing to a copy from before that would drop their change.
+            let _ = std::fs::remove_file(backup_path(path));
         }
+        self.undo.clear();
         self.job = Some(j);
         self.path = Some(path.to_path_buf());
         self.stamp = mtime(path);
@@ -129,7 +132,15 @@ impl Session {
         }
         let job = self.job.as_mut().unwrap();
         let before = job.clone();
-        let mut out = ops::run(job, &self.ctx, name, &args)?;
+        let mut out = match ops::run(job, &self.ctx, name, &args) {
+            Ok(o) => o,
+            Err(e) => {
+                // Refused: nothing it changed before refusing stays, or the
+                // next change would save it.
+                *job = before;
+                return Err(e);
+            }
+        };
         // A booked job keeps the stock in step with every change (as the
         // window does on every save).
         if out.changed && op.kind == Kind::Write && job.booked && op.name != "stock-book" {

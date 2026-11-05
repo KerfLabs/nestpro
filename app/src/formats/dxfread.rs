@@ -16,11 +16,13 @@ pub struct Options {
     pub paper_space: bool,
     pub explode_blocks: bool,
     pub skip_invisible: bool,
+    /// mm per drawing unit for a file that doesn't say (`$INSUNITS`); 1 = mm.
+    pub unit_mm: f64,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Options { paper_space: false, explode_blocks: true, skip_invisible: false }
+        Options { paper_space: false, explode_blocks: true, skip_invisible: false, unit_mm: 1.0 }
     }
 }
 
@@ -379,6 +381,13 @@ fn entmode_of(owner: Option<u64>, r: &Rec) -> u8 {
 }
 
 /// Read the drawing objects of a DXF's group-code pairs.
+/// mm per unit from the HEADER's `$INSUNITS` (9 $INSUNITS, then 70 <value>).
+fn header_units(pairs: &[(i32, &str)]) -> Option<f64> {
+    let i = pairs.iter().position(|p| *p == (9, "$INSUNITS"))?;
+    let v = pairs.get(i + 1).filter(|p| p.0 == 70)?.1.parse().ok()?;
+    crate::integrations::insunits_mm(v)
+}
+
 pub fn read(pairs: &[(i32, &str)], opts: &Options) -> Result<Drawing, String> {
     let start = section(pairs, "ENTITIES").ok_or("This file has no drawing (ENTITIES section) — is it an ASCII DXF?")?;
     let mut b = Builder { db: Db { objs: HashMap::new(), order: vec![], layers: HashMap::new(), blocks: HashMap::new(), owned: HashMap::new() }, next: 0, layer_ids: HashMap::new(), block_ids: HashMap::new() };
@@ -388,6 +397,11 @@ pub fn read(pairs: &[(i32, &str)], opts: &Options) -> Result<Drawing, String> {
     b.entities(&records(pairs, start), None, false);
 
     let db = b.db;
+    // The drawing's own unit ($INSUNITS), else the caller's: everything is
+    // placed in mm, so arcs are split within ARC_CHORD_ERR mm and an inch
+    // drawing comes in at size with round holes (IU1).
+    let u = header_units(pairs).unwrap_or(opts.unit_mm);
+    let top = Mat { x: [u, 0.0, 0.0], y: [0.0, u, 0.0], z: [0.0, 0.0, u], o: [0.0; 3] };
     let mut ctx = Ctx::new(&db, opts.explode_blocks, opts.skip_invisible);
     let mut paper = 0usize;
     for h in &db.order {
@@ -396,7 +410,7 @@ pub fn read(pairs: &[(i32, &str)], opts: &Options) -> Result<Drawing, String> {
         }
         let o = &db.objs[h];
         if o.entmode == 2 || (opts.paper_space && o.entmode == 1) {
-            ctx.entity(o, &Mat::ID, None, 0);
+            ctx.entity(o, &top, None, 0);
         } else if o.entmode == 1 && !matches!(o.kind, Kind::Skip { annotation: true, .. }) {
             paper += 1;
         }

@@ -172,6 +172,9 @@ pub struct Job {
     pub held: std::collections::BTreeMap<String, i32>,
     /// The ERP/MES work this job was brought in from and sent back to.
     pub erp: Option<integrations::ErpJob>,
+    /// The job as last saved or opened (`job_sig`); None = never saved. It
+    /// has unsaved changes when it no longer matches (jobtree.rs).
+    pub saved: Option<u64>,
 }
 
 pub struct App {
@@ -235,6 +238,12 @@ pub struct App {
     /// Which list the Jobs status line describes (last one clicked).
     pub jobs_pick_sheet: bool,
     pub pending: Option<Pending>,
+    /// Closing the window with unsaved jobs: their names while asking, and
+    /// whether the person chose to close anyway (jobtree.rs `quit_guard`).
+    pub quit_ask: Option<Vec<String>>,
+    pub quit_confirmed: bool,
+    /// The Library folder as it was when typing in its box began (settings).
+    pub lib_dir_typed_from: Option<String>,
     /// Original option: warn before changing a part that has technology.
     pub warn_tech: bool,
     /// "Use this answer for the rest" given in the technology question.
@@ -421,7 +430,7 @@ fn demo_jobs(first: &App) -> Vec<Job> {
     let p = |name: &str, shape, w, h, qty, color| Part { name: name.into(), shape, w, h, qty, rotate: true, color, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
     let mk = |week: &str, name: &str, parts: Vec<Part>, spec: SheetSpec| {
         let result = nest::nest(&parts, &spec);
-        Job { week: week.into(), name: name.into(), parts, spec, result, stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None }
+        Job { week: week.into(), name: name.into(), parts, spec, result, stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None, saved: None }
     };
     let mut steel5 = spec.clone();
     steel5.thickness = 5.0;
@@ -443,6 +452,7 @@ fn demo_jobs(first: &App) -> Vec<Job> {
             manual_cuts: vec![],
             cam_changed: None,
             file: None,
+            saved: None,
             held: Default::default(),
             erp: None,
         },
@@ -528,6 +538,9 @@ impl App {
             show_labor_ticket: false,
             jobs_pick_sheet: false,
             pending: None,
+            quit_ask: None,
+            quit_confirmed: false,
+            lib_dir_typed_from: None,
             warn_tech: true,
             tech_answer_all: None,
             tech_all_box: false,
@@ -602,6 +615,10 @@ impl App {
         a.run_nesting();
         a.undo.clear();
         a.jobs = demo_jobs(&a);
+        // The examples count as saved: nothing to lose when closing them.
+        for i in 0..a.jobs.len() {
+            a.mark_job_saved(i);
+        }
         a
     }
 
@@ -646,6 +663,7 @@ impl App {
         self.job_path = j.file.as_ref().map(|l| l.path.clone());
         self.job_link = j.file;
         self.erp_job = j.erp;
+        self.ghost = None;
         self.sel_cut = None;
         self.cur_sheet = 0;
         self.sel_placed = None;
@@ -687,6 +705,7 @@ impl App {
             cam_changed: None,
             held: Default::default(),
             file: None,
+            saved: None,
             erp: None,
         });
         let i = self.jobs.len() - 1;
@@ -717,6 +736,16 @@ impl App {
     }
 
     pub fn save_job_to(&mut self, path: &std::path::Path) {
+        // Someone else (an agent) changed the file since the window last read
+        // or wrote it: don't write over their work without asking which to keep.
+        if let Some(link) = self.job_link.clone().filter(|l| l.path == path) {
+            let m = filewatch::mtime(path);
+            if m.is_some() && m != link.mtime && jobfile::load(path).is_ok_and(|d| engine::imports::job_sig(&d) != link.disk_sig) {
+                self.pending = Some(Pending::JobFileChanged { path: path.to_path_buf() });
+                self.status = "Not saved: the job's file was changed by another program — choose which version to keep first.".into();
+                return;
+            }
+        }
         if !self.ready_to_save(stockui::SaveTarget::File(path.to_path_buf())) {
             return;
         }
@@ -744,6 +773,10 @@ impl App {
         match jobfile::save(path, &j) {
             Ok(()) => {
                 self.link_job_file(path, &j);
+                self.mark_job_saved(self.cur_job);
+                // An agent's one-step undo copy is from before this save: undoing
+                // to it would drop what was just saved.
+                let _ = std::fs::remove_file(engine::session::backup_path(path));
                 self.status = format!("Saved job {} to {}{stock_note}", self.job_name, path.display());
             }
             Err(e) => self.status = format!("Couldn't save the job: {e}"),
@@ -763,7 +796,7 @@ impl App {
         let name = self.unique_job_name(&j.name).unwrap_or_else(|| j.name.clone());
         self.store_job();
         let tried = 0;
-        self.jobs.push(Job { week: if j.week.is_empty() { "Opened jobs".into() } else { j.week }, name, parts: j.parts, spec: j.spec.clone(), result: { let mut r = nest::NestResult { sheets: j.sheets, formats: j.formats, method: j.method, tried }; r.normalise(&j.spec); r }, stale: j.stale, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: j.held.clone(), erp: None, file: None });
+        self.jobs.push(Job { week: if j.week.is_empty() { "Opened jobs".into() } else { j.week }, name, parts: j.parts, spec: j.spec.clone(), result: { let mut r = nest::NestResult { sheets: j.sheets, formats: j.formats, method: j.method, tried }; r.normalise(&j.spec); r }, stale: j.stale, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: j.held.clone(), erp: None, file: None, saved: None });
         let i = self.jobs.len() - 1;
         self.open_job(i);
         self.cut_lines = j.cut_lines;
@@ -774,6 +807,7 @@ impl App {
         self.refresh();
         self.link_job_file(path, &disk);
         self.store_job();
+        self.mark_job_saved(self.cur_job);
         self.status = format!("Opened job {} from {} — {} product(s), {} sheet(s).", self.job_name, path.display(), self.parts.len(), self.result.sheets.len());
     }
 
@@ -809,7 +843,7 @@ impl App {
             return;
         };
         self.store_job();
-        self.jobs.push(Job { week, name, parts: vec![], spec: engine::with_prefs(&self.spec, &self.cfg), result: NestResult::default(), stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None });
+        self.jobs.push(Job { week, name, parts: vec![], spec: engine::with_prefs(&self.spec, &self.cfg), result: NestResult::default(), stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None, saved: None });
         let i = self.jobs.len() - 1;
         self.open_job(i);
         self.status = format!("Created job {} — add products, then nest.", self.job_name);
@@ -825,8 +859,18 @@ impl App {
         self.store_job();
         let mut j = self.jobs[self.cur_job].clone();
         j.name = name;
-        // Not the original's library record, or saving the copy would overwrite it.
+        // Not the original's library record or file, or saving the copy would
+        // overwrite it; and never saved.
         j.lib_id = None;
+        j.file = None;
+        j.saved = None;
+        // Nor its stock: the copy takes its own sheets when it's saved, and the
+        // original's remnants stay the original's.
+        j.held.clear();
+        for f in j.result.formats.iter_mut() {
+            f.made.clear();
+            f.made_from = 0;
+        }
         // Nor its work order: the copy's nest would replace the original's.
         if let Some(e) = j.erp.as_mut() {
             e.work_order = None;
@@ -1246,6 +1290,8 @@ impl App {
         self.sel_cut = None;
         self.sel_placed = None;
         self.drag = None;
+        // A part on the pointer may be one the restored job doesn't have.
+        self.ghost = None;
         if self.sel_part.is_some_and(|i| i >= self.parts.len()) {
             self.sel_part = None;
         }
@@ -1275,6 +1321,10 @@ impl App {
     pub fn compact(&mut self) {
         let ci = self.cur_sheet;
         if ci >= self.result.sheets.len() {
+            return;
+        }
+        if self.result.format(ci, &self.spec).outline.is_some() {
+            self.status = engine::COMPACT_REMNANT.into();
             return;
         }
         self.checkpoint();
@@ -1337,10 +1387,7 @@ impl App {
     }
 
     pub fn export(&mut self) {
-        if self.result.sheets.is_empty() {
-            self.status = "Nothing to export — nest first.".into();
-            return;
-        }
+        // Nothing nested: engine::export says so (and removes the job's old programs).
         // Settings → Folders, or Documents\Sheet Nesting.
         let base = if !self.cfg.export_dir.is_empty() {
             PathBuf::from(&self.cfg.export_dir)
@@ -1511,6 +1558,10 @@ impl App {
     pub fn remove_part(&mut self, idx: usize) {
         self.checkpoint();
         engine::remove_part(&mut self.parts, &mut self.result.sheets, idx);
+        // Placements were renumbered: hand picks would land on other parts
+        // (as the agents' remove-part does); the part on the pointer may be gone.
+        self.manual_cuts.iter_mut().for_each(Vec::clear);
+        self.ghost = None;
         self.sel_part = if self.parts.is_empty() { None } else { Some(idx.min(self.parts.len() - 1)) };
         self.sel_placed = None;
         self.refresh();
@@ -1573,6 +1624,11 @@ impl App {
         self.checkpoint();
         for &i in sel.iter().rev() {
             self.result.sheets[self.cur_sheet].remove(i);
+        }
+        // The sheet's placements were renumbered: its hand picks would land on
+        // other parts (as the agents' operations do, sheet_changed).
+        if let Some(m) = self.manual_cuts.get_mut(self.cur_sheet) {
+            m.clear();
         }
         self.set_selection(vec![]);
         self.refresh();
@@ -2034,6 +2090,7 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.frames += 1;
+        self.quit_guard(&ctx);
         // The active job (ORDENACT.SYS in the original): the open job's library
         // record, so it opens again next time. Not while taking screenshots.
         if self.shot.is_none() {
@@ -2361,7 +2418,7 @@ fn main() -> eframe::Result {
             // Without the example jobs: one empty job (not for screenshots).
             if load_layout && !app.cfg.examples {
                 let spec = app.spec.clone();
-                app.jobs = vec![Job { week: String::new(), name: "New job".into(), parts: vec![], spec, result: nest::NestResult::default(), stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None }];
+                app.jobs = vec![Job { week: String::new(), name: "New job".into(), parts: vec![], spec, result: nest::NestResult::default(), stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None, saved: None }];
                 app.cur_job = 0;
                 app.job_name = "New job".into();
                 app.parts.clear();
@@ -2730,6 +2787,31 @@ mod tests {
         a.redo();
         assert_eq!(a.total_placed(), placed + 1);
         no_clashes(&a);
+    }
+
+    #[test]
+    fn compact_undo_and_delete_leave_nothing_pointing_at_the_wrong_part() {
+        let mut a = App::new(None);
+        a.run_nesting();
+        a.cur_sheet = 0;
+        // Compact on a remnant would slide parts off its outline: refused.
+        let before = a.result.sheets[0].clone();
+        let (w, h) = (a.spec.w, a.spec.h);
+        a.result.formats[0].outline = Some(crate::stock::Outline { outer: vec![[0.0, 0.0], [w, 0.0], [w, h], [0.0, h]], holes: vec![] });
+        a.compact();
+        assert!(a.status.contains("rectangular") && a.result.sheets[0] == before, "{}", a.status);
+        a.result.formats[0].outline = None;
+        // Undo with a just-added part still on the pointer: the pointer lets go.
+        a.checkpoint();
+        a.parts.push(a.parts[0].clone());
+        a.start_ghost(a.parts.len() - 1, false);
+        a.undo();
+        assert!(a.ghost.is_none());
+        // Taking a part off the sheet renumbers the rest: its hand picks go.
+        a.manual_cuts = vec![vec![cnc::ManualCut { placed: 1, contour: 0, start: [0.0, 0.0], reverse: false }]];
+        a.set_selection(vec![0]);
+        a.remove_selected();
+        assert!(a.manual_cuts.iter().all(|m| m.is_empty()));
     }
 
     #[test]

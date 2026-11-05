@@ -96,8 +96,14 @@ pub fn handle(s: &mut Session, m: &Value) -> Option<Value> {
         "tools/call" => {
             let name = params.get("name").and_then(Value::as_str).unwrap_or("");
             let mut args = params.get("arguments").cloned().unwrap_or(json!({}));
-            let job = args.as_object_mut().and_then(|o| o.remove("job")).and_then(|v| v.as_str().map(String::from));
-            ok(match s.call(name, job.as_deref(), &args) {
+            // A job given as something other than its file's path is refused,
+            // not dropped (or the call would land on the job already open).
+            let job = match args.as_object_mut().and_then(|o| o.remove("job")) {
+                None | Some(Value::Null) => Ok(None),
+                Some(Value::String(p)) => Ok(Some(p)),
+                Some(_) => Err("job must be the job file's path, as text".to_string()),
+            };
+            ok(match job.and_then(|job| s.call(name, job.as_deref(), &args)) {
                 Ok(r) => {
                     let mut content = vec![json!({"type": "text", "text": serde_json::to_string_pretty(&r.json).unwrap_or_default()})];
                     if let Some(png) = r.image {

@@ -918,18 +918,26 @@ impl App {
         ui.add_space(10.0);
         card(ui, "Library folder", "This app's own product and job database. Put it on a shared drive and everyone in the shop sees the same products and jobs. Empty = Documents\\Sheet Nesting\\Library.", |ui| {
             row(ui, "Folder", |ui| {
-                if ui.add(egui::TextEdit::singleline(&mut self.cfg.library_dir).desired_width(380.0).hint_text("Documents\\Sheet Nesting\\Library")).changed() {
+                let r = ui.add(egui::TextEdit::singleline(&mut self.cfg.library_dir).desired_width(380.0).hint_text("Documents\\Sheet Nesting\\Library"));
+                // Typed: it counts as another folder once the typing is done.
+                if r.gained_focus() {
+                    self.lib_dir_typed_from = Some(self.cfg.library_dir.clone());
+                }
+                if r.lost_focus() && self.lib_dir_typed_from.take().is_some_and(|d| d != self.cfg.library_dir) {
+                    self.library_folder_changed();
+                }
+                if r.changed() {
                     self.libui.loaded = false;
                 }
                 if ui.button("Browse…").clicked() {
                     if let Some(d) = rfd::FileDialog::new().pick_folder() {
                         self.cfg.library_dir = d.display().to_string();
-                        self.libui.loaded = false;
+                        self.library_folder_changed();
                     }
                 }
                 if !self.cfg.library_dir.is_empty() && ui.small_button("✕").clicked() {
                     self.cfg.library_dir.clear();
-                    self.libui.loaded = false;
+                    self.library_folder_changed();
                 }
             });
         });

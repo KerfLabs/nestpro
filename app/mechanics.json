@@ -4423,6 +4423,145 @@
   "group": "drawing import",
   "value": "only chains still open after joining at 0.01 mm",
   "source": "MECHANICS IM8; own design"
+ },
+ {
+  "name": "compensation word without a lead-in: run along the first straight before PROFILE (PS1 Z028)",
+  "group": "blm",
+  "value": 4.0,
+  "unit": "mm",
+  "source": "MECHANICS BL24; observed: PS1 file Z028"
+ },
+ {
+  "name": "copies share a subprogram only when their whole machining is the same",
+  "group": "blm",
+  "value": true,
+  "source": "MECHANICS BL37"
+ },
+ {
+  "name": "one axis turned round swaps G2/G3 as well as G41/G42",
+  "group": "kerf compensation",
+  "value": true,
+  "source": "MECHANICS KC19"
+ },
+ {
+  "name": "parts in holes are cut deepest first",
+  "group": "cut order",
+  "value": true,
+  "source": "MECHANICS CO1"
+ },
+ {
+  "name": "export removes this job's programs it didn't write again",
+  "group": "export",
+  "value": true,
+  "source": "MECHANICS EXP1"
+ },
+ {
+  "name": "unsaved changes = differs from the job as last saved or opened",
+  "group": "saving",
+  "value": true,
+  "source": "MECHANICS SV1"
+ },
+ {
+  "name": "closing the window with unsaved jobs asks first",
+  "group": "saving",
+  "value": true,
+  "source": "MECHANICS SV2"
+ },
+ {
+  "name": "a job's file and library record stay with that job (delete, close, copy, other library folder)",
+  "group": "saving",
+  "value": true,
+  "source": "MECHANICS SV3"
+ },
+ {
+  "name": "save refuses to write over a file another program changed",
+  "group": "saving",
+  "value": true,
+  "source": "MECHANICS SV4"
+ },
+ {
+  "name": "job and settings files written through a temporary file",
+  "group": "saving",
+  "value": true,
+  "source": "MECHANICS SV5"
+ },
+ {
+  "name": "stock only with nothing in stock nests nothing (no made-up sheet)",
+  "group": "saving",
+  "value": true,
+  "source": "MECHANICS SV6"
+ },
+ {
+  "name": "sheets are taken before remnants are stored; no remnants when taking fails",
+  "group": "saving",
+  "value": true,
+  "source": "MECHANICS SV7"
+ },
+ {
+  "name": "a copied job holds no stock and owns no remnants",
+  "group": "saving",
+  "value": true,
+  "source": "MECHANICS SV8"
+ },
+ {
+  "name": "compact refused on a remnant with an outline",
+  "group": "nesting",
+  "value": true,
+  "source": "MECHANICS CP1"
+ },
+ {
+  "name": "taking parts off a sheet / removing a product clears hand-picked cut order",
+  "group": "manual machining",
+  "value": true,
+  "source": "MECHANICS MM7"
+ },
+ {
+  "name": "LASTLINE type 2/3 read back as an arc (centre = start + 9th/10th values)",
+  "group": "program import",
+  "value": true,
+  "source": "MECHANICS NX7"
+ },
+ {
+  "name": "a contour returning to its pierce point (no lead-in) is closed there",
+  "group": "program import",
+  "value": true,
+  "source": "MECHANICS NX8"
+ },
+ {
+  "name": "the picked sheet SPF is opened, not the first in its folder",
+  "group": "program import",
+  "value": true,
+  "source": "MECHANICS NX9"
+ },
+ {
+  "name": "DXF $INSUNITS applied on import (1 in, 2 ft, 4 mm, 5 cm, 6 m); none = mm",
+  "group": "import",
+  "value": true,
+  "source": "MECHANICS IU1"
+ },
+ {
+  "name": "property boxes don't clamp values they only show",
+  "group": "parts",
+  "value": true,
+  "source": "MECHANICS PP1"
+ },
+ {
+  "name": "a refused agent operation leaves the job as it was (session included)",
+  "group": "agents",
+  "value": true,
+  "source": "MECHANICS AG1"
+ },
+ {
+  "name": "edit-part changes only the sizes given; a disc's diameter sets both",
+  "group": "agents",
+  "value": true,
+  "source": "MECHANICS AG2"
+ },
+ {
+  "name": "MCP job argument must be the file path as text",
+  "group": "agents",
+  "value": true,
+  "source": "MECHANICS AG3"
  }
 ]
 }

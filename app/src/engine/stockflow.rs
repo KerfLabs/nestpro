@@ -57,7 +57,9 @@ pub fn stock_plan(spec: &SheetSpec, u: &StockUse, exclude: &[String]) -> Option<
         order(cands.clone())
     };
     if items.is_empty() {
-        return None;
+        // Nothing in stock for this job: the job's sheet size only when the
+        // options allow it, else no sheets (never a sheet that isn't there).
+        return (!st.fallback_job_size).then(Vec::new);
     }
     let mut plan: Vec<FormatSlot> = items
         .iter()
@@ -93,6 +95,10 @@ pub fn nest_from_stock(parts: &[Part], spec: &SheetSpec, u: &StockUse) -> Option
     let mut res = None;
     for _ in 0..8 {
         let plan = stock_plan(spec, u, &exclude)?;
+        if plan.is_empty() && res.is_some() {
+            // Every other sheet is dropped too: keep the last nesting.
+            break;
+        }
         let mut r = nest::nest_plan_opt(parts, spec, &plan, combo);
         if st.best_format {
             r = best_format(parts, spec, &plan, combo, r, &out_of_time);
@@ -636,7 +642,13 @@ pub fn make_remnants(dir: &Path, j: &JobSheets, formats: &mut Vec<SheetFormat>, 
 #[allow(clippy::too_many_arguments)]
 pub fn on_save(dir: &Path, j: &JobSheets, formats: &mut Vec<SheetFormat>, held: &mut BTreeMap<String, i32>, st: &StockSettings, force_lines: bool, names: Option<&BTreeMap<(usize, usize), String>>) -> String {
     let mut notes = vec![];
-    if st.remnants_on_save || st.keep_completed || force_lines {
+    // The sheets first: remnants of a sheet that couldn't be taken from
+    // stock would be remnants of a sheet that isn't there.
+    let (taken, stock_note) = match reconcile(dir, formats, j.sheets.len(), held, st.allow_no_stock) {
+        Ok(s) => (true, s),
+        Err(e) => (false, format!("stock not updated: {e}; remnants not stored")),
+    };
+    if taken && (st.remnants_on_save || st.keep_completed || force_lines) {
         match make_remnants(dir, j, formats, st, force_lines, names) {
             Ok(m) => {
                 if m.count > 0 {
@@ -650,10 +662,8 @@ pub fn on_save(dir: &Path, j: &JobSheets, formats: &mut Vec<SheetFormat>, held: 
             Err(e) => notes.push(format!("remnants not stored: {e}")),
         }
     }
-    match reconcile(dir, formats, j.sheets.len(), held, st.allow_no_stock) {
-        Ok(s) if !s.is_empty() => notes.push(s),
-        Ok(_) => {}
-        Err(e) => notes.push(format!("stock not updated: {e}")),
+    if !stock_note.is_empty() {
+        notes.push(stock_note);
     }
     notes.join("; ")
 }

@@ -124,14 +124,21 @@ pub fn parse_sub(text: &str) -> (Vec<Vec<P>>, Vec<Vec<P>>, Vec<Vec<P>>) {
     let mut profile = false;
     let mut mark = false;
     let mut started = false;
-    let finish = |path: &mut Vec<P>, mark: bool, loops: &mut Vec<Vec<P>>, open: &mut Vec<Vec<P>>, marks: &mut Vec<Vec<P>>| {
+    // Where the head pierced (NEXT_L): a contour without a lead-in starts
+    // there, its first piece (carrying G41/G42) before PROFILE (BL24).
+    let mut pierce: P = [0.0, 0.0];
+    let finish = |path: &mut Vec<P>, mark: bool, pierce: P, loops: &mut Vec<Vec<P>>, open: &mut Vec<Vec<P>>, marks: &mut Vec<Vec<P>>| {
         if path.len() >= 2 {
             let l = *path.last().unwrap();
             let near = |q: &P| ((q[0] - l[0]).powi(2) + (q[1] - l[1]).powi(2)).sqrt() < CLOSE_TOL;
             // The contour closes where the path comes back to: its start, or
             // — after Lantek's lead-in arc (a move right after PROFILE) — the
-            // end of that arc.
-            let start = (0..path.len().saturating_sub(3)).find(|&i| near(&path[i]));
+            // end of that arc, or — without a lead-in — the pierce point.
+            let mut start = (0..path.len().saturating_sub(3)).find(|&i| near(&path[i]));
+            if start.is_none() && !mark && path.len() >= 3 && near(&pierce) {
+                path.insert(0, pierce);
+                start = Some(0);
+            }
             let mut p = std::mem::take(path);
             if mark {
                 marks.push(p);
@@ -147,9 +154,10 @@ pub fn parse_sub(text: &str) -> (Vec<Vec<P>>, Vec<Vec<P>>, Vec<Vec<P>>) {
     for raw in text.lines() {
         let l = raw.trim();
         if let Some(a) = inside(l, "NEXT_L(") {
-            finish(&mut path, mark, &mut loops, &mut open, &mut marks);
+            finish(&mut path, mark, pierce, &mut loops, &mut open, &mut marks);
             let v = nums(&a);
             cur = [v.first().copied().unwrap_or(0.0), v.get(1).copied().unwrap_or(0.0)];
+            pierce = cur;
             // NEXT_L(x, y, next, pierce, quality …): quality 9 = marking.
             mark = v.get(4).copied() == Some(9.0) && v.len() < 6;
             profile = false;
@@ -177,20 +185,27 @@ pub fn parse_sub(text: &str) -> (Vec<Vec<P>>, Vec<Vec<P>>, Vec<Vec<P>>) {
         } else if let Some(a) = inside(l, "LASTLINE(") {
             let v = nums(&a);
             if v.len() >= 8 {
+                let (from, to) = ([v[4], v[5]], [v[6], v[7]]);
                 if path.is_empty() {
-                    path.push([v[4], v[5]]);
+                    path.push(from);
                 }
-                path.push([v[6], v[7]]);
-                cur = [v[6], v[7]];
+                // The 4th value is the move: 2 / 3 an arc (as G02 / G03) with
+                // the centre at from + (9th, 10th) — the original's posts end
+                // round holes on one; 1 a straight line.
+                match v.get(3) {
+                    Some(&t) if (t == 2.0 || t == 3.0) && v.len() >= 10 => path.extend(arc_points(from, to, [from[0] + v[8], from[1] + v[9]], t == 3.0)),
+                    _ => path.push(to),
+                }
+                cur = to;
             }
-            finish(&mut path, mark, &mut loops, &mut open, &mut marks);
+            finish(&mut path, mark, pierce, &mut loops, &mut open, &mut marks);
             profile = false;
         } else if l == "ENDGEO" {
-            finish(&mut path, mark, &mut loops, &mut open, &mut marks);
+            finish(&mut path, mark, pierce, &mut loops, &mut open, &mut marks);
             profile = false;
         }
     }
-    finish(&mut path, mark, &mut loops, &mut open, &mut marks);
+    finish(&mut path, mark, pierce, &mut loops, &mut open, &mut marks);
     (loops, open, marks)
 }
 
@@ -427,7 +442,12 @@ pub fn open(path: &std::path::Path) -> Result<Imported, String> {
                 .filter_map(|e| e.ok())
                 .filter(|e| e.path().extension().and_then(|x| x.to_str()).is_some_and(|x| x.eq_ignore_ascii_case("spf")))
                 .filter_map(|e| std::fs::read(e.path()).ok().map(|b| (e.file_name().to_string_lossy().to_string(), latin(&b))))
-                .collect();
+                .collect::<Vec<(String, String)>>();
+            // The sheet program picked comes first, so it's the one opened
+            // when the folder holds several sheets' programs.
+            let picked = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let mut files = files;
+            files.sort_by_key(|f| f.0 != picked);
             (files, sibling(&["XML", "xml"]).and_then(|p| std::fs::read(p).ok()).map(|b| String::from_utf8_lossy(&b).to_string()))
         }
         _ => {
@@ -505,5 +525,37 @@ mod progimport_tests {
         assert!(pts.iter().all(|q| ((q[0] - 5.0).powi(2) + q[1].powi(2)).sqrt() - 5.0 < 1e-9));
         assert!(pts.iter().all(|q| q[1] >= -1e-9));
         assert_eq!(*pts.last().unwrap(), [0.0, 0.0]);
+    }
+
+    #[test]
+    fn a_contour_ending_on_an_arc_or_without_a_lead_in_comes_back_whole() {
+        // A slot whose round end is the LASTLINE (type 2, centre from + (0,-50)).
+        let slot = "NEXT_L(100,0,0,2,3)\nPROFILE\nG01 X0 Y0\nG01 X0 Y100\nG01 X100 Y100\nLASTLINE(0,0,0,2,100,100,100,0,0,-50)\nENDGEO\n";
+        let (loops, open, _) = parse_sub(slot);
+        assert!(open.is_empty() && loops.len() == 1, "{loops:?} {open:?}");
+        let w = loops[0].iter().map(|q| q[0]).fold(f64::MIN, f64::max);
+        assert!((w - 150.0).abs() < 0.5, "round end reaches x = 150, got {w}");
+        // No lead-in (BL24): G41 on a short move before PROFILE, back to the pierce point.
+        let bare = "NEXT_L(0,0,0,2,3)\nG01 G41 X4 Y0\nPROFILE\nG01 X100 Y0\nG01 X100 Y50\nG01 X0 Y50\nLASTLINE(0,0,0,1,0,50,0,0,0,0)\nNEXT_L(40,20,1,2,3)\nG01 G42 X44 Y20\nPROFILE\nG01 X50 Y20\nG01 X50 Y30\nG01 X40 Y30\nLASTLINE(0,0,0,1,40,30,40,20,0,0)\nENDGEO\n";
+        let (loops, open, _) = parse_sub(bare);
+        assert!(open.is_empty() && loops.len() == 2, "{loops:?} {open:?}");
+        let (g, _) = part_geo(&loops, &[]).unwrap();
+        assert_eq!((g.w.round(), g.h.round(), g.holes.len()), (100.0, 50.0, 1));
+    }
+
+    #[test]
+    fn an_spf_picked_from_a_folder_opens_that_sheet() {
+        let d = std::env::temp_dir().join(format!("nestpro_spf_pick_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        for (n, w) in [("A", 1000), ("B", 2000)] {
+            std::fs::write(d.join(format!("{n}.SPF")), format!(";ADILAS\n;STEEL,{w},500,3\nINITNEST\nORIG(10,10,0)\nN1 CALL\"/_n_wks_dir/_n_sheet_wpd/_n_{n}701_spf\"\nENDNEST\n")).unwrap();
+            std::fs::write(d.join(format!("{n}701.SPF")), "NEXT_L(0,0,0,2,3)\nPROFILE\nG01 X50 Y0\nG01 X50 Y50\nG01 X0 Y50\nLASTLINE(0,0,0,1,0,50,0,0,0,0)\nENDGEO\n").unwrap();
+        }
+        for (n, w) in [("A", 1000.0), ("B", 2000.0)] {
+            let im = open(&d.join(format!("{n}.SPF"))).unwrap();
+            assert_eq!(im.sheet_w, w, "{n}");
+        }
+        let _ = std::fs::remove_dir_all(&d);
     }
 }
