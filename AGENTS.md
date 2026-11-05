@@ -113,3 +113,17 @@ The app is also driven headless by agents and scripts (`nestpro <operation> job.
 - The app's icon is egui's default (credited in `app/assets/CREDITS.md`). Keep it.
 - Commit or push only when the user asks.
 - Explain results in shop terms (sheets, remnants, parts, cuts) first, code second.
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues on `KerfLabs/nestpro`, which are public; `FEATURES.md` stays the list of what isn't built yet. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five default labels: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
