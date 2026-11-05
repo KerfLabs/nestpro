@@ -102,7 +102,7 @@ fn find_dxf(dir: &Path) -> Option<PathBuf> {
 }
 
 /// Convert through `conv` and read the DXF it writes.
-pub fn run(conv: &Converter, bytes: &[u8]) -> Result<Drawing, String> {
+pub fn run(conv: &Converter, bytes: &[u8], unit_mm: f64) -> Result<Drawing, String> {
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
     let tmp = std::env::temp_dir().join(format!("nestpro-dwg-{}-{stamp}", std::process::id()));
     let (inp, out) = (tmp.join("in"), tmp.join("out"));
@@ -126,7 +126,7 @@ pub fn run(conv: &Converter, bytes: &[u8]) -> Result<Drawing, String> {
         run_with_timeout(cmd, Duration::from_secs(60))?;
         let dxf = find_dxf(&out).ok_or("it wrote no DXF")?;
         let text = std::fs::read(&dxf).map_err(|e| e.to_string())?;
-        crate::dxf::read(&String::from_utf8_lossy(&text))
+        crate::dxf::read_in(&String::from_utf8_lossy(&text), unit_mm)
     })();
     let _ = std::fs::remove_dir_all(&tmp);
     result

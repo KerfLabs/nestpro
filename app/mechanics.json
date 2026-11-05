@@ -4534,7 +4534,7 @@
   "source": "MECHANICS NX9"
  },
  {
-  "name": "DXF $INSUNITS applied on import (1 in, 2 ft, 4 mm, 5 cm, 6 m); none = mm",
+  "name": "DXF $INSUNITS applied on import (1 in, 2 ft, 4 mm, 5 cm, 6 m); none (and every DWG) = the app's unit (Settings → Nesting), as the original's A089 0",
   "group": "import",
   "value": true,
   "source": "MECHANICS IU1"

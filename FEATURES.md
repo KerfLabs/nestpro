@@ -157,7 +157,7 @@ original (or a real job).
 | JOB-26 | Other importers of the original: HPGL (.PLT), ISO CUT and ISO PUNCH programs, ME10, EPS, CESI OM, ALMA, CAM2000, ASCII punch, parametric parts | Missing | ★ | manual, Drawing module import list |
 | JOB-27 | PDF: curves aren't fitted back to arcs and circles (the original's converter does); protected PDFs are refused even with an empty password; page rotation is ignored; text in CID fonts is skipped; the gap between pages and the handling of filled shapes aren't confirmed | Partial | ★ | MECHANICS PD3–PD7 |
 | JOB-28 | IGES: hyperbolas and parabolas (104) come in as straight lines; model-space scale is ignored; compressed IGES is refused; level names (406) aren't used; points (116) are left out (the original imports them) | Partial | ★ | MECHANICS IG3, IG5 |
-| JOB-30 | **Drawing units**: a DXF without a unit header (`$INSUNITS` missing or 0) comes in as mm, and the import has no inch / mm choice (the ERP integration has its own drawing unit). A **DWG**'s own unit isn't read at all yet, so an inch DWG comes in 25.4× too small | Missing | ★★★ | `formats/dxfread.rs`, `formats/dwg`; MECHANICS IU1 |
+| JOB-33 | A DWG's own unit (its header's `INSUNITS`) isn't read: every DWG is taken in the app's unit (Settings → Nesting), so a DWG drawn in mm opens 25.4× too large on an inch-set PC. The original's import setting itself (DXFASYSW / DWGASYSW `A089`, "transform to system units") isn't read either | Missing | ★★ | `formats/dwg`, MECHANICS IU1 |
 | JOB-32 | ERP send: renaming or deleting a job while its nest is being sent drops the work order the ERP returns, so sending again (with app-made work orders) makes a second one | Missing | ★ | `erpui::erp_sent` matches the job by index and name; audit 2026-11-05 |
 
 ## Part drawing (DRW)
@@ -200,6 +200,7 @@ original (or a real job).
 
 | ID | What | Built |
 |---|---|---|
+| JOB-30 | **Drawings without a unit** (DXF without `$INSUNITS`, every DWG) are read in the app's unit, Settings → Nesting (mm or inch), as the original reads them in its system units | 2026-11-05 (`formats::read_bytes`, MECHANICS IU1) |
 | — | Audit fixes (agents): a refused operation keeps nothing it changed; `edit-part` changes only the sizes given, a disc's diameter both; MCP refuses a `job` that isn't a path | 2026-11-05 (MECHANICS AG1–AG3) |
 | JOB-29 | **DXF units**: the drawing's `$INSUNITS` (inch, foot, cm, m) is applied in every import (window, drag and drop, agents' `import-dxf`, drawings named in an import XML); the ERP import uses its drawing unit only when the file doesn't say | 2026-11-05 (`formats/dxfread.rs`, MECHANICS IU1) |
 | OUT-6 | Open program (LC5 set): a contour that ends on an arc (LASTLINE type 2 / 3) comes back with the arc; a contour without a lead-in (BL24) comes back closed; an `.SPF` picked from a folder of several sheets opens that sheet | 2026-11-05 (`progimport.rs`, MECHANICS NX7–NX9) |

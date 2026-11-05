@@ -459,7 +459,7 @@ impl App {
         use crate::units::{drag_len, LenUnit};
         ui.label(RichText::new("Nesting").size(18.0).strong().color(th().text_strong));
         ui.add_space(8.0);
-        card(ui, "Units", "Part gap, edge margin and moves on the Nesting screen are shown and typed in this unit. Inches can be typed as fractions (1/4, 1 1/2) or decimals; either unit can be typed with its suffix (6.35mm, 1/4in).", |ui| {
+        card(ui, "Units", "Part gap, edge margin and moves on the Nesting screen are shown and typed in this unit. Inches can be typed as fractions (1/4, 1 1/2) or decimals; either unit can be typed with its suffix (6.35mm, 1/4in). DXF and DWG drawings that don't say their unit are read in it too.", |ui| {
             ui.horizontal(|ui| {
                 for u in [LenUnit::Mm, LenUnit::Inch] {
                     ui.radio_value(&mut self.cfg.nesting.units, u, u.label());
