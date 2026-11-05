@@ -628,16 +628,24 @@ impl App {
                 }
             }
         }
-        if self.collision && self.overlaps.is_empty() {
+        let (_, off, _) = self.sheet_problems();
+        if self.collision && self.overlaps.is_empty() && off == 0 {
             return;
         }
         let mut text = if self.collision { String::new() } else { "Collisions OFF".to_string() };
-        if !self.overlaps.is_empty() {
+        if !self.overlaps.is_empty() || off > 0 {
             let n = self.overlaps.len();
             if !text.is_empty() {
                 text += "  ·  ";
             }
-            text += &format!("{n} overlap{} — the CNC export will warn", if n == 1 { "" } else { "s" });
+            let mut what = vec![];
+            if n > 0 {
+                what.push(format!("{n} overlap{}", if n == 1 { "" } else { "s" }));
+            }
+            if off > 0 {
+                what.push(format!("{off} part{} off the sheet", if off == 1 { "" } else { "s" }));
+            }
+            text += &format!("{} — the CNC export will warn", what.join(", "));
         }
         let galley = painter.layout_no_wrap(text, egui::FontId::proportional(12.5), Color32::WHITE);
         let size = galley.size() + Vec2::new(20.0, 10.0);
@@ -783,10 +791,12 @@ mod quick_ring_tests {
         // undo and redo follow what there is.
         let mut a = app();
         assert!(!a.radial_enabled(Act::Turn) && !a.radial_enabled(Act::CopyHere));
-        assert!(a.radial_enabled(Act::SelectAll) && a.radial_enabled(Act::Collision) && a.radial_enabled(Act::Compact));
+        assert!(a.radial_enabled(Act::RenestSheet) && a.radial_enabled(Act::CutOff) && a.radial_enabled(Act::Stock));
         assert!(!a.radial_enabled(Act::NextSheet) && !a.radial_enabled(Act::PrevSheet));
         assert!(!a.radial_enabled(Act::Undo) && !a.radial_enabled(Act::Redo));
-        a.radial_run(Act::SelectAll, Radial::new(Pos2::ZERO, Ring::Sheet));
+        a.radial_run(Act::Stock, Radial::new(Pos2::ZERO, Ring::Sheet));
+        assert!(a.stockui.open);
+        a.select_all_on_sheet();
         assert_eq!(a.selection(), vec![0, 1]);
         for k in [Act::Turn, Act::TurnBack, Act::CopyHere, Act::Delete] {
             assert!(a.radial_enabled(k), "{k:?}");
@@ -909,8 +919,7 @@ mod quick_ring_tests {
         // QR5, QR6: with collision off a part may land on another; it is
         // outlined and counted until it is moved clear.
         let mut a = app();
-        a.radial_run(Act::Collision, Radial::new(Pos2::ZERO, Ring::Sheet));
-        assert!(!a.collision && a.status.contains("OFF"));
+        a.collision = false;
         a.set_selection(vec![1]);
         a.cfg.nesting.step = 150.0;
         a.nudge(Dir::Left, false, 1.0);

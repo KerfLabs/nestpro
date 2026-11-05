@@ -41,11 +41,11 @@ pub enum Act {
     MirrorTb,
     Delete,
     // Empty sheet.
-    SelectAll,
+    RenestSheet,
     NextSheet,
     PrevSheet,
-    Compact,
-    Collision,
+    CutOff,
+    Stock,
     // Shared, at the same place in every ring that has them (QR2).
     Undo,
     Redo,
@@ -70,7 +70,7 @@ impl Ring {
         match self {
             Ring::Part => [LeadAuto, LeadOnElement, JointsAuto, JointOnElement, PlaceText, TextOnElement, Loops, FitView],
             Ring::OnPart => [Turn, TurnBack, CopyHere, MirrorTb, MirrorLr, Undo, Delete, FitView],
-            Ring::Sheet => [SelectAll, Redo, NextSheet, Collision, Compact, Undo, PrevSheet, FitView],
+            Ring::Sheet => [RenestSheet, Redo, NextSheet, CutOff, Stock, Undo, PrevSheet, FitView],
         }
     }
 }
@@ -78,24 +78,24 @@ impl Ring {
 impl Act {
     pub fn label(self) -> &'static str {
         match self {
-            Act::LeadAuto => "Lead-ins",
-            Act::LeadOnElement => "Lead on element",
-            Act::JointsAuto => "Micro-joints",
-            Act::JointOnElement => "Joint on element",
+            Act::LeadAuto => "Automatic lead-ins",
+            Act::LeadOnElement => "Place a lead-in on this element (every piece of this part type gets it)",
+            Act::JointsAuto => "Automatic micro-joints",
+            Act::JointOnElement => "Place a micro-joint on this element (every piece of this part type gets it)",
             Act::PlaceText => "Place text",
             Act::TextOnElement => "Text on element",
-            Act::Loops => "Loops",
+            Act::Loops => "Automatic loops",
             Act::Turn => "Turn to the next allowed angle",
             Act::TurnBack => "Turn back to the previous angle",
             Act::CopyHere => "Copy — click to drop it",
             Act::MirrorLr => "Mirror left ↔ right",
             Act::MirrorTb => "Mirror top ↕ bottom",
             Act::Delete => "Take off the sheet",
-            Act::SelectAll => "Select every part on this sheet",
+            Act::RenestSheet => "Re-nest this sheet (its parts only)",
             Act::NextSheet => "Next sheet",
             Act::PrevSheet => "Previous sheet",
-            Act::Compact => "Compact (slide parts left, then down)",
-            Act::Collision => "Collision checking on / off",
+            Act::CutOff => "Cut off the leftover as a remnant",
+            Act::Stock => "Sheet stock — put a sheet or remnant on this sheet",
             Act::Undo => "Undo",
             Act::Redo => "Redo",
             Act::FitView => "Fit view",
@@ -104,24 +104,24 @@ impl Act {
     /// Short name on the ring ("here" = on the selected element).
     fn short(self) -> &'static str {
         match self {
-            Act::LeadAuto => "Lead-ins",
+            Act::LeadAuto => "Auto leads",
             Act::LeadOnElement => "Lead here",
-            Act::JointsAuto => "Joints",
+            Act::JointsAuto => "Auto joints",
             Act::JointOnElement => "Joint here",
-            Act::PlaceText => "Text",
+            Act::PlaceText => "Add text",
             Act::TextOnElement => "Text here",
-            Act::Loops => "Loops",
+            Act::Loops => "Auto loops",
             Act::Turn => "Turn",
             Act::TurnBack => "Turn back",
             Act::CopyHere => "Copy",
             Act::MirrorLr => "Mirror ↔",
             Act::MirrorTb => "Mirror ↕",
             Act::Delete => "Delete",
-            Act::SelectAll => "Select all",
+            Act::RenestSheet => "Re-nest sheet",
             Act::NextSheet => "Next sheet",
             Act::PrevSheet => "Prev sheet",
-            Act::Compact => "Compact",
-            Act::Collision => "Collisions",
+            Act::CutOff => "Cut off leftover",
+            Act::Stock => "Sheet stock",
             Act::Undo => "Undo",
             Act::Redo => "Redo",
             Act::FitView => "Fit",
@@ -130,9 +130,9 @@ impl Act {
     fn icon(self) -> Icon {
         match self {
             Act::LeadAuto => Icon::LeadIn,
-            Act::LeadOnElement => Icon::CutPath,
+            Act::LeadOnElement => Icon::OnElement,
             Act::JointsAuto | Act::JointOnElement => Icon::Joint,
-            Act::PlaceText | Act::TextOnElement => Icon::Numbers,
+            Act::PlaceText | Act::TextOnElement => Icon::Text,
             Act::Loops => Icon::Loop,
             // The next allowed turn is counter-clockwise, the way back clockwise.
             Act::Turn => Icon::RotateLeft,
@@ -141,11 +141,11 @@ impl Act {
             Act::MirrorLr => Icon::Mirror,
             Act::MirrorTb => Icon::MirrorTb,
             Act::Delete => Icon::Remove,
-            Act::SelectAll => Icon::SelectAll,
+            Act::RenestSheet => Icon::NestSheet,
             Act::NextSheet => Icon::Next,
             Act::PrevSheet => Icon::Prev,
-            Act::Compact => Icon::Compact,
-            Act::Collision => Icon::Collision,
+            Act::CutOff => Icon::CutLine,
+            Act::Stock => Icon::Stock,
             Act::Undo => Icon::Undo,
             Act::Redo => Icon::Redo,
             Act::FitView => Icon::Fit,
@@ -213,7 +213,7 @@ impl App {
         let in_part = self.workspace == Workspace::Part;
         let has_sel = !in_part && !self.selection().is_empty();
         match a {
-            Act::FitView | Act::Collision => true,
+            Act::FitView | Act::Stock => true,
             Act::PlaceText => in_part,
             a if a.on_element() => in_part && !self.sel_elems.is_empty(),
             Act::LeadAuto | Act::JointsAuto | Act::Loops => !self.tech_targets().is_empty(),
@@ -223,7 +223,7 @@ impl App {
                 has_sel && self.result.sheets.get(self.cur_sheet).is_some_and(|s| crate::engine::arrange::can_mirror(&self.parts, s, &self.selection(), a == Act::MirrorLr))
             }
             Act::CopyHere | Act::Delete => has_sel,
-            Act::SelectAll | Act::Compact => self.sheet_len() > 0,
+            Act::RenestSheet | Act::CutOff => self.sheet_len() > 0,
             Act::NextSheet => self.cur_sheet + 1 < self.result.sheets.len(),
             Act::PrevSheet => self.cur_sheet > 0,
             Act::Undo => !self.undo.is_empty(),
@@ -234,9 +234,22 @@ impl App {
 
     pub(crate) fn radial_run(&mut self, a: Act, rm: Radial) {
         match a {
-            Act::LeadAuto => self.auto_leads(),
+            // On a part, the ring works on that part type (the ribbon's
+            // "Apply to" is for the ribbon), and says what it changed.
+            Act::LeadAuto | Act::JointsAuto | Act::Loops => {
+                let k = match a {
+                    Act::LeadAuto => crate::techui::TechRerun::AutoLeads,
+                    Act::JointsAuto => crate::techui::TechRerun::AutoJoints,
+                    _ => crate::techui::TechRerun::AutoLoops,
+                };
+                let keep = self.tech_all;
+                if self.sel_part.is_some_and(|i| i < self.parts.len()) {
+                    self.tech_all = false;
+                }
+                self.run_tech(k);
+                self.tech_all = keep;
+            }
             Act::LeadOnElement => self.lead_on_element(),
-            Act::JointsAuto => self.auto_joints_now(),
             Act::JointOnElement => self.joint_on_elements(),
             // The text tools open the quick editor, ready to type.
             Act::PlaceText => match (rm.text_under, self.shown_part()) {
@@ -244,7 +257,6 @@ impl App {
                 _ => self.open_text_editor(rm.center, crate::textedit::TextTarget::New { on_element: false }),
             },
             Act::TextOnElement => self.open_text_editor(rm.center, crate::textedit::TextTarget::New { on_element: true }),
-            Act::Loops => self.auto_loops(),
             Act::Turn => self.rotate_selected(),
             Act::TurnBack => self.turn_back_selected(),
             Act::CopyHere => {
@@ -255,18 +267,11 @@ impl App {
             Act::MirrorLr => self.mirror_selected(true),
             Act::MirrorTb => self.mirror_selected(false),
             Act::Delete => self.remove_selected(),
-            Act::SelectAll => self.select_all_on_sheet(),
+            Act::RenestSheet => self.renest_sheet(),
             Act::NextSheet => self.select_sheet(self.cur_sheet + 1),
             Act::PrevSheet => self.select_sheet(self.cur_sheet.saturating_sub(1)),
-            Act::Compact => self.compact(),
-            Act::Collision => {
-                self.collision = !self.collision;
-                self.status = if self.collision {
-                    "Collision checking on — moved parts keep the part gap.".into()
-                } else {
-                    "Collision checking OFF — moved parts may overlap. Overlapping parts are outlined in red and the CNC export warns about them.".into()
-                };
-            }
+            Act::CutOff => self.auto_remnant_edge(),
+            Act::Stock => self.stockui.open = true,
             Act::Undo => self.undo(),
             Act::Redo => self.redo(),
             Act::FitView => {
@@ -307,7 +312,8 @@ impl App {
             let painter = ui.painter_at(r.expand(4.0));
             let c = rm.center;
             let th = th();
-            let alpha = (235.0 * ease) as u8;
+            // Nearly opaque, so busy geometry under the ring doesn't show through.
+            let alpha = (252.0 * ease) as u8;
             painter.circle_filled(c + Vec2::new(0.0, 6.0), OUTER * scale + 2.0, Color32::from_black_alpha((60.0 * ease) as u8));
             painter.circle_filled(c, OUTER * scale, with_alpha(th.panel, alpha));
             painter.circle_stroke(c, OUTER * scale, Stroke::new(1.0, with_alpha(th.border, alpha)));
@@ -328,12 +334,6 @@ impl App {
                 }
                 painter.add(EShape::mesh(mesh));
             };
-            // A switch that is on (collision checking) keeps a soft wedge.
-            for (k, a) in slots.iter().enumerate() {
-                if *a == Act::Collision && self.collision && hover != Some(k) {
-                    wedge(k, with_alpha(th.accent, (40.0 * ease) as u8));
-                }
-            }
             // Highlight the wedge being pointed at.
             if let Some(k) = hover {
                 wedge(k, with_alpha(th.accent, (90.0 * ease) as u8));
@@ -351,16 +351,21 @@ impl App {
                 let en = self.radial_enabled(*a);
                 let hot = hover == Some(k);
                 let ir = Rect::from_center_size(pos - Vec2::new(0.0, 7.0), Vec2::splat(24.0));
-                let ink = if !en { with_alpha(th.text_dim, 90) } else if hot { th.accent_fg } else { th.text };
-                let accent = if !en { with_alpha(th.text_dim, 90) } else { th.accent_fg };
+                let ink = if !en { with_alpha(th.text_dim, 150) } else if hot { th.accent_fg } else { th.text };
+                let accent = if !en { with_alpha(th.text_dim, 150) } else { th.accent_fg };
                 draw_icon_with(&painter, ir, a.icon(), ink, accent, false);
-                painter.text(pos + Vec2::new(0.0, 14.0), Align2::CENTER_CENTER, self.radial_short(*a, &rm), FontId::proportional(11.0), ink);
+                painter.text(pos + Vec2::new(0.0, 14.0), Align2::CENTER_CENTER, self.radial_short(*a, &rm), FontId::proportional(12.0), ink);
             }
             // Middle: what will happen.
             painter.circle_filled(c, INNER * scale, with_alpha(th.pane_header, alpha));
             painter.circle_stroke(c, INNER * scale, Stroke::new(1.0, with_alpha(th.border, alpha)));
-            let mid_txt = if hover.is_some() { "go" } else { "×" };
-            painter.text(c, Align2::CENTER_CENTER, mid_txt, FontId::proportional(13.0), th.text_dim);
+            // The middle closes the ring: a small cross, hidden while a tool is pointed at.
+            if hover.is_none() {
+                let k = 4.5 * scale;
+                let st = Stroke::new(1.6, th.text_dim);
+                painter.line_segment([c + Vec2::new(-k, -k), c + Vec2::new(k, k)], st);
+                painter.line_segment([c + Vec2::new(-k, k), c + Vec2::new(k, -k)], st);
+            }
             if rm.held && d.length() > 4.0 {
                 painter.line_segment([c, p], Stroke::new(2.0, with_alpha(th.accent, 180)));
             }
@@ -399,8 +404,6 @@ impl App {
     fn radial_short(&self, a: Act, rm: &Radial) -> &'static str {
         match a {
             Act::PlaceText if rm.text_under.is_some() => "Edit text",
-            Act::Collision if self.collision => "Collisions on",
-            Act::Collision => "Collisions OFF",
             _ => a.short(),
         }
     }

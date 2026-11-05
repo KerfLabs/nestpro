@@ -568,8 +568,8 @@ impl App {
     pub fn ribbon_cutoff(&mut self, ui: &mut egui::Ui) {
         let has = !self.result.sheets.is_empty();
         ribbon_group(ui, "Remnants & cut lines", |ui| {
-            if ribbon_button(ui, Icon::Compact, "Automatic\nedge", false, has)
-                .on_hover_text(format!("The remnant line in the chosen shape ({}), {:.0} mm past the parts", self.cfg.stock.line.shape.label(), self.cfg.stock.line.offset))
+            if ribbon_button(ui, Icon::CutLine, "Cut off\nleftover", false, has)
+                .on_hover_text(format!("Add a remnant line: the leftover beyond the parts is cut off and kept as a remnant — in the chosen shape ({}), {:.0} mm past the parts (the same as Home → Cut off leftover)", self.cfg.stock.line.shape.label(), self.cfg.stock.line.offset))
                 .clicked()
             {
                 self.auto_remnant_edge();
@@ -599,7 +599,7 @@ impl App {
                 self.exact_remnant_edge();
             }
             let straight = self.cut_tool == Some(CutTool::Straight);
-            if ribbon_button(ui, Icon::CutPath, "Straight\nline", straight, true)
+            if ribbon_button(ui, Icon::CutLine, "Straight\nline", straight, true)
                 .on_hover_text("Click two points. Edge to edge it cuts a remnant off; ends snap to the sheet edges. Shift = square.")
                 .clicked()
             {

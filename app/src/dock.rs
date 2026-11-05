@@ -80,7 +80,8 @@ impl PaneId {
 
     fn default_height(self) -> f32 {
         match self {
-            PaneId::NestTree => 300.0,
+            // Leaves Part Properties room for its main fields under it.
+            PaneId::NestTree => 240.0,
             PaneId::PartList => 240.0,
             PaneId::JobTree => 330.0,
             _ => 260.0,
@@ -709,11 +710,12 @@ impl App {
     fn pane_body_in(&mut self, ui: &mut egui::Ui, id: PaneId, body: Rect) {
         let mut child = ui.new_child(UiBuilder::new().max_rect(body).id_salt(("pane_body", id)));
         child.set_clip_rect(body.intersect(ui.clip_rect()));
-        egui::ScrollArea::vertical().id_salt(("pane_scroll", id)).auto_shrink([false, false]).show(&mut child, |ui| {
+        let out = egui::ScrollArea::vertical().id_salt(("pane_scroll", id)).auto_shrink([false, false]).show(&mut child, |ui| {
             ui.add_space(4.0);
             self.pane_body(ui, id);
             ui.add_space(6.0);
         });
+        crate::ui_parts::fade_if_more(&child, &out);
     }
 
     /// An auto-hidden pane slid out over the work area from its tab.
@@ -789,11 +791,12 @@ impl App {
                 let acts = self.pane_title_bar(ui, hdr, id);
                 self.handle_header(ctx, id, hdr, Vec2::ZERO, acts);
                 if !self.dock.get(id).collapsed {
-                    egui::ScrollArea::vertical().id_salt(("float_scroll", id)).auto_shrink([false, false]).show(ui, |ui| {
+                    let out = egui::ScrollArea::vertical().id_salt(("float_scroll", id)).auto_shrink([false, false]).show(ui, |ui| {
                         ui.add_space(4.0);
                         self.pane_body(ui, id);
                         ui.add_space(6.0);
                     });
+                    crate::ui_parts::fade_if_more(ui, &out);
                 }
             });
     }

@@ -26,6 +26,8 @@ pub struct StockUi {
     pub creating: bool,
     pub msg: String,
     pub show_options: bool,
+    /// What the last "use" did (text, went well), shown under the buttons.
+    pub note: Option<(String, bool)>,
 }
 
 impl Default for StockUi {
@@ -42,6 +44,7 @@ impl Default for StockUi {
             creating: false,
             msg: String::new(),
             show_options: false,
+            note: None,
         }
     }
 }
@@ -155,6 +158,61 @@ impl App {
         self.mark_cam_changed();
         self.refresh();
         self.status = if misfits > 0 { format!("Sheet {i1} is now {reference}; {misfits} part(s) no longer fit — move them or nest again.", i1 = i + 1) } else { format!("Sheet {} is now {reference}.", i + 1) };
+        self.stockui.note = Some((self.status.clone(), misfits == 0));
+    }
+
+    /// How many parts on the shown sheet would not fit on a stock item.
+    pub fn stock_misfits(&self, it: &Item) -> usize {
+        misfits(self.result.sheets.get(self.cur_sheet).map_or(&[][..], |v| &v[..]), &self.spec, it)
+    }
+
+    /// Double-click on a stock row: the main button's action — use it, or
+    /// when parts would no longer fit, use it and re-nest (all or nothing).
+    pub fn use_stock_default(&mut self, reference: &str) {
+        let Some(it) = Stock::load(&self.library_dir()).ok().and_then(|s| s.get(reference).cloned()) else {
+            self.status = format!("Sheet {reference} isn't in stock.");
+            return;
+        };
+        let why = if it.material != self.spec.material || (it.thickness - self.spec.thickness).abs() > stock::TOL {
+            Some(format!("{reference} is {} {} mm; this job is {} {} mm.", crate::cnc::MATERIALS[it.material.min(2)], it.thickness, crate::cnc::MATERIALS[self.spec.material.min(2)], self.spec.thickness))
+        } else if it.qty == 0 && !self.cfg.stock.allow_no_stock {
+            Some(format!("None of {reference} is left in stock."))
+        } else {
+            None
+        };
+        if let Some(w) = why {
+            self.status = w.clone();
+            self.stockui.note = Some((w, false));
+        } else if self.stock_misfits(&it) > 0 {
+            self.use_stock_and_renest(reference);
+        } else {
+            self.use_stock_item_on_sheet(reference);
+        }
+    }
+
+    /// Put a stock item on the shown sheet and nest that sheet's parts on it
+    /// again — all or nothing: if they can't all fit, the sheet stays as it
+    /// was and the message says why.
+    pub fn use_stock_and_renest(&mut self, reference: &str) {
+        let before = self.undo.len();
+        self.use_stock_item_on_sheet(reference);
+        if self.undo.len() == before {
+            return; // not used (wrong material, not in stock): its message stands
+        }
+        let i = self.cur_sheet;
+        let f = self.result.format(i, &self.spec);
+        match crate::engine::renest_sheet(&self.parts, &self.spec, &self.result.sheets[i], &f, self.group_nest) {
+            Ok(_) => {
+                self.renest_sheet();
+                self.stockui.note = Some((format!("✔ Sheet {} is now {reference}, and all its parts were nested on it again.", i + 1), true));
+            }
+            Err(e) => {
+                self.undo();
+                self.redo.pop();
+                self.status = format!("Nothing changed — {reference} can't hold all the parts of sheet {}: {e} Pick a bigger sheet, or use it and Nest all to spread the parts over more sheets.", i + 1);
+                self.stockui.note = Some((self.status.clone(), false));
+            }
+        }
     }
 
     fn stock_reload(&mut self) {
@@ -194,15 +252,34 @@ impl App {
             }
         }
         let held = self.held.clone();
-        egui::Window::new(RichText::new("Sheet stock").size(16.0).strong()).id(egui::Id::unique("sheet_stock")).open(&mut open).default_size([980.0, 560.0]).collapsible(false).show(ctx, |ui| {
+        egui::Window::new(RichText::new("Sheet stock").size(16.0).strong()).id(egui::Id::unique("sheet_stock")).pivot(egui::Align2::CENTER_TOP).default_pos(crate::ui_parts::dialog_pos(ctx)).open(&mut open).default_size([980.0, 560.0]).collapsible(false).show(ctx, |ui| {
+            // Two tabs: the stock itself, and how automatic nesting uses it.
+            ui.horizontal(|ui| {
+                for (opts, name) in [(false, "Stock"), (true, "Nesting options")] {
+                    if ui.selectable_label(self.stockui.show_options == opts, RichText::new(name).size(13.5).strong()).clicked() {
+                        self.stockui.show_options = opts;
+                    }
+                }
+            });
+            ui.separator();
+            if self.stockui.show_options {
+                let out = egui::ScrollArea::vertical().id_salt("stock_opts").auto_shrink([false, false]).show(ui, |ui| {
+                    stock_options(ui, &mut self.cfg.stock);
+                });
+                crate::ui_parts::fade_if_more(ui, &out);
+                return;
+            }
             let su = &mut self.stockui;
             ui.horizontal(|ui| {
                 ui.checkbox(&mut su.job_only, format!("Only {} {} mm (this job)", crate::cnc::MATERIALS[mat.min(2)], thk));
                 ui.separator();
+                ui.label(RichText::new("Show").color(th().text_dim));
                 ui.checkbox(&mut su.crit.sheets, "Sheets");
                 ui.checkbox(&mut su.crit.nest_remnants, "Remnants from nesting");
                 ui.checkbox(&mut su.crit.user_remnants, "Remnants by user");
-                ui.checkbox(&mut su.crit.show_zero_qty, "Quantity 0");
+                ui.separator();
+                ui.label(RichText::new("Include").color(th().text_dim));
+                ui.checkbox(&mut su.crit.show_zero_qty, "Empty (qty 0)");
                 ui.checkbox(&mut su.crit.include_locked, "Locked");
             });
             ui.add_space(4.0);
@@ -214,17 +291,25 @@ impl App {
                 v
             };
             let ctrl = ui.input(|i| i.modifiers.command);
-            let list_h = if su.show_options { 180.0 } else { 330.0 };
+            let list_h = 290.0;
             egui::ScrollArea::vertical().id_salt("stock_list").max_height(list_h).auto_shrink([false, false]).show(ui, |ui| {
-                egui::Grid::new("stock_grid").striped(true).min_col_width(40.0).show(ui, |ui| {
+                egui::Grid::new("stock_grid").striped(true).min_col_width(40.0).spacing([18.0, 6.0]).show(ui, |ui| {
                     for h in ["Reference", "Kind", "Material", "Thk", "Length", "Width", "Area m²", "Qty", "This job", "Priority", "Locked", "From", "User data", "Added"] {
                         ui.label(RichText::new(h).strong().size(12.0));
                     }
                     ui.end_row();
                     for it in &rows {
                         let sel = su.sel.as_deref() == Some(it.reference.as_str());
-                        if ui.selectable_label(sel, RichText::new(&it.reference).strong()).clicked() {
+                        let r = ui.selectable_label(sel, RichText::new(&it.reference).strong()).on_hover_text("Click to pick; double-click to put it on the sheet you're looking at");
+                        if r.clicked() {
                             su.sel = Some(it.reference.clone());
+                            su.note = None;
+                        }
+                        if r.double_clicked() {
+                            // The same as the main button below: when parts would
+                            // no longer fit, it re-nests (all or nothing).
+                            let rf = it.reference.clone();
+                            action = Some(Box::new(move |app: &mut App| app.use_stock_default(&rf)));
                         }
                         let kind_col = if it.kind.is_remnant() { th().accent } else { th().text };
                         ui.label(RichText::new(it.kind.label()).color(kind_col));
@@ -266,31 +351,93 @@ impl App {
                     }
                 });
                 if rows.is_empty() {
-                    ui.label(RichText::new("Nothing in stock matches — Create a sheet below.").color(th().text_dim));
+                    // Empty: say so and offer the next step right here.
+                    // Empty stock and stock hidden by the filters read differently.
+                    ui.add_space(10.0);
+                    let total = su.stock.items.len();
+                    let msg = if total == 0 {
+                        "The stock is empty — create the first sheet or remnant.".to_string()
+                    } else {
+                        format!("None of the {total} sheet(s) and remnant(s) in stock match these filters.")
+                    };
+                    ui.label(RichText::new(msg).color(th().text));
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        if ui.add(egui::Button::new(RichText::new("Create sheet…").color(Color32::WHITE)).fill(th().accent)).clicked() {
+                            su.creating = true;
+                            su.new_item.material = mat;
+                            su.new_item.thickness = thk;
+                        }
+                        if total > 0 && ui.button("Show everything").on_hover_text("Clear the filters: every material, sheets and remnants, empty and locked ones too").clicked() {
+                            su.job_only = false;
+                            su.crit.sheets = true;
+                            su.crit.nest_remnants = true;
+                            su.crit.user_remnants = true;
+                            su.crit.show_zero_qty = true;
+                            su.crit.include_locked = true;
+                        }
+                    });
                 }
             });
             ui.separator();
             let selected = su.sel.clone().and_then(|r| su.stock.get(&r).cloned());
+            let cur = self.cur_sheet;
+            // 1. Put the picked item on the sheet you're looking at.
+            let allow_empty = self.cfg.stock.allow_no_stock;
+            let why = match &selected {
+                None => Some("Pick a sheet or remnant in the list (double-click puts it on straight away).".to_string()),
+                Some(i) if i.material != mat || (i.thickness - thk).abs() > stock::TOL => Some("It's another material or thickness than this job.".to_string()),
+                Some(i) if i.qty == 0 && !allow_empty => Some("None of it left in stock.".to_string()),
+                _ => None,
+            };
+            let placed_n = self.result.sheets.get(cur).map_or(0, |v| v.len());
+            let off = selected.as_ref().map_or(0, |it| misfits(self.result.sheets.get(cur).map_or(&[][..], |v| &v[..]), &self.spec, it));
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(format!("Put on sheet {}", cur + 1)).strong().color(th().text_strong));
+                ui.add_space(6.0);
+                if let Some(w) = &why {
+                    ui.label(RichText::new(w).size(12.5).color(th().text_dim));
+                    return;
+                }
+                let r = su.sel.clone().unwrap_or_default();
+                let primary = |t: String| egui::Button::new(RichText::new(t).color(Color32::WHITE).strong()).fill(th().accent);
+                if off == 0 {
+                    if ui.add(primary(format!("Use on sheet {}", cur + 1))).on_hover_text("Put the selected sheet or remnant on the sheet you're looking at (Ctrl + Z undoes it)").clicked() {
+                        action = Some(Box::new(move |app: &mut App| app.use_stock_item_on_sheet(&r)));
+                    }
+                    let ok = if placed_n == 0 { "The sheet is empty — nest onto it after.".to_string() } else { format!("✔ All {placed_n} parts on sheet {} still fit on it.", cur + 1) };
+                    ui.label(RichText::new(ok).size(12.5).color(if placed_n == 0 { th().text_dim } else { th().ok_fg }));
+                } else {
+                    if ui.add(primary(format!("Use it and re-nest sheet {}", cur + 1))).on_hover_text("Put it on the sheet and nest that sheet's parts on it again — all or nothing: if they can't all fit, nothing changes and this line says so. Ctrl + Z undoes it.").clicked() {
+                        let r = r.clone();
+                        action = Some(Box::new(move |app: &mut App| app.use_stock_and_renest(&r)));
+                    }
+                    if ui.button("Use anyway — parts stay over the edge").on_hover_text("Put it on the sheet and leave every part where it is: the parts that no longer fit stay over the edge, marked red, until you move them or nest again. Ctrl + Z undoes it.").clicked() {
+                        action = Some(Box::new(move |app: &mut App| app.use_stock_item_on_sheet(&r)));
+                    }
+                }
+            });
+            if why.is_none() && off > 0 {
+                ui.label(RichText::new(format!("⚠ {off} of the {placed_n} parts on sheet {} won't fit on it — re-nest them onto it (all or nothing), or leave them over the edge.", cur + 1)).size(12.5).color(th().warn_fg)).on_hover_text("Use it and re-nest: the sheet takes the item and its parts are nested on it again; if they can't all fit, nothing changes and this dialog says so.\nUse anyway: the parts stay where they are; those past the new edge are marked red until you move them or nest again.");
+            }
+            // What the last "use" did, kept in view here (not only in the status bar).
+            if let Some((text, ok)) = &su.note {
+                ui.label(RichText::new(text).size(12.5).color(if *ok { th().ok_fg } else { th().warn_fg }));
+            }
+            ui.separator();
+            // 2. Look after the stock itself (the job is not changed).
             ui.horizontal(|ui| {
-                ui.add(egui::DragValue::new(&mut su.qty_step).range(1..=stock::MAX_QTY).prefix("× "));
+                ui.label(RichText::new("Stock").strong().color(th().text_strong)).on_hover_text("These change the stock list only — the open job is not changed");
+                ui.add_space(6.0);
+                ui.add(egui::DragValue::new(&mut su.qty_step).range(1..=stock::MAX_QTY).prefix("Qty ")).on_hover_text("How many sheets the two buttons beside it add to or take from stock");
                 let has = selected.is_some();
-                if ui.add_enabled(has, egui::Button::new("Add")).on_hover_text("Add this many of the selected sheet").clicked() {
+                if ui.add_enabled(has, egui::Button::new("Add to stock")).on_hover_text("Put this many more of the selected sheet in stock (the job is not changed)").clicked() {
                     let (r, n) = (su.sel.clone().unwrap_or_default(), su.qty_step);
                     action = Some(Box::new(move |app: &mut App| app.stock_change(|s| s.change_qty(&r, n))));
                 }
-                if ui.add_enabled(has, egui::Button::new("Remove")).on_hover_text("Take this many off; at 0 the sheet is deleted").clicked() {
+                if ui.add_enabled(has, egui::Button::new("Reduce stock")).on_hover_text("Lower the stock count by this many; at 0 the sheet is deleted").clicked() {
                     let (r, n) = (su.sel.clone().unwrap_or_default(), su.qty_step);
                     action = Some(Box::new(move |app: &mut App| app.stock_change(|s| s.change_qty(&r, -n))));
-                }
-                if ui.add_enabled(has, egui::Button::new("Delete")).clicked() {
-                    let r = su.sel.clone().unwrap_or_default();
-                    action = Some(Box::new(move |app: &mut App| {
-                        app.stock_change(|s| {
-                            s.delete(&r);
-                            Ok(())
-                        });
-                        app.stockui.sel = None;
-                    }));
                 }
                 if let Some(it) = &selected {
                     let mut p = it.priority;
@@ -307,20 +454,22 @@ impl App {
                         }));
                     }
                 }
-                ui.separator();
-                let allow_empty = self.cfg.stock.allow_no_stock;
-                let fits_job = selected.as_ref().is_some_and(|i| i.material == mat && (i.thickness - thk).abs() <= stock::TOL && (i.qty > 0 || allow_empty));
-                if ui.add_enabled(fits_job, egui::Button::new(RichText::new("Use on current sheet").strong())).on_hover_text("Put the selected sheet or remnant on the sheet you're looking at").clicked() {
-                    let r = su.sel.clone().unwrap_or_default();
-                    action = Some(Box::new(move |app: &mut App| app.use_stock_item_on_sheet(&r)));
-                }
-                if ui.button("Create sheet…").clicked() {
+                // With nothing listed, the empty list offers Create sheet itself.
+                if !rows.is_empty() && ui.button("Create sheet…").clicked() {
                     su.creating = !su.creating;
                     su.new_item.material = mat;
                     su.new_item.thickness = thk;
                 }
-                if ui.selectable_label(su.show_options, "Options…").clicked() {
-                    su.show_options = !su.show_options;
+                ui.add_space(12.0);
+                if ui.add_enabled(has, egui::Button::new(RichText::new("Delete sheet").color(if has { th().warn_fg } else { th().text_dim }))).on_hover_text("Remove the selected sheet or remnant from stock altogether").clicked() {
+                    let r = su.sel.clone().unwrap_or_default();
+                    action = Some(Box::new(move |app: &mut App| {
+                        app.stock_change(|s| {
+                            s.delete(&r);
+                            Ok(())
+                        });
+                        app.stockui.sel = None;
+                    }));
                 }
             });
             if let Some(it) = &selected {
@@ -384,16 +533,10 @@ impl App {
                     }));
                 }
             }
-            if self.stockui.show_options {
-                ui.separator();
-                egui::ScrollArea::vertical().id_salt("stock_opts").max_height(300.0).auto_shrink([false, true]).show(ui, |ui| {
-                    stock_options(ui, &mut self.cfg.stock);
-                });
-            }
             if !self.stockui.msg.is_empty() {
                 ui.colored_label(Color32::from_rgb(220, 90, 70), &self.stockui.msg);
             }
-            ui.label(RichText::new(Stock::file(&self.library_dir()).display().to_string()).monospace().size(10.5).color(th().text_dim));
+            ui.label(RichText::new("Stock file").size(11.0).color(th().text_dim)).on_hover_text(Stock::file(&self.library_dir()).display().to_string());
         });
         if let Some(a) = action {
             a(self);
@@ -514,135 +657,138 @@ impl App {
 
 /// The Do All and Sheet Remnants options.
 pub fn stock_options(ui: &mut egui::Ui, st: &mut stock::StockSettings) {
-    ui.label(RichText::new("Automatic nesting (Do All)").strong());
-    ui.checkbox(&mut st.use_stock, "Nest on sheets from stock");
-    ui.add_enabled_ui(st.use_stock, |ui| {
-        ui.horizontal(|ui| {
-            ui.label("Order of sheets");
-            egui::ComboBox::from_id_salt("stock_order").selected_text(st.order.label()).show_ui(ui, |ui| {
-                for o in Order::ALL {
-                    ui.selectable_value(&mut st.order, o, o.label());
-                }
-            });
-            ui.checkbox(&mut st.remnants_first, "Remnants before sheets");
-        });
-        ui.horizontal(|ui| {
-            ui.checkbox(&mut st.criteria.nest_remnants, "Use remnants from nesting");
-            ui.checkbox(&mut st.criteria.user_remnants, "Use remnants by user");
-            ui.checkbox(&mut st.allow_no_stock, "Use sheets with no stock left");
-        });
-        ui.horizontal(|ui| {
-            ui.checkbox(&mut st.fallback_job_size, "When stock runs out, use the job's sheet size");
-        });
-        ui.horizontal(|ui| {
-            ui.checkbox(&mut st.best_format, "Look for the best sheet format");
-            ui.checkbox(&mut st.best_combination, "Search for the best sheet combination");
-            ui.add_enabled_ui(st.best_combination, |ui| {
-                let mut pct = st.combination_min * 100.0;
-                if ui.add(egui::DragValue::new(&mut pct).range(0.0..=100.0).suffix(" %")).on_hover_text("Minimum efficiency: a sheet used less than this is tried in the other sizes").changed() {
-                    st.combination_min = pct / 100.0;
-                }
-            });
-        });
-        ui.horizontal(|ui| {
-            ui.label("Maximum time to look for the best sheets");
-            ui.add(egui::DragValue::new(&mut st.max_seconds).range(1.0..=3600.0).suffix(" s"));
-        });
-        ui.horizontal(|ui| {
-            ui.label("Minimum efficiency to keep a sheet");
-            let mut pct = st.min_efficiency * 100.0;
-            if ui.add(egui::DragValue::new(&mut pct).range(0.0..=100.0).suffix(" %")).on_hover_text("0 = off. A stock sheet used less than this is dropped and the parts nested on another").changed() {
-                st.min_efficiency = pct / 100.0;
-            }
-            egui::ComboBox::from_id_salt("eff_mode").selected_text(st.eff_mode.label()).show_ui(ui, |ui| {
-                for m in EffMode::ALL {
-                    ui.selectable_value(&mut st.eff_mode, m, m.label());
-                }
-            });
-        });
-    });
-    ui.checkbox(&mut st.with_references, "Work with sheet references").on_hover_text("Off: a new sheet of the same material, thickness and size just adds to the existing one");
-    ui.add_space(6.0);
-    ui.label(RichText::new("Sheet remnants").strong());
-    ui.checkbox(&mut st.remnants_on_save, "Generate remnants when you save").on_hover_text("Each sheet's remnant line turns what's beyond it into a remnant in stock");
-    ui.checkbox(&mut st.keep_completed, "Generate remnants with the completed sheets").on_hover_text("Keep the whole used sheet (less the parts) in stock to nest more on later");
-    ui.checkbox(&mut st.prompt_remnant_ref, "Prompt for references when generating remnants");
-    ui.horizontal(|ui| {
-        ui.checkbox(&mut st.auto_sheet_ref, "Automatic sheet references");
-        ui.add_enabled(st.auto_sheet_ref, egui::TextEdit::singleline(&mut st.sheet_ref_format).hint_text("[MAT]_[LNG]x[WDT]x[THK]").desired_width(200.0));
-    });
-    ui.horizontal(|ui| {
-        ui.checkbox(&mut st.auto_remnant_ref, "Automatic remnant references");
-        ui.add_enabled(st.auto_remnant_ref, egui::TextEdit::singleline(&mut st.remnant_ref_format).hint_text("[SHT]-[AUT]").desired_width(200.0));
-    })
-    .response
-    .on_hover_text("[MAT] material, [UD1]–[UD3] user data, [SHT] origin sheet, [AUT] next number, [LNG] [WDT] [THK] sizes (add 1 = ÷10, 2 = ÷100; a third character = decimals)");
-    let m = &mut st.mark;
-    ui.horizontal(|ui| {
-        ui.checkbox(&mut m.on, "Automatic mark");
-        ui.add_enabled(m.on, egui::TextEdit::singleline(&mut m.text).desired_width(140.0)).on_hover_text("#300 reference, #301 length, #302 width, #303 area, #304 weight, #200 sheet, #400 material, #401 thickness, #104 date; #N.d = d decimals");
-        ui.add_enabled_ui(m.on, |ui| {
-            ui.add(egui::DragValue::new(&mut m.height).range(1.0..=200.0).speed(0.5).prefix("H ").suffix(" mm"));
-            egui::ComboBox::from_id_salt("mark_pos").width(110.0).selected_text(if m.position == 0 { "Find room".to_string() } else { format!("Position {}", m.position) }).show_ui(ui, |ui| {
-                ui.selectable_value(&mut m.position, 0, "Find room");
-                for k in 1..=9u8 {
-                    ui.selectable_value(&mut m.position, k, format!("Position {k} (keypad)"));
-                }
-            });
-        });
-    });
-    ui.horizontal(|ui| {
-        ui.label("Minimum area of remnants");
-        ui.add(egui::DragValue::new(&mut st.min_remnant_m2).range(0.0..=100.0).speed(0.01).max_decimals(3).suffix(" m²"));
-    });
-    ui.checkbox(&mut st.lines_after_nesting, "Create the remnant line automatically after nesting");
-    ui.horizontal(|ui| {
-        ui.label("Remnants can be rotated");
-        egui::ComboBox::from_id_salt("rem_rot").selected_text(st.remnant_rotation.label()).show_ui(ui, |ui| {
-            for r in stock::RemnantRotation::ALL {
-                ui.selectable_value(&mut st.remnant_rotation, r, r.label());
-            }
-        });
-        if st.remnant_rotation != stock::RemnantRotation::NotAllowed {
-            ui.checkbox(&mut st.turn_over, "Allow turning over the remnant");
-        }
-    });
-    let l = &mut st.line;
-    egui::Grid::new("remline_opts").num_columns(4).spacing([10.0, 4.0]).show(ui, |ui| {
-        ui.label("Cutting line shape");
-        egui::ComboBox::from_id_salt("remline_shape_opts").width(170.0).selected_text(l.shape.label()).show_ui(ui, |ui| {
-            for s in crate::remline::LineShape::ALL {
-                ui.selectable_value(&mut l.shape, s, s.label());
-            }
-        });
-        // The exact line follows the cut: no rounding (UI2).
-        if l.shape == crate::remline::LineShape::Exact {
-            l.round = false;
-        }
-        ui.label("Offset between the parts and the line");
-        ui.horizontal(|ui| {
-            ui.add_enabled(!l.cutter_radius, egui::DragValue::new(&mut l.offset).range(0.0..=500.0).speed(0.5).suffix(" mm"));
-            ui.checkbox(&mut l.cutter_radius, "Cutter radius");
-        });
-        ui.end_row();
-        ui.label("Minimum width");
-        ui.add(egui::DragValue::new(&mut l.min_width).range(0.0..=5000.0).speed(1.0).suffix(" mm")).on_hover_text("A remnant strip narrower than this isn't made");
-        ui.label("Offset in the sheet edge");
-        ui.add(egui::DragValue::new(&mut l.edge_offset).range(0.0..=100.0).speed(0.1).suffix(" mm")).on_hover_text("Leave this much uncut where the line meets the sheet edge, so the remnant stays held");
-        ui.end_row();
-        let xy = l.shape.uses_min_xy();
-        ui.label("Minimum X / Y");
-        ui.add_enabled_ui(xy, |ui| {
+    // Two cards, like Settings: what Nest all takes from stock, and what goes back.
+    crate::settings_ui::card(ui, "Automatic nesting (Nest all)", "Which sheets from stock Nest all uses, and in what order.", |ui| {
+        ui.checkbox(&mut st.use_stock, "Nest on sheets from stock");
+        ui.add_enabled_ui(st.use_stock, |ui| {
             ui.horizontal(|ui| {
-                ui.add(egui::DragValue::new(&mut l.min_x).range(0.0..=20000.0).suffix(" mm"));
-                ui.add(egui::DragValue::new(&mut l.min_y).range(0.0..=6000.0).suffix(" mm"));
+                ui.label("Order of sheets");
+                egui::ComboBox::from_id_salt("stock_order").selected_text(st.order.label()).show_ui(ui, |ui| {
+                    for o in Order::ALL {
+                        ui.selectable_value(&mut st.order, o, o.label());
+                    }
+                });
+                ui.checkbox(&mut st.remnants_first, "Remnants before sheets");
             });
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut st.criteria.nest_remnants, "Use remnants from nesting");
+                ui.checkbox(&mut st.criteria.user_remnants, "Use remnants by user");
+                ui.checkbox(&mut st.allow_no_stock, "Use sheets with no stock left");
+            });
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut st.fallback_job_size, "When stock runs out, use the job's sheet size");
+            });
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut st.best_format, "Look for the best sheet format");
+                ui.checkbox(&mut st.best_combination, "Search for the best sheet combination");
+                ui.add_enabled_ui(st.best_combination, |ui| {
+                    let mut pct = st.combination_min * 100.0;
+                    if ui.add(egui::DragValue::new(&mut pct).range(0.0..=100.0).suffix(" %")).on_hover_text("Minimum efficiency: a sheet used less than this is tried in the other sizes").changed() {
+                        st.combination_min = pct / 100.0;
+                    }
+                });
+            });
+            ui.horizontal(|ui| {
+                ui.label("Maximum time to look for the best sheets");
+                ui.add(egui::DragValue::new(&mut st.max_seconds).range(1.0..=3600.0).suffix(" s"));
+            });
+            ui.horizontal(|ui| {
+                ui.label("Minimum efficiency to keep a sheet");
+                let mut pct = st.min_efficiency * 100.0;
+                if ui.add(egui::DragValue::new(&mut pct).range(0.0..=100.0).suffix(" %")).on_hover_text("0 = off. A stock sheet used less than this is dropped and the parts nested on another").changed() {
+                    st.min_efficiency = pct / 100.0;
+                }
+                egui::ComboBox::from_id_salt("eff_mode").selected_text(st.eff_mode.label()).show_ui(ui, |ui| {
+                    for m in EffMode::ALL {
+                        ui.selectable_value(&mut st.eff_mode, m, m.label());
+                    }
+                });
+            });
+        });
+        ui.checkbox(&mut st.with_references, "Work with sheet references").on_hover_text("Off: a new sheet of the same material, thickness and size just adds to the existing one");
+    });
+    ui.add_space(10.0);
+    crate::settings_ui::card(ui, "Sheet remnants", "What goes back into stock when a job is saved or cut.", |ui| {
+        ui.checkbox(&mut st.remnants_on_save, "Generate remnants when you save").on_hover_text("Each sheet's remnant line turns what's beyond it into a remnant in stock");
+        ui.checkbox(&mut st.keep_completed, "Generate remnants with the completed sheets").on_hover_text("Keep the whole used sheet (less the parts) in stock to nest more on later");
+        ui.checkbox(&mut st.prompt_remnant_ref, "Prompt for references when generating remnants");
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut st.auto_sheet_ref, "Automatic sheet references");
+            ui.add_enabled(st.auto_sheet_ref, egui::TextEdit::singleline(&mut st.sheet_ref_format).hint_text("[MAT]_[LNG]x[WDT]x[THK]").desired_width(200.0));
+        });
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut st.auto_remnant_ref, "Automatic remnant references");
+            ui.add_enabled(st.auto_remnant_ref, egui::TextEdit::singleline(&mut st.remnant_ref_format).hint_text("[SHT]-[AUT]").desired_width(200.0));
         })
         .response
-        .on_hover_text("The parts side is at least this long from where nesting starts (first six shapes)");
-        ui.checkbox(&mut l.round, "Round the remnant line");
-        ui.add_enabled(l.round, egui::DragValue::new(&mut l.radius).range(0.5..=500.0).speed(0.5).prefix("R ").suffix(" mm"));
-        ui.end_row();
+        .on_hover_text("[MAT] material, [UD1]–[UD3] user data, [SHT] origin sheet, [AUT] next number, [LNG] [WDT] [THK] sizes (add 1 = ÷10, 2 = ÷100; a third character = decimals)");
+        let m = &mut st.mark;
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut m.on, "Automatic mark");
+            ui.add_enabled(m.on, egui::TextEdit::singleline(&mut m.text).desired_width(140.0)).on_hover_text("#300 reference, #301 length, #302 width, #303 area, #304 weight, #200 sheet, #400 material, #401 thickness, #104 date; #N.d = d decimals");
+            ui.add_enabled_ui(m.on, |ui| {
+                ui.add(egui::DragValue::new(&mut m.height).range(1.0..=200.0).speed(0.5).prefix("H ").suffix(" mm"));
+                egui::ComboBox::from_id_salt("mark_pos").width(110.0).selected_text(if m.position == 0 { "Find room".to_string() } else { format!("Position {}", m.position) }).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut m.position, 0, "Find room");
+                    for k in 1..=9u8 {
+                        ui.selectable_value(&mut m.position, k, format!("Position {k} (keypad)"));
+                    }
+                });
+            });
+        });
+        ui.horizontal(|ui| {
+            ui.label("Minimum area of remnants");
+            ui.add(egui::DragValue::new(&mut st.min_remnant_m2).range(0.0..=100.0).speed(0.01).max_decimals(3).suffix(" m²"));
+        });
+        ui.checkbox(&mut st.lines_after_nesting, "Create the remnant line automatically after nesting");
+        ui.horizontal(|ui| {
+            ui.label("Remnants can be rotated");
+            egui::ComboBox::from_id_salt("rem_rot").selected_text(st.remnant_rotation.label()).show_ui(ui, |ui| {
+                for r in stock::RemnantRotation::ALL {
+                    ui.selectable_value(&mut st.remnant_rotation, r, r.label());
+                }
+            });
+            if st.remnant_rotation != stock::RemnantRotation::NotAllowed {
+                ui.checkbox(&mut st.turn_over, "Allow turning over the remnant");
+            }
+        });
+        let l = &mut st.line;
+        egui::Grid::new("remline_opts").num_columns(4).spacing([10.0, 4.0]).show(ui, |ui| {
+            ui.label("Cutting line shape");
+            egui::ComboBox::from_id_salt("remline_shape_opts").width(170.0).selected_text(l.shape.label()).show_ui(ui, |ui| {
+                for s in crate::remline::LineShape::ALL {
+                    ui.selectable_value(&mut l.shape, s, s.label());
+                }
+            });
+            // The exact line follows the cut: no rounding (UI2).
+            if l.shape == crate::remline::LineShape::Exact {
+                l.round = false;
+            }
+            ui.label("Offset between the parts and the line");
+            ui.horizontal(|ui| {
+                ui.add_enabled(!l.cutter_radius, egui::DragValue::new(&mut l.offset).range(0.0..=500.0).speed(0.5).suffix(" mm"));
+                ui.checkbox(&mut l.cutter_radius, "Cutter radius");
+            });
+            ui.end_row();
+            ui.label("Minimum width");
+            ui.add(egui::DragValue::new(&mut l.min_width).range(0.0..=5000.0).speed(1.0).suffix(" mm")).on_hover_text("A remnant strip narrower than this isn't made");
+            ui.label("Offset in the sheet edge");
+            ui.add(egui::DragValue::new(&mut l.edge_offset).range(0.0..=100.0).speed(0.1).suffix(" mm")).on_hover_text("Leave this much uncut where the line meets the sheet edge, so the remnant stays held");
+            ui.end_row();
+            let xy = l.shape.uses_min_xy();
+            ui.label("Minimum X / Y");
+            ui.add_enabled_ui(xy, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut l.min_x).range(0.0..=20000.0).suffix(" mm"));
+                    ui.add(egui::DragValue::new(&mut l.min_y).range(0.0..=6000.0).suffix(" mm"));
+                });
+            })
+            .response
+            .on_hover_text("The parts side is at least this long from where nesting starts (first six shapes)");
+            ui.checkbox(&mut l.round, "Round the remnant line");
+            ui.add_enabled(l.round, egui::DragValue::new(&mut l.radius).range(0.5..=500.0).speed(0.5).prefix("R ").suffix(" mm"));
+            ui.end_row();
+        });
     });
 }
 
@@ -690,6 +836,45 @@ mod tests {
         s.add_remnant(l, &parent, 1, Some("1-1".into()), "old job");
         s.save(&dir).unwrap();
         (a, dir)
+    }
+
+    #[test]
+    fn use_and_renest_is_all_or_nothing() {
+        let (mut a, dir) = app_with_stock("renest");
+        a.cfg.stock.use_stock = false;
+        a.run_nesting();
+        let before = a.result.sheets[0].clone();
+        let fmt = a.result.format(0, &a.spec);
+        // Far too small for the sheet's parts: nothing may change.
+        Stock::update(&dir, |s| s.add_sheet(Item::sheet("TINY", 0, 10.0, 400.0, 300.0, 1), true)).unwrap();
+        a.use_stock_and_renest("TINY");
+        assert_eq!(a.result.sheets[0], before, "parts untouched");
+        assert_eq!(a.result.format(0, &a.spec).w, fmt.w, "sheet size untouched");
+        assert!(a.status.starts_with("Nothing changed"), "{}", a.status);
+        // Big enough: used and nested again.
+        Stock::update(&dir, |s| s.add_sheet(Item::sheet("BIG", 0, 10.0, 3000.0, 1500.0, 1), true)).unwrap();
+        a.use_stock_and_renest("BIG");
+        assert_eq!(a.result.formats[0].stock_ref, "BIG");
+        assert!(a.result.sheets[0].iter().all(|p| a.fits_sheet(p, 0)));
+    }
+
+    #[test]
+    fn double_click_on_a_stock_row_never_strands_parts() {
+        // RN7: a double-click does what the main button does — when parts
+        // would no longer fit it re-nests, all or nothing.
+        let (mut a, dir) = app_with_stock("dblclick");
+        a.cfg.stock.use_stock = false;
+        a.run_nesting();
+        let before = a.result.sheets[0].clone();
+        Stock::update(&dir, |s| s.add_sheet(Item::sheet("TINY", 0, 10.0, 400.0, 300.0, 1), true)).unwrap();
+        a.use_stock_default("TINY");
+        assert_eq!(a.result.sheets[0], before, "parts untouched");
+        assert!(a.stockui.note.as_ref().is_some_and(|(t, ok)| !ok && t.starts_with("Nothing changed")), "{:?}", a.stockui.note);
+        Stock::update(&dir, |s| s.add_sheet(Item::sheet("BIG", 0, 10.0, 3000.0, 1500.0, 1), true)).unwrap();
+        a.use_stock_default("BIG");
+        assert_eq!(a.result.formats[0].stock_ref, "BIG");
+        assert!(a.result.sheets[0].iter().all(|p| a.fits_sheet(p, 0)));
+        assert!(a.stockui.note.as_ref().is_some_and(|(_, ok)| *ok));
     }
 
     #[test]
@@ -913,4 +1098,12 @@ mod tests {
         assert!(a.result.formats.iter().all(|f| f.stock_ref != "1-1"), "{:?}", a.result.formats);
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+/// How many of these placed parts would not fit on a stock item.
+fn misfits(placed: &[crate::nest::Placed], spec: &crate::nest::SheetSpec, it: &Item) -> usize {
+    let mut sp = spec.clone();
+    sp.w = it.length;
+    sp.h = it.width;
+    placed.iter().filter(|p| !sp.fits(p)).count()
 }

@@ -12,6 +12,32 @@ use egui::{Align2, Color32, CornerRadius, FontId, Pos2, Rect, RichText, Sense, S
 
 impl App {
     /// Parts the Technology buttons act on: the selected one, or all.
+    /// Run an automatic technology command and say what it changed (and,
+    /// when it changed one part type of several, offer it for all of them).
+    pub fn run_tech(&mut self, k: TechRerun) {
+        match k {
+            TechRerun::AutoLeads => self.auto_leads(),
+            TechRerun::StandardLeads => self.apply_machine_leads(),
+            TechRerun::AutoJoints => self.auto_joints_now(),
+            TechRerun::AutoLoops => self.auto_loops(),
+        }
+        let targets = self.tech_targets();
+        let pcs: u32 = targets.iter().filter_map(|&i| self.parts.get(i)).map(|p| p.qty).sum();
+        let what = k.label();
+        let (title, again) = if self.tech_all || targets.len() != 1 {
+            (format!("{what} on all {} part types ({pcs} pcs)", targets.len()), None)
+        } else {
+            let name = self.parts.get(targets[0]).map_or(String::new(), |p| p.name.clone());
+            (format!("{what} on 1 part type: {name} ({pcs} pcs)"), (self.parts.len() > 1).then_some(k))
+        };
+        self.result_card = Some(crate::ResultCard {
+            title,
+            lines: vec![],
+            warn: false,
+            actions: again.map(|k| vec![(format!("Apply to all {} part types", self.parts.len()), crate::CardAct::TechAll(k))]).unwrap_or_default(),
+        });
+    }
+
     pub(crate) fn tech_targets(&self) -> Vec<usize> {
         if self.tech_all {
             (0..self.parts.len()).collect()
@@ -38,7 +64,7 @@ impl App {
         let q = mt.leads.quality(1);
         let classes: Vec<String> = crate::leads::CLASS_NAMES.iter().zip(q.recs.iter()).map(|(n, r)| format!("{n}: type {} ({} / {} mm)", r.kind, r.d_in, r.d_out)).collect();
         format!(
-            "The machine's lead-ins: {} mm in, {} mm out, {} mm overlap past the start, position {} ({}).\n{}.\nTables by contour class (quality 1): {}",
+            "Standard leads: the machine's own lead-in and lead-out on every contour, whatever its shape — {} mm in, {} mm out, {} mm overlap past the start, position {} ({}). (Auto lead-ins instead picks by contour class.)\n{}.\nTables by contour class (quality 1): {}",
             mt.lead_in,
             mt.lead_out,
             mt.overlap,
@@ -91,27 +117,77 @@ impl App {
     }
 
     pub fn ribbon_part_tech(&mut self, ui: &mut egui::Ui) {
+        // On the sheet the commands work on all part types until the user
+        // picks "This part type" by hand; that choice is then kept. (Picking a
+        // part on the sheet does not change it.) An opened part's commands work
+        // on that part. With no part picked, "this part" means nothing.
+        if self.workspace == crate::Workspace::Nesting {
+            self.tech_all = self.tech_nest_all.unwrap_or(true);
+        }
+        if !self.tech_all && self.sel_part.is_none_or(|i| i >= self.parts.len()) && !self.parts.is_empty() {
+            self.tech_all = true;
+        }
         let has = !self.tech_targets().is_empty();
+        let n_scope = self.tech_targets().len();
         let in_part = self.workspace == crate::Workspace::Part;
         let picked = in_part && !self.sel_elem_info.is_empty();
-        ribbon_group(ui, "Lead-in/Lead-outs", |ui| {
-            if ribbon_button_ex(ui, Icon::LeadIn, "Automatic", false, has, true)
+        // What the commands work on comes first, so it is always in view
+        // (the ribbon folds groups from the right when the window is narrow).
+        ribbon_group(ui, "Apply to", |ui| {
+            ui.vertical(|ui| {
+                // Two clear choices with what each changes: one part (all its
+                // pieces) or every part in the job.
+                ui.spacing_mut().item_spacing.y = 4.0;
+                ui.add_space(4.0);
+                let sel = self.sel_part.and_then(|i| self.parts.get(i));
+                let pieces: u32 = self.parts.iter().map(|p| p.qty).sum();
+                let one = match sel {
+                    Some(p) => format!("This part type: {} · all {} pcs", p.name, p.qty),
+                    None => "This part type (pick one)".to_string(),
+                };
+                let all = format!("All {} part types · {} pcs", self.parts.len(), pieces);
+                let width = 220.0;
+                // Two choices; the chosen one is filled in the accent colour
+                // with a tick, the other stays plain.
+                let choice = |text: String, on: bool| {
+                    if on {
+                        egui::Button::new(RichText::new(format!("✔  {text}")).color(Color32::WHITE).strong()).fill(th().accent).min_size(Vec2::new(width, 26.0))
+                    } else {
+                        egui::Button::new(RichText::new(text).color(th().text)).min_size(Vec2::new(width, 26.0))
+                    }
+                };
+                if ui.add_enabled(sel.is_some(), choice(one, !self.tech_all)).on_hover_text("The technology commands change the selected part type — every piece of it on every sheet (technology belongs to the part, not to one placed piece)").clicked() {
+                    self.tech_all = false;
+                    if self.workspace == crate::Workspace::Nesting {
+                        self.tech_nest_all = Some(false);
+                    }
+                }
+                if ui.add(choice(all, self.tech_all)).on_hover_text("The technology commands change every part type in the job").clicked() {
+                    self.tech_all = true;
+                    if self.workspace == crate::Workspace::Nesting {
+                        self.tech_nest_all = Some(true);
+                    }
+                }
+            });
+        });
+        ribbon_group(ui, "Lead-ins", |ui| {
+            if scoped(ribbon_button_ex(ui, Icon::LeadIn, "Auto\nlead-ins", false, has, true), n_scope, self.tech_all)
                 .on_hover_text("Leads by contour class, from the machine's tables by default: round holes and parts at the position's angle, rectangles at its corner or nearest side, other shapes at the nearest valid corner, else the middle of the nearest long-enough line")
                 .clicked()
             {
-                self.auto_leads();
+                self.run_tech(TechRerun::AutoLeads);
             }
-            if ribbon_button(ui, Icon::Remove, "Delete", false, has).clicked() {
+            if scoped(ribbon_button(ui, Icon::Remove, "Delete\nlead-ins", false, has), n_scope, self.tech_all).clicked() {
                 self.edit_tech("Lead-ins removed", |t, b| TechEdit::DeleteLeads.apply(t, b));
             }
-            if ribbon_button(ui, Icon::Program, "Machine", false, has)
+            if scoped(ribbon_button(ui, Icon::StandardLeads, "Standard\nleads", false, has), n_scope, self.tech_all)
                 .on_hover_text(self.machine_tech_tip())
                 .clicked()
             {
-                self.apply_machine_leads();
+                self.run_tech(TechRerun::StandardLeads);
             }
             if in_part
-                && ribbon_button(ui, Icon::CutPath, "On element", false, picked)
+                && ribbon_button(ui, Icon::OnElement, "On element", false, picked)
                     .on_hover_text("Click a line or arc on the part, then put the lead-in in its middle")
                     .clicked()
             {
@@ -134,24 +210,24 @@ impl App {
             });
         });
 
-        ribbon_group(ui, "Micro-Joints", |ui| {
-            if ribbon_button(ui, Icon::Joint, "Automatic", false, has)
+        ribbon_group(ui, "Micro-joints", |ui| {
+            if scoped(ribbon_button(ui, Icon::Joint, "Auto\njoints", false, has), n_scope, self.tech_all)
                 .on_hover_text("One joint per the machine's maximum distance (100 mm by default) on every contour, holes too, rounded up to an even number, each centred on its line or arc; within the size class's fewest/most")
                 .clicked()
             {
-                self.auto_joints_now();
+                self.run_tech(TechRerun::AutoJoints);
             }
-            if ribbon_button(ui, Icon::Remove, "Delete", false, has).clicked() {
+            if scoped(ribbon_button(ui, Icon::Remove, "Delete\njoints", false, has), n_scope, self.tech_all).clicked() {
                 self.edit_tech("Micro-joints removed", |t, b| TechEdit::DeleteJoints.apply(t, b));
             }
             if in_part
-                && ribbon_button(ui, Icon::CutPath, "On element", false, picked)
+                && ribbon_button(ui, Icon::OnElement, "On element", false, picked)
                     .on_hover_text("A micro-joint in the middle of each selected line or arc")
                     .clicked()
             {
                 self.joint_on_elements();
             }
-            if ribbon_button(ui, Icon::Grid, "Settings", self.show_joint_sizes, true).on_hover_text("Joint type (plain gap, with leads, at corners), gap width, lead distances and angle, and the automatic count by size").clicked() {
+            if ribbon_button(ui, Icon::Gear, "Joint\nsettings", self.show_joint_sizes, true).on_hover_text("Joint type (plain gap, with leads, at corners), gap width, lead distances and angle, and the automatic count by size").clicked() {
                 if !self.show_joint_sizes {
                     self.auto_joints = crate::ct1::for_spec(&self.spec).joint_sizes;
                 }
@@ -159,30 +235,30 @@ impl App {
             }
         });
         ribbon_group(ui, "Loops", |ui| {
-            if ribbon_button(ui, Icon::Loop, "Automatic", false, has)
+            if scoped(ribbon_button(ui, Icon::Loop, "Auto\nloops", false, has), n_scope, self.tech_all)
                 .on_hover_text("Small loops outside sharp outer corners (90° or less)")
                 .clicked()
             {
-                self.auto_loops();
+                self.run_tech(TechRerun::AutoLoops);
             }
-            if ribbon_button(ui, Icon::Remove, "Delete", false, has).clicked() {
+            if scoped(ribbon_button(ui, Icon::Remove, "Delete\nloops", false, has), n_scope, self.tech_all).clicked() {
                 self.edit_tech("Loops removed", |t, b| TechEdit::Loops(false).apply(t, b));
             }
         });
-        ribbon_group(ui, "Cut Technology", |ui| {
-            if ribbon_button(ui, Icon::CutTech, "Automatic", false, has)
+        ribbon_group(ui, "Cut technology", |ui| {
+            if scoped(ribbon_button(ui, Icon::CutTech, "Own\ntechnology", false, has), n_scope, self.tech_all)
                 .on_hover_text("Give the part its own technology with the defaults")
                 .clicked()
             {
                 self.edit_tech("Own cut technology", |t, b| TechEdit::Own.apply(t, b));
             }
-            if ribbon_button(ui, Icon::Remove, "Delete", false, has)
+            if scoped(ribbon_button(ui, Icon::Remove, "Remove own\ntechnology", false, has), n_scope, self.tech_all)
                 .on_hover_text("Back to the sheet's automatic technology")
                 .clicked()
             {
                 self.edit_tech("Technology removed (automatic again)", |t, b| TechEdit::Delete.apply(t, b));
             }
-            if ribbon_button(ui, Icon::Grid, "By size", self.show_cut_ranges, true)
+            if ribbon_button(ui, Icon::SizeBands, "Quality\nby size", self.show_cut_ranges, true)
                 .on_hover_text("Cut quality by contour size: e.g. small holes with fine quality (the original's automatic cut technology list)")
                 .clicked()
             {
@@ -223,7 +299,7 @@ impl App {
                 "Add the text along the bottom of the part"
             };
             let label = if on_elem { "On element" } else if in_part { "Place" } else { "Add" };
-            if ribbon_button(ui, Icon::Numbers, label, self.placing_text, has && !self.text_draft.trim().is_empty())
+            if scoped(ribbon_button(ui, Icon::Text, label, self.placing_text, has && !self.text_draft.trim().is_empty()), n_scope, self.tech_all)
                 .on_hover_text(tip)
                 .clicked()
             {
@@ -237,7 +313,7 @@ impl App {
                     self.add_text_to_targets(&txt, h, kind);
                 }
             }
-            if ribbon_button(ui, Icon::Remove, "Delete", false, has).on_hover_text("Remove all texts from the part").clicked() {
+            if scoped(ribbon_button(ui, Icon::Remove, "Delete\ntexts", false, has), n_scope, self.tech_all).on_hover_text("Remove all texts from the part").clicked() {
                 let targets = self.tech_targets();
                 self.checkpoint();
                 for i in targets {
@@ -246,21 +322,6 @@ impl App {
                 self.refresh();
                 self.status = "Texts removed.".into();
             }
-        });
-        ribbon_group(ui, "Apply to", |ui| {
-            ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing.y = 3.0;
-                ui.spacing_mut().interact_size.y = 21.0;
-                ui.add_space(2.0);
-                if ui.radio(!self.tech_all, "Selected part").clicked() {
-                    self.tech_all = false;
-                }
-                if ui.radio(self.tech_all, "All parts").clicked() {
-                    self.tech_all = true;
-                }
-                let sel = self.sel_part.and_then(|i| self.parts.get(i)).map_or("—".to_string(), |p| p.name.clone());
-                ui.label(RichText::new(sel).size(11.0).color(th().text_dim));
-            });
         });
     }
 
@@ -529,5 +590,45 @@ impl App {
         }
         self.refresh();
         self.status = format!("Text '{txt}' added to {} part(s) as {}.", targets.len(), kind.label().to_lowercase());
+    }
+}
+
+/// A small count in the top corner of a technology button: how many part
+/// types the command will change ("all 10", or "1" for the selected part), so
+/// the scope is visible on the button itself, not only in "Apply to".
+fn scoped(r: egui::Response, n: usize, all: bool) -> egui::Response {
+    if n == 0 {
+        return r;
+    }
+    let text = if all { format!("all {n}") } else if n == 1 { "1 type".to_string() } else { format!("{n} types") };
+    let painter = r.ctx.layer_painter(r.layer_id);
+    // Neutral grey, so it never reads as the blue "on" mark of a toggle.
+    let galley = painter.layout_no_wrap(text, egui::FontId::proportional(10.5), th().text_dim);
+    let size = galley.size() + Vec2::new(8.0, 2.0);
+    let pill = egui::Rect::from_min_size(egui::Pos2::new(r.rect.right() - size.x - 1.0, r.rect.top() + 1.0), size);
+    painter.rect_filled(pill, CornerRadius::same(7), th().panel);
+    painter.rect_stroke(pill, CornerRadius::same(7), Stroke::new(1.0, th().border), egui::StrokeKind::Inside);
+    painter.galley(pill.min + Vec2::new(4.0, 1.0), galley, th().text_dim);
+    let what = if all { format!("Changes all {n} part types in the job.") } else { "Changes the selected part type only (every piece of it).".to_string() };
+    r.on_hover_text(what)
+}
+
+/// The automatic technology commands that can be run again on all part types.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TechRerun {
+    AutoLeads,
+    StandardLeads,
+    AutoJoints,
+    AutoLoops,
+}
+
+impl TechRerun {
+    pub fn label(self) -> &'static str {
+        match self {
+            TechRerun::AutoLeads => "Auto lead-ins",
+            TechRerun::StandardLeads => "Standard leads",
+            TechRerun::AutoJoints => "Auto joints",
+            TechRerun::AutoLoops => "Auto loops",
+        }
     }
 }

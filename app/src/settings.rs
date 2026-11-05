@@ -65,7 +65,7 @@ pub struct Machine {
 
 impl Default for Machine {
     fn default() -> Self {
-        Machine { name: "Laser".into(), output: Output::Iso, post_lib: String::new(), blm_ps1: String::new(), blm_cf1: String::new(), gas_id: 1, gas_name: "Nitrogen".into() }
+        Machine { name: "Laser 01".into(), output: Output::Iso, post_lib: String::new(), blm_ps1: String::new(), blm_cf1: String::new(), gas_id: 1, gas_name: "Nitrogen".into() }
     }
 }
 
@@ -84,6 +84,8 @@ pub struct AppSettings {
     /// The active job: its library record, reopened at start (the original's
     /// ORDENACT.SYS, AJ1–AJ2). Empty = none.
     pub active_job: String,
+    /// Job files opened or saved lately, newest first (the Open job menu).
+    pub recent_jobs: Vec<String>,
     /// Part data in drawing file names, e.g. [Reference]_[Quantity]_[Material]; empty = off.
     pub name_format: String,
     /// Text put before / after every imported part's reference (FN5).
@@ -251,6 +253,7 @@ impl Default for AppSettings {
             library_dir: String::new(),
             examples: true,
             active_job: String::new(),
+            recent_jobs: vec![],
             name_format: String::new(),
             ref_prefix: String::new(),
             ref_suffix: String::new(),
@@ -366,6 +369,9 @@ impl AppSettings {
         s += &format!("lantek_dir = {}\nexport_dir = {}\nactive_conn = {}\nactive_machine = {}\n", esc(&self.lantek_dir), esc(&self.export_dir), self.active_conn, self.active_machine);
         s += &format!("library_dir = {}\nexamples = {}\nname_format = {}\n", esc(&self.library_dir), self.examples, esc(&self.name_format));
         s += &format!("ref_prefix = {}\nref_suffix = {}\nactive_job = {}\n", esc(&self.ref_prefix), esc(&self.ref_suffix), esc(&self.active_job));
+        for r in &self.recent_jobs {
+            s += &format!("recent_job = {}\n", esc(r));
+        }
         s += &format!("theme = {}\nwarn_tech = {}\nshow_unbuilt = {}\nauto_db = {}\n", self.theme, self.warn_tech, self.show_unbuilt, self.auto_db);
         s += &format!("ui_size = {}\nscroll_speed = {}\n", self.ui_size, self.scroll_speed);
         s += &format!("stock = {}\n", serde_json::to_string(&self.stock).unwrap_or_default());
@@ -458,6 +464,7 @@ impl AppSettings {
                     "ref_prefix" => st.ref_prefix = v,
                     "ref_suffix" => st.ref_suffix = v,
                     "active_job" => st.active_job = v,
+                    "recent_job" => st.recent_jobs.push(v),
                     "active_conn" => st.active_conn = v.parse().unwrap_or(0),
                     "active_machine" => st.active_machine = v.parse().unwrap_or(0),
                     "theme" => st.theme = if ["light", "dark", "system"].contains(&v.as_str()) { v } else { "system".into() },
@@ -753,6 +760,7 @@ mod settings_tests {
             name_format: "[Reference]_[Quantity]_*".into(),
             ref_prefix: "J88-".into(),
             active_job: "12".into(),
+            recent_jobs: vec![r"C:\Jobs\DEMO-001.snjob".into(), r"\\server\jobs\Acme.snjob".into()],
             ref_suffix: String::new(),
             connections: vec![
                 Connection { name: "Shop".into(), server: r"srv\SQL".into(), database: "SHOP".into(), windows: false, user: "lantek".into(), password_enc: "01000000d08c".into() },

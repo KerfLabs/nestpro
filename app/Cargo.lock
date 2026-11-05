@@ -2129,6 +2129,7 @@ version = "0.1.0"
 dependencies = [
  "crc32fast",
  "eframe",
+ "egui",
  "embed-resource",
  "geo",
  "image",
