@@ -41,9 +41,9 @@ fn an_agent_programs_a_job_from_parts_to_cnc() {
     let mut s = Session::new(Ctx::builtin());
     call(&mut s, "add-shape", Some(jp), json!({"shape": "disc", "w": 200, "qty": 6, "name": "Disc-200"}));
     call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 300, "h": 120, "qty": 4}));
-    let layers = call(&mut s, "dxf-layers", None, json!({"path": dxf.to_str().unwrap()}));
-    assert!(layers["data"].as_object().is_some_and(|m| m.contains_key("MARK")), "{layers}");
-    let r = call(&mut s, "import-dxf", None, json!({"path": dxf.to_str().unwrap(), "layers": "MARK=mark", "qty": 3}));
+    let layers = call(&mut s, "drawing-layers", None, json!({"path": dxf.to_str().unwrap()}));
+    assert!(layers["data"]["layers"].as_object().is_some_and(|m| m.contains_key("MARK")), "{layers}");
+    let r = call(&mut s, "import-drawing", None, json!({"path": dxf.to_str().unwrap(), "layers": "MARK=mark", "qty": 3}));
     assert_eq!(r["data"]["added"][0]["qty"], 3, "{r}");
     let saved = jobfile::load(&job).unwrap();
     assert_eq!(saved.parts.len(), 3);
@@ -893,4 +893,93 @@ fn an_agent_turns_a_part_back_to_its_previous_turn() {
     call(&mut s, "rotate", None, json!({"sheet": 1, "item": 1}));
     assert_eq!(angle(&mut s), a0, "and the next turn brings it back");
     let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_agent_imports_dstv_and_essi_drawings() {
+    let d = dir("formats");
+    let job = d.join("plates.snjob");
+    let jp = job.to_str().unwrap();
+    // A made-up DSTV plate: 300 × 200, 10 mm S355, 3 off, one round hole.
+    let nc1 = "ST\n** demo\n  DEMO-001\n  D-10\n  1\n  P7\n  S355J2\n  3\n  PL10*200\n  B\n    300.00\n    200.00\n     10.00\n     10.00\n     10.00\n\
+      0.00\n     15.70\n      0.000\n      0.000\n      0.000\n      0.000\n      0.000\n  \n  \n  \n  \n\
+AK\n  v       0.00u      0.00       0.00\n        300.00       0.00       0.00\n        300.00     200.00       0.00\n          0.00     200.00       0.00\n          0.00       0.00       0.00\n\
+BO\n  v     150.00s    100.00      22.00       0.00\nKO\n  v     100.00u    150.00       0.00\n        150.00     150.00       0.00\nEN\n";
+    std::fs::write(d.join("DEMO-PLATE.nc1"), nc1).unwrap();
+    // A made-up ESSI program (0.1 mm units): a 100 × 50 rectangle cut with the oxy torch.
+    std::fs::write(d.join("DEMO-RECT.CNC"), "%\n7\n+1000+0\n+0+500\n-1000+0\n+0-500\n8\n0\n").unwrap();
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(jp), json!({"w": 1500, "h": 1000, "material": "steel", "thickness": 10}));
+
+    // The DSTV marking block starts as mark.
+    let layers = call(&mut s, "drawing-layers", None, json!({"path": d.join("DEMO-PLATE.nc1").to_str().unwrap()}));
+    assert_eq!(layers["data"]["default_roles"][crate::formats::dstv::KO], "Mark", "{layers}");
+
+    let paths = format!("{};{}", d.join("DEMO-PLATE.nc1").display(), d.join("DEMO-RECT.CNC").display());
+    let r = call(&mut s, "import-drawing", None, json!({"path": paths}));
+    let added = r["data"]["added"].as_array().unwrap();
+    assert_eq!(added.len(), 2, "{r}");
+    // DS8: the quantity comes from the file's header.
+    assert_eq!((added[0]["w"].as_f64(), added[0]["h"].as_f64(), added[0]["qty"].as_u64(), added[0]["holes"].as_u64()), (Some(300.0), Some(200.0), Some(3), Some(1)), "{r}");
+    // ES2: 0.1 mm per program unit.
+    assert_eq!((added[1]["w"].as_f64(), added[1]["h"].as_f64(), added[1]["qty"].as_u64()), (Some(100.0), Some(50.0), Some(1)), "{r}");
+    // S355J2 is a mild-steel grade and the plate is 10 mm: nothing to report.
+    assert!(!r["data"]["notes"].to_string().contains("the file says"), "{r}");
+    let saved = jobfile::load(&job).unwrap();
+    assert_eq!(saved.parts.len(), 2);
+    assert!(saved.parts[0].custom.as_ref().is_some_and(|c| !c.marks.is_empty()), "the KO marking comes in as marking");
+
+    // A file that is no drawing is refused in plain words.
+    std::fs::write(d.join("notes.txt"), "hello").unwrap();
+    let e = err(&mut s, "import-drawing", json!({"path": d.join("notes.txt").to_str().unwrap()}));
+    assert!(e.contains("not a drawing"), "{e}");
+}
+
+#[test]
+fn parts_of_one_file_keep_their_own_names() {
+    // With name format [Reference]-[Quantity], "DEMO-2" (the second part of DEMO)
+    // must not read as reference DEMO, quantity 2: part data comes from the file name.
+    let mut cfg = AppSettings::default();
+    cfg.name_format = "[Reference]-[Quantity]".into();
+    let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
+    let square = |x: f64| crate::dxf::Piece { layer: "0".into(), pts: vec![[x, 0.0], [x + 10.0, 0.0], [x + 10.0, 10.0], [x, 10.0]], closed: true };
+    let part = |x: f64| crate::formats::ReadPart { drawing: crate::dxf::Drawing { pieces: vec![square(x)], ..Default::default() }, meta: Default::default(), mark_layers: vec![] };
+    let inc = crate::formats::incoming("DEMO", vec![part(0.0), part(50.0)]);
+    let names: Vec<(String, u32)> = inc
+        .iter()
+        .map(|i| {
+            let (p, _) = part_from_read(&cfg, &spec, &i.file, &i.name, &i.part.drawing, &i.part.meta, &Default::default(), 0).unwrap();
+            (p.name, p.qty)
+        })
+        .collect();
+    assert_eq!(names, vec![("DEMO-1".to_string(), 1), ("DEMO-2".to_string(), 1)]);
+    // A one-part file still reads its name: BRACKET-40 is BRACKET, 40 off.
+    let one = crate::formats::incoming("BRACKET-40", vec![part(0.0)]);
+    let (p, _) = part_from_read(&cfg, &spec, &one[0].file, &one[0].name, &one[0].part.drawing, &one[0].part.meta, &Default::default(), 0).unwrap();
+    assert_eq!((p.name.as_str(), p.qty), ("BRACKET", 40));
+    // Steel grades count as the material of their alias.
+    assert_eq!(material_like(&cfg, "S355J2"), Some(0));
+    assert_eq!(material_like(&cfg, "Unobtainium"), None);
+}
+
+#[test]
+fn the_xml_import_names_what_a_drawing_lost_and_refuses_multi_part_files() {
+    let d = dir("xmlnotes");
+    // A plate whose second object is damaged, and a Lantek file with two different parts.
+    std::fs::write(d.join("plate.dxf"), "0\nSECTION\n2\nENTITIES\n0\nCIRCLE\n8\n0\n10\n0\n20\n0\n30\n0\n40\n50\n0\nLINE\n8\n0\n10\n0\n20\n0\n11\nbad\n21\n5\n0\nENDSEC\n0\nEOF\n").unwrap();
+    std::fs::write(d.join("nest.mec"), "0 FILEMECLT 7.00\n3 0 0 0 50 50 40\n3 1 0 0 200 50 30\n999\n").unwrap();
+    let xml = d.join("order.xml");
+    std::fs::write(
+        &xml,
+        r#"<?xml version="1.0"?><Import>
+  <Product Reference="DEMO-1" Material="Mild steel" Thickness="3" Quantity="2" Fich="plate.dxf"/>
+  <Product Reference="DEMO-2" Material="Mild steel" Thickness="3" Quantity="2" Fich="nest.mec"/>
+</Import>"#,
+    )
+    .unwrap();
+    let im = imports::xml_import(&AppSettings::default(), None, &xml, 0).unwrap();
+    let notes = im.notes.join(" | ");
+    assert!(notes.contains("DEMO-1: ignored damaged LINE"), "{notes}");
+    assert!(notes.contains("DEMO-2") && notes.contains("holds 2 parts"), "{notes}");
+    assert_eq!(im.added, 1);
 }

@@ -366,12 +366,14 @@ pub fn lantek_encrypted(major: u32) -> bool {
 /// The message for a Lantek .mec / .chp file.
 fn lantek_file_message(path: &std::path::Path, ver: Option<(u32, u32)>) -> String {
     let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    // MF1, MF2: the parts of a Lantek .mec come in through Import drawings (MF4–MF15).
+    let parts = "import its parts with Import drawings (Lantek .mec files, encrypted too)";
     match ver {
         Some((ma, mi)) if lantek_encrypted(ma) => format!(
-            "{name} is a Lantek drawing/machining file (version {ma}.{mi}), which Lantek encrypts. In Lantek, export the nesting's LC5 programs (or the parts as DXF) and open those here."
+            "{name} is a Lantek drawing/machining file (version {ma}.{mi}), which Lantek encrypts. It doesn't open as a nesting here: {parts}, or open the nesting's LC5 programs."
         ),
-        Some((ma, mi)) => format!("{name} is an older Lantek file (version {ma}.{mi}); this app doesn't read Lantek's own file format — export DXF or the LC5 programs from Lantek."),
-        None => format!("{name} is one of Lantek's own nesting files; this app doesn't read Lantek's own file format — export the LC5 programs or DXF from Lantek."),
+        Some((ma, mi)) => format!("{name} is an older Lantek file (version {ma}.{mi}). It doesn't open as a nesting here: {parts}, or open the nesting's LC5 programs."),
+        None => format!("{name} is one of Lantek's own nesting files. It doesn't open as a nesting here: {parts}, or open the nesting's LC5 programs."),
     }
 }
 

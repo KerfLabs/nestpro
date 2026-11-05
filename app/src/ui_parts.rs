@@ -944,8 +944,8 @@ impl App {
                     self.open_part(i);
                 }
             }
-            if ribbon_button(ui, Icon::Import, "Import\nDXF", false, true)
-                .on_hover_text("Add part drawings from DXF files (or drop them on the window)")
+            if ribbon_button(ui, Icon::Import, "Import\ndrawings", false, true)
+                .on_hover_text("Add part drawings: DXF, DWG, Lantek MEC, IGES, PDF, ESSI, DSTV or GEO files (or drop them on the window)")
                 .clicked()
             {
                 self.import_dialog();

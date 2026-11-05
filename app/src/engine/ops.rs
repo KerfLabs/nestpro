@@ -157,10 +157,19 @@ pub static OPS: &[Op] = &[
     Op { name: "import-program", group: "Job", kind: Kind::Create, help: "Open a BLM LC5 machine program set (<NEST>.zip, its .XML, or a Lantek .nxp) as a new editable job: its parts, where they sit, the sheet, material and thickness, and the cut-off as a remnant line.", args: &[
         r("path", Ty::Path, "The program set (.zip / .XML / .nxp)"), a("force", Ty::Bool, "Overwrite the job file if it exists"),
     ] },
-    Op { name: "dxf-layers", group: "Parts", kind: Kind::Global, help: "List a DXF drawing's layers and how many objects each holds, before importing it.", args: &[r("path", Ty::Path, "The DXF file")] },
-    Op { name: "import-dxf", group: "Parts", kind: Kind::Write, help: "Import DXF drawings as parts. Every layer is cut unless `layers` says otherwise; part data in the file name follows Settings → name format.", args: &[
-        r("path", Ty::Path, "DXF file, or several separated by ';'"), a("layers", Ty::Str, "Layer roles: \"LAYER=cut|mark|ignore,…\" (others: cut)"),
-        a("qty", Ty::Int, "Quantity for every imported part (default: from the file name, else 1)"), a("name", Ty::Str, "Reference (one file only)"), a("group", Ty::Str, "Group for the imported parts"),
+    Op { name: "drawing-layers", group: "Parts", kind: Kind::Global, help: "List a part drawing's layers (DXF/DWG layers, IGES levels, DSTV blocks, ESSI cut/mark…) and how many objects each holds, before importing it. Also answers to dxf-layers.", args: &[
+        r("path", Ty::Path, "The drawing file"), c("format", FORMATS, "Read the file as this format (default: by its extension and content)"),
+        c("dialect", &["ESSI", "BURNY", "ESAB", "MESSER", "VULCAN"], "ESSI programs: the cutting control's dialect (default: by extension)"),
+        c("pdf_layers", &["colour", "pdf", "one"], "PDF drawings: layers by line colour (default), by the PDF's own layers, or all on one layer"),
+    ] },
+    Op { name: "import-drawing", group: "Parts", kind: Kind::Write, help: "Import part drawings as parts: DXF, DWG, Lantek MEC, IGES, PDF, ESSI, DSTV (NC1) or GEO, picked by extension and content. Every layer is cut unless `layers` says otherwise (a format's marking layers start as mark). Quantity comes from `qty`, else the file's own part data, else the file name (Settings → name format); a file holding several parts gives several parts. Also answers to import-dxf.", args: &[
+        r("path", Ty::Path, "Drawing file, or several separated by ';'"), c("format", FORMATS, "Read every file as this format (default: by extension and content)"),
+        c("dialect", &["ESSI", "BURNY", "ESAB", "MESSER", "VULCAN"], "ESSI programs: the cutting control's dialect (default: by extension — .MPG ESAB, .LOS MESSER, .DAT VULCAN, else ESSI)"),
+        a("scale", Ty::Num, "PDF drawings: the drawing's scale, real size = drawing size × scale (4 for a 1:4 drawing; default 1)"),
+        c("pages", &["together", "separate"], "PDF drawings: all pages side by side in one drawing (default), or one part per page"),
+        c("pdf_layers", &["colour", "pdf", "one"], "PDF drawings: layers by line colour (default), by the PDF's own layers, or all on one layer"),
+        a("layers", Ty::Str, "Layer roles: \"LAYER=cut|mark|ignore,…\" (others: cut, or mark for a format's marking layers)"),
+        a("qty", Ty::Int, "Quantity for every imported part (default: the file's, else from the file name, else 1)"), a("name", Ty::Str, "Reference (one part only)"), a("group", Ty::Str, "Group for the imported parts"),
     ] },
     Op { name: "edit-part", group: "Parts", kind: Kind::Write, help: "Change a part's reference, quantity, size (built-in shapes), rotations or group. Changing the size of a part with technology needs tech=copy (keep it, change a copy) or tech=drop (remove its technology).", args: &[
         PART, a("name", Ty::Str, "New reference"), a("qty", Ty::Int, "Quantity ordered"), a("w", Ty::Num, "Length X, mm (built-in shapes)"), a("h", Ty::Num, "Width Y, mm (built-in shapes)"),
@@ -300,6 +309,12 @@ pub static OPS: &[Op] = &[
 
 pub fn find(name: &str) -> Option<&'static Op> {
     let n = name.replace('_', "-");
+    // The DXF-only names from before the other drawing formats.
+    let n = match n.as_str() {
+        "import-dxf" => "import-drawing".to_string(),
+        "dxf-layers" => "drawing-layers".to_string(),
+        _ => n,
+    };
     OPS.iter().find(|o| o.name == n)
 }
 
@@ -994,19 +1009,48 @@ pub fn run_global(ctx: &Ctx, name: &str, args: &Value) -> Result<Outcome, String
         "stock" => stock_op(ctx, &a),
         "machines" => Ok(Outcome::read(format!("Active machine: {}.", ctx.cfg.machine().name), machines(ctx))),
         "import-xml" => import_xml(ctx, &a),
-        "dxf-layers" => {
+        "drawing-layers" => {
             let path = a.need_str("path")?;
-            let d = read_dxf(Path::new(&path))?;
-            let layers = d.layers();
-            Ok(Outcome::read(format!("{} layer(s) in {path}.", layers.len()), json!(layers)))
+            let parts = read_drawing(ctx, Path::new(&path), &a)?;
+            let mut layers: BTreeMap<String, usize> = BTreeMap::new();
+            for p in &parts {
+                for (l, n) in p.drawing.layers() {
+                    *layers.entry(l).or_insert(0) += n;
+                }
+            }
+            let roles = crate::formats::default_roles(&parts);
+            let data = json!({
+                "layers": layers,
+                "default_roles": roles.iter().map(|(k, v)| (k.clone(), v.label())).collect::<BTreeMap<_, _>>(),
+                "parts": parts.len(),
+            });
+            Ok(Outcome::read(format!("{} layer(s) in {path}{}.", layers.len(), if parts.len() > 1 { format!(" ({} parts)", parts.len()) } else { String::new() }), data))
         }
         n => Err(format!("{n} needs a job")),
     }
 }
 
-fn read_dxf(path: &Path) -> Result<dxf::Drawing, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("{}: couldn't read ({e})", path.display()))?;
-    dxf::read(&String::from_utf8_lossy(&bytes)).map_err(|e| format!("{}: {e}", path.display()))
+/// The `format` choices: every drawing format's key.
+const FORMATS: &[&str] = &["dxf", "dwg", "mec", "iges", "pdf", "essi", "dstv", "geo"];
+
+fn read_drawing(ctx: &Ctx, path: &Path, a: &Args) -> Result<Vec<crate::formats::ReadPart>, String> {
+    let fmt = match a.str("format") {
+        Some(f) => Some(crate::formats::Format::from_key(&f).ok_or_else(|| format!("format: '{f}' is not one of {}", FORMATS.join(", ")))?),
+        None => None,
+    };
+    use crate::formats::pdf::{Layers, Pages};
+    let opts = crate::formats::ReadOpts {
+        essi_dialect: a.str("dialect"),
+        pdf_scale: a.num("scale")?,
+        pdf_pages: a.str("pages").map(|p| if p == "separate" { Pages::Separate } else { Pages::SideBySide }),
+        pdf_layers: a.str("pdf_layers").map(|l| match l.as_str() {
+            "pdf" => Layers::PdfLayers,
+            "one" => Layers::None,
+            _ => Layers::Colour,
+        }),
+        ..Default::default()
+    };
+    crate::formats::read_file_with(path, fmt, &ctx.cfg, opts)
 }
 
 fn library(ctx: &Ctx) -> Result<crate::library::Library, String> {
@@ -1305,14 +1349,15 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             job.stale = true;
             Ok(Outcome::msg(m))
         }
-        "import-dxf" => {
+        "import-drawing" => {
             let paths: Vec<PathBuf> = a.need_str("path")?.split(';').filter(|s| !s.trim().is_empty()).map(|s| PathBuf::from(s.trim())).collect();
             let mut drawings = vec![];
             for p in &paths {
                 let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Drawing".into());
-                drawings.push((stem, read_dxf(p)?));
+                let parts = read_drawing(ctx, p, &a)?;
+                drawings.extend(crate::formats::incoming(&stem, parts));
             }
-            let mut roles = default_roles(drawings.iter().map(|d| &d.1));
+            let mut roles = crate::formats::default_roles(drawings.iter().map(|d| &d.part));
             if let Some(spec) = a.str("layers") {
                 for kv in spec.split(',').filter(|s| !s.trim().is_empty()) {
                     let (l, role) = kv.split_once('=').ok_or_else(|| format!("layers: '{kv}' is not LAYER=role"))?;
@@ -1323,8 +1368,9 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             }
             let mut notes = vec![];
             let mut added = vec![];
-            for (stem, d) in &drawings {
-                let (mut p, n) = part_from_drawing(&ctx.cfg, &job.spec, stem, d, &roles, next_color(&job.parts))?;
+            for inc in &drawings {
+                let rp = &inc.part;
+                let (mut p, n) = part_from_read(&ctx.cfg, &job.spec, &inc.file, &inc.name, &rp.drawing, &rp.meta, &roles, next_color(&job.parts))?;
                 notes.extend(n);
                 if let Some(q) = a.int("qty")? {
                     p.qty = q.max(0) as u32;
@@ -2211,7 +2257,7 @@ pub const GUI_MAP: &[(&str, &str)] = &[
     ("Jobs/Save\njob", "gui: every change is saved to the job file"),
     ("Jobs/Open\njob", "gui: name the job file in each call"),
     ("Status line/Show labor\nticket", "view:"),
-    ("Import/DXF", "import-dxf"),
+    ("Import/Drawings", "import-drawing"),
     ("Nest/Nest\nall", "nest"),
     ("Nesting/Open\nprogram", "import-program"),
     ("Review/Times and\ncosts", "info"),
@@ -2233,7 +2279,7 @@ pub const GUI_MAP: &[(&str, &str)] = &[
     ("Insert/Nest\nsheet", "renest-sheet"),
     ("Insert/Add\npart", "add-shape"),
     ("Insert/Open\npart", "part-info"),
-    ("Insert/Import\nDXF", "import-dxf"),
+    ("Insert/Import\ndrawings", "import-drawing"),
     ("Edit/Undo", "undo"),
     ("Edit/Redo", "gui: undo again from the session history instead"),
     ("Modify/Collision", "gui: agents always place with collision checking on"),

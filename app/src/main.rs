@@ -38,6 +38,7 @@ mod settings_ui;
 mod sheetsim;
 mod textedit;
 mod dxf;
+mod formats;
 mod jobfile;
 mod jobs;
 mod libui;
@@ -133,7 +134,7 @@ pub enum Pending {
     /// Material or thickness change while parts are nested.
     NestedSpecChange { new_spec: SheetSpec },
     /// Drawings with several layers: choose each layer's role.
-    DxfLayers { files: Vec<(String, dxf::Drawing)>, roles: std::collections::BTreeMap<String, dxf::LayerRole> },
+    DxfLayers { files: Vec<formats::Incoming>, roles: std::collections::BTreeMap<String, dxf::LayerRole> },
     /// The open job's file was changed outside the app while it also changed here.
     JobFileChanged { path: PathBuf },
 }
@@ -878,36 +879,33 @@ impl App {
         let mut added = 0;
         let mut notes: Vec<String> = vec![];
         let mut first = true;
-        let mut layered: Vec<(String, dxf::Drawing)> = vec![];
+        let mut layered: Vec<formats::Incoming> = vec![];
         for path in paths {
-            let name = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Drawing".into());
-            let bytes = match std::fs::read(&path) {
-                Ok(b) => b,
+            let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Drawing".into());
+            let parts = match formats::read_file(&path, None, &self.cfg) {
+                Ok(p) => p,
                 Err(e) => {
-                    notes.push(format!("{name}: couldn't read ({e})"));
+                    notes.push(e);
                     continue;
                 }
             };
-            let drawing = match dxf::read(&String::from_utf8_lossy(&bytes)) {
-                Ok(d) => d,
-                Err(e) => {
-                    notes.push(format!("{name}: {e}"));
+            for inc in formats::incoming(&stem, parts) {
+                // Drawings with several layers: ask which layer is cut, marked or left out
+                // (original maps each layer to a machining code; default 13 = cut).
+                if inc.part.drawing.layers().len() > 1 {
+                    layered.push(inc);
                     continue;
                 }
-            };
-            // Drawings with several layers: ask which layer is cut, marked or left out
-            // (original maps each layer to a machining code; default 13 = cut).
-            if drawing.layers().len() > 1 {
-                layered.push((name, drawing));
-                continue;
-            }
-            if self.add_drawing(name, &drawing, &std::collections::BTreeMap::new(), &mut notes, &mut first) {
-                added += 1;
+                let roles = formats::default_roles([&inc.part]);
+                if self.add_drawing(&inc, &roles, &mut notes, &mut first) {
+                    added += 1;
+                }
             }
         }
         if !layered.is_empty() {
-            // Every layer starts as Cut, the original's default role (code 13).
-            let roles = engine::default_roles(layered.iter().map(|x| &x.1));
+            // Every layer starts as Cut, the original's default role (code 13);
+            // a format's marking layers start as Mark.
+            let roles = formats::default_roles(layered.iter().map(|x| &x.part));
             self.pending = Some(Pending::DxfLayers { files: layered, roles });
         }
         self.finish_import(added, notes);
@@ -916,13 +914,13 @@ impl App {
     /// Build one drawing with the given layer roles and add it as a product.
     fn add_drawing(
         &mut self,
-        name: String,
-        d: &dxf::Drawing,
+        inc: &formats::Incoming,
         roles: &std::collections::BTreeMap<String, dxf::LayerRole>,
         notes: &mut Vec<String>,
         first: &mut bool,
     ) -> bool {
-        match engine::part_from_drawing(&self.cfg, &self.spec, &name, d, roles, self.color_seq) {
+        let rp = &inc.part;
+        match engine::part_from_read(&self.cfg, &self.spec, &inc.file, &inc.name, &rp.drawing, &rp.meta, roles, self.color_seq) {
             Ok((part, n)) => {
                 if *first {
                     self.checkpoint();
@@ -957,12 +955,12 @@ impl App {
     }
 
     /// Finish drawings that waited for the layer question.
-    pub fn import_layered(&mut self, files: Vec<(String, dxf::Drawing)>, roles: std::collections::BTreeMap<String, dxf::LayerRole>) {
+    pub fn import_layered(&mut self, files: Vec<formats::Incoming>, roles: std::collections::BTreeMap<String, dxf::LayerRole>) {
         let mut notes = vec![];
         let mut first = true;
         let mut added = 0;
-        for (name, d) in files {
-            if self.add_drawing(name, &d, &roles, &mut notes, &mut first) {
+        for inc in &files {
+            if self.add_drawing(inc, &roles, &mut notes, &mut first) {
                 added += 1;
             }
         }
@@ -996,15 +994,16 @@ impl App {
         };
     }
 
-    /// Ask for DXF files with the system file picker.
+    /// Ask for part drawings with the system file picker.
     pub fn import_dialog(&mut self) {
-        if let Some(files) = rfd::FileDialog::new()
-            .set_title("Import part drawings")
-            .add_filter("DXF drawing or Lantek import XML", &["dxf", "DXF", "xml", "XML"])
-            .add_filter("DXF drawing", &["dxf", "DXF"])
-            .add_filter("Lantek import XML (DXF Import / Parts Import)", &["xml", "XML"])
-            .pick_files()
-        {
+        let mut all = formats::picker_extensions();
+        all.extend(["xml".to_string(), "XML".to_string()]);
+        let mut dlg = rfd::FileDialog::new().set_title("Import part drawings").add_filter("Part drawings or Lantek import XML", &all);
+        for f in formats::Format::ALL {
+            let ext: Vec<String> = f.extensions().iter().flat_map(|e| [e.to_string(), e.to_uppercase()]).collect();
+            dlg = dlg.add_filter(f.label(), &ext);
+        }
+        if let Some(files) = dlg.add_filter("Lantek import XML (DXF Import / Parts Import)", &["xml", "XML"]).pick_files() {
             self.import_drawings(files);
         }
     }
@@ -1135,12 +1134,12 @@ impl App {
                         });
                     }
                     Pending::DxfLayers { files, mut roles } => {
-                        let names: Vec<&str> = files.iter().map(|f| f.0.as_str()).collect();
+                        let names: Vec<&str> = files.iter().map(|f| f.name.as_str()).collect();
                         ui.label(format!("{} has several layers. Choose what each layer is:", names.join(", ")));
                         ui.add_space(6.0);
                         let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
-                        for (_, d) in &files {
-                            for (l, n) in d.layers() {
+                        for f in &files {
+                            for (l, n) in f.part.drawing.layers() {
                                 *counts.entry(l).or_insert(0) += n;
                             }
                         }
@@ -2118,13 +2117,13 @@ impl eframe::App for App {
             }
         }
 
-        // DXF files dropped onto the window become products.
+        // Drawings dropped onto the window become products.
         let dropped: Vec<PathBuf> = ctx.input(|i| {
             i.raw
                 .dropped_files
                 .iter()
                 .map(|f| f.path().to_path_buf())
-                .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("dxf") || e.eq_ignore_ascii_case("xml")))
+                .filter(|p| formats::is_drawing(p) || p.extension().is_some_and(|e| e.eq_ignore_ascii_case("xml")))
                 .collect()
         });
         if !dropped.is_empty() {
