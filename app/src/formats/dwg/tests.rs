@@ -258,6 +258,11 @@ fn reads_a_small_r2000_drawing_into_a_plate_with_two_holes() {
     let (g, _) = crate::dxf::build(d, &Default::default()).unwrap();
     assert_eq!(g.holes.len(), 2);
     assert!((g.w - 100.0).abs() < 1e-6 && (g.h - 50.0).abs() < 1e-6);
+    // Read in inches (the app's unit; IU1): at size, the holes as finely split.
+    let inch = read(&bytes, &Options { use_converter: false, unit_mm: 25.4, ..Default::default() }).unwrap();
+    let (gi, _) = crate::dxf::build(&inch[0].drawing, &Default::default()).unwrap();
+    assert!((gi.w - 2540.0).abs() < 1e-6 && (gi.h - 1270.0).abs() < 1e-6, "{} × {}", gi.w, gi.h);
+    assert!(gi.holes[0].len() > g.holes[0].len(), "{} vs {} pieces", gi.holes[0].len(), g.holes[0].len());
     // −Z extrusion: the circle stored at x = −25 lands at x = +25 (DW7).
     let centre = |h: &Vec<crate::nest::P>| {
         let n = h.len() as f64;

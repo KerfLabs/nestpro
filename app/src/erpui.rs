@@ -160,9 +160,8 @@ fn fetch_step(c: Box<dyn Connector>, group: Group, wo: erp::Ref, step_id: String
 
 /// Turn a drawing's text into a part for `ip`, in mm.
 pub fn part_from(ip: &ImportPart, text: &str, drawing_units: Units, color: usize) -> Result<(Part, Vec<String>), String> {
-    let mut d = crate::dxf::read(text)?;
-    let mm = erp::dxf_units_mm(text).unwrap_or(drawing_units.mm());
-    erp::scale_drawing(&mut d, mm);
+    // In mm: the file's own unit, else the integration's drawing unit.
+    let d = crate::dxf::read_in(text, drawing_units.mm())?;
     let roles: std::collections::BTreeMap<String, crate::dxf::LayerRole> = d.layers().keys().map(|l| (l.clone(), guess_role(l))).collect();
     let (g, rep) = crate::dxf::build(&d, &roles)?;
     let mut notes = vec![];
@@ -342,6 +341,7 @@ impl App {
             held: Default::default(),
             erp: Some(link),
             file: None,
+            saved: None,
         });
         let i = self.jobs.len() - 1;
         self.open_job(i);
@@ -1388,5 +1388,10 @@ mod tests {
         assert!((q.w - 101.6).abs() < 1e-6);
         let (q, _) = part_from(&ip, &bare, Units::Millimeter, 0).unwrap();
         assert!((q.w - 4.0).abs() < 1e-6);
+        // A 1 inch hole in a file without a unit stays round at the inch setting.
+        let holed = bare.replace("0\nENDSEC\n0\nEOF", "0\nCIRCLE\n8\n0\n10\n2\n20\n1\n40\n0.5\n0\nENDSEC\n0\nEOF");
+        let (q, _) = part_from(&ip, &holed, Units::Inch, 0).unwrap();
+        let h = &q.custom.as_ref().unwrap().holes[0];
+        assert!(h.len() > 20, "a 1 inch hole in {} pieces", h.len());
     }
 }

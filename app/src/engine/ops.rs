@@ -1412,8 +1412,15 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             if resized && d.shape == Shape::Custom {
                 return Err("An imported drawing keeps its size — import it again to change it.".into());
             }
-            d.w = nw.unwrap_or(d.w).max(1.0);
-            d.h = nh.unwrap_or(d.h).max(1.0);
+            // Only the sizes given change (at least 0.5 mm, as in the window);
+            // a disc's diameter is both.
+            let (nw, nh) = if d.shape == Shape::Disc { (nw.or(nh), nh.or(nw)) } else { (nw, nh) };
+            if let Some(w) = nw {
+                d.w = w.max(0.5);
+            }
+            if let Some(h) = nh {
+                d.h = h.max(0.5);
+            }
             if resized && d.tech.is_some() {
                 // The original asks: edit a copy (keeps this part's technology) or
                 // edit the part and remove its technology (T2).
@@ -1706,6 +1713,9 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
         "compact" => {
             let s = sheet_idx(job, &a)?;
             let (f, sp) = (job.format(s), job.spec_at(s));
+            if f.outline.is_some() {
+                return Err(COMPACT_REMNANT.into());
+            }
             let before = sheet_usage(&job.parts, &job.sheets[s], &job.spec, &f).2;
             nest::compact_contours(&job.parts, &mut job.sheets[s], &sp);
             job.sheet_changed(s);

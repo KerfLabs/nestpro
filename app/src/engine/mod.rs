@@ -347,6 +347,10 @@ pub fn nest_all(parts: &[Part], spec: &SheetSpec, group_nest: bool, stock: Optio
     r
 }
 
+/// Compact on a remnant: it slides parts toward the lower-left corner of the
+/// sheet's box, where a shaped remnant may have no material (CP1).
+pub const COMPACT_REMNANT: &str = "Compact works on whole rectangular sheets only — on a remnant it could slide parts off its outline. Move them by hand, or Nest sheet.";
+
 /// Re-nest one sheet (RN1): only the parts already on it, onto the same sheet
 /// (same format, remnant outline included), by the same automatic level as
 /// Nest all, then compacted against the real contours on a rectangular sheet.
@@ -817,14 +821,32 @@ pub fn safe_name(s: &str) -> String {
     s.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '.' { c } else { '_' }).collect()
 }
 
+/// Programs an earlier export of this job wrote that this one didn't (`kept`:
+/// a sheet that's gone, or the other program format) are removed, so nobody
+/// runs a sheet that no longer exists (EXP1).
+fn remove_stale_programs(dir: &Path, job_name: &str, post: &crate::post::PostConfig, blm: Option<&crate::blm::BlmSettings>, kept: &[PathBuf]) -> std::io::Result<()> {
+    let blm_job = blm.map_or(job_name, |b| b.job.as_str());
+    for k in 1..=999 {
+        let nest = crate::blm::nest_name(blm_job, k);
+        for f in [dir.join(post.file_name(job_name, k)), dir.join(format!("{nest}.zip")), dir.join(format!("{nest}.XML"))] {
+            if !kept.contains(&f) && f.is_file() {
+                std::fs::remove_file(&f)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Write every sheet's machine program (G-code, or BLM LC5 sets) and the CSV
 /// parts report into `base\<job>`.
 #[allow(clippy::too_many_arguments)]
 pub fn export(base: &Path, job_name: &str, parts: &[Part], sheets: &[Vec<Placed>], formats: &[SheetFormat], plans: &[SheetPlan], job_spec: &SheetSpec, cuts: &[Vec<CutLine>], marks: &[Vec<Vec<crate::nest::P>>], post: &crate::post::PostConfig, blm: Option<&crate::blm::BlmSettings>, bridge: f64) -> Result<Exported, String> {
+    let dir = base.join(safe_name(job_name));
     if sheets.is_empty() {
+        // The job's earlier programs would still be there to run.
+        let _ = remove_stale_programs(&dir, job_name, post, blm, &[]);
         return Err("Nothing to export — nest first.".into());
     }
-    let dir = base.join(safe_name(job_name));
     let mut files = vec![];
     let mut warning = None;
     let res = (|| -> std::io::Result<()> {
@@ -847,6 +869,7 @@ pub fn export(base: &Path, job_name: &str, parts: &[Part], sheets: &[Vec<Placed>
             std::fs::write(&f, program(k + 1, parts, s, spec, pl, c, marks.get(k).map_or(&[][..], |v| v.as_slice()), post, bridge))?;
             files.push(f);
         }
+        remove_stale_programs(&dir, job_name, post, blm, &files)?;
         let mut csv = String::from("reference,shape,width_mm,height_mm,quantity,nested\n");
         for (i, p) in parts.iter().enumerate() {
             csv.push_str(&format!("{},{},{:.1},{:.1},{},{}\n", p.name.replace(',', " "), p.shape.label(), p.w, p.h, p.qty, placed_count(sheets, i)));

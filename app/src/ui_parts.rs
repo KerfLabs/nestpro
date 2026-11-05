@@ -1076,12 +1076,12 @@ line", false, has_sheets)
                     }
                 });
                 ui.label("Length X");
-                changed |= ui.add(egui::DragValue::new(&mut self.spec.w).range(200.0..=12000.0).suffix(" mm")).changed();
+                changed |= ui.add(egui::DragValue::new(&mut self.spec.w).range(200.0..=12000.0).clamp_existing_to_range(false).suffix(" mm")).changed();
                 ui.end_row();
                 ui.label("");
                 ui.label("");
                 ui.label("Width Y");
-                changed |= ui.add(egui::DragValue::new(&mut self.spec.h).range(200.0..=3000.0).suffix(" mm")).changed();
+                changed |= ui.add(egui::DragValue::new(&mut self.spec.h).range(200.0..=3000.0).clamp_existing_to_range(false).suffix(" mm")).changed();
                 ui.end_row();
             });
         });
@@ -1321,21 +1321,21 @@ Last run won with: {}.", level_summary(self.spec.nest_level()), self.result.meth
                 ui.end_row();
             } else if p.shape == Shape::Disc {
                 ui.label("Diameter");
-                if ui.add(egui::DragValue::new(&mut p.w).range(10.0..=3000.0).speed(1.0).suffix(" mm")).changed() {
+                if ui.add(egui::DragValue::new(&mut p.w).range(0.5..=3000.0).clamp_existing_to_range(false).speed(1.0).suffix(" mm")).changed() {
                     p.h = p.w;
                     changed = true;
                 }
                 ui.end_row();
             } else {
                 ui.label("Width");
-                changed |= ui.add(egui::DragValue::new(&mut p.w).range(10.0..=6000.0).speed(1.0).suffix(" mm")).changed();
+                changed |= ui.add(egui::DragValue::new(&mut p.w).range(0.5..=6000.0).clamp_existing_to_range(false).speed(1.0).suffix(" mm")).changed();
                 ui.end_row();
                 ui.label("Height");
-                changed |= ui.add(egui::DragValue::new(&mut p.h).range(10.0..=3000.0).speed(1.0).suffix(" mm")).changed();
+                changed |= ui.add(egui::DragValue::new(&mut p.h).range(0.5..=3000.0).clamp_existing_to_range(false).speed(1.0).suffix(" mm")).changed();
                 ui.end_row();
             }
             ui.label("Quantity");
-            changed |= ui.add(egui::DragValue::new(&mut p.qty).range(0..=999)).changed();
+            changed |= ui.add(egui::DragValue::new(&mut p.qty).range(0..=99999).clamp_existing_to_range(false)).changed();
             ui.end_row();
             ui.label("Rotation");
             changed |= ui.checkbox(&mut p.rotate, "may turn 90°").changed();
@@ -1381,19 +1381,19 @@ Last run won with: {}.", level_summary(self.spec.nest_level()), self.result.meth
         if let Some(t) = draft.tech.as_mut() {
             egui::Grid::new("tech_edit").num_columns(2).spacing([10.0, 5.0]).show(ui, |ui| {
                 ui.label("Lead-in");
-                changed |= ui.add(egui::DragValue::new(&mut t.lead_in).range(0.0..=30.0).speed(0.1).suffix(" mm")).changed();
+                changed |= ui.add(egui::DragValue::new(&mut t.lead_in).range(0.0..=30.0).clamp_existing_to_range(false).speed(0.1).suffix(" mm")).changed();
                 ui.end_row();
                 ui.label("Lead-out");
-                changed |= ui.add(egui::DragValue::new(&mut t.lead_out).range(0.0..=20.0).speed(0.1).suffix(" mm")).changed();
+                changed |= ui.add(egui::DragValue::new(&mut t.lead_out).range(0.0..=20.0).clamp_existing_to_range(false).speed(0.1).suffix(" mm")).changed();
                 ui.end_row();
                 ui.label("Overlap").on_hover_text("Cut on past the start before the lead-out, so the contour closes cleanly");
-                changed |= ui.add(egui::DragValue::new(&mut t.overlap).range(0.0..=10.0).speed(0.05).suffix(" mm")).changed();
+                changed |= ui.add(egui::DragValue::new(&mut t.overlap).range(0.0..=10.0).clamp_existing_to_range(false).speed(0.05).suffix(" mm")).changed();
                 ui.end_row();
                 ui.label("Micro-joints");
-                changed |= ui.add(egui::DragValue::new(&mut t.micro_joints).range(0..=12)).changed();
+                changed |= ui.add(egui::DragValue::new(&mut t.micro_joints).range(0..=12).clamp_existing_to_range(false)).changed();
                 ui.end_row();
                 ui.label("Joint width");
-                changed |= ui.add(egui::DragValue::new(&mut t.joint_width).range(0.1..=5.0).speed(0.05).suffix(" mm")).changed();
+                changed |= ui.add(egui::DragValue::new(&mut t.joint_width).range(0.1..=5.0).clamp_existing_to_range(false).speed(0.05).suffix(" mm")).changed();
                 ui.end_row();
                 ui.label("Cut quality");
                 egui::ComboBox::from_id_salt("quality").width(110.0).selected_text(t.quality.label()).show_ui(ui, |ui| {
@@ -1826,4 +1826,26 @@ pub fn menu_row(ui: &mut egui::Ui, icon: &str, label: &str, hint: &str) -> bool 
         ui.painter().text(r.right_center() - Vec2::new(10.0, 0.0), Align2::RIGHT_CENTER, hint, FontId::proportional(11.0), t.text_dim);
     }
     resp.clicked()
+}
+
+#[cfg(test)]
+mod part_editor_tests {
+    use crate::nest::Shape;
+    use crate::App;
+    use eframe::egui;
+
+    #[test]
+    fn looking_at_a_part_never_changes_it() {
+        // A quantity over the box's old 999 and a disc under its old 10 mm.
+        let mut a = App::new(None);
+        let p = &mut a.parts[0];
+        (p.shape, p.w, p.h, p.qty) = (Shape::Disc, 8.0, 8.0, 1000);
+        a.sel_part = Some(0);
+        let ctx = egui::Context::default();
+        for _ in 0..3 {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| a.part_editor(ui));
+            out.textures_delta.clear();
+        }
+        assert_eq!((a.parts[0].qty, a.parts[0].w, a.parts[0].h), (1000, 8.0, 8.0));
+    }
 }

@@ -588,7 +588,7 @@ How the rebuild uses them (Sheet tab → **Manual cutting**):
   G-code and shown with M1, M2… badges and a direction arrow. Every other contour follows
   automatically.
 - While picking, dragging only pans the view (parts don't move). Nesting again clears the
-  picks.
+  picks, and so does taking parts off the sheet or removing a product from the job (MM7).
 - Not imitated: open manual paths and joining them (MM5/MM6), common cuts, islands, and the
   standard-shape macros.
 
@@ -694,7 +694,8 @@ A005, A011, A012, A015, A016, A017 and A019. The rebuild follows this for the st
   Arrays start from 2 + A015 parts.
 - **Holes**: a placed part only takes its material out of the sheet's free strips, so smaller
   parts drop into its holes during normal nesting, at every level (holes over B076). Parts
-  inside another part are cut first.
+  inside another part are cut first; with parts in the holes of parts in holes (rings in rings)
+  the most deeply nested goes first (CO1).
 - **Corners** (A017, level 5): not used by the strip engine (it always nests from the lower left).
 - **Rotations** (R1): the Part Properties have the 0/90/180/270° buttons and "may be flipped".
   Placements store quarter turns and a mirror flag; turning a placed part steps to the next
@@ -1061,6 +1062,8 @@ How the rebuild uses them:
   then down (3 passes), until its contour is one gap from another contour or the margin. Parts
   stop at the real edge, so L-brackets and gussets tuck into each other's notches. Where edges
   are slanted the slide backs off (14 bisection steps) until the true clearance holds.
+  Compaction works on whole rectangular sheets only: on a remnant with an outline *Compact* is
+  refused (CP1), as it would slide parts toward the box's corner, where there may be no material.
 - **Dragging, dropping and the ghost** use the contour test, and the ghost's approach snap slides
   to the nearest contour within reach (then once across, into corners and notches).
 - **Picking** a part on the sheet follows its outline, so the right part is picked where boxes
@@ -1249,6 +1252,16 @@ cut-off line (read from the example; `20u, −10u` is inferred from one vertical
 | BL12 | Start: approach point outside by **Z039** on edges 1/2 (x or y − Z039) and by **Z040** on 3/4 (+ Z040); cut start inside by **Z040** on 1/2 (+) and **Z039** on 3/4 (−). With PS1 Z016 = 3 (LT9) the approach isn't a `G0` move but goes into `NEXT_L(start,0,0,3,1,start − approach,approach)`; otherwise `SPYOUT`, `DO $A_OUT[7]=1`, `G0 X.. Y..`. Then `G01 G40 X.. Y..`, `PROFILE`. |
 | BL13 | End: cut to **10 mm** inside the end edge, `HD_DWN_OFF` (Z016 = 3 only), then out past the edge by Z040 (edges 3/4) or Z039 (1/2). |
 
+### BLM LC5 — compensation without a lead-in, repeated parts, stale programs
+
+| # | Rule | Source |
+|---|------|--------|
+| BL24 | A contour **without a lead-in** still gets its G41/G42: with PS1 **Z028** above 0.1 mm (4 mm in the shop's file) the first straight move is split, `G01 G4x` to Z028 along it (at most half of it), then `PROFILE`, then the rest of the move. A contour that starts with an arc gets a zero-length `G01 G4x` at its start first. The rebuild reads Z028 from the PS1 (built-in 4). | Observed |
+| BL37 | Copies of a part share one subprogram only when their **whole machining is the same** relative to their corner (turn, mirror, start point, leads). A copy whose lead was moved, for example clear of a neighbour, gets its own subprogram; otherwise it would be cut with the first copy's lead. | Rebuild |
+| KC19 | A post that turns one axis round swaps **G2 and G3** as well as G41 and G42; an arc that kept its word would cut the rest of the circle. | Rebuild |
+| CO1 | **Cut order with parts in holes**: the part inside the most other parts' boxes is cut first, so with rings in rings the innermost goes first and no hole drops with an uncut part in it. | Rebuild |
+| EXP1 | **Export CNC replaces the job's programs**: in the job's export folder, programs this job wrote earlier and this export didn't (sheets that are gone, or the other format, plain G-code vs. LC5 `.zip` / `.XML`) are removed, so nobody runs a sheet that no longer exists; with no sheets left, exporting refuses and removes them all. Other files are left alone. Remnant marks and cut lines run at their own speed (marking speed, or the normal cutting speed), not the last contour's. | Rebuild |
+
 The rebuild reads Z039, Z040, Z043 from `MchFiles\PstAdi06.PS1` and A005 from `PstAdi06.CF1` at export
 (`blm::adi()`; built-in 10 / 10 / 119.9 / 0.005 if the files are missing), classifies trim ends by
 edge and writes BL12–BL13 exactly (the example's FINAL_CUT is reproduced line for line by a test).
@@ -1403,6 +1416,14 @@ The rebuild: Open program also takes a **.nxp**. It reads the N001 nesting names
 nesting whose LC5 programs (`<name>.zip` / `.XML` / `.SPF`) are next to it, listing the others; geometry
 comes from those programs, since the .nxp itself has none (NX4). The program reader accepts both `ORIG`
 and `TRANS` + `AROT` placements (NX6), turning the part by the angle.
+
+| # | Rule (rebuild: reading LC5 programs back) | Source |
+|---|------|--------|
+| NX7 | `LASTLINE`'s 4th value is the move: **1** straight, **2 / 3** an arc as G02 / G03 with its centre at the start + (9th, 10th) values. The original's posts end round holes and slots on such an arc; it's read back as an arc. | Rebuild (from the post's output) |
+| NX8 | A contour **without a lead-in** (BL24) starts at the pierce point: its first piece, before `PROFILE`, carries G41/G42. Read back, a path that returns to the pierce point is closed there. | Rebuild |
+| NX9 | Opening one sheet's `.SPF` from a folder that holds several sheets' programs opens that sheet. | Rebuild |
+| IU1 | **DXF units**: a drawing's `$INSUNITS` header (1 inch, 2 foot, 4 mm, 5 cm, 6 m) is applied when it's read, in every import. Arcs are cut into straight pieces within 0.1 mm of the real curve in mm (not 0.1 of the drawing's unit). A DXF or DWG that doesn't say is read in the app's unit (Settings → Nesting: mm or inch), as the original takes a drawing's numbers in its system units (DXFASYSW / DWGASYSW `A089 0`, observed); drawings from the ERP integration use its own drawing unit. A DWG's own unit isn't read yet, so a DWG is always in the app's unit. | Rebuild |
+| PP1 | **Looking never changes**: the number boxes in part and sheet properties keep their limits for typing and dragging only; a value outside them (a quantity of 1000, an 8 mm disc, a sheet over 3 m) is shown as it is. | Rebuild |
 
 
 ## How Lantek stores nestings (and how this app saves jobs)
@@ -1674,6 +1695,22 @@ Folders here are one level deep; Cut/Paste/Find/Organize/Export are not built.
 → The rebuild keeps the active job as the open job's **library record** (`settings.ini` → `active_job`, kept in step each frame):
 - At start that saved job is opened again and made current (`jobtree::active_job_id`; an empty or unreadable record means none, as in AJ2, read up to ACTIVE_JOB_LINE_MAX = 40 characters). If it can't be found the record is cleared.
 - Job right-click → **Close** takes a saved job out of Open jobs (AJ3); it stays under Saved jobs (Library). An unsaved job can't be closed silently: save it first or Delete it.
+
+| # | Rule (rebuild: keeping work safe) | Source |
+|---|------|--------|
+| SV1 | Each open job remembers what it looked like when last **saved or opened**. A job that no longer matches has **unsaved changes**; one never saved counts when it has parts or nestings. The example jobs count as saved. | Rebuild |
+| SV2 | **Closing the window** with unsaved jobs asks first, naming them: *Go back and save* or *Close without saving*. **Close** on a job with unsaved changes is refused like an unsaved job (save it, or Delete it to drop them). | Rebuild |
+| SV3 | A job's file and library record stay with that job: **deleting or closing** the open job shows the next job with its own file, and a **copy** has no file and no record, so saving it asks where. Changing the **Library folder** forgets the open jobs' record numbers (they'd name other jobs in the new folder); they're saved as new records there. | Rebuild |
+| SV4 | **Save** checks the job's file first: when another program (an agent) changed it since the window read or wrote it, nothing is written and the window asks which version to keep. A save from the window removes the agents' one-step undo copy (`<job>.snjob~`), and an agent session that finds its job changed by someone else drops its undo steps, so an undo never goes back past someone else's change. | Rebuild |
+| SV5 | Job files and the settings file are written to a temporary file and then renamed over the old one, so a crash or a full disk never leaves half a file. | Rebuild |
+| SV6 | **Nesting from stock never invents a sheet**: with nothing in stock for the job and "use the job's sheet size when stock runs out" off (agents: `nest stock=only`), nothing is nested. When the minimum efficiency drops every stock sheet, the last nesting is kept. | Rebuild |
+| SV7 | **Saving or booking takes the sheets first**, then stores the new remnants. When the sheets can't be taken (another job took the last one), no remnant is stored and the note says so; saving again retries. | Rebuild |
+| SV8 | A **copy** of a job holds no stock and owns no remnants: it takes its own sheets when it's saved. | Rebuild |
+| CP1 | **Compact** is refused on a remnant with an outline (window and agents' `compact`). | Rebuild |
+| MM7 | Taking parts off a sheet clears that sheet's **hand-picked cut order**; removing a product clears every sheet's. The placements are renumbered, so the picks would land on other parts. | Rebuild |
+| AG1 | An agent operation that **refuses** leaves the job exactly as it was, in the session too (nothing it set before refusing is saved by a later change). | Rebuild |
+| AG2 | `edit-part` changes only the sizes it's given (at least 0.5 mm, as in the window); a **disc's** diameter sets both. | Rebuild |
+| AG3 | MCP: a `job` that isn't the job file's path (text) is refused, never dropped (the call would otherwise land on the job already open). | Rebuild |
 - Open jobs vs Saved jobs: Expert keeps every job in its database and has one active job. The rebuild keeps several jobs open in the window (Open jobs) and saves them to its own library (Saved jobs); the active job is the one shown.
 
 
@@ -2131,9 +2168,10 @@ the same path.
   corrector changes; `G40` on the rapid to whatever needs none (a contour without control
   compensation, marking, a free cut line) and on the way home. A contour without a lead-in gets
   the word on a block of its own. A post that turns one axis round (A016 × A017 < 0) mirrors the
-  path, so G41 and G42 swap. Our choices.
+  path, so G41 and G42 swap, and so do G2 and G3 (KC19). Our choices.
 - **BLM LC5 post**: its format is kept (G41/G42 on the first lead-in move, no corrector word);
-  with system compensation only, no word and the offset path.
+  a contour without a lead-in gets it on a short move before `PROFILE` (BL24); with system
+  compensation only, no word and the offset path.
 - **The job's choice**: Machining → Compensation → *Kerf* (Drawing and Nesting modules):
   *CN compensation* and *System compensation* toggles for the job, each defaulting to the machine
   file's; *Use the machine's settings* clears them. They win over the machine's switches and the

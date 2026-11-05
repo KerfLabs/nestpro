@@ -592,7 +592,11 @@ impl AppSettings {
         if let Some(d) = f.parent() {
             std::fs::create_dir_all(d)?;
         }
-        std::fs::write(f, self.to_text())
+        // Write next to it, then rename, so a crash or a full disk never
+        // leaves half a settings file (machines, posts and materials lost).
+        let tmp = f.with_extension("tmp");
+        std::fs::write(&tmp, self.to_text())?;
+        std::fs::rename(&tmp, &f)
     }
 
     /// Add Lantek Expert's database connection and machines from an install

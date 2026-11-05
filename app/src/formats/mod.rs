@@ -190,9 +190,12 @@ pub fn read_bytes(fmt: Format, bytes: &[u8], cfg: &crate::settings::AppSettings,
 }
 
 fn read_unguarded(fmt: Format, bytes: &[u8], cfg: &crate::settings::AppSettings, opts: &ReadOpts) -> Result<Vec<ReadPart>, String> {
+    // A DXF or DWG that doesn't say its unit is in the app's unit (Settings →
+    // Nesting), as the original reads it in its system units (A089 = 0; IU1).
+    let unit_mm = cfg.nesting.units.factor();
     match fmt {
-        Format::Dxf => crate::dxf::read(&String::from_utf8_lossy(bytes)).map(|drawing| vec![ReadPart { drawing, meta: Meta::default(), mark_layers: vec![] }]),
-        Format::Dwg => dwg::read(bytes, &Default::default()),
+        Format::Dxf => crate::dxf::read_in(&String::from_utf8_lossy(bytes), unit_mm).map(|drawing| vec![ReadPart { drawing, meta: Meta::default(), mark_layers: vec![] }]),
+        Format::Dwg => dwg::read(bytes, &dwg::Options { unit_mm, ..Default::default() }),
         Format::Mec => {
             let mut o = mec::Options::default();
             // The Lantek folder from Settings is searched before the default one
@@ -308,6 +311,21 @@ mod tests {
         let o = essi_options(&ReadOpts { ext: "DAT".into(), ..Default::default() }).unwrap();
         assert_eq!(o.dialect.name, "VULCAN");
         assert_eq!(Format::from_key("igs"), Some(Format::Iges));
+    }
+
+    #[test]
+    fn a_drawing_without_a_unit_is_read_in_the_apps_unit() {
+        let mut cfg = crate::settings::AppSettings::default();
+        let size = |cfg: &crate::settings::AppSettings, text: &str| {
+            let p = read_bytes(Format::Dxf, text.as_bytes(), cfg, &ReadOpts::default()).unwrap();
+            crate::dxf::build(&p[0].drawing, &Default::default()).unwrap().0.w
+        };
+        let mm = size(&cfg, crate::dxf::SAMPLE_DXF);
+        cfg.nesting.units = crate::units::LenUnit::Inch;
+        assert!((size(&cfg, crate::dxf::SAMPLE_DXF) - mm * 25.4).abs() < 1e-6, "no unit: the app's (inch)");
+        // A drawing that says mm stays mm whatever the app's unit.
+        let said = format!("0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n{}", crate::dxf::SAMPLE_DXF);
+        assert!((size(&cfg, &said) - mm).abs() < 1e-6);
     }
 
     #[test]

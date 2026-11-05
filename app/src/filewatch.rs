@@ -99,6 +99,7 @@ impl App {
         self.sel_placed = None;
         self.sel_cut = None;
         self.ssim = None;
+        self.ghost = None;
         if self.sel_part.is_some_and(|i| i >= self.parts.len()) {
             self.sel_part = None;
         }
@@ -106,6 +107,7 @@ impl App {
         self.store_job();
         self.link_job_file(path, &copy);
         self.mark_cam_changed();
+        self.mark_job_saved(self.cur_job);
         self.status = format!("Reloaded {}: its file was changed outside the app (an agent or another program).", self.job_name);
     }
 
@@ -183,6 +185,24 @@ mod filewatch_tests {
         a.watch_job_file(&ctx);
         assert!(matches!(a.pending, Some(Pending::JobFileChanged { .. })));
         assert!(!a.parts.iter().any(|p| p.name == "Second"), "nothing taken without asking");
+        // Saving without answering doesn't write over the agent's change.
+        a.pending = None;
+        a.save_job_to(&path);
+        assert!(matches!(a.pending, Some(Pending::JobFileChanged { .. })), "{}", a.status);
+        assert!(jobfile::load(&path).unwrap().parts.iter().any(|p| p.name == "Second"));
+        // Keep mine, then save: the agent's undo can't bring back a version
+        // from before the window's save.
+        if let (Some(l), Ok(j)) = (a.job_link.as_mut(), jobfile::load(&path)) {
+            l.mtime = mtime(&path);
+            l.disk_sig = job_sig(&j);
+        }
+        a.pending = None;
+        wait_tick();
+        a.save_job_to(&path);
+        assert!(a.pending.is_none(), "{}", a.status);
+        assert!(s.call("undo", None, &serde_json::json!({})).is_err());
+        let disk = jobfile::load(&path).unwrap();
+        assert!(!disk.parts.iter().any(|p| p.name == "Second") && disk.parts[0].qty == a.parts[0].qty);
 
         // Each job keeps its own file: switching jobs doesn't carry the path along.
         a.pending = None;

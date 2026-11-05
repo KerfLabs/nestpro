@@ -6,6 +6,7 @@
 //! case — is refused with error 9.
 
 use crate::App;
+use eframe::egui;
 
 /// Error the original returns for a folder name that is taken (JX4).
 pub const FOLDER_NAME_TAKEN: i32 = 9;
@@ -187,6 +188,12 @@ impl App {
         self.manual_cuts = j.manual_cuts;
         self.cam_changed = j.cam_changed;
         self.held = j.held;
+        // The job's own file and work order, not the closed or deleted job's,
+        // or Save would write this job over that one's file.
+        self.job_path = j.file.as_ref().map(|l| l.path.clone());
+        self.job_link = j.file;
+        self.erp_job = j.erp;
+        self.ghost = None;
         self.sel_cut = None;
         self.jobs_reindexed();
         self.cur_sheet = 0;
@@ -199,13 +206,21 @@ impl App {
 
     /// Close a job: it leaves the open jobs; its saved copy stays in the library
     /// (the original's "Close the current job" deletes the active-job record,
-    /// rule AJ3). A job never saved isn't closed
-    /// silently — save it first, or delete it.
+    /// rule AJ3). A job never saved, or changed since it was saved, isn't
+    /// closed silently — save it first, or delete it.
     pub fn close_job(&mut self, i: usize) {
         self.store_job();
-        let Some(j) = self.jobs.get(i) else { return };
+        if i >= self.jobs.len() {
+            return;
+        }
+        let unsaved = self.job_unsaved(i);
+        let j = &self.jobs[i];
         if j.lib_id.is_none() {
             self.status = format!("{} isn't saved yet — Save to library first (or Delete it).", j.name);
+            return;
+        }
+        if unsaved {
+            self.status = format!("{} has changes that aren't saved — save it first (or Delete it to drop them).", j.name);
             return;
         }
         if self.jobs.len() == 1 {
@@ -237,6 +252,85 @@ impl App {
         self.refresh();
         self.store_job();
         self.status = format!("Nesting {} added to {} — drag products from Parts View onto it, or Nest all.", self.cur_sheet + 1, self.job_name);
+    }
+
+    /// The job at `i` as it would be saved.
+    fn job_file_at(&mut self, i: usize) -> crate::jobfile::JobFile {
+        if i == self.cur_job {
+            return self.current_jobfile();
+        }
+        let j = &self.jobs[i];
+        crate::jobfile::JobFile {
+            format: crate::jobfile::FORMAT.into(),
+            version: crate::jobfile::VERSION,
+            name: j.name.clone(),
+            week: j.week.clone(),
+            parts: j.parts.clone(),
+            spec: j.spec.clone(),
+            sheets: j.result.sheets.clone(),
+            formats: j.result.formats.clone(),
+            held: j.held.clone(),
+            cut_lines: j.cut_lines.clone(),
+            method: j.result.method.clone(),
+            manual_cuts: j.manual_cuts.clone(),
+            stale: j.stale,
+            booked: true,
+            erp: j.erp.clone(),
+        }
+    }
+
+    /// Remember the job at `i` as it is now as saved (just saved or opened).
+    pub fn mark_job_saved(&mut self, i: usize) {
+        if i < self.jobs.len() {
+            let sig = crate::engine::imports::job_sig(&self.job_file_at(i));
+            self.jobs[i].saved = Some(sig);
+        }
+    }
+
+    /// Does the job at `i` have changes that aren't saved? A job never saved
+    /// counts when it has parts or nestings.
+    pub fn job_unsaved(&mut self, i: usize) -> bool {
+        if i >= self.jobs.len() {
+            return false;
+        }
+        let sig = crate::engine::imports::job_sig(&self.job_file_at(i));
+        let j = &self.jobs[i];
+        match j.saved {
+            Some(s) => s != sig,
+            None => !j.parts.is_empty() || j.result.sheets.iter().any(|s| !s.is_empty()),
+        }
+    }
+
+    /// Closing the window: ask first when a job has unsaved changes.
+    pub fn quit_guard(&mut self, ctx: &egui::Context) {
+        if self.shot.is_some() || self.quit_confirmed {
+            return;
+        }
+        if ctx.input(|i| i.viewport().close_requested()) {
+            let unsaved: Vec<usize> = (0..self.jobs.len()).filter(|&i| self.job_unsaved(i)).collect();
+            let names: Vec<String> = unsaved.iter().map(|&i| self.jobs[i].name.clone()).collect();
+            if !names.is_empty() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.quit_ask = Some(names);
+            }
+        }
+        let Some(names) = self.quit_ask.clone() else { return };
+        egui::Window::new("Unsaved changes").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO).show(ctx, |ui| {
+            ui.set_max_width(420.0);
+            ui.label(format!("{} job(s) have changes that aren't saved: {}. Closing now loses them.", names.len(), names.join(", ")));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let back = egui::Button::new(egui::RichText::new("Go back and save").color(egui::Color32::WHITE).strong()).fill(crate::theme::th().accent);
+                if ui.add(back).clicked() {
+                    self.quit_ask = None;
+                }
+                if ui.button("Close without saving").clicked() {
+                    self.quit_ask = None;
+                    self.quit_confirmed = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            });
+        });
     }
 
     /// Tooltip for a job row.
@@ -333,6 +427,50 @@ mod jobtree_tests {
     }
 
     #[test]
+    fn saving_never_lands_on_another_jobs_file_or_drops_unsaved_edits() {
+        let dir = std::env::temp_dir().join(format!("nestpro_job_files_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut a = App::new(None);
+        a.cfg.library_dir = dir.join("lib").display().to_string();
+        // The examples are nothing to lose.
+        assert!((0..a.jobs.len()).all(|i| !a.job_unsaved(i)));
+        let (fa, fb) = (dir.join("a.snjob"), dir.join("b.snjob"));
+        a.open_job(0);
+        a.save_job_to(&fa);
+        a.open_job(1);
+        a.save_job_to(&fb);
+        // Deleting the open job: the job that takes its place keeps its own file.
+        a.open_job(0);
+        a.delete_job(0);
+        assert_eq!(a.job_path.as_deref(), Some(fb.as_path()));
+        // A copy has no file (and isn't saved), so saving it never replaces the original.
+        a.copy_job();
+        assert!(a.job_path.is_none() && a.job_link.is_none());
+        assert!(a.job_unsaved(a.cur_job));
+        // A library job changed after saving isn't closed (its changes would go).
+        a.open_job(0);
+        a.save_job_to_library();
+        a.parts[0].qty += 3;
+        a.open_job(1);
+        assert!(a.job_unsaved(0));
+        let n = a.jobs.len();
+        a.close_job(0);
+        assert_eq!(a.jobs.len(), n, "{}", a.status);
+        // Saved again, it closes.
+        a.open_job(0);
+        a.save_job_to_library();
+        a.open_job(1);
+        a.close_job(0);
+        assert_eq!(a.jobs.len(), n - 1, "{}", a.status);
+        // Another library folder: record numbers from the old one aren't reused.
+        a.save_job_to_library();
+        a.library_folder_changed();
+        assert!(a.job_lib_id.is_none() && a.jobs.iter().all(|j| j.lib_id.is_none()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn switching_jobs_keeps_each_jobs_cut_lines_and_copies_are_new_records() {
         let mut a = App::new(None);
         a.open_job(0);
@@ -343,9 +481,14 @@ mod jobtree_tests {
         assert_eq!(a.cut_lines.first().map_or(0, |s| s.len()), 1, "job 0 gets its line back");
         // A copy is not linked to the original's library record.
         a.job_lib_id = Some(42);
+        // ... nor the original's stock: it takes its own sheets when saved.
+        a.held.insert("S-1".into(), 1);
+        a.result.formats[0].made = vec!["R-1".into()];
         a.copy_job();
         assert_eq!(a.job_lib_id, None);
         assert_eq!(a.jobs[0].lib_id, Some(42));
+        assert!(a.held.is_empty() && a.result.formats.iter().all(|f| f.made.is_empty()));
+        assert_eq!(a.jobs[0].held.get("S-1"), Some(&1));
         // Typing a job name, then the job list changes: the edit is dropped.
         a.tree_edit = Some(TreeEdit::Job { index: 2, text: "x".into() });
         a.confirm_delete_job = Some(2);

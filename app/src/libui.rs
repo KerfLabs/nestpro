@@ -75,6 +75,17 @@ impl App {
         }
     }
 
+    /// Another library folder: the open jobs' record numbers belong to the old
+    /// one, so saving would replace whatever has that number in the new one.
+    /// They become new records there.
+    pub fn library_folder_changed(&mut self) {
+        self.libui.loaded = false;
+        self.job_lib_id = None;
+        for j in &mut self.jobs {
+            j.lib_id = None;
+        }
+    }
+
     /// Save the open job into the library (over its record if it came from there).
     pub fn save_job_to_library(&mut self) {
         if !self.ready_to_save(crate::stockui::SaveTarget::Library) {
@@ -86,6 +97,7 @@ impl App {
         self.status = match r {
             Ok(id) => {
                 self.job_lib_id = Some(id);
+                self.mark_job_saved(self.cur_job);
                 self.lib_refresh();
                 format!("Saved job {} to the library as {} ({}).{stock_note}", self.job_name, crate::library::auto_ref(Kind::Job, id), self.library_dir().display())
             }
@@ -169,7 +181,7 @@ impl App {
         }
         let name = self.unique_job_name(&j.name).unwrap_or_else(|| j.name.clone());
         self.store_job();
-        self.jobs.push(crate::Job { week: if j.week.is_empty() { "Library".into() } else { j.week }, name, parts: j.parts, spec: j.spec.clone(), result: { let mut r = crate::nest::NestResult { sheets: j.sheets, formats: j.formats, method: j.method, tried: 0 }; r.normalise(&j.spec); r }, stale: j.stale, lib_id: Some(id), cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: j.held.clone(), erp: None, file: None });
+        self.jobs.push(crate::Job { week: if j.week.is_empty() { "Library".into() } else { j.week }, name, parts: j.parts, spec: j.spec.clone(), result: { let mut r = crate::nest::NestResult { sheets: j.sheets, formats: j.formats, method: j.method, tried: 0 }; r.normalise(&j.spec); r }, stale: j.stale, lib_id: Some(id), cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: j.held.clone(), erp: None, file: None, saved: None });
         let i = self.jobs.len() - 1;
         self.open_job(i);
         self.cut_lines = j.cut_lines;
@@ -180,6 +192,7 @@ impl App {
         self.job_path = None;
         self.job_link = None;
         self.refresh();
+        self.mark_job_saved(self.cur_job);
         self.status = format!("Opened library job {id}: {}.", self.job_name);
     }
 

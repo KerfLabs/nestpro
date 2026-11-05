@@ -35,11 +35,14 @@ pub struct Options {
     pub skip_invisible: bool,
     /// When the file cannot be read natively, try an installed DWG→DXF converter.
     pub use_converter: bool,
+    /// mm per drawing unit (the drawing's own unit isn't read yet): every length
+    /// is placed in mm, so arcs are split within ARC_CHORD_ERR mm (IU1).
+    pub unit_mm: f64,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Options { paper_space: false, explode_blocks: true, skip_invisible: false, use_converter: true }
+        Options { paper_space: false, explode_blocks: true, skip_invisible: false, use_converter: true, unit_mm: 1.0 }
     }
 }
 
@@ -60,7 +63,7 @@ pub fn read(bytes: &[u8], opts: &Options) -> Result<Vec<super::ReadPart>, String
                 return Err(e);
             }
             match convert::find() {
-                Some(conv) => convert::run(&conv, bytes).map_err(|ce| format!("{e} Converting it with {} failed too: {ce}", conv.name()))?,
+                Some(conv) => convert::run(&conv, bytes, opts.unit_mm).map_err(|ce| format!("{e} Converting it with {} failed too: {ce}", conv.name()))?,
                 None => return Err(e),
             }
         }
@@ -110,6 +113,8 @@ pub fn read_native(bytes: &[u8], opts: &Options) -> Result<Drawing, String> {
 
     // DW6: model space (and paper space when asked); blocks only through inserts.
     let mut ctx = geom::Ctx::new(&db, opts.explode_blocks, opts.skip_invisible);
+    let u = opts.unit_mm;
+    let unit = geom::Mat { x: [u, 0.0, 0.0], y: [0.0, u, 0.0], z: [0.0, 0.0, u], o: [0.0; 3] };
     for h in &db.order {
         if ctx.over {
             break;
@@ -117,7 +122,7 @@ pub fn read_native(bytes: &[u8], opts: &Options) -> Result<Drawing, String> {
         let o = &db.objs[h];
         let top = o.entmode == 2 || (opts.paper_space && o.entmode == 1);
         if top {
-            ctx.entity(o, &geom::Mat::ID, None, 0);
+            ctx.entity(o, &unit, None, 0);
         }
     }
     // Over a limit, part of the drawing is missing: refuse it whole.

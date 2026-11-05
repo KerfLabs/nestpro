@@ -389,6 +389,12 @@ pub fn read(text: &str) -> Result<Drawing, String> {
     read_with(text, &crate::formats::dxfread::Options::default())
 }
 
+/// `read`, with `unit_mm` for a file that doesn't say its unit (the ERP
+/// integration's drawing unit). A file that says its unit is read in it.
+pub fn read_in(text: &str, unit_mm: f64) -> Result<Drawing, String> {
+    read_with(text, &crate::formats::dxfread::Options { unit_mm, ..Default::default() })
+}
+
 /// `read` with the reading choices (paper space, blocks, invisible objects).
 pub fn read_with(text: &str, opts: &crate::formats::dxfread::Options) -> Result<Drawing, String> {
     let lines: Vec<&str> = text.lines().map(|l| l.trim()).collect();
@@ -774,5 +780,24 @@ mod tests {
     #[test]
     fn not_a_dxf_is_refused() {
         assert!(parse("hello").is_err());
+    }
+
+    #[test]
+    fn an_inch_drawing_comes_in_at_its_real_size() {
+        let mm = parse(SAMPLE_DXF).unwrap().0;
+        let inch = parse(&format!("0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n1\n0\nENDSEC\n{SAMPLE_DXF}")).unwrap().0;
+        assert!((inch.w - mm.w * 25.4).abs() < 1e-6 && (inch.h - mm.h * 25.4).abs() < 1e-6, "{} vs {}", inch.w, mm.w);
+        // ... and its round holes stay round: within the chord error in mm.
+        for h in &inch.holes {
+            let n = h.len() as f64;
+            let c = [h.iter().map(|q| q[0]).sum::<f64>() / n, h.iter().map(|q| q[1]).sum::<f64>() / n];
+            let r = ((h[0][0] - c[0]).powi(2) + (h[0][1] - c[1]).powi(2)).sqrt();
+            for k in 0..h.len() {
+                let (a, b) = (h[k], h[(k + 1) % h.len()]);
+                let mid = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
+                let dev = r - ((mid[0] - c[0]).powi(2) + (mid[1] - c[1]).powi(2)).sqrt();
+                assert!(dev <= ARC_CHORD_ERR + 1e-6, "hole r {r:.1}: chord {dev:.3} mm off");
+            }
+        }
     }
 }

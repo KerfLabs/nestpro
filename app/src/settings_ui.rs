@@ -459,7 +459,7 @@ impl App {
         use crate::units::{drag_len, LenUnit};
         ui.label(RichText::new("Nesting").size(18.0).strong().color(th().text_strong));
         ui.add_space(8.0);
-        card(ui, "Units", "Part gap, edge margin and moves on the Nesting screen are shown and typed in this unit. Inches can be typed as fractions (1/4, 1 1/2) or decimals; either unit can be typed with its suffix (6.35mm, 1/4in).", |ui| {
+        card(ui, "Units", "Part gap, edge margin and moves on the Nesting screen are shown and typed in this unit. Inches can be typed as fractions (1/4, 1 1/2) or decimals; either unit can be typed with its suffix (6.35mm, 1/4in). DXF and DWG drawings that don't say their unit are read in it too.", |ui| {
             ui.horizontal(|ui| {
                 for u in [LenUnit::Mm, LenUnit::Inch] {
                     ui.radio_value(&mut self.cfg.nesting.units, u, u.label());
@@ -918,18 +918,26 @@ impl App {
         ui.add_space(10.0);
         card(ui, "Library folder", "This app's own product and job database. Put it on a shared drive and everyone in the shop sees the same products and jobs. Empty = Documents\\Sheet Nesting\\Library.", |ui| {
             row(ui, "Folder", |ui| {
-                if ui.add(egui::TextEdit::singleline(&mut self.cfg.library_dir).desired_width(380.0).hint_text("Documents\\Sheet Nesting\\Library")).changed() {
+                let r = ui.add(egui::TextEdit::singleline(&mut self.cfg.library_dir).desired_width(380.0).hint_text("Documents\\Sheet Nesting\\Library"));
+                // Typed: it counts as another folder once the typing is done.
+                if r.gained_focus() {
+                    self.lib_dir_typed_from = Some(self.cfg.library_dir.clone());
+                }
+                if r.lost_focus() && self.lib_dir_typed_from.take().is_some_and(|d| d != self.cfg.library_dir) {
+                    self.library_folder_changed();
+                }
+                if r.changed() {
                     self.libui.loaded = false;
                 }
                 if ui.button("Browse…").clicked() {
                     if let Some(d) = rfd::FileDialog::new().pick_folder() {
                         self.cfg.library_dir = d.display().to_string();
-                        self.libui.loaded = false;
+                        self.library_folder_changed();
                     }
                 }
                 if !self.cfg.library_dir.is_empty() && ui.small_button("✕").clicked() {
                     self.cfg.library_dir.clear();
-                    self.libui.loaded = false;
+                    self.library_folder_changed();
                 }
             });
         });
