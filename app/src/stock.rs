@@ -18,8 +18,6 @@ use std::path::{Path, PathBuf};
 
 /// Highest quantity an item can hold (the original caps it, SS11).
 pub const MAX_QTY: i32 = 32_500;
-/// "No limit" in an availability list (SS12). Never stored in the file.
-pub const UNLIMITED: i32 = -1;
 /// Default thickness / size tolerance when matching stock (mm). The original
 /// reads it from its database settings; the value isn't visible (estimated).
 pub const TOL: f64 = 0.01;

@@ -8,7 +8,7 @@ use crate::theme::th;
 use crate::ui_parts::*;
 use crate::App;
 use eframe::egui;
-use egui::{Align2, Color32, CornerRadius, FontId, Pos2, Rect, RichText, Sense, Stroke, Vec2};
+use egui::{Color32, CornerRadius, Rect, RichText, Sense, Stroke, Vec2};
 
 impl App {
     /// Parts the Technology buttons act on: the selected one, or all.
@@ -559,13 +559,6 @@ impl App {
             });
         }
     }
-}
-
-/// Small preview text helper for the position pad tooltip (kept for clarity).
-#[allow(dead_code)]
-fn keypad_label(pos: u8, r: Rect, p: &egui::Painter) {
-    p.text(r.center(), Align2::CENTER_CENTER, pos.to_string(), FontId::proportional(9.0), th().text_dim);
-    let _ = Pos2::ZERO;
 }
 
 fn short_kind(k: crate::nest::TextKind) -> &'static str {

@@ -4,7 +4,6 @@
 //! free SQL, nothing that writes. Table meanings come from the queries
 //! Expert runs (see MECHANICS.md "Database tables", DT1–DT9).
 
-use crate::dbconn::LantekDb;
 use std::process::{Command, Stdio};
 
 /// Rows shown per table.
@@ -229,13 +228,6 @@ try {
 }
 "#;
 
-/// Run one of the queries above against Expert's database.
-#[cfg_attr(not(test), allow(dead_code))]
-pub fn run(db: &LantekDb, password: &str, sql: &str) -> Result<Table, String> {
-    let c = crate::settings::Connection { server: db.server.clone(), database: db.database.clone(), windows: db.user.is_empty(), user: db.user.clone(), ..Default::default() };
-    run_conn(&c, password, sql)
-}
-
 /// Run a query on a saved connection. A typed password wins over the
 /// remembered one, which is only decrypted inside the helper process.
 pub fn run_conn(c: &crate::settings::Connection, password: &str, sql: &str) -> Result<Table, String> {
@@ -333,8 +325,8 @@ mod dbq_tests {
     #[cfg(windows)]
     fn reports_the_servers_error_when_it_cannot_connect() {
         // Nothing listens on local port 1: SqlClient's own error comes back.
-        let db = LantekDb { server: "tcp:127.0.0.1,1".into(), database: "x".into(), ..Default::default() };
-        let e = run(&db, "", "SELECT 1").unwrap_err();
+        let c = crate::settings::Connection { server: "tcp:127.0.0.1,1".into(), database: "x".into(), windows: true, ..Default::default() };
+        let e = run_conn(&c, "", "SELECT 1").unwrap_err();
         assert!(!e.is_empty() && !e.contains("PowerShell"), "{e}");
     }
 

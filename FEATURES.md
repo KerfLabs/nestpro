@@ -46,6 +46,7 @@ original (or a real job).
 | REM-9 | Remnant cut into squares (CT1 B420) | Missing | ★ | MECHANICS "Cut order by sheet zones" |
 | REM-10 | Remnant lines between group zones (A789/A790) | Missing | ★ | MECHANICS "Nesting parts grouped by attributes" |
 | REM-13 | Remnant marks preview their references by simulating the next store for every sheet up to the one shown, on each redraw while marks are on; cache it (per job state) if it shows on jobs with many sheets | Missing | ★ | MECHANICS RN6, `stockflow::remnant_refs` |
+| REM-14 | Automatic line's distance past the parts: the app uses the offset, or the cutter radius when that option is on or for the irregular "at the cut" shape; RM1 observed half a cut width added to the distance. About 0.15 mm on a 0.3 mm kerf. Check which the original does in each mode | Estimate | ★ | MECHANICS RM1, ST8 |
 
 ## Nesting (NST)
 

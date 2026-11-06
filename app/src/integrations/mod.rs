@@ -735,15 +735,6 @@ pub fn pick_material(cfg: &crate::settings::AppSettings, m: &MaterialInfo) -> Op
     }
 }
 
-/// A DXF's own unit from its header ($INSUNITS: 1 inch, 4 mm, 5 cm, 6 m),
-/// or None when it doesn't say.
-pub fn dxf_units_mm(text: &str) -> Option<f64> {
-    let lines: Vec<&str> = text.lines().map(str::trim).collect();
-    let i = lines.iter().position(|l| *l == "$INSUNITS")?;
-    // Next group: "70" then the value.
-    insunits_mm(lines.get(i + 2)?.parse().ok()?)
-}
-
 /// mm per drawing unit for a DXF / DWG `$INSUNITS` value (None: unitless or
 /// a unit we don't map).
 pub fn insunits_mm(v: i32) -> Option<f64> {
@@ -754,24 +745,6 @@ pub fn insunits_mm(v: i32) -> Option<f64> {
         5 => Some(10.0),
         6 => Some(1000.0),
         _ => None,
-    }
-}
-
-/// Scale a drawing as read (points, texts) by `f`.
-pub fn scale_drawing(d: &mut crate::dxf::Drawing, f: f64) {
-    if (f - 1.0).abs() < 1e-12 {
-        return;
-    }
-    for p in &mut d.pieces {
-        for q in &mut p.pts {
-            q[0] *= f;
-            q[1] *= f;
-        }
-    }
-    for t in &mut d.texts {
-        t.2[0] *= f;
-        t.2[1] *= f;
-        t.3 *= f;
     }
 }
 
@@ -1041,19 +1014,6 @@ mod tests {
         assert_eq!(m("", "Aluminum 5052 Sheet"), Some(2));
         assert_eq!(m("A36", "Hot Rolled Steel Plate"), Some(0));
         assert_eq!(m("", "Copper"), None);
-    }
-
-    #[test]
-    fn dxf_units_come_from_the_header() {
-        assert_eq!(dxf_units_mm("0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n1\n0\nENDSEC\n"), Some(25.4));
-        assert_eq!(dxf_units_mm("9\n$INSUNITS\n70\n     4\n"), Some(1.0));
-        assert_eq!(dxf_units_mm("9\n$INSUNITS\n70\n0\n"), None, "unitless");
-        assert_eq!(dxf_units_mm(crate::dxf::SAMPLE_DXF), None);
-        let mut d = crate::dxf::read(crate::dxf::SAMPLE_DXF).unwrap();
-        let w0 = d.pieces[0].pts.iter().map(|p| p[0]).fold(f64::MIN, f64::max);
-        scale_drawing(&mut d, 25.4);
-        let w1 = d.pieces[0].pts.iter().map(|p| p[0]).fold(f64::MIN, f64::max);
-        assert!((w1 - w0 * 25.4).abs() < 1e-9);
     }
 
     #[test]

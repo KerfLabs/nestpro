@@ -15,7 +15,7 @@
 //!
 //! Lines end in CR LF. See MECHANICS.md "BLM LC5 programs".
 
-use crate::cnc::{self, SheetPlan};
+use crate::cnc::SheetPlan;
 use crate::nest::{Part, Placed, SheetSpec, P};
 use std::fmt::Write as _;
 
@@ -770,12 +770,6 @@ pub fn write_sheet(dir: &std::path::Path, set: &BlmSet) -> std::io::Result<()> {
     std::fs::write(dir.join(format!("{}.zip", set.nest)), zip(&set.spf))
 }
 
-/// Used by tests and the preview: the plan for a sheet.
-#[allow(dead_code)]
-pub fn plan_of(parts: &[Part], sheet: &[Placed], spec: &SheetSpec) -> SheetPlan {
-    cnc::plan(parts, sheet, spec)
-}
-
 #[cfg(test)]
 mod blm_tests {
     use super::*;
@@ -843,7 +837,7 @@ mod blm_tests {
         let parts = vec![Part { name: "BLANK".into(), shape: Shape::Rectangle, w: 100.0, h: 50.0, qty: 2, rotate: false, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
         let sheet = vec![Placed { part: 0, x: 10.0, y: 10.0, w: 100.0, h: 50.0, turns: 0, mirror: false }, Placed { part: 0, x: 10.0, y: 70.0, w: 100.0, h: 50.0, turns: 0, mirror: false }];
         let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 10.0, material: 1, thickness: 6.35, level: 3, machine: Default::default(), kerf: Default::default() };
-        let plan = cnc::plan(&parts, &sheet, &spec);
+        let plan = crate::cnc::plan(&parts, &sheet, &spec);
         let set = BlmSettings::for_spec(&spec, "LC5 YLS6000", "J-1");
         let s = sheet_set(1, &parts, &sheet, &spec, &plan, &[], &set);
         let names: Vec<&str> = s.spf.iter().map(|f| f.0.as_str()).collect();

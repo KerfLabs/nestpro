@@ -90,7 +90,6 @@ pub struct LeadQuality {
     pub min_len: f64,
     pub min_radius: f64,
     /// Pierce radius (B294 / E781…) — read, not used.
-    #[allow(dead_code)]
     pub pierce_radius: f64,
     /// Shortest lead-in a collision test may leave (B295 / E792…).
     pub min_lead: f64,

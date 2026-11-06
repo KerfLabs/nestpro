@@ -451,6 +451,19 @@ mod tests {
     }
 
     #[test]
+    fn the_header_gives_the_drawing_unit() {
+        let width = |header: &str| {
+            let text = format!("0\nSECTION\n2\nHEADER\n{header}0\nENDSEC\n{}", dxf("", "0\nLINE\n8\nCUT\n10\n0\n20\n0\n11\n1\n21\n0\n"));
+            let b = bbox(&read(&text).unwrap());
+            b[2] - b[0]
+        };
+        assert!((width("9\n$INSUNITS\n70\n1\n") - 25.4).abs() < 1e-9, "inch");
+        assert!((width("  9\n$INSUNITS\n 70\n     4\n") - 1.0).abs() < 1e-9, "mm, padded as CAD programs write it");
+        assert!((width("  9\n$INSUNITS\n 70\n     1\n") - 25.4).abs() < 1e-9, "inch, padded");
+        assert!((width("9\n$INSUNITS\n70\n0\n") - 1.0).abs() < 1e-9, "unitless: the caller's unit");
+    }
+
+    #[test]
     fn a_mirrored_arc_lands_on_the_mirrored_side() {
         // DW7: centre (50,0) in a plane seen from below (extrusion 0,0,-1) is at x = -50.
         let d = read(&dxf("", "0\nARC\n8\nCUT\n10\n50\n20\n0\n30\n0\n40\n10\n50\n0\n51\n180\n210\n0\n220\n0\n230\n-1\n")).unwrap();
