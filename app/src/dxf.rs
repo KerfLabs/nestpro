@@ -21,6 +21,9 @@ use std::collections::BTreeMap;
 pub const JOIN_TOL: f64 = 0.01;
 /// Largest gap between an arc and its straight segments, in mm (original default 0.1).
 pub const ARC_CHORD_ERR: f64 = 0.1;
+/// Fewest straight segments for a full circle, however small (DX2), so a small
+/// hole stays round and its arcs can be written as arcs.
+pub const ARC_MIN_SEGMENTS: f64 = 16.0;
 /// Most outline edges the hole tests of one drawing may look at.
 const HOLE_WORK: usize = 200_000_000;
 
@@ -105,9 +108,11 @@ impl Drawing {
     }
 }
 
-/// Number of straight segments for an arc so it stays within ARC_CHORD_ERR.
+/// Number of straight segments for an arc so it stays within ARC_CHORD_ERR,
+/// and no coarser than ARC_MIN_SEGMENTS to the full turn (DX2).
 pub(crate) fn arc_segments(r: f64, sweep: f64) -> usize {
-    let step = if r > ARC_CHORD_ERR { 2.0 * (1.0 - ARC_CHORD_ERR / r).acos() } else { std::f64::consts::FRAC_PI_2 };
+    let fine = std::f64::consts::TAU / ARC_MIN_SEGMENTS;
+    let step = if r > ARC_CHORD_ERR { (2.0 * (1.0 - ARC_CHORD_ERR / r).acos()).min(fine) } else { fine };
     ((sweep.abs() / step).ceil() as usize).clamp(2, 720)
 }
 

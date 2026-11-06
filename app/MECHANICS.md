@@ -135,6 +135,8 @@ How the rebuild uses them:
   (`dxfread::Options::paper_space`). Estimated, as DW6.
 - **Arc smoothness 0.1 mm** (`dxf::ARC_CHORD_ERR`, D4): arcs, circles and bulges are split
   so no straight piece strays more than 0.1 mm from the true arc.
+- **At least 16 pieces to the full circle (DX2)**: however small the arc, so small holes stay round,
+  are recognised as round and reach the LC5 as arcs. Estimated (own design).
 - **Layers (D5)**: a drawing with more than one layer opens "Drawing layers". Every layer
   starts as **Cut** (code 13) and can be set to **Mark** or **Leave out**. Marking lines show
   dashed on the part, are done before the part is cut (`M10 ( MARK ON )` … `M11`), and count
@@ -1227,15 +1229,14 @@ XML job sheet, and has them zipped. The rules below were checked against an exam
 | BL1 | Files per sheet: `<NEST>.SPF` (sheet), `<NEST>7nn.SPF` (one per part), `<NEST>LIS.SPF` (lists the sheet and part SPFs, not itself), all zipped as `<dir>\<NEST>.zip` (deflate, no folders); the original's post has the zip made by a separate zip helper program, called with the file name, which isn't always installed. Lines end CR LF. |
 | BL2 | XML job sheet `<NEST>.XML` (utf-8, tabs): General → NestingName, JobName, Machine, MatName, MatId, MatAlias, Thickness, Length, Width, PartXMax, PartYMax, Quantity, NestingTime (s), GasId, GasName, TechnoTable, UserData1-5, Files/SubPrg(CNCSub, PartRef), Pezzi/Istanza(Name, Length, Width, Quantity, PieceTime, WorkOrder, Order, UserData1-8, Executions/Execution(Quantity, SubProgram/CNCSub)), Utensili/Foratura Id0-6 and Taglio Id0-12 (1 = that pierce type / cut quality is used). Written when CF1 **A049** = 1 or 2 (2 adds times) / PS1 **Z059** = 1 (the standard settings have CF1 A049 2, PS1 Z059 1). |
 | BL3 | Subprogram name = nesting name up to the first "." (cut to 5 characters when 6-8 long) + **700 + part number** (701, 702…). |
-| BL4 | Sheet program: `;ADILAS`, `;MAT,length,width,thickness`, `;IDMAT=`, `;NOMEMAT=`, `;ALIASMAT=`, `;IDGAS=`, `;NOMEGAS=`, `;Postprocessor version 2.0.0`, `;R220=Z16*1000+2*100+0`, `R12=`thickness, `R201..R203=0.0`, `R21=`length, `R22=`width, `R23=`length − PartXMax, `R24=0`, `R523=10`, `R524=0`, `R500=0`, `INITNEST`, then per part `ORIG(x,y,angle)` (PS1 Z005 = 1; 0 gives `TRANS X.. Y..` + `AROT Z..`) and `N<k> CALL"/_n_wks_dir/_n_sheet_wpd/_n_<SUB>_spf"`, then `ENDNEST`, `RET`. Warns "Numero sottoprogrammi superiore al massimo consentito - **96**" (Z027). |
-| BL5 | Part subprogram: `;M01`, `R16=chk_pret` (Z056), `CICLA:`, `INITPART(1)`, `;<part>`; per path `NEXT_L(x,y,first?0:1,pierce,quality)` (marking: pierce 0, quality 9; cutting: pierce 2, quality 3 in the example), lead-in `G01 G41/G42 X Y`, `PROFILE`, moves `G01/G02/G03` with `CORNER` after a corner whose angle is at most **119.9°** (Z043), last move as `LASTLINE(…,x1,y1,x2,y2,0,0)` (10 parameters, Z061); then `ENDGEO`, the pre-cut retry `IF R16==1 / STOPRE / R16=0 / GOTOB CICLA / ENDIF`, `ENDPART`, `RET`. Coordinates up to 3 decimals, whole numbers as `12.`. |
+| BL4 | Sheet program: `;ADILAS`, `;MAT,length,width,thickness`, `;IDMAT=`, `;NOMEMAT=`, `;ALIASMAT=`, `;IDGAS=`, `;NOMEGAS=`, `;Postprocessor version 2.0.0`, `;R220=Z16*1000+2*100+0`, `R12=`thickness, `R201..R203=0.0`, `R21=`length, `R22=`width, `R23` / `R24` / `R523` / `R524` = the free margins (BL17), `R500=0`, `INITNEST`, then per part `ORIG(x,y,angle)` (PS1 Z005 = 1; 0 gives `TRANS X.. Y..` + `AROT Z..`) and `N<k> CALL"/_n_wks_dir/_n_sheet_wpd/_n_<SUB>_spf"`, then `ENDNEST`, `RET`. Warns "Numero sottoprogrammi superiore al massimo consentito - **96**" (Z027). |
+| BL5 | Part subprogram: `;M01`, `R16=chk_pret` (Z056), `CICLA:`, `INITPART(1)`, `;<part>`; per path `NEXT_L(x,y,first?0:1,pierce,quality)` (marking: pierce 0, quality 9; cutting: pierce 2, quality 3 in the example), lead-in `G01 G41/G42 X Y`, `PROFILE`, moves `G01/G02/G03` with `CORNER` after a corner whose angle is at most **119.9°** (Z043), last move as `LASTLINE(0,0,0,…,x1,y1,x2,y2,0,0)` (10 parameters, Z061; BL27); then `ENDGEO`, the pre-cut retry `IF R16==1 / STOPRE / R16=0 / GOTOB CICLA / ENDIF`, `ENDPART`, `RET`. Coordinates up to 3 decimals, whole numbers as `12.`. |
 | BL6 | Material codes from PS1 D-lines: X5CrNi 0100, RST 37-2 0010, Al 1050 A 0200 (Z063 = 1 takes alias and id from the system). |
 
 The rebuild (src/blm.rs): **Machining -> Post settings -> "BLM LC5 output"** (on when the active machine
 is an LC5/BLM) makes Export CNC write `<NEST>.XML` and `<NEST>.zip` (sheet SPF, part SPFs, LIS) per sheet
-following BL1–BL5, zipped in-app with deflate. Estimated / not built: the 2nd LASTLINE value (written
-`1.` for cut paths, `0` for marking — the example has 1. and 1.004), arcs (written as G01 moves),
-micro-joints, the FINAL_CUT / remnant-line subprogram (`HD_DWN_OFF`), part rotation through ORIG's angle
+following BL1–BL5, zipped in-app with deflate. Estimated / not built: when `LASTLINE` starts `1,<lead-arc radius>,0` instead of `0,0,0` (BL27),
+micro-joints (refused, BL39), the FINAL_CUT / remnant-line subprogram (`HD_DWN_OFF`), part rotation through ORIG's angle
 (each rotation gets its own subprogram instead), and gas defaults.
 
 
@@ -1243,11 +1244,11 @@ micro-joints, the FINAL_CUT / remnant-line subprogram (`HD_DWN_OFF`), part rotat
 
 | # | Rule |
 |---|------|
-| BL7 | Curves are written as arcs: `G02`/`G03 X.. Y.. I.. J..` with I/J = centre − arc start (incremental), e.g. `G03 X51.31 Y37.345 I0. J-1.`. The rebuild fits arcs to the contour's points: every point within **0.005 mm** of one circle (the post library's machine tolerance, CF1 A005), turning one way, at most **30°** per step (so a square's corners stay corners), radius at most 5000 mm, at least 3 moves, less than a full turn. The last move stays the LASTLINE straight. |
+| BL7 | Curves are written as arcs: `G02`/`G03 X.. Y.. I.. J..` with I/J = centre − arc start (incremental), e.g. `G03 X51.31 Y37.345 I0. J-1.`. The rebuild fits arcs to the contour's points: every point within **0.005 mm** of one circle (the post library's machine tolerance, CF1 A005, which may tighten this but not loosen it), every move between points within **0.105 mm** of it (BL38), turning one way, at most **30°** per step (so a square's corners stay corners), radius at most 5000 mm, at least 3 moves, less than a full turn. The last move stays the LASTLINE straight. |
 | BL8 | Cut-off / remnant line = its own subprogram, PartRef and Istanza Name **FINAL_CUT** (no PieceTime/WorkOrder/Order), called after the parts with ORIG at the line's start: `NEXT_L(10u,0,0,3,1,20u,−10u)`, `G01 G40` to 10 mm in, `PROFILE`, cut to 10 mm before the end, **`HD_DWN_OFF`**, run on to 10 mm past the end (u = the line's direction). 10 mm = PS1 Z039/Z040 sheet-trim overruns (Z038 = 1). Lines that aren't one straight edge-to-edge segment are written as an open cut path. |
 | BL9 | Repeated points are dropped so no zero-length moves are written (rebuild). |
 
-Still not written for the LC5: micro-joints (PS1 Z051 "LASTLINE su microgiunzioni"), part rotation
+Still not written for the LC5: micro-joints and corner loops, which stop the export (BL39; PS1 Z051 "LASTLINE su microgiunzioni"), part rotation
 through ORIG's angle, part times (PieceTime), and the meaning of NEXT_L's 6th–9th values for the
 cut-off line (read from the example; `20u, −10u` is inferred from one vertical line).
 
@@ -1266,6 +1267,10 @@ cut-off line (read from the example; `20u, −10u` is inferred from one vertical
 | # | Rule | Source |
 |---|------|--------|
 | BL24 | A contour **without a lead-in** still gets its G41/G42: with PS1 **Z028** above 0.1 mm (4 mm in the shop's file) the first straight move is split, `G01 G4x` to Z028 along it (at most half of it), then `PROFILE`, then the rest of the move. A contour that starts with an arc gets a zero-length `G01 G4x` at its start first. The rebuild reads Z028 from the PS1 (built-in 4). | Observed |
+| BL17 | The sheet program's **free margins**: `R23` and `R24` are the room left to the far X and Y edges, `R523` and `R524` the room left to the near ones, measured from the points of everything written (lead-ins, marking, cut-off lines), so a written arc can reach up to 0.105 mm past them. Never below 0; 0.1 mm or less counts as 0. | observed in real programs (holds on 71–79 of 79 sets; L-shaped cut-offs differ, MAC-41) |
+| BL27 | `LASTLINE` starts **`0,0,0`**. Real programs write that on about 92% of contours; the rest have `1,<lead-arc radius or 0>,0`, and what decides isn't known (MAC-31). | observed; the choice is estimated |
+| BL38 | A run of moves becomes one arc only if **each move between its points stays within 0.105 mm of that arc** (the 0.1 mm drawing tolerance plus the 0.005 mm machine tolerance). Without this a long edge between two small rounded corners, or a run of straight sides, would be written as a huge arc that leaves the part. | own design |
+| BL39 | Before an LC5 set is exported or shown as a program it is **read back**: the text is parsed on its own and each cut is compared with its own planned path, both ways, at 0.125 mm, along with its compensation word and direction. A mismatch, a missing or unplanned part or cut-off line, or a part planned with micro-joints, corner loops or punched holes (which the files can't carry yet) stops the export: nothing is written, and the job's earlier programs are removed, or the message says which couldn't be. A write that fails partway removes them too. Lead-outs and overlap aren't written and don't stop it (MAC-30); a cut-off line is checked for its start, the line it runs on and compensation off, not where it stops (MAC-42). | own design |
 | BL37 | Copies of a part share one subprogram only when their **whole machining is the same** relative to their corner (turn, mirror, start point, leads). A copy whose lead was moved, for example clear of a neighbour, gets its own subprogram; otherwise it would be cut with the first copy's lead. | Rebuild |
 | KC19 | A post that turns one axis round swaps **G2 and G3** as well as G41 and G42; an arc that kept its word would cut the rest of the circle. | Rebuild |
 | CO1 | **Cut order with parts in holes**: the part inside the most other parts' boxes is cut first, so with rings in rings the innermost goes first and no hole drops with an uncut part in it. | Rebuild |

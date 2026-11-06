@@ -44,6 +44,12 @@ pub const ARC_MAX_R: f64 = 5000.0;
 pub const ARC_MAX_STEP_DEG: f64 = 30.0;
 /// Fewest moves an arc must replace.
 pub const ARC_MIN_MOVES: usize = 3;
+
+/// How far a move between two fitted points may sit from the arc that
+/// replaces it (BL38): a drawing's curves are split within ARC_CHORD_ERR, so a
+/// true arc's pieces reach that, plus the fit's usual point tolerance. Fixed:
+/// a post library's looser tolerance must not loosen this limit too.
+pub const ARC_SPAN_TOL: f64 = crate::dxf::ARC_CHORD_ERR + ARC_TOL;
 /// Sheet-trim overruns (PstAdi06.PS1 Z039 "fuoriuscita in negativo" and
 /// Z040 "in positivo", 10 mm each here; Z038 = 1 turns the trim on). Used by
 /// the post's trim writer per sheet edge (BL12; see final_cut_sub).
@@ -245,7 +251,9 @@ fn arc_fit(pts: &[P], i: usize, j: usize) -> Option<(P, bool)> {
     let ccw = cross(pts[i], pts[i + 1], pts[i + 2]) > 0.0;
     for k in i..=j {
         let d = ((pts[k][0] - c[0]).powi(2) + (pts[k][1] - c[1]).powi(2)).sqrt();
-        if (d - r).abs() > adi().arc_tol {
+        // A post library may ask for tighter than ARC_TOL, never looser: BL38's
+        // limit holds only with the ends this close to the circle.
+        if (d - r).abs() > adi().arc_tol.min(ARC_TOL) {
             return None;
         }
         if k + 2 <= j && (cross(pts[k], pts[k + 1], pts[k + 2]) > 0.0) != ccw {
@@ -253,6 +261,16 @@ fn arc_fit(pts: &[P], i: usize, j: usize) -> Option<(P, bool)> {
         }
         if k + 2 <= j && turn_deg(pts[k], pts[k + 1], pts[k + 2]) > ARC_MAX_STEP_DEG {
             return None;
+        }
+        // BL38: the points can all lie on a circle while a long straight between
+        // them runs far from it (an edge between two small rounded corners).
+        // A straight move is nearest the centre at its middle, furthest at its
+        // ends, which the test above has already held to the circle.
+        if k < j {
+            let mid = [(pts[k][0] + pts[k + 1][0]) / 2.0, (pts[k][1] + pts[k + 1][1]) / 2.0];
+            if r - (mid[0] - c[0]).hypot(mid[1] - c[1]) > ARC_SPAN_TOL {
+                return None;
+            }
         }
     }
     // Less than a full turn.
@@ -377,8 +395,9 @@ fn write_path(s: &mut String, pts: &[P], closed: bool, lead: &[P], comp: &str, f
         from = end;
     }
     let (a, b) = (moves[n - 2], moves[n - 1]);
-    let head = if has_lead { "1,1." } else { "0,0" };
-    let _ = write!(s, "LASTLINE({head},0,1,{},{},{},{},0,0)\r\n", coord(a[0]), coord(a[1]), coord(b[0]), coord(b[1]));
+    // BL27: what real programs write on nearly every contour; when the post
+    // writes a 1 and the lead-in arc's radius instead isn't known (MAC-31).
+    let _ = write!(s, "LASTLINE(0,0,0,1,{},{},{},{},0,0)\r\n", coord(a[0]), coord(a[1]), coord(b[0]), coord(b[1]));
 }
 
 /// One part's subprogram, in the part's own coordinates (origin at its
@@ -521,6 +540,25 @@ fn bounds(parts: &[Part], sheet: &[Placed]) -> (P, P) {
     (lo, hi)
 }
 
+/// The free margins in the sheet program's header (BL17): the room left at each
+/// side once everything written is on the sheet, lead-ins, marking and cut-off
+/// lines included. [R23 far X, R24 far Y, R523 near X, R524 near Y]; never below
+/// 0, and under 0.1 mm counts as none.
+pub fn sheet_margins(plan: &SheetPlan, cuts: &[crate::cutoff::CutLine], w: f64, h: f64) -> [f64; 4] {
+    let cuts_pts = plan.contours.iter().filter(|c| c.punch.is_none()).flat_map(|c| c.points.iter().chain(c.lead_path.iter()));
+    let all = cuts_pts.chain(plan.marks.iter().flat_map(|m| m.1.iter())).chain(cuts.iter().filter(|c| c.pts.len() >= 2).flat_map(|c| c.pts.iter()));
+    let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+    for p in all {
+        lo = [lo[0].min(p[0]), lo[1].min(p[1])];
+        hi = [hi[0].max(p[0]), hi[1].max(p[1])];
+    }
+    if lo[0] > hi[0] {
+        return [w, h, 0.0, 0.0];
+    }
+    let room = |v: f64| if v <= 0.1 { 0.0 } else { v };
+    [room(w - hi[0]), room(h - hi[1]), room(lo[0]), room(lo[1])]
+}
+
 /// Build the BLM program set for one sheet.
 pub fn sheet_set(sheet_no: usize, parts: &[Part], sheet: &[Placed], spec: &SheetSpec, plan: &SheetPlan, cuts: &[crate::cutoff::CutLine], set: &BlmSettings) -> BlmSet {
     let nest = nest_name(&set.job, sheet_no);
@@ -583,7 +621,8 @@ pub fn sheet_set(sheet_no: usize, parts: &[Part], sheet: &[Placed], spec: &Sheet
     for t in 1..=3 {
         let _ = write!(m, "R20{t}=0.0    ;lunghezza barretta utensile {t}\r\n");
     }
-    let _ = write!(m, "R21={}\r\nR22={}\r\nR23={}\r\nR24=0\r\nR523=10\r\nR524=0\r\nR500=0\r\nINITNEST\r\n", plain(spec.w), plain(spec.h), plain(spec.w - xmax));
+    let [r23, r24, r523, r524] = sheet_margins(plan, cuts, spec.w, spec.h);
+    let _ = write!(m, "R21={}\r\nR22={}\r\nR23={}\r\nR24={}\r\nR523={}\r\nR524={}\r\nR500=0\r\nINITNEST\r\n", plain(spec.w), plain(spec.h), plain(r23), plain(r24), plain(r523), plain(r524));
     let mut order: Vec<usize> = (0..sheet.len()).collect();
     // Parts in the order they are cut.
     order.sort_by_key(|&i| plan.contours.iter().position(|c| c.part_no == i + 1).unwrap_or(usize::MAX));
@@ -788,6 +827,140 @@ mod blm_tests {
         assert_eq!(nest_name("J-1234 sample", 2), "J1234SAMPLEX2");
     }
 
+    /// How far the arcs and lines of `moves` from `from` stray from the path
+    /// through `pts` (the farthest of many samples along each move).
+    fn stray(pts: &[P], moves: &[Move]) -> f64 {
+        let seg = |p: P, a: P, b: P| {
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let l = dx * dx + dy * dy;
+            let t = if l == 0.0 { 0.0 } else { (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l).clamp(0.0, 1.0) };
+            ((p[0] - a[0] - t * dx).powi(2) + (p[1] - a[1] - t * dy).powi(2)).sqrt()
+        };
+        let near = |p: P| pts.windows(2).map(|w| seg(p, w[0], w[1])).fold(f64::MAX, f64::min);
+        let mut from = pts[0];
+        let mut worst = 0.0f64;
+        for m in moves {
+            for k in 1..=200 {
+                let t = k as f64 / 200.0;
+                let p = match *m {
+                    Move::Line(e) => [from[0] + (e[0] - from[0]) * t, from[1] + (e[1] - from[1]) * t],
+                    Move::Arc { to, center, ccw } => {
+                        let r = (from[0] - center[0]).hypot(from[1] - center[1]);
+                        let a0 = (from[1] - center[1]).atan2(from[0] - center[0]);
+                        let mut a1 = (to[1] - center[1]).atan2(to[0] - center[0]);
+                        let tau = std::f64::consts::TAU;
+                        if ccw && a1 <= a0 {
+                            a1 += tau;
+                        }
+                        if !ccw && a1 >= a0 {
+                            a1 -= tau;
+                        }
+                        let a = a0 + (a1 - a0) * t;
+                        [center[0] + r * a.cos(), center[1] + r * a.sin()]
+                    }
+                };
+                worst = worst.max(near(p));
+            }
+            from = move_end(m);
+        }
+        worst
+    }
+
+    /// A plate's outline with rounded corners, split the way a drawing is.
+    fn rounded_plate(w: f64, h: f64, r: f64) -> Vec<P> {
+        let mut pts = vec![];
+        for (cx, cy, a0) in [(w - r, r, -90.0f64), (w - r, h - r, 0.0), (r, h - r, 90.0), (r, r, 180.0)] {
+            let n = crate::dxf::arc_segments(r, std::f64::consts::FRAC_PI_2);
+            for k in 0..=n {
+                let a = (a0 + 90.0 * k as f64 / n as f64).to_radians();
+                pts.push([cx + r * a.cos(), cy + r * a.sin()]);
+            }
+        }
+        pts.push(pts[0]);
+        pts
+    }
+
+    #[test]
+    fn small_holes_reach_the_machine_as_arcs() {
+        // DX2 + BL38: a hole of any size has enough pieces for the arc fit.
+        for d in [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 10.0] {
+            let r = d / 2.0;
+            let n = crate::dxf::arc_segments(r, std::f64::consts::TAU);
+            assert!(n >= 16, "Ø{d}: {n} pieces");
+            let pts: Vec<P> = (0..n).map(|k| {
+                let a = k as f64 / n as f64 * std::f64::consts::TAU;
+                [r * a.cos(), r * a.sin()]
+            }).collect();
+            assert!(fit_moves(&pts).iter().any(|m| matches!(m, Move::Arc { .. })), "Ø{d} came out as straight moves");
+            assert!(matches!(crate::machine::recognise(&pts), Some(crate::machine::StdShape::Circle { .. })), "Ø{d} isn't seen as round");
+        }
+    }
+
+    #[test]
+    fn margins_are_the_room_left_around_what_is_written() {
+        // BL17: lead-ins and marks count; a line to the edge leaves no room.
+        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
+        let mut plan = crate::cnc::plan(&[], &[], &spec);
+        plan.marks.push((1, vec![[20.0, 30.0], [40.0, 30.0]]));
+        assert_eq!(sheet_margins(&plan, &[], 1000.0, 500.0), [960.0, 470.0, 20.0, 30.0]);
+        let cut = crate::cutoff::CutLine { pts: vec![[0.0, 100.0], [1000.0, 100.0]], kind: crate::cutoff::CutKind::Remnant };
+        assert_eq!(sheet_margins(&plan, &[cut], 1000.0, 500.0), [0.0, 400.0, 0.0, 30.0]);
+        assert_eq!(sheet_margins(&crate::cnc::plan(&[], &[], &spec), &[], 1000.0, 500.0), [1000.0, 500.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn long_edges_between_small_rounded_corners_stay_straight() {
+        // BL38: the points of a long edge and its two neighbours lie on a circle,
+        // but the edge itself runs far from it.
+        for (w, h) in [(300.0, 150.0), (2400.0, 1200.0)] {
+            for r in [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 5.0, 25.0] {
+                let pts = rounded_plate(w, h, r);
+                let off = stray(&pts, &fit_moves(&pts));
+                assert!(off < 0.11, "{w} x {h} R{r}: the program strays {off:.2} mm from the part");
+            }
+        }
+    }
+
+    #[test]
+    fn a_point_just_inside_the_circle_counts_against_the_move_limit() {
+        // BL38: pieces at the full limit, two points 0.005 mm inside the circle.
+        let r = 500.0;
+        let step = 2.0 * (1.0f64 - 0.10499 / r).acos();
+        let pts: Vec<P> = (0..7).map(|k| {
+            let a = k as f64 * step;
+            let rr = if k == 1 || k == 2 { r - 0.0049 } else { r };
+            [rr * a.cos(), rr * a.sin()]
+        }).collect();
+        let off = stray(&pts, &fit_moves(&pts));
+        assert!(off <= ARC_SPAN_TOL + 1e-6, "strays {off:.4} mm");
+    }
+
+    #[test]
+    fn straight_sided_shapes_stay_straight() {
+        // BL38: half of a 24-sided plate of radius 200 has no curve to fit.
+        let pts: Vec<P> = (0..=12).map(|k| {
+            let a = k as f64 / 24.0 * std::f64::consts::TAU;
+            [200.0 * a.cos(), 200.0 * a.sin()]
+        }).collect();
+        let m = fit_moves(&pts);
+        assert!(m.iter().all(|m| matches!(m, Move::Line(_))), "{m:?}");
+    }
+
+    #[test]
+    fn curves_split_at_the_drawing_tolerance_still_become_arcs() {
+        // BL38: a chord of a true arc may sit the full 0.1 mm import error off it.
+        for r in [6.0, 40.0, 100.0, 1000.0, 4000.0] {
+            let n = crate::dxf::arc_segments(r, std::f64::consts::PI);
+            let pts: Vec<P> = (0..=n).map(|k| {
+                let a = k as f64 / n as f64 * std::f64::consts::PI;
+                [r * a.cos(), r * a.sin()]
+            }).collect();
+            let m = fit_moves(&pts);
+            assert_eq!(m.len(), 1, "R{r} in {n} pieces: {m:?}");
+            assert!(matches!(m[0], Move::Arc { .. }), "R{r}: {m:?}");
+        }
+    }
+
     #[test]
     fn circles_become_arcs_and_lines_stay_lines() {
         // A 16-point circle of radius 5 around (10,10), then a straight run.
@@ -848,7 +1021,7 @@ mod blm_tests {
         assert!(main.ends_with("ENDNEST\r\nRET\r\n"));
         let sub = &s.spf[1].1;
         assert!(sub.starts_with(";M01\r\nR16=chk_pret\r\nCICLA:\r\nINITPART(1)\r\n;BLANK\r\nNEXT_L("));
-        assert!(sub.contains("PROFILE\r\n") && sub.contains("LASTLINE(1,1.,0,1,") && sub.contains("CORNER\r\n"));
+        assert!(sub.contains("PROFILE\r\n") && sub.contains("LASTLINE(0,0,0,1,") && sub.contains("CORNER\r\n"));
         assert!(sub.ends_with("ENDGEO\r\nIF R16==1\r\n\t  STOPRE\r\n\t  R16=0\r\n   GOTOB CICLA\r\nENDIF\r\nENDPART\r\nRET\r\n"));
         // The list names the sheet and part programs, not itself (as in the LC5 example).
         assert_eq!(s.spf[2].1, "J1X1.SPF\r\nJ1X1701.SPF\r\n");

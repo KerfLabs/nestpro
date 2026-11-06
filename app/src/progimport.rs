@@ -107,7 +107,9 @@ pub fn arc_points(a: P, b: P, c: P, ccw: bool) -> Vec<P> {
         }
     }
     let sweep = a1 - a0;
-    let n = ((sweep.abs().to_degrees() / ARC_STEP_DEG).ceil() as usize).max(1);
+    // Big radii need finer steps than the angle alone, to stay within the
+    // drawing tolerance the LC5 output's arc fit allows (BL38).
+    let n = ((sweep.abs().to_degrees() / ARC_STEP_DEG).ceil() as usize).max(crate::dxf::arc_segments(r, sweep.abs()));
     let mut v: Vec<P> = (1..n).map(|k| {
         let t = a0 + sweep * k as f64 / n as f64;
         [c[0] + r * t.cos(), c[1] + r * t.sin()]
@@ -465,6 +467,16 @@ pub fn open(path: &std::path::Path) -> Result<Imported, String> {
 #[cfg(test)]
 mod progimport_tests {
     use super::*;
+
+    #[test]
+    fn big_arcs_are_rebuilt_within_the_drawing_tolerance() {
+        // BL38: 5 degree steps would sit 0.95 mm off an R1000 arc.
+        let v = arc_points([1000.0, 0.0], [0.0, 1000.0], [0.0, 0.0], true);
+        for w in v.windows(2) {
+            let half = ((w[1][0] - w[0][0]).powi(2) + (w[1][1] - w[0][1]).powi(2)).sqrt() / 2.0;
+            assert!(1000.0 - (1000.0f64.powi(2) - half * half).sqrt() <= crate::dxf::ARC_CHORD_ERR + 1e-9);
+        }
+    }
 
     #[test]
     fn reads_back_a_program_set_this_app_writes() {

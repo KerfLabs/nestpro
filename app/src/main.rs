@@ -1688,6 +1688,9 @@ impl App {
         if let Ok(ex) = &res {
             let names = ex.files.iter().filter_map(|f| f.file_name().map(|n| n.to_string_lossy().to_string())).collect();
             self.last_export = Some((ex.dir.clone(), names, ex.warning.clone()));
+        } else {
+            // A refused export takes the job's programs with it (BL39).
+            self.last_export = None;
         }
         self.status = match res {
             Ok(ex) if ex.warning.is_some() => format!("Exported, but {}.", ex.warning.unwrap_or_default()),
