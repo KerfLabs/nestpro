@@ -266,13 +266,9 @@ impl PolyIndex {
         PolyIndex { lo: bbox[1], band, rows, bbox }
     }
 
-    /// Whether `p` is inside the polygon (even-odd rule).
-    pub(crate) fn contains(&self, p: P) -> bool {
-        self.contains_counted(p, &mut 0)
-    }
-
-    /// `contains`, adding the number of edges looked at to `work` (so callers
-    /// can hold a whole drawing's tests to a budget).
+    /// Whether `p` is inside the polygon (even-odd rule), adding the number of
+    /// edges looked at to `work` (so callers can hold a whole drawing's tests
+    /// to a budget).
     pub(crate) fn contains_counted(&self, p: P, work: &mut usize) -> bool {
         if self.rows.is_empty() || p[0] < self.bbox[0] || p[0] > self.bbox[2] || p[1] < self.bbox[1] || p[1] > self.bbox[3] {
             return false;
@@ -715,7 +711,7 @@ mod tests {
             inside
         };
         for p in [[10.25, 50.0], [10.75, 99.0], [3.0, -5.0], [3.2, 0.0], [-1.0, 5.0], [100.0, 100.0]] {
-            assert_eq!(idx.contains(p), plain(p), "{p:?}");
+            assert_eq!(idx.contains_counted(p, &mut 0), plain(p), "{p:?}");
         }
     }
 

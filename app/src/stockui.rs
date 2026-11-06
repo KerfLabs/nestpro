@@ -923,7 +923,6 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        let s = Stock::load(&dir).unwrap();
         // Clearing the sheets gives the stock back.
         a.result = nest::NestResult::default();
         a.stock_on_save();

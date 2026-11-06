@@ -87,34 +87,6 @@ pub fn polyline_dist(p: P, pts: &[P]) -> f64 {
     pts.windows(2).map(|w| seg_point(p, w[0], w[1])).fold(f64::MAX, f64::min)
 }
 
-/// Where the automatic remnant line goes in X: past the parts' right-hand extent
-/// by the part gap plus half the cut width (RM1: origin + cut width × 0.5 +
-/// distance). None when the remnant left
-/// would be narrower than the minimum (the original refuses it, code 10).
-pub fn remnant_line_x(sheet: &[Placed], spec: &SheetSpec) -> Option<f64> {
-    let ext = sheet.iter().map(|p| p.x + p.w).fold(spec.margin, f64::max);
-    let x = ext + spec.gap + crate::kerf::kerf_mm(spec) * 0.5;
-    (spec.w - x >= REMNANT_MIN_MM).then_some(x)
-}
-
-/// The same across Y (RM1).
-pub fn remnant_line_y(sheet: &[Placed], spec: &SheetSpec) -> Option<f64> {
-    let ext = sheet.iter().map(|p| p.y + p.h).fold(spec.margin, f64::max);
-    let y = ext + spec.gap + crate::kerf::kerf_mm(spec) * 0.5;
-    (spec.h - y >= REMNANT_MIN_MM).then_some(y)
-}
-
-/// Automatic edge: a straight line from sheet edge to sheet edge, in whichever
-/// direction leaves the larger remnant.
-pub fn auto_edge(sheet: &[Placed], spec: &SheetSpec) -> Option<CutLine> {
-    let ax = remnant_line_x(sheet, spec).map(|x| ((spec.w - x) * spec.h, CutLine { pts: vec![[x, 0.0], [x, spec.h]], kind: CutKind::Remnant }));
-    let ay = remnant_line_y(sheet, spec).map(|y| ((spec.h - y) * spec.w, CutLine { pts: vec![[0.0, y], [spec.w, y]], kind: CutKind::Remnant }));
-    match (ax, ay) {
-        (Some(a), Some(b)) => Some(if a.0 >= b.0 { a.1 } else { b.1 }),
-        (a, b) => a.or(b).map(|v| v.1),
-    }
-}
-
 /// Rounded corners: each corner of the polyline becomes an arc of radius `r`
 /// (or less, where the sides are short) — "Round the remnant line"
 /// (RM3: the original puts a fillet between elements that aren't tangent
@@ -831,28 +803,16 @@ mod cutoff_tests {
     }
 
     #[test]
-    fn automatic_line_sits_a_gap_and_half_a_cut_past_the_parts() {
-        let sheet = [at(10.0, 10.0), at(10.0, 320.0)];
-        let x = remnant_line_x(&sheet, &spec()).unwrap();
-        assert!((x - (510.0 + 5.0 + KERF_MM * 0.5)).abs() < 1e-9);
-        // Wider remnant on the right than on top: the X line wins.
-        let l = auto_edge(&sheet, &spec()).unwrap();
-        assert_eq!(l.pts[0][0], x);
-        assert_eq!(l.kind, CutKind::Remnant);
-        // Parts reaching the far side: no remnant (narrower than the minimum).
-        let full = [Placed { x: 1450.0, ..at(0.0, 0.0) }];
-        assert!(remnant_line_x(&full, &spec()).is_none());
-    }
-
-    #[test]
     fn exact_edge_steps_around_the_parts_and_keeps_more() {
         // A tall stack on the left and one long part at the bottom.
         let sheet = [at(10.0, 10.0), Placed { w: 1200.0, ..at(10.0, 320.0) }];
         let s = spec();
         let e = exact_edge(&sheet, &s, false).unwrap();
-        let straight = auto_edge(&sheet, &s).unwrap();
+        // RM1: a gap and half a cut past the long part.
+        let x = 1210.0 + s.gap + crate::kerf::kerf_mm(&s) * 0.5;
+        assert!(e.pts.iter().any(|p| (p[0] - x).abs() < 1e-9), "{:?}", e.pts);
         let a_exact = nest::area(&remnant_region(&e.pts, &s).unwrap());
-        let a_straight = nest::area(&remnant_region(&straight.pts, &s).unwrap());
+        let a_straight = nest::area(&remnant_region(&[[x, 0.0], [x, s.h]], &s).unwrap());
         assert!(a_exact > a_straight + 1000.0, "{a_exact} vs {a_straight}");
         let parts = [rect_part(), Part { w: 1200.0, ..rect_part() }];
         let sheet2 = [at(10.0, 10.0), Placed { part: 1, w: 1200.0, ..at(10.0, 320.0) }];

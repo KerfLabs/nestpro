@@ -311,7 +311,6 @@ pub fn set_joint_sizes(sizes: crate::nest::AutoJoints) {
 
 /// `code → value` for every `Xnnn value ; comment` line outside the material
 /// × thickness sections (quotes kept). Section lines are in `parse_file`.
-#[allow(dead_code)]
 pub fn parse(text: &str) -> HashMap<String, String> {
     parse_file(text).globals
 }

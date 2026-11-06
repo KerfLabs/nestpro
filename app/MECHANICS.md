@@ -1024,11 +1024,14 @@ and *Punch the remnant line at the beginning of the sequence*.
 
 How the rebuild uses them (Sheet tab → **Remnants & cut lines**; Home tab → *Remnant line*):
 
-- **Automatic edge**: a straight line from sheet edge to sheet edge, the part gap + half a cut
-  (0.3 mm kerf, estimated) past the parts (RM1), in X or Y — whichever leaves the larger remnant.
-  Refused when less than 100 mm would be left (RM1's minimum; value estimated).
-- **Exact edge**: a stepped line that follows the parts band by band, so the remnant keeps every
+- **Automatic edge**: the line in the shape set in the Sheet Remnants options (ST8), the offset
+  past the parts (default 10 mm, ST11), or the cutter radius when that option is on. The irregular
+  "at the cut" shape always uses the cutter radius (at least 0.03 mm). Refused when less than the
+  minimum width (default 100 mm) would be left.
+- **Exact edge**: a stepped line that follows the parts band by band, the part gap + half a cut
+  (0.3 mm kerf when the machine gives none, estimated) past them (RM1), so the remnant keeps every
   free corner; bands shorter than 50 mm are merged into a neighbour (no teeth or slivers).
+  Refused when the remnant is under 100 mm × the sheet side (RM1's minimum; value estimated).
   **Round corners** (on by default) rounds each step with a 10 mm radius (RM3).
 - **Straight line**: click two points (ends snap to the sheet edges; Shift squares it). **Draw
   path**: click as many points as you like, double-click or Enter to finish, Backspace undoes a
