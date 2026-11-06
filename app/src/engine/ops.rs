@@ -2216,6 +2216,11 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             let plans = job.plans();
             let text = if ctx.blm.on {
                 let set = crate::blm::sheet_set(s + 1, &job.parts, &job.sheets[s], &job.spec_at(s), &plans[s], job.cuts(s), &blm_for(&job.spec, &ctx.blm, &job.name, &ctx.cfg));
+                // BL39: the same refusal as export.
+                let issues = readback::check_set(&set, &job.parts, &job.sheets[s], &plans[s], job.cuts(s));
+                if !issues.is_empty() {
+                    return Err(readback::refusal(s + 1, &issues));
+                }
                 let mut t = format!("; BLM LC5 set {} — {} subprogram file(s)\n", set.nest, set.spf.len());
                 for (n, body) in &set.spf {
                     t.push_str(&format!("; ==== {n}\n{body}\n"));

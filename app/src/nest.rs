@@ -694,6 +694,8 @@ pub struct Geo {
 }
 
 pub fn circle(cx: f64, cy: f64, r: f64, n: usize) -> Vec<P> {
+    // At least fine enough for the drawing tolerance on a big circle (BL38).
+    let n = n.max(crate::dxf::arc_segments(r, std::f64::consts::TAU));
     (0..n)
         .map(|i| {
             let a = i as f64 / n as f64 * std::f64::consts::TAU;
@@ -709,7 +711,7 @@ fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Vec<P> {
 fn slot(cx: f64, cy: f64, len: f64, r: f64) -> Vec<P> {
     let half = (len / 2.0 - r).max(0.0);
     let mut pts = Vec::new();
-    let n = 12;
+    let n = crate::dxf::arc_segments(r, std::f64::consts::PI).max(12);
     for i in 0..=n {
         let a = -std::f64::consts::FRAC_PI_2 + i as f64 / n as f64 * std::f64::consts::PI;
         pts.push([cx + half + r * a.cos(), cy + r * a.sin()]);
@@ -2282,6 +2284,14 @@ pub fn nest_grouped(parts: &[Part], spec: &SheetSpec, zone_gap: f64) -> NestResu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn big_round_shapes_stay_within_the_drawing_tolerance() {
+        // BL38: a big disc or slot split too coarsely would stay straight moves.
+        let sag = |p: &[P], r: f64| p.windows(2).map(|w| ((w[1][0] - w[0][0]).powi(2) + (w[1][1] - w[0][1]).powi(2)).sqrt() / 2.0).filter(|h| *h < r / 2.0).map(|h| r - (r * r - h * h).sqrt()).fold(0.0, f64::max);
+        assert!(sag(&circle(0.0, 0.0, 400.0, 64), 400.0) <= crate::dxf::ARC_CHORD_ERR + 1e-9);
+        assert!(sag(&slot(0.0, 0.0, 400.0, 60.0), 60.0) <= crate::dxf::ARC_CHORD_ERR + 1e-9);
+    }
 
     #[test]
     fn nests_without_overlap() {
