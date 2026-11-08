@@ -3,8 +3,8 @@ name = "nestpro"
 version = "0.1.0"
 edition = "2024"
 description = "Sheet-nesting CAM for laser, plasma, oxyfuel and waterjet cutting"
-license = "MIT"
-repository = "https://github.com/KerfLabs/nestpro"
+license = "PolyForm-Small-Business-1.0.0"
+repository = "https://github.com/KurfLabs/nestpro"
 
 [dependencies]
 eframe = "0.37.0"

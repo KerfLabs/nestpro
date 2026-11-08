@@ -46,7 +46,7 @@ patterns=(
   'e-mail|[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.[A-Za-z.]{2,}'
 )
 # E-mails that are fine to publish.
-email_ok='noreply@anthropic\.com|users\.noreply\.github\.com|@example\.(com|org)|noreply@'
+email_ok='hello@kurflabs\.com|noreply@anthropic\.com|users\.noreply\.github\.com|@example\.(com|org)|noreply@'
 
 deny=()
 if [ -f research/public-denylist.txt ]; then
