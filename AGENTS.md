@@ -1,6 +1,6 @@
 # Agent guide — nestpro (Sheet Nesting)
 
-An open-source sheet-nesting CAM program for cutting machines (laser, plasma, oxyfuel,
+A source-available sheet-nesting CAM program for cutting machines (laser, plasma, oxyfuel,
 waterjet) in Rust + egui. It covers the daily cutting workflow (jobs → parts → sheets →
 nesting → technology → machining → CNC program) and reads the files of Lantek Expert, the
 commercial program it is built to replace in a working shop. Read `README.md` for the
@@ -15,10 +15,10 @@ and reading its database for migration are in scope.
 
 | Repo | Holds | Where it lives locally |
 |---|---|---|
-| `KerfLabs/nestpro` (public) | The app, tests, `app/MECHANICS.md` (behaviour rules in our own words), tools, docs | this folder |
-| `KerfLabs/nestpro-research` (private, never public) | How the rules were found: feature dossiers, code addresses and evidence, decompiled notes, reference screenshots, notes about the shop's own setup, and the project's history before the split | `research/` inside this folder (git-ignored here, its own git repo) |
+| `KurfLabs/nestpro` (public) | The app, tests, `app/MECHANICS.md` (behaviour rules in our own words), tools, docs | this folder |
+| `KurfLabs/nestpro-research` (private, never public) | How the rules were found: feature dossiers, code addresses and evidence, decompiled notes, reference screenshots, notes about the shop's own setup, and the project's history before the split | `research/` inside this folder (git-ignored here, its own git repo) |
 
-If `research/` is missing, clone it: `git clone https://github.com/KerfLabs/nestpro-research research`.
+If `research/` is missing, clone it: `git clone https://github.com/KurfLabs/nestpro-research research`.
 Its own `AGENTS.md` explains how features are studied. Read it before studying a feature.
 
 A rule crosses from research to the public repo **only as behaviour**: what the app does,
@@ -118,7 +118,7 @@ The app is also driven headless by agents and scripts (`nestpro <operation> job.
 
 ### Issue tracker
 
-GitHub Issues on `KerfLabs/nestpro`, which are public; `FEATURES.md` stays the list of what isn't built yet. See `docs/agents/issue-tracker.md`.
+GitHub Issues on `KurfLabs/nestpro`, which are public; `FEATURES.md` stays the list of what isn't built yet. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

@@ -1,6 +1,6 @@
 # nestpro — Sheet Nesting
 
-An open-source sheet-nesting CAM program for cutting machines (laser, plasma, oxyfuel,
+A source-available sheet-nesting CAM program for cutting machines (laser, plasma, oxyfuel,
 waterjet), written in Rust + egui. It covers a shop's daily cutting workflow: jobs, parts,
 sheet stock and remnants, nesting, cutting technology, machining and CNC programs.
 
@@ -98,4 +98,15 @@ Read `AGENTS.md`, especially "Keeping the public repo clean", and run
 
 ## License
 
-MIT — see `LICENSE`.
+[PolyForm Small Business License 1.0.0](https://polyformproject.org/licenses/small-business/1.0.0)
+— see `LICENSE`.
+
+- **Free** for any business, sole traders included, with fewer than 100 people
+  (employees plus contractors) **and** under about US$1 million revenue last year
+  (the 2019 figure, adjusted for inflation). That covers use, changes, and sharing.
+- **Bigger companies** need a commercial license from Kurf Labs: write to
+  hello@kurflabs.com ([kurflabs.com](https://kurflabs.com)). Shops that contribute
+  code may get one free or cheap.
+
+Releases before this change were published under MIT and stay MIT for anyone
+who already has them.
