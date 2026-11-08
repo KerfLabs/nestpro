@@ -9,6 +9,7 @@
 pub mod arrange;
 pub mod imports;
 pub mod ops;
+pub mod readback;
 pub mod render;
 pub mod session;
 pub mod stockflow;
@@ -826,15 +827,28 @@ pub fn safe_name(s: &str) -> String {
 /// runs a sheet that no longer exists (EXP1).
 fn remove_stale_programs(dir: &Path, job_name: &str, post: &crate::post::PostConfig, blm: Option<&crate::blm::BlmSettings>, kept: &[PathBuf]) -> std::io::Result<()> {
     let blm_job = blm.map_or(job_name, |b| b.job.as_str());
+    // One locked file doesn't keep the others: every one is tried.
+    let mut first_error = None;
     for k in 1..=999 {
         let nest = crate::blm::nest_name(blm_job, k);
         for f in [dir.join(post.file_name(job_name, k)), dir.join(format!("{nest}.zip")), dir.join(format!("{nest}.XML"))] {
             if !kept.contains(&f) && f.is_file() {
-                std::fs::remove_file(&f)?;
+                if let Err(e) = std::fs::remove_file(&f) {
+                    first_error.get_or_insert(e);
+                }
             }
         }
     }
-    Ok(())
+    first_error.map_or(Ok(()), Err)
+}
+
+/// BL39: an export that stops takes the job's earlier programs with it, so they
+/// can't be run by mistake; says which way that went.
+fn remove_programs_note(dir: &Path, job_name: &str, post: &crate::post::PostConfig, blm: Option<&crate::blm::BlmSettings>) -> String {
+    match remove_stale_programs(dir, job_name, post, blm, &[]) {
+        Ok(()) => " No program of this job is left in that folder.".into(),
+        Err(e) => format!(" Some of this job's earlier programs in {} couldn't be removed ({e}): delete them before anyone runs them.", dir.display()),
+    }
 }
 
 /// Write every sheet's machine program (G-code, or BLM LC5 sets) and the CSV
@@ -847,6 +861,22 @@ pub fn export(base: &Path, job_name: &str, parts: &[Part], sheets: &[Vec<Placed>
         let _ = remove_stale_programs(&dir, job_name, post, blm, &[]);
         return Err("Nothing to export — nest first.".into());
     }
+    // BL39: every LC5 set is read back before anything is written; a set that
+    // wouldn't cut the plan stops the whole export, and the job's earlier
+    // programs go too, so they can't be run by mistake.
+    let mut sets = vec![];
+    if let Some(b) = blm.filter(|b| b.on) {
+        for (k, (s, pl)) in sheets.iter().zip(plans).enumerate() {
+            let spec = &job_spec.for_format(&format_at(formats, job_spec, k));
+            let c = cuts.get(k).map_or(&[][..], |v| v.as_slice());
+            let set = crate::blm::sheet_set(k + 1, parts, s, spec, pl, c, b);
+            let issues = readback::check_set(&set, parts, s, pl, c);
+            if !issues.is_empty() {
+                return Err(format!("{}{}", readback::refusal(k + 1, &issues), remove_programs_note(&dir, job_name, post, blm)));
+            }
+            sets.push(set);
+        }
+    }
     let mut files = vec![];
     let mut warning = None;
     let res = (|| -> std::io::Result<()> {
@@ -854,14 +884,13 @@ pub fn export(base: &Path, job_name: &str, parts: &[Part], sheets: &[Vec<Placed>
         for (k, (s, pl)) in sheets.iter().zip(plans).enumerate() {
             let spec = &job_spec.for_format(&format_at(formats, job_spec, k));
             let c = cuts.get(k).map_or(&[][..], |v| v.as_slice());
-            if let Some(b) = blm.filter(|b| b.on) {
+            if let Some(set) = sets.get(k) {
                 // The LC5 reads BLM's SPF set (zipped) and its XML job sheet.
-                let set = crate::blm::sheet_set(k + 1, parts, s, spec, pl, c, b);
-                crate::blm::write_sheet(&dir, &set)?;
+                crate::blm::write_sheet(&dir, set)?;
                 files.push(dir.join(format!("{}.zip", set.nest)));
                 files.push(dir.join(format!("{}.XML", set.nest)));
                 if set.warning.is_some() {
-                    warning = set.warning;
+                    warning = set.warning.clone();
                 }
                 continue;
             }
@@ -879,7 +908,8 @@ pub fn export(base: &Path, job_name: &str, parts: &[Part], sheets: &[Vec<Placed>
         files.push(f);
         Ok(())
     })();
-    res.map_err(|e| format!("Export failed: {e}"))?;
+    // A write that fails partway must not leave a mix of new and old files.
+    res.map_err(|e| format!("Export failed: {e}.{}", remove_programs_note(&dir, job_name, post, blm)))?;
     // QR6: warn (the programs are still written) when parts overlap.
     if let Some(o) = overlap_warning(parts, sheets, |k| job_spec.for_format(&format_at(formats, job_spec, k))) {
         warning = Some(match warning {

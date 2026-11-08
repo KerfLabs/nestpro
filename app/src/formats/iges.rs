@@ -265,8 +265,7 @@ fn dist(a: V3, b: V3) -> f64 {
 
 /// Segments for an arc of radius `r_mm` and sweep `sweep` within the arc smoothness.
 fn arc_segments(r_mm: f64, sweep: f64) -> usize {
-    let step = if r_mm > ARC_CHORD_ERR { 2.0 * (1.0 - ARC_CHORD_ERR / r_mm).acos() } else { std::f64::consts::FRAC_PI_2 };
-    ((sweep.abs() / step).ceil() as usize).clamp(2, 720)
+    crate::dxf::arc_segments(r_mm, sweep)
 }
 
 impl File {

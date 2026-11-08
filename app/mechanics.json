@@ -4610,6 +4610,36 @@
   "group": "quick ring",
   "value": "job files and Library jobs together, newest first, marked File / Library; search above six",
   "source": "MECHANICS QR11"
+ },
+ {
+  "name": "LC5 free margins",
+  "group": "blm",
+  "value": "room left around everything written, lead-ins, marking and cut-off lines included; 0.1 mm or less is 0",
+  "source": "MECHANICS BL17"
+ },
+ {
+  "name": "LC5 LASTLINE start",
+  "group": "blm",
+  "value": "0,0,0",
+  "source": "MECHANICS BL27"
+ },
+ {
+  "name": "LC5 arc fit, move to arc",
+  "group": "blm",
+  "value": "0.105 mm",
+  "source": "MECHANICS BL38"
+ },
+ {
+  "name": "LC5 read-back tolerance",
+  "group": "blm",
+  "value": "0.125 mm",
+  "source": "MECHANICS BL39"
+ },
+ {
+  "name": "fewest pieces to a full circle",
+  "group": "dxf",
+  "value": "16",
+  "source": "MECHANICS DX2"
  }
 ]
 }

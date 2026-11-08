@@ -27,6 +27,51 @@ fn err(s: &mut Session, op: &str, args: Value) -> String {
 }
 
 #[test]
+fn an_lc5_export_writes_straight_edges_and_refuses_what_it_cant_carry() {
+    let d = dir("lc5_gate");
+    let job = d.join("plate.snjob");
+    let jp = job.to_str().unwrap();
+    // A plate with R1 corners, each object as a CAD program writes it.
+    let (w, h, r) = (300.0, 150.0, 1.0);
+    let line = |a: [f64; 2], b: [f64; 2]| format!("0\nLINE\n8\n0\n10\n{}\n20\n{}\n11\n{}\n21\n{}\n", a[0], a[1], b[0], b[1]);
+    let arc = |c: [f64; 2], a0: f64, a1: f64| format!("0\nARC\n8\n0\n10\n{}\n20\n{}\n40\n{r}\n50\n{a0}\n51\n{a1}\n", c[0], c[1]);
+    let body = [
+        line([r, 0.0], [w - r, 0.0]), arc([w - r, r], 270.0, 360.0),
+        line([w, r], [w, h - r]), arc([w - r, h - r], 0.0, 90.0),
+        line([w - r, h], [r, h]), arc([r, h - r], 90.0, 180.0),
+        line([0.0, h - r], [0.0, r]), arc([r, r], 180.0, 270.0),
+    ].concat();
+    let dxf = d.join("PLATE.dxf");
+    std::fs::write(&dxf, format!("0\nSECTION\n2\nENTITIES\n{body}0\nENDSEC\n0\nEOF\n")).unwrap();
+    let mut ctx = Ctx::builtin();
+    ctx.blm.on = true;
+    let mut s = Session::new(ctx);
+    call(&mut s, "new", Some(jp), json!({"w": 1500, "h": 1000, "material": "steel", "thickness": 5}));
+    call(&mut s, "import-drawing", None, json!({"path": dxf.to_str().unwrap(), "qty": 2}));
+    call(&mut s, "nest", None, json!({"stock": "off"}));
+    call(&mut s, "leads", None, json!({"mode": "machine"}));
+    let out = d.join("cnc");
+    let e = call(&mut s, "export", None, json!({"dir": out.to_str().unwrap()}));
+    let zip = e["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).find(|f| f.ends_with(".zip")).unwrap().to_string();
+
+    // BL38: no arc in the program is bigger than the part's corners.
+    let text = call(&mut s, "program", None, json!({"sheet": 1}))["data"].as_str().unwrap().to_string();
+    let radii: Vec<f64> = text.lines().filter(|l| l.starts_with("G02") || l.starts_with("G03")).map(|l| {
+        let v = |c: char| l.split_whitespace().find_map(|w| w.strip_prefix(c)).and_then(|n| n.parse::<f64>().ok()).unwrap_or(0.0);
+        v('I').hypot(v('J'))
+    }).collect();
+    assert!(!radii.is_empty() && radii.iter().all(|r| *r < 1.5), "{radii:?}\n{text}");
+
+    // BL39: planned micro-joints stop the export and the program, and the set
+    // written before is gone, so it can't be run by mistake.
+    call(&mut s, "joints", None, json!({"mode": "auto"}));
+    let refused = err(&mut s, "export", json!({"dir": out.to_str().unwrap()}));
+    assert!(refused.contains("micro-joints") && refused.contains("nothing was exported"), "{refused}");
+    assert!(!Path::new(&zip).exists());
+    assert!(err(&mut s, "program", json!({"sheet": 1})).contains("micro-joints"));
+}
+
+#[test]
 fn an_agent_programs_a_job_from_parts_to_cnc() {
     let d = dir("flow");
     let job = d.join("frames.snjob");
