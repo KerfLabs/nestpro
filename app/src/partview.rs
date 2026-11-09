@@ -755,11 +755,11 @@ impl App {
                 None => "Automatic sheet technology (machine lead tables)".into(),
             },
             format!(
-                "Micro-joints {}{}  ·  loops {}  ·  quality {}",
+                "Micro-joints {}{}  ·  loops {}  ·  quality: {}",
                 plan.contours.iter().map(|c| c.joints.len()).sum::<usize>(),
                 t.filter(|t| t.micro_joints > 0 || t.joint_every > 0.0).map_or(String::new(), |t| format!(" ({})", t.joint_type.label().to_lowercase())),
                 t.map_or("off", |t| if t.loops { "on" } else { "off" }),
-                crate::techui::part_quality_label(t.and_then(|t| t.quality)).to_lowercase()
+                crate::techui::part_quality_label(t.and_then(|t| t.quality), &crate::ct1::for_spec(&self.spec).qualities)
             ),
             format!(
                 "Cut {:.0} mm  ·  {} pierce(s)  ·  {:.1} s",

@@ -2190,6 +2190,8 @@ impl App {
             }
         });
         if let Some(t) = draft.tech.as_mut() {
+            // The machine's names and colours for its cut qualities (CQ4, CQ5).
+            let names = crate::ct1::for_spec(&self.spec).qualities;
             egui::Grid::new("tech_edit").num_columns(2).spacing([10.0, 5.0]).show(ui, |ui| {
                 ui.label("Lead-in");
                 changed |= ui.add(egui::DragValue::new(&mut t.lead_in).range(0.0..=30.0).clamp_existing_to_range(false).speed(0.1).suffix(" mm")).changed();
@@ -2207,10 +2209,14 @@ impl App {
                 changed |= ui.add(egui::DragValue::new(&mut t.joint_width).range(0.1..=5.0).clamp_existing_to_range(false).speed(0.05).suffix(" mm")).changed();
                 ui.end_row();
                 ui.label("Cut quality").on_hover_text("The machine's quality for every contour the size ranges don't set; Auto lets the machine's size bands decide, so small holes are cut slower");
-                egui::ComboBox::from_id_salt("quality").width(110.0).selected_text(crate::techui::part_quality_label(t.quality)).show_ui(ui, |ui| {
-                    changed |= ui.selectable_value(&mut t.quality, None, crate::techui::part_quality_label(None)).changed();
-                    for q in crate::nest::CutQuality::all() {
-                        changed |= ui.selectable_value(&mut t.quality, Some(q), q.label()).changed();
+                let shown: egui::WidgetText = match t.quality {
+                    Some(q) => crate::techui::quality_text(ui, &names, q).into(),
+                    None => crate::techui::part_quality_label(None, &names).into(),
+                };
+                egui::ComboBox::from_id_salt("quality").width(130.0).selected_text(shown).show_ui(ui, |ui| {
+                    changed |= ui.selectable_value(&mut t.quality, None, crate::techui::part_quality_label(None, &names)).changed();
+                    for q in crate::techui::offered_qualities(&names) {
+                        changed |= ui.selectable_value(&mut t.quality, Some(q), crate::techui::quality_text(ui, &names, q)).changed();
                     }
                 });
                 ui.end_row();

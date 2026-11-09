@@ -282,6 +282,37 @@
    "estimated": true
   },
   {
+   "name": "cut quality names",
+   "group": "part technology",
+   "value": "machine file A922 (quality 1) … A933 (quality 12), shown 'Name (n)'",
+   "source": "CQ4"
+  },
+  {
+   "name": "cut quality without a name",
+   "group": "part technology",
+   "value": "Quality n",
+   "source": "CQ4",
+   "estimated": true
+  },
+  {
+   "name": "cut quality hidden from the pickers",
+   "group": "part technology",
+   "value": "<HIDE>",
+   "source": "CQ4"
+  },
+  {
+   "name": "cut quality colours",
+   "group": "part technology",
+   "value": "colour settings LANTEKIN.CNI C041 (quality 1) … C052 (quality 12)",
+   "source": "CQ5"
+  },
+  {
+   "name": "cut quality shipped colours",
+   "group": "part technology",
+   "value": ["#ff8040", "#0080c0", "#ff00ff", "#008000", "#800080", "#804040", "#0080ff", "#008080", "#004080", "#8080ff", "#80ffff", "#ff80ff"],
+   "source": "CQ5"
+  },
+  {
    "name": "a cut quality set by hand on a contour wins over the part's size ranges, the part's quality and the machine's size bands",
    "group": "part technology",
    "value": true,
