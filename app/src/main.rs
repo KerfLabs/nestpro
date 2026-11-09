@@ -3004,6 +3004,10 @@ fn main() -> eframe::Result {
             }
             if let Some(p) = &job_open {
                 app.open_job_file(p);
+                // With --part, the opened job's first part in the Drawing module.
+                if want_part {
+                    app.open_part(0);
+                }
             }
             if let Some(p) = &import_xml {
                 app.import_xml(p);

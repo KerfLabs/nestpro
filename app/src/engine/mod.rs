@@ -7,6 +7,7 @@
 //! `render.rs` draws a sheet or a part to PNG/SVG so an agent can look at it.
 
 pub mod arrange;
+pub mod contours;
 pub mod imports;
 pub mod ops;
 pub mod readback;
@@ -210,7 +211,10 @@ pub fn import_notes(name: &str, rep: &dxf::ImportReport) -> Vec<String> {
         notes.push(format!("{name}: ignored {}", rep.skipped.join(", ")));
     }
     if rep.open_pieces > 0 {
-        notes.push(format!("{name}: {} open piece(s) left out", rep.open_pieces));
+        notes.push(format!("{name}: {} open piece(s) off the part left out", rep.open_pieces));
+    }
+    if rep.open_kept > 0 {
+        notes.push(format!("{name}: {} open line(s) kept on the part as Bend line or No cut, never cut (contour-tech changes them)", rep.open_kept));
     }
     if rep.gaps_closed > 0 {
         notes.push(format!("{name}: {} gap(s) up to 0.5 mm closed", rep.gaps_closed));

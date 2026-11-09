@@ -1143,3 +1143,211 @@ fn export_stops_on_a_part_drawn_wrong_or_a_pierce_off_the_sheet() {
     let e = err(&mut s, "export", json!({"dir": out.to_str().unwrap()}));
     assert!(e.contains("part 'HOLES': holes 1 and 2 overlap") && e.contains("No program of this job is left"), "{e}");
 }
+
+/// The 200 × 100 mm outline of the contour-state tests' made-up plates.
+const DEMO_SQUARE: &str = "0\nLWPOLYLINE\n8\n0\n90\n4\n70\n1\n10\n0\n20\n0\n10\n200\n20\n0\n10\n200\n20\n100\n10\n0\n20\n100\n";
+
+/// A made-up plate for the contour-state tests: a 200 × 100 mm outline, a
+/// 30 mm hole and two equal 10 mm holes, a straight line across the plate from
+/// edge to edge, and a short stray line on it.
+fn contour_plate(d: &Path) -> PathBuf {
+    let sq = DEMO_SQUARE.to_string();
+    let circle = |x: f64, y: f64, r: f64| format!("0\nCIRCLE\n8\n0\n10\n{x}\n20\n{y}\n30\n0\n40\n{r}\n");
+    let line = |a: [f64; 2], b: [f64; 2]| format!("0\nLINE\n8\n0\n10\n{}\n20\n{}\n11\n{}\n21\n{}\n", a[0], a[1], b[0], b[1]);
+    let body = [sq, circle(40.0, 50.0, 15.0), circle(150.0, 25.0, 5.0), circle(150.0, 75.0, 5.0), line([100.0, 0.0], [100.0, 100.0]), line([20.0, 85.0], [70.0, 85.0])].concat();
+    let p = d.join("DEMO-PLATE.dxf");
+    std::fs::write(&p, format!("0\nSECTION\n2\nENTITIES\n{body}0\nENDSEC\n0\nEOF\n")).unwrap();
+    p
+}
+
+/// A part's contours as part-info lists them: (number, kind, state, length mm).
+fn contour_rows(s: &mut Session, part: usize) -> Vec<(u64, String, String, f64)> {
+    let pi = call(s, "part-info", None, json!({"part": part}));
+    pi["data"]["contours"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{pi}"))
+        .iter()
+        .map(|c| (c["contour"].as_u64().unwrap(), c["kind"].as_str().unwrap().to_string(), c["state"].as_str().unwrap_or_else(|| panic!("no state: {c}")).to_string(), c["length_mm"].as_f64().unwrap()))
+        .collect()
+}
+
+#[test]
+fn open_lines_come_in_as_bend_lines_or_no_cut_and_are_never_cut() {
+    let d = dir("contour_states");
+    let job = d.join("plate.snjob");
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "steel", "thickness": 3}));
+    call(&mut s, "import-drawing", None, json!({"path": contour_plate(&d).to_str().unwrap(), "qty": 1}));
+
+    // CS2: closed contours start as Cut; the straight line from edge to edge is
+    // a Bend line, the stray line No cut. Holes first, the outline, then open lines.
+    let rows = contour_rows(&mut s, 1);
+    let kinds: Vec<(&str, &str)> = rows.iter().map(|r| (r.1.as_str(), r.2.as_str())).collect();
+    assert_eq!(kinds, [("hole", "cut"), ("hole", "cut"), ("hole", "cut"), ("outside", "cut"), ("open", "bend-line"), ("open", "no-cut")], "{rows:?}");
+    assert_eq!(rows.iter().map(|r| r.0).collect::<Vec<_>>(), [1, 2, 3, 4, 5, 6]);
+    assert!((rows[4].3 - 100.0).abs() < 0.1 && (rows[5].3 - 50.0).abs() < 0.1, "{rows:?}");
+
+    // CS3: neither is cut, pierced, timed or checked: four pierces (outline and
+    // three holes), 600 mm of outline plus the holes, and Verify Part is clean.
+    let pi = call(&mut s, "part-info", None, json!({"part": 1}));
+    assert_eq!(pi["data"]["machining"]["pierces"], 4, "{pi}");
+    let cut = pi["data"]["cut_len_mm"].as_f64().unwrap();
+    assert!((750.0..758.0).contains(&cut), "cut {cut} mm");
+    assert_eq!(pi["data"]["machining"]["times_s"]["mark"], 0.0, "{pi}");
+    assert_eq!(pi["data"]["verify_part"], json!([]), "{pi}");
+    call(&mut s, "place", None, json!({"part": 1, "x": 50, "y": 50}));
+    let code = call(&mut s, "program", None, json!({"sheet": 1}))["data"].as_str().unwrap().to_string();
+    assert!(!code.contains("MARK ON"), "{code}");
+    assert_eq!(code.matches("M07").count(), 4, "{code}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn contour_tech_marks_a_bend_line_leaves_out_a_hole_and_sets_every_equal_hole() {
+    let d = dir("contour_tech");
+    let job = d.join("plate.snjob");
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "steel", "thickness": 3}));
+    call(&mut s, "import-drawing", None, json!({"path": contour_plate(&d).to_str().unwrap(), "qty": 1}));
+    call(&mut s, "place", None, json!({"part": 1, "x": 50, "y": 50}));
+    let states = |s: &mut Session| contour_rows(s, 1).into_iter().map(|r| r.2).collect::<Vec<_>>();
+    let program = |s: &mut Session| call(s, "program", None, json!({"sheet": 1}))["data"].as_str().unwrap().to_string();
+
+    // CS4: the Bend line (contour 5) made a Mark is marked before the part is
+    // cut, along x = 100 of the part (150 on the sheet).
+    call(&mut s, "contour-tech", None, json!({"part": 1, "contours": "5", "state": "mark"}));
+    assert_eq!(states(&mut s), ["cut", "cut", "cut", "cut", "mark", "no-cut"]);
+    let code = program(&mut s);
+    assert_eq!(code.matches("MARK ON").count(), 1, "{code}");
+    let mark = &code[code.find("MARK ON").unwrap()..code.find("MARK OFF").unwrap()];
+    assert!(mark.contains("X150.00"), "{mark}");
+    let pi = call(&mut s, "part-info", None, json!({"part": 1}));
+    assert!(pi["data"]["machining"]["times_s"]["mark"].as_f64().unwrap() > 0.0, "{pi}");
+
+    // The 30 mm hole left out is gone from the part and the program; it keeps
+    // its number, so it can be set back.
+    call(&mut s, "contour-tech", None, json!({"part": 1, "contours": 1, "state": "leave-out"}));
+    assert_eq!(states(&mut s), ["leave-out", "cut", "cut", "cut", "mark", "no-cut"]);
+    assert_eq!(program(&mut s).matches("M07").count(), 3);
+    let pi = call(&mut s, "part-info", None, json!({"part": 1}));
+    // The plate less two 10 mm holes, each 16 straight pieces (DX2).
+    let small = 8.0 * 25.0 * (std::f64::consts::PI / 8.0).sin();
+    assert!((pi["data"]["area_mm2"].as_f64().unwrap() - (20000.0 - 2.0 * small)).abs() < 0.5, "{pi}");
+    // Elements name their contour by the same numbers (the holes are 2 and 3 now).
+    let on: std::collections::BTreeSet<u64> = pi["data"]["elements"].as_array().unwrap().iter().map(|e| e["contour"].as_u64().unwrap()).collect();
+    assert_eq!(on, [2, 3, 4].into());
+
+    // CS5: same=true marks every hole equal to hole 2; only the outline is cut.
+    let r = call(&mut s, "contour-tech", None, json!({"part": 1, "contours": "2", "state": "mark", "same": true}));
+    assert!(r["message"].as_str().unwrap().contains("2, 3"), "{r}");
+    assert_eq!(states(&mut s), ["leave-out", "mark", "mark", "cut", "mark", "no-cut"]);
+    let code = program(&mut s);
+    assert_eq!((code.matches("M07").count(), code.matches("MARK ON").count()), (1, 3), "{code}");
+    // ... and back to Cut.
+    call(&mut s, "contour-tech", None, json!({"part": 1, "contours": "1-3", "state": "cut"}));
+    assert_eq!(states(&mut s), ["cut", "cut", "cut", "cut", "mark", "no-cut"]);
+    assert_eq!(program(&mut s).matches("M07").count(), 4);
+
+    // The outline is always cut, and an open line can't be cut yet: refused,
+    // saying why, and nothing changes.
+    let e = err(&mut s, "contour-tech", json!({"part": 1, "contours": "4", "state": "mark"}));
+    assert!(e.contains("outline") && e.contains("no part"), "{e}");
+    let e = err(&mut s, "contour-tech", json!({"part": 1, "contours": "6", "state": "cut"}));
+    assert!(e.contains("open line") && e.contains("split"), "{e}");
+    let e = err(&mut s, "contour-tech", json!({"part": 1, "contours": "7", "state": "mark"}));
+    assert!(e.contains("6 contours") && e.contains("part-info"), "{e}");
+    assert_eq!(states(&mut s), ["cut", "cut", "cut", "cut", "mark", "no-cut"]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn contour_states_are_kept_in_jobs_and_products_and_old_jobs_open_as_before() {
+    let d = dir("contour_keep");
+    let job = d.join("plate.snjob");
+    let jp = job.to_str().unwrap();
+    let ctx = || {
+        let mut c = Ctx::builtin();
+        c.cfg.library_dir = d.join("library").to_string_lossy().into_owned();
+        c
+    };
+    let mut s = Session::new(ctx());
+    call(&mut s, "new", Some(jp), json!({"w": 1000, "h": 500, "material": "steel", "thickness": 3}));
+    call(&mut s, "import-drawing", None, json!({"path": contour_plate(&d).to_str().unwrap(), "qty": 1, "name": "DEMO-001"}));
+    call(&mut s, "contour-tech", None, json!({"part": 1, "contours": "5", "state": "mark"}));
+    call(&mut s, "contour-tech", None, json!({"part": 1, "contours": "2", "state": "no-cut"}));
+    call(&mut s, "contour-tech", None, json!({"part": 1, "contours": "1", "state": "leave-out"}));
+    let set = ["leave-out", "no-cut", "cut", "cut", "mark", "no-cut"];
+    let states = |s: &mut Session, part: usize| contour_rows(s, part).into_iter().map(|r| r.2).collect::<Vec<_>>();
+
+    // The job reopened from its file keeps every state.
+    let mut s = Session::new(ctx());
+    call(&mut s, "info", Some(jp), json!({}));
+    assert_eq!(states(&mut s, 1), set);
+    // So does a product saved to the library and added to a job again.
+    call(&mut s, "library", None, json!({"mode": "save-part", "parts": "1"}));
+    call(&mut s, "library", None, json!({"mode": "add", "name": "DEMO-001", "qty": 2}));
+    assert_eq!(states(&mut s, 2), set);
+    call(&mut s, "place", None, json!({"part": 2, "x": 50, "y": 50}));
+    let code = call(&mut s, "program", None, json!({"sheet": 1}))["data"].as_str().unwrap().to_string();
+    assert_eq!((code.matches("M07").count(), code.matches("MARK ON").count()), (2, 1), "{code}");
+
+    // A job saved before contour states (no contour list) opens as it was: its
+    // holes and outline Cut, its marking lines Mark, the same program.
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&job).unwrap()).unwrap();
+    for p in v["parts"].as_array_mut().unwrap() {
+        p["custom"].as_object_mut().unwrap().remove("contours");
+    }
+    std::fs::write(&job, serde_json::to_string(&v).unwrap()).unwrap();
+    let mut s = Session::new(ctx());
+    call(&mut s, "info", Some(jp), json!({}));
+    assert_eq!(states(&mut s, 2), ["cut", "cut", "mark"], "the cut hole, the outline and the mark");
+    assert_eq!(call(&mut s, "program", None, json!({"sheet": 1}))["data"].as_str().unwrap(), code);
+    // ... and its contours can be set from there.
+    call(&mut s, "contour-tech", None, json!({"part": 2, "contours": "1", "state": "mark"}));
+    assert_eq!(states(&mut s, 2), ["mark", "cut", "mark"]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn open_lines_start_by_layer_line_type_and_shape() {
+    let d = dir("contour_start");
+    let job = d.join("plate.snjob");
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "steel", "thickness": 3}));
+    let sq = DEMO_SQUARE.to_string();
+    let line = |layer: &str, ltype: &str, a: [f64; 2], b: [f64; 2]| format!("0\nLINE\n8\n{layer}\n{ltype}10\n{}\n20\n{}\n11\n{}\n21\n{}\n", a[0], a[1], b[0], b[1]);
+    // From the left edge and back to it, but not straight.
+    let crooked = "0\nLWPOLYLINE\n8\n0\n90\n3\n70\n0\n10\n0\n20\n50\n10\n50\n20\n70\n10\n0\n20\n90\n".to_string();
+    let body = [
+        sq,
+        crooked,
+        line("BEND-UP", "", [20.0, 20.0], [60.0, 20.0]),
+        line("0", "6\nDASHED\n", [20.0, 40.0], [50.0, 40.0]),
+        // A 40 mm square hole drawn dashed, line by line.
+        line("0", "6\nDASHED\n", [120.0, 20.0], [160.0, 20.0]),
+        line("0", "6\nDASHED\n", [160.0, 20.0], [160.0, 60.0]),
+        line("0", "6\nDASHED\n", [160.0, 60.0], [120.0, 60.0]),
+        line("0", "6\nDASHED\n", [120.0, 60.0], [120.0, 20.0]),
+        line("MARK", "", [20.0, 60.0], [40.0, 60.0]),
+        line("0", "", [300.0, 0.0], [400.0, 0.0]),
+    ]
+    .concat();
+    let dxf = d.join("DEMO-LINES.dxf");
+    std::fs::write(&dxf, format!("0\nSECTION\n2\nENTITIES\n{body}0\nENDSEC\n0\nEOF\n")).unwrap();
+    let by_length = |s: &mut Session, part: usize| -> std::collections::BTreeMap<i64, String> { contour_rows(s, part).into_iter().map(|r| (r.3.round() as i64, r.2)).collect() };
+
+    // CS2: layer roles first — the dashed line's row starts as left out (DX3),
+    // the marking layer's line is a Mark; then a bend layer's line is a Bend
+    // line, a line that isn't straight is No cut, and one off the part is left out.
+    let r = call(&mut s, "import-drawing", None, json!({"path": dxf.to_str().unwrap(), "layers": "MARK=mark"}));
+    let notes = r["data"]["notes"].to_string();
+    assert!(notes.contains("1 open piece(s) off the part left out") && notes.contains("2 open line(s) kept"), "{notes}");
+    let want: std::collections::BTreeMap<i64, String> = [(600, "cut"), (108, "no-cut"), (40, "bend-line"), (20, "mark")].into_iter().map(|(l, st)| (l, st.to_string())).collect();
+    assert_eq!(by_length(&mut s, 1), want);
+    // The dashed row set to Cut (DX3): its square closes and is a cut hole,
+    // its open line a Bend line, never cut.
+    call(&mut s, "import-drawing", None, json!({"path": dxf.to_str().unwrap(), "layers": "MARK=mark,0 [DASHED]=cut"}));
+    let got = by_length(&mut s, 2);
+    assert_eq!((got.get(&160).map(String::as_str), got.get(&30).map(String::as_str)), (Some("cut"), Some("bend-line")), "{got:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}

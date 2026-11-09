@@ -78,7 +78,7 @@ original (or a real job).
 | TEC-1 | Lead-ins: types 14–16, force placement, dynamic and custom leads, move point, lead-out like lead-in | Partial | ★★ | automatic leads by contour class from the machine's tables (types 1–13, zones, corner rules, round-hole limits, collision test) are built: MECHANICS AL1–AL11, `leads.rs` |
 | TEC-2 | Micro-joints: per-class joint records from the material file (V lines), zone modes, nano-joints, move point, to geometry, semi-automatic | Partial | ★ | automatic joints (count per F150, even, size-class fewest/most, holes too, centred, corner joints, joint leads) are built: MECHANICS AM1–AM6, `joints.rs`; the joint table per material × thickness section too (MTL7) |
 | TEC-3 | **Bridges**: join parts so they cut as one | Missing | ★★ | |
-| TEC-4 | Cut technologies: no cut, clean cut, dynamic, hatch, bending lines | Partial | ★★ | cut quality per part and marking texts are built |
+| TEC-4 | Cut technologies: no cut, clean cut, dynamic, hatch, bending lines | Partial | ★★ | cut quality per part and marking texts are built; every contour's state (Cut, Mark, No cut, Bend line, Leave out) with open lines kept at import, for agents (`contour-tech`, `part-info`; MECHANICS CS1–CS5, 2026-11-09). Still missing: the window's cut technology panel (paint by click, box or sweep, Ctrl+Z, Esc), a cut quality per contour, clean cut, dynamic, hatch |
 | TEC-5 | Texts: QR codes, templates, vectorize, written text | Partial | ★★ | marked / note / special, curved |
 | TEC-6 | Loops type 2, round angles | Partial | ★ | |
 | TEC-7 | Bevel (standard, 3D) | Missing | ★ | bevel heads only |
@@ -94,6 +94,7 @@ original (or a real job).
 | TEC-18 | Centre marks: a spot at the centre of a round hole, made with the machine's centre-mark quality, so it can be drilled or tapped later | Missing | ★ | planning 2026-11-09 (`GLOSSARY.md`, `docs/adr/`) |
 | TEC-19 | Auxiliary geometry: named reference lines kept on the part with their own colour, line style and thickness, never machined | Missing | ★ | planning 2026-11-09 (`GLOSSARY.md`, `docs/adr/`) |
 | TEC-20 | Marker kind per mark (powder, pen, drill); every mark is made with the cutting head at the machine's marking quality | Missing | ★ | planning 2026-11-09 (`GLOSSARY.md`, `docs/adr/`) |
+| TEC-21 | Cutting an open line (a slit, or a line through the part): an open contour can't be set to Cut, the nester, leads and posts only cut closed contours | Missing | ★ | MECHANICS CS4; `contour-tech` refuses it |
 
 ## Machining and output (MAC)
 
@@ -198,7 +199,9 @@ original (or a real job).
 | DRW-3 | Move / edit one text | Missing | ★ | add / delete work |
 | DRW-4 | Utilities: contours, compare parts, lifting | Missing | ★ | |
 | DRW-5 | Zoom window / previous / scale, full screen | Partial | ★ | zoom, fit |
-| DRW-6 | Selection: every contour equal to the picked one; all outside or all inside contours | Missing | ★ | MECHANICS "Lantek Expert v44 new features" (2.1.1, 2.1.2) |
+| DRW-6 | Selection: every contour equal to the picked one; all outside or all inside contours | Partial | ★ | MECHANICS "Lantek Expert v44 new features" (2.1.1, 2.1.2); the equal-contour test is built for agents (`contour-tech same=true`, MECHANICS CS5: the same shape moved, not turned or mirrored — a guess, the original's test isn't studied); no selection in the window |
+| DRW-8 | Colours of No cut contours (dimmed grey) and Bend lines (dashed magenta in the Drawing module, purple elsewhere) are our own: the original's colours for no-cut and bending geometry aren't studied | Estimate | ★ | MECHANICS CS3, DR4 |
+| DRW-7 | Export DXF writes only the cut and marked contours: No cut contours and Bend lines aren't in it (a bending program would want the bend lines) | Missing | ★ | MECHANICS D1, CS3 |
 
 ## Simulation, reports, machine link (OUT)
 

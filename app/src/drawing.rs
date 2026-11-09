@@ -24,6 +24,11 @@ pub const C_CURSOR: [u8; 3] = [255, 255, 255];
 pub const C_MARK: [u8; 3] = [0, 255, 0];
 /// C057 0 200 0, style 2: contours already cut in the simulation.
 pub const C_DONE: [u8; 3] = [0, 200, 0];
+/// No cut contours, dimmed (CS3; our own colour).
+pub const C_NO_CUT: [u8; 3] = [110, 110, 110];
+/// Bend lines, dashed (CS3; our own colour: the original's bending-geometry
+/// colour isn't studied).
+pub const C_BEND: [u8; 3] = [255, 0, 255];
 /// Drawing background (near-black navy, as in the original).
 pub const C_BACKGROUND: [u8; 3] = [0, 0, 16];
 /// Simulation: seconds per contour when running.
@@ -371,10 +376,13 @@ pub fn cut_problems(part: &Part) -> Vec<String> {
     if crosses_itself(&g.outline) {
         out.push("the outside contour crosses itself".into());
     }
+    // Holes are named by their contour numbers, as part-info lists them (CS1).
+    let order = crate::dxf::cut_order(&crate::engine::contours::list(part));
+    let no = |k: usize| order.get(k).map_or(k, |n| *n) + 1;
     let boxes: Vec<[f64; 4]> = g.holes.iter().map(|h| nest::bbox_of(h)).collect();
     for (k, h) in g.holes.iter().enumerate() {
         if !h.iter().all(|&q| nest::point_in_poly(&g.outline, q)) || nest::contours_within(h, &g.outline, 1e-6) {
-            out.push(format!("hole {} is not inside the outside contour", k + 1));
+            out.push(format!("hole {} is not inside the outside contour", no(k)));
         }
         for (j, h2) in g.holes.iter().enumerate().skip(k + 1) {
             let (a, b) = (boxes[k], boxes[j]);
@@ -382,7 +390,7 @@ pub fn cut_problems(part: &Part) -> Vec<String> {
                 continue;
             }
             if nest::contours_within(h, h2, 1e-6) || nest::point_in_poly(h2, h[0]) || nest::point_in_poly(h, h2[0]) {
-                out.push(format!("holes {} and {} overlap", k + 1, j + 1));
+                out.push(format!("holes {} and {} overlap", no(k), no(j)));
             }
         }
     }
@@ -515,6 +523,15 @@ pub fn paint_drawing_part(painter: &egui::Painter, part: &Part, to_s: &dyn Fn(P)
         painter.add(egui::Shape::closed_line(h.iter().map(|&p| to_s(p)).collect(), st));
     }
     if let Some(c) = &part.custom {
+        // CS3: No cut contours dimmed, Bend lines dashed in their own colour.
+        for shown in c.shown_only() {
+            let pts: Vec<Pos2> = shown.path().into_iter().map(to_s).collect();
+            if shown.state == crate::dxf::ContourState::BendLine {
+                painter.extend(egui::Shape::dashed_line(&pts, Stroke::new(1.3, rgb(C_BEND)), 9.0, 4.0));
+            } else {
+                painter.add(egui::Shape::line(pts, Stroke::new(1.0, rgb(C_NO_CUT))));
+            }
+        }
         for m in &c.marks {
             painter.add(egui::Shape::line(m.iter().map(|&p| to_s(p)).collect(), Stroke::new(1.2, rgb(C_MARK))));
         }

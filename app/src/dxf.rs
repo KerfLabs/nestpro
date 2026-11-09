@@ -46,6 +46,137 @@ pub struct CustomGeo {
     pub texts: Vec<crate::nest::PartText>,
     pub w: f64,
     pub h: f64,
+    /// Every contour of the drawing with its state, in contour-number order:
+    /// the closed contours inside the outline (holes), the outline, then the
+    /// open lines (CS1). `outline`, `holes`, `marks` and the fills are made
+    /// from it (`apply_states`). Parts saved before contour states have none;
+    /// their outline, holes and marks stay exactly as saved.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub contours: Vec<Contour>,
+}
+
+/// What happens to one contour of a part (CS1, `GLOSSARY.md`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ContourState {
+    /// Cut through the sheet.
+    #[default]
+    Cut,
+    /// Marked on the surface, not cut through.
+    Mark,
+    /// Kept on the part and shown, never machined.
+    NoCut,
+    /// A no-cut line where the part is bent later, shown in its own colour.
+    BendLine,
+    /// Not on the part at all.
+    LeaveOut,
+}
+
+impl ContourState {
+    pub const ALL: [ContourState; 5] = [ContourState::Cut, ContourState::Mark, ContourState::NoCut, ContourState::BendLine, ContourState::LeaveOut];
+    /// The word on screen.
+    pub fn label(self) -> &'static str {
+        match self {
+            ContourState::Cut => "Cut",
+            ContourState::Mark => "Mark",
+            ContourState::NoCut => "No cut",
+            ContourState::BendLine => "Bend line",
+            ContourState::LeaveOut => "Leave out",
+        }
+    }
+    /// The agents' word (as saved in the job file).
+    pub fn key(self) -> &'static str {
+        match self {
+            ContourState::Cut => "cut",
+            ContourState::Mark => "mark",
+            ContourState::NoCut => "no-cut",
+            ContourState::BendLine => "bend-line",
+            ContourState::LeaveOut => "leave-out",
+        }
+    }
+    /// Shown on the part and the sheet, but never cut, marked, pierced or
+    /// timed (CS3).
+    pub fn shown_only(self) -> bool {
+        matches!(self, ContourState::NoCut | ContourState::BendLine)
+    }
+}
+
+/// One contour of a part as drawn, with its state (CS1). A closed contour
+/// doesn't repeat its first point.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Contour {
+    pub pts: Vec<P>,
+    pub closed: bool,
+    pub state: ContourState,
+}
+
+impl Contour {
+    /// The points to draw or mark along: a closed contour back to its start.
+    pub fn path(&self) -> Vec<P> {
+        let mut pts = self.pts.clone();
+        if self.closed && !pts.is_empty() {
+            pts.push(pts[0]);
+        }
+        pts
+    }
+
+    /// Its length: around a closed contour, along an open one.
+    pub fn length(&self) -> f64 {
+        crate::leads::path_len(&self.path())
+    }
+}
+
+/// Where the outline is in a contour list: the last closed contour (CS1
+/// numbering: holes first, the outline, then the open lines).
+pub fn outline_index(list: &[Contour]) -> Option<usize> {
+    list.iter().rposition(|c| c.closed)
+}
+
+/// The contours the part cuts, as their places in `list`, in the order the
+/// part's geometry has them: the Cut holes, then the outline (CS3). Element,
+/// lead and joint contour numbers count in this order.
+pub fn cut_order(list: &[Contour]) -> Vec<usize> {
+    let o = outline_index(list);
+    let mut v: Vec<usize> = (0..list.len()).filter(|&k| Some(k) != o && list[k].closed && list[k].state == ContourState::Cut).collect();
+    v.extend(o);
+    v
+}
+
+impl CustomGeo {
+    /// The contours in number order (CS1): the part's own list, or for a part
+    /// saved before contour states its holes and outline as Cut and its
+    /// marking lines as Mark (closed ones among the holes).
+    pub fn contour_list(&self) -> Vec<Contour> {
+        if !self.contours.is_empty() {
+            return self.contours.clone();
+        }
+        let closed_mark = |m: &Vec<P>| m.len() > 3 && close(m[0], m[m.len() - 1], JOIN_TOL);
+        let mut list: Vec<Contour> = self.holes.iter().map(|h| Contour { pts: h.clone(), closed: true, state: ContourState::Cut }).collect();
+        list.extend(self.marks.iter().filter(|m| closed_mark(m)).map(|m| Contour { pts: m[..m.len() - 1].to_vec(), closed: true, state: ContourState::Mark }));
+        list.push(Contour { pts: self.outline.clone(), closed: true, state: ContourState::Cut });
+        list.extend(self.marks.iter().filter(|m| !closed_mark(m)).map(|m| Contour { pts: m.clone(), closed: false, state: ContourState::Mark }));
+        list
+    }
+
+    /// Make the outline, holes, marking lines and fills from the contours'
+    /// states (CS3): only Cut contours are cut, Mark contours (open or closed)
+    /// become marking lines, the rest are neither. Nothing changes for a part
+    /// without a contour list.
+    pub fn apply_states(&mut self) {
+        let order = cut_order(&self.contours);
+        let Some((&o, holes)) = order.split_last() else { return };
+        self.outline = self.contours[o].pts.clone();
+        self.holes = holes.iter().map(|&k| self.contours[k].pts.clone()).collect();
+        self.marks = self.contours.iter().filter(|c| c.state == ContourState::Mark).map(Contour::path).collect();
+        self.fills = triangulate(&self.outline);
+        self.hole_fills = self.holes.iter().flat_map(|h| triangulate(h)).collect();
+    }
+
+    /// The contours drawn but never machined (No cut and Bend line, CS3), in
+    /// part coordinates, with their state.
+    pub fn shown_only(&self) -> impl Iterator<Item = &Contour> {
+        self.contours.iter().filter(|c| c.state.shown_only())
+    }
 }
 
 /// What a drawing layer becomes (original: layer → machining code; 13 = cut).
@@ -71,7 +202,10 @@ impl LayerRole {
 pub struct ImportReport {
     pub entities: usize,
     pub skipped: Vec<String>,
+    /// Open lines left out because they aren't on the part.
     pub open_pieces: usize,
+    /// Open lines kept on the part as Bend line or No cut (CS2).
+    pub open_kept: usize,
     pub outside_loops: usize,
     /// Gaps between 0.01 and 0.5 mm that were closed (IM8).
     pub gaps_closed: usize,
@@ -124,6 +258,32 @@ impl Drawing {
         } else {
             LayerRole::Cut
         }
+    }
+
+    /// Whether a layer row holds lines drawn in a dashed or dotted line type
+    /// (DX3's `0 [CENTER]` rows; not frozen, off or invisible ones).
+    pub fn dashed(&self, layer: &str) -> bool {
+        self.hidden.get(layer).is_some_and(|why| why.contains("line type"))
+    }
+}
+
+/// A layer named like a bend layer ("BEND", "Bend lines", "BENDING"…), CS2.
+pub fn bend_layer(layer: &str) -> bool {
+    layer.to_ascii_uppercase().contains("BEND")
+}
+
+/// The state an open line on a cut layer starts with (CS2): a Bend line when
+/// it is dashed, on a bend layer, or straight and running from edge to edge
+/// of the part (both ends within `CLOSE_TOL` of the outline); otherwise No
+/// cut. Cutting an open line could split the part, so none starts as Cut.
+fn open_line_start(pts: &[P], bendish: bool, mut edge: impl FnMut(P) -> bool) -> ContourState {
+    let (a, b) = (pts[0], pts[pts.len() - 1]);
+    let len = ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt();
+    let straight = len > CLOSE_TOL && pts.iter().all(|&p| (((b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])) / len).abs() <= JOIN_TOL);
+    if bendish || (straight && edge(a) && edge(b)) {
+        ContourState::BendLine
+    } else {
+        ContourState::NoCut
     }
 }
 
@@ -330,6 +490,19 @@ impl PolyIndex {
         }
         inside
     }
+
+    /// Whether `p` lies within `tol` of the polygon's edge, adding the edges
+    /// looked at to `work`.
+    pub(crate) fn near_edge(&self, p: P, tol: f64, work: &mut usize) -> bool {
+        if self.rows.is_empty() || p[0] < self.bbox[0] - tol || p[0] > self.bbox[2] + tol || p[1] < self.bbox[1] - tol || p[1] > self.bbox[3] + tol {
+            return false;
+        }
+        let row = |y: f64| (((y - self.lo) / self.band).floor().max(0.0) as usize).min(self.rows.len() - 1);
+        (row(p[1] - tol)..=row(p[1] + tol)).any(|r| {
+            *work += self.rows[r].len();
+            self.rows[r].iter().any(|&(a, b)| crate::nest::seg_point_dist(p, a, b) <= tol)
+        })
+    }
 }
 
 fn close(a: P, b: P, eps: f64) -> bool {
@@ -452,54 +625,14 @@ pub fn read_with(text: &str, opts: &crate::formats::dxfread::Options) -> Result<
     crate::formats::dxfread::read(&pairs, opts)
 }
 
-/// Turn a read drawing into one part, using a role per layer (missing = Cut).
-pub fn build(d: &Drawing, roles: &BTreeMap<String, LayerRole>) -> Result<(CustomGeo, ImportReport), String> {
-    let role = |l: &str| roles.get(l).copied().unwrap_or_else(|| d.default_role(l));
-    let mut report = d.report.clone();
-    let mut loops: Vec<Vec<P>> = vec![];
-    let mut open: Vec<Vec<P>> = vec![];
-    let mut marks: Vec<Vec<P>> = vec![];
-    // DX4: an object drawn twice in the same place is cut (or marked) once,
-    // whatever its layer, so a doubled circle isn't pierced and cut twice.
-    let mut seen: std::collections::HashSet<(bool, Vec<(i64, i64)>)> = Default::default();
-    let mut hidden: BTreeMap<&str, usize> = BTreeMap::new();
-    for p in &d.pieces {
-        let r = role(&p.layer);
-        if r == LayerRole::Ignore {
-            if d.hidden.contains_key(&p.layer) {
-                *hidden.entry(&p.layer).or_insert(0) += 1;
-            }
-            continue;
-        }
-        if !seen.insert((r == LayerRole::Mark, piece_key(&p.pts, p.closed))) {
-            report.duplicates += 1;
-            continue;
-        }
-        match r {
-            LayerRole::Ignore => {}
-            LayerRole::Mark => {
-                let mut pts = p.pts.clone();
-                if p.closed {
-                    pts.push(pts[0]);
-                }
-                marks.push(pts);
-            }
-            LayerRole::Cut => {
-                if p.closed {
-                    loops.push(p.pts.clone());
-                } else {
-                    open.push(p.pts.clone());
-                }
-            }
-        }
-    }
-    report.hidden_left_out = hidden.into_iter().map(|(l, n)| (l.to_string(), n)).collect();
+/// Join open pieces end to end into closed loops (added to `loops`): first
+/// within 0.01 mm; then (IM8) only the chains still open get gaps up to 0.5 mm
+/// closed, so a contour that closes on its own never loses a piece to a nearby
+/// loose line. Piece ends are filed in a grid, so joining stays in step with
+/// the drawing's size; the piece chosen is the same as a plain search would
+/// choose. Returns the chains that stay open.
+fn join_pieces(mut open: Vec<Vec<P>>, loops: &mut Vec<Vec<P>>, report: &mut ImportReport) -> Result<Vec<Vec<P>>, String> {
     let eps = JOIN_TOL;
-    // Join open cut pieces into loops: first end to end within 0.01 mm; then
-    // (IM8) only the chains still open get gaps up to 0.5 mm closed, so a contour
-    // that closes on its own never loses a piece to a nearby loose line. Piece
-    // ends are filed in a grid, so joining stays in step with the drawing's size;
-    // the piece chosen is the same as a plain search would choose.
     let mut left: Vec<Vec<P>> = vec![];
     {
         let mut ends = EndGrid::new(eps);
@@ -548,6 +681,7 @@ pub fn build(d: &Drawing, roles: &BTreeMap<String, LayerRole>) -> Result<(Custom
         }
     }
     let dist = |a: P, b: P| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt();
+    let mut still_open: Vec<Vec<P>> = vec![];
     {
         let mut ends = EndGrid::new(CLOSE_TOL);
         for (k, c) in left.iter().enumerate() {
@@ -595,20 +729,71 @@ pub fn build(d: &Drawing, roles: &BTreeMap<String, LayerRole>) -> Result<(Custom
                         break;
                     }
                     _ => {
-                        report.open_pieces += 1;
+                        still_open.push(chain);
                         break;
                     }
                 }
             }
         }
     }
+    Ok(still_open)
+}
+
+/// Turn a read drawing into one part, using a role per layer (missing = Cut).
+pub fn build(d: &Drawing, roles: &BTreeMap<String, LayerRole>) -> Result<(CustomGeo, ImportReport), String> {
+    let role = |l: &str| roles.get(l).copied().unwrap_or_else(|| d.default_role(l));
+    let mut report = d.report.clone();
+    let mut loops: Vec<Vec<P>> = vec![];
+    let mut open: Vec<Vec<P>> = vec![];
+    // Marking pieces (points, closed), and the open pieces of bend layers and
+    // dashed rows (CS2).
+    let mut mark_pieces: Vec<(Vec<P>, bool)> = vec![];
+    let mut bend_pieces: Vec<Vec<P>> = vec![];
+    // DX4: an object drawn twice in the same place is cut (or marked) once,
+    // whatever its layer, so a doubled circle isn't pierced and cut twice.
+    let mut seen: std::collections::HashSet<(bool, Vec<(i64, i64)>)> = Default::default();
+    let mut hidden: BTreeMap<&str, usize> = BTreeMap::new();
+    for p in &d.pieces {
+        let r = role(&p.layer);
+        if r == LayerRole::Ignore {
+            if d.hidden.contains_key(&p.layer) {
+                *hidden.entry(&p.layer).or_insert(0) += 1;
+            }
+            continue;
+        }
+        if !seen.insert((r == LayerRole::Mark, piece_key(&p.pts, p.closed))) {
+            report.duplicates += 1;
+            continue;
+        }
+        match r {
+            LayerRole::Ignore => {}
+            LayerRole::Mark => mark_pieces.push((p.pts.clone(), p.closed)),
+            LayerRole::Cut => {
+                if p.closed {
+                    loops.push(p.pts.clone());
+                } else if bend_layer(&p.layer) || d.dashed(&p.layer) {
+                    bend_pieces.push(p.pts.clone());
+                } else {
+                    open.push(p.pts.clone());
+                }
+            }
+        }
+    }
+    report.hidden_left_out = hidden.into_iter().map(|(l, n)| (l.to_string(), n)).collect();
+    let eps = JOIN_TOL;
+    // Cut pieces are joined into loops; the bend layers' and dashed rows'
+    // pieces only with each other (CS2), so a bend line ending on an outline
+    // corner can't take that corner's place in the outline, while a hole drawn
+    // dashed and set to Cut still closes.
+    let open_lines = join_pieces(open, &mut loops, &mut report)?;
+    let bend_lines = join_pieces(bend_pieces, &mut loops, &mut report)?;
     // A loop with a point that isn't a number (a damaged file) can't be an outline.
     let loops: Vec<Vec<P>> = loops.into_iter().filter(|l| l.iter().all(|p| p[0].is_finite() && p[1].is_finite())).map(|l| cleanup(l, eps)).filter(|l| l.len() >= 3).collect();
     if loops.is_empty() {
         return Err("No closed outline on the cut layers (pieces don't join within 0.5 mm).".into());
     }
     let oi = (0..loops.len()).max_by(|&a, &b| area(&loops[a]).total_cmp(&area(&loops[b]))).unwrap();
-    let mut outline = loops[oi].clone();
+    let outline = loops[oi].clone();
     let mut holes = vec![];
     // The outline's edges filed by band: each hole test looks at the few edges
     // at its height, not the whole outline.
@@ -630,6 +815,24 @@ pub fn build(d: &Drawing, roles: &BTreeMap<String, LayerRole>) -> Result<(Custom
             report.outside_loops += 1;
         }
     }
+    // CS2: an open line is on the part when the middle of one of its pieces
+    // lies inside the outline; the others are left out, like outlines outside
+    // the part.
+    let mut lines: Vec<Contour> = vec![];
+    for (mut pts, bendish) in open_lines.into_iter().map(|l| (l, false)).chain(bend_lines.into_iter().map(|l| (l, true))) {
+        if work > HOLE_WORK {
+            return Err("This drawing is too complex to sort its holes and lines from its outline in reasonable time (a very jagged outline with very many holes or lines). Nothing was imported; simplify the drawing or split it.".into());
+        }
+        pts.dedup_by(|a, b| close(*a, *b, eps));
+        let mid = |w: &[P]| [(w[0][0] + w[1][0]) / 2.0, (w[0][1] + w[1][1]) / 2.0];
+        if pts.len() < 2 || !pts.iter().all(|p| p[0].is_finite() && p[1].is_finite()) || !pts.windows(2).any(|w| inside.contains_counted(mid(w), &mut work)) {
+            report.open_pieces += 1;
+            continue;
+        }
+        let state = open_line_start(&pts, bendish, |p| inside.near_edge(p, CLOSE_TOL, &mut work));
+        report.open_kept += 1;
+        lines.push(Contour { pts, closed: false, state });
+    }
     let (mut ox, mut oy, mut mx, mut my) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
     for p in &outline {
         ox = ox.min(p[0]);
@@ -637,18 +840,21 @@ pub fn build(d: &Drawing, roles: &BTreeMap<String, LayerRole>) -> Result<(Custom
         mx = mx.max(p[0]);
         my = my.max(p[1]);
     }
-    let shift = |l: &mut Vec<P>| {
-        for p in l.iter_mut() {
+    // Contour numbers (CS1): holes and other closed contours first, the
+    // outline, then the open lines. Closed contours start as Cut, marking
+    // layers' as Mark.
+    let contour = |pts: Vec<P>, closed: bool, state: ContourState| Contour { pts, closed, state };
+    let (closed_marks, open_marks): (Vec<_>, Vec<_>) = mark_pieces.into_iter().filter(|m| !m.0.is_empty()).partition(|m| m.1);
+    let mut contours: Vec<Contour> = holes.into_iter().map(|h| contour(h, true, ContourState::Cut)).collect();
+    contours.extend(closed_marks.into_iter().map(|(pts, _)| contour(pts, true, ContourState::Mark)));
+    contours.push(contour(outline, true, ContourState::Cut));
+    contours.extend(lines);
+    contours.extend(open_marks.into_iter().map(|(pts, _)| contour(pts, false, ContourState::Mark)));
+    for c in &mut contours {
+        for p in c.pts.iter_mut() {
             p[0] -= ox;
             p[1] -= oy;
         }
-    };
-    shift(&mut outline);
-    for h in &mut holes {
-        shift(h);
-    }
-    for m in &mut marks {
-        shift(m);
     }
     // Texts on a Mark layer are marked; texts on a cut layer stay drawing notes
     // (text can't be cut through); left-out layers drop theirs.
@@ -664,9 +870,9 @@ pub fn build(d: &Drawing, roles: &BTreeMap<String, LayerRole>) -> Result<(Custom
             Some(crate::nest::PartText { text: text.clone(), at: [at[0] - ox, at[1] - oy], height: *height, angle: *angle, curve: 0.0, kind })
         })
         .collect();
-    let fills = triangulate(&outline);
-    let hole_fills = holes.iter().flat_map(|h| triangulate(h)).collect();
-    Ok((CustomGeo { outline, holes, fills, hole_fills, marks, texts, w: mx - ox, h: my - oy }, report))
+    let mut g = CustomGeo { outline: vec![], holes: vec![], fills: vec![], hole_fills: vec![], marks: vec![], texts, w: mx - ox, h: my - oy, contours };
+    g.apply_states();
+    Ok((g, report))
 }
 
 /// Read a DXF and build it with every layer cut.
