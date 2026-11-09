@@ -88,6 +88,9 @@ fn an_agent_programs_a_job_from_parts_to_cnc() {
     call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 300, "h": 120, "qty": 4}));
     let layers = call(&mut s, "drawing-layers", None, json!({"path": dxf.to_str().unwrap()}));
     assert!(layers["data"]["layers"].as_object().is_some_and(|m| m.contains_key("MARK")), "{layers}");
+    // IM10: the part's size before importing, as the import window previews it.
+    let size = &layers["data"]["sizes"][0];
+    assert!(size["w"].as_f64().is_some_and(|w| w > 0.0) && size["h"].as_f64().is_some_and(|h| h > 0.0), "{layers}");
     let r = call(&mut s, "import-drawing", None, json!({"path": dxf.to_str().unwrap(), "layers": "MARK=mark", "qty": 3}));
     assert_eq!(r["data"]["added"][0]["qty"], 3, "{r}");
     let saved = jobfile::load(&job).unwrap();

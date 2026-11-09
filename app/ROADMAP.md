@@ -16,7 +16,7 @@ is **`FEATURES.md`** at the top of the repo; keep both in step.
 |---|---|---|
 | Job Explorer, Product List, Product view, Sheet list, Sheet View | Have (Jobs screen) | |
 | Save jobs to disk / database (New, Connect, Information) | Have — `.snjob` files and the Library (jobs and products on disk, shareable folder); Lantek SQL database is read-only (Windows) | |
-| Parts from database, Import parts (DXF/DWG/MEC/IGES/GEO…) | Have — DXF, DWG, Lantek MEC (encrypted too), IGES, PDF, ESSI, DSTV, GEO (`formats/`); still missing HPGL, ISO programs, ME10, EPS and others (JOB-26) | |
+| Parts from database, Import parts (DXF/DWG/MEC/IGES/GEO…) | Have — DXF, DWG, Lantek MEC (encrypted too), IGES, PDF, ESSI, DSTV, GEO (`formats/`), picked in an import window with a preview of the drawing (IM10); still missing HPGL, ISO programs, ME10, EPS and others (JOB-26) | |
 | Rectangles (quick rectangular parts) | Part — built-in shapes | |
 | Sheets stock manager (sizes, quantities, remnants) | Have — Sheet stock window: list/criteria, quantities, priority, locking, create, what the open job uses; nesting takes sheets from stock (best sheet format / combination searches, time limit) | |
 | **Materials** and **Consumables** (gas, nozzles) | Part — fixed material list, each with its machine-file key (Settings → Materials → Machine table); the machine file's material × thickness sections pick leads, joints, joint gap and offer gap/margins (MECHANICS MTL1–MTL12); no gas/nozzle keys | ★★ |

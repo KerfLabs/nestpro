@@ -86,6 +86,11 @@ pub struct AppSettings {
     pub active_job: String,
     /// Job files opened or saved lately, newest first (the Open job menu).
     pub recent_jobs: Vec<String>,
+    /// Folders part drawings were imported from lately, newest first (the
+    /// import window opens in the first, IM10).
+    pub import_dirs: Vec<String>,
+    /// Show the selected drawing in the import window (IM5, IM10; default on).
+    pub import_preview: bool,
     /// Part data in drawing file names, e.g. [Reference]_[Quantity]_[Material]; empty = off.
     pub name_format: String,
     /// Text put before / after every imported part's reference (FN5).
@@ -254,6 +259,8 @@ impl Default for AppSettings {
             examples: true,
             active_job: String::new(),
             recent_jobs: vec![],
+            import_dirs: vec![],
+            import_preview: true,
             name_format: String::new(),
             ref_prefix: String::new(),
             ref_suffix: String::new(),
@@ -372,6 +379,10 @@ impl AppSettings {
         for r in &self.recent_jobs {
             s += &format!("recent_job = {}\n", esc(r));
         }
+        for d in &self.import_dirs {
+            s += &format!("import_dir = {}\n", esc(d));
+        }
+        s += &format!("import_preview = {}\n", self.import_preview);
         s += &format!("theme = {}\nwarn_tech = {}\nshow_unbuilt = {}\nauto_db = {}\n", self.theme, self.warn_tech, self.show_unbuilt, self.auto_db);
         s += &format!("ui_size = {}\nscroll_speed = {}\n", self.ui_size, self.scroll_speed);
         s += &format!("stock = {}\n", serde_json::to_string(&self.stock).unwrap_or_default());
@@ -465,6 +476,8 @@ impl AppSettings {
                     "ref_suffix" => st.ref_suffix = v,
                     "active_job" => st.active_job = v,
                     "recent_job" => st.recent_jobs.push(v),
+                    "import_dir" => st.import_dirs.push(v),
+                    "import_preview" => st.import_preview = v != "false",
                     "active_conn" => st.active_conn = v.parse().unwrap_or(0),
                     "active_machine" => st.active_machine = v.parse().unwrap_or(0),
                     "theme" => st.theme = if ["light", "dark", "system"].contains(&v.as_str()) { v } else { "system".into() },
@@ -761,6 +774,8 @@ mod settings_tests {
             ref_prefix: "J88-".into(),
             active_job: "12".into(),
             recent_jobs: vec![r"C:\Jobs\DEMO-001.snjob".into(), r"\\server\jobs\Acme.snjob".into()],
+            import_dirs: vec![r"\\server\dxf\Acme".into(), r"C:\Lantek\Expert\Samples\DXF".into()],
+            import_preview: false,
             ref_suffix: String::new(),
             connections: vec![
                 Connection { name: "Shop".into(), server: r"srv\SQL".into(), database: "SHOP".into(), windows: false, user: "lantek".into(), password_enc: "01000000d08c".into() },

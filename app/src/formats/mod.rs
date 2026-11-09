@@ -230,7 +230,12 @@ pub fn read_file(path: &Path, format: Option<Format>, cfg: &crate::settings::App
 }
 
 /// `read_file` with reading choices (the extension is filled in from the path).
-pub fn read_file_with(path: &Path, format: Option<Format>, cfg: &crate::settings::AppSettings, mut opts: ReadOpts) -> Result<Vec<ReadPart>, String> {
+pub fn read_file_with(path: &Path, format: Option<Format>, cfg: &crate::settings::AppSettings, opts: ReadOpts) -> Result<Vec<ReadPart>, String> {
+    read_path(path, format, cfg, opts).map(|(_, parts)| parts)
+}
+
+/// `read_file_with`, also saying which format the file was read as.
+pub fn read_path(path: &Path, format: Option<Format>, cfg: &crate::settings::AppSettings, mut opts: ReadOpts) -> Result<(Format, Vec<ReadPart>), String> {
     opts.ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_string();
     let bytes = std::fs::read(path).map_err(|e| format!("{}: couldn't read ({e})", path.display()))?;
     let fmt = format.or_else(|| detect(path, &bytes)).ok_or_else(|| {
@@ -241,7 +246,7 @@ pub fn read_file_with(path: &Path, format: Option<Format>, cfg: &crate::settings
     if parts.is_empty() {
         return Err(format!("{}: no part drawing in this {}", path.display(), fmt.label()));
     }
-    Ok(parts)
+    Ok((fmt, parts))
 }
 
 /// One part of an imported file, with the file's name and the part's own name.

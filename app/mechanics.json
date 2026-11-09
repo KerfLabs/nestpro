@@ -4178,6 +4178,18 @@
   "source": "MECHANICS IM9"
  },
  {
+  "name": "Import window: preview of the picked drawing",
+  "group": "drawing import",
+  "value": true,
+  "source": "MECHANICS IM10"
+ },
+ {
+  "name": "Import window: recent folders kept",
+  "group": "drawing import",
+  "value": 6,
+  "source": "MECHANICS IM10"
+ },
+ {
   "name": "ESSI line classes",
   "group": "ESSI",
   "value": "0 signs code, 1 code+value, 2 move, 5 arc",
