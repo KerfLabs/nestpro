@@ -1,0 +1,16 @@
+name: Public check
+
+# Runs on every push, docs included: docs are where customer names and e-mail
+# addresses are most likely to slip in. It takes seconds.
+on:
+  push:
+    branches-ignore: [cla-signatures]
+  pull_request:
+
+jobs:
+  public-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: No research evidence, shop data or unreviewed images
+        run: tools/public-check.sh

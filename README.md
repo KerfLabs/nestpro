@@ -93,8 +93,9 @@ How it is built: `app/src/engine/` holds the job rules (shared with the window),
 
 ## Contributing
 
-Read `AGENTS.md`, especially "Keeping the public repo clean", and run
-`tools/install-hooks.sh` once so the pre-commit check runs.
+Bug reports, test files and code are all welcome. See [CONTRIBUTING.md](CONTRIBUTING.md):
+it explains how to keep customer data out of public issues, the checks to run, and the
+one-time [contributor agreement](CLA.md).
 
 ## License
 
@@ -107,6 +108,9 @@ Read `AGENTS.md`, especially "Keeping the public repo clean", and run
 - **Bigger companies** need a commercial license from Kurf Labs: write to
   hello@kurflabs.com ([kurflabs.com](https://kurflabs.com)). Shops that contribute
   code may get one free or cheap.
+
+[LICENSING.md](LICENSING.md) answers the common questions in plain words: how to count
+people and revenue, groups of companies, evaluation, and home use.
 
 Releases before this change were published under MIT and stay MIT for anyone
 who already has them.
