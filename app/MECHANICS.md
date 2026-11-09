@@ -831,8 +831,18 @@ How the rebuild uses them:
 - View: Axis, Color Display, Machining Window, Restore Panels, **Full Screen** (hides the
   panels), **Show Parts** (first / previous / next / last), Zoom All / Window / Previous / In /
   Out.
-- Simulation: **Beginning, Previous, Run/Pause, Next, End, Stop** — contours already cut turn
-  green (C057), the one being cut is white with the head marked; Run steps every 0.7 s.
+- Simulation: **Beginning, Previous, Run/Pause, Next, End, Stop** play the part's own program
+  the way the sheet's Simulation does (below): the head moves along each beam run — rapid,
+  pierce, lead-in, contour, lead-out — so it can be followed from the lead-in into the contour;
+  cuts already made turn green (C057), micro-joint gaps stay uncut, and the counter says how
+  many contours are cut. Speed is × real time — 0.1×, 0.25×, 0.5×, 1× (default), 5× (our
+  choice: slow enough to follow a lead-in). Previous / Next go pierce by pierce and bring the
+  head back into view when zoomed in; the head is followed while it runs. The Simulation Window
+  (slider, operation, X / Y, cutter radius, heads) sits under the part, which fits above it
+  while simulating.
+- Fix: the part's simulation used to light a whole contour at once with a fixed dot at its
+  start point and paint over its micro-joints, so the head never seemed to go from the lead-in
+  into the contour.
 - Notes: Dimension notes Automatic / Delete, Texts (new text), Modify (the selected text),
   Text and Dimensions on/off.
 - **Angle between three points** (DR8): click a point, the corner, then another point — the
@@ -901,10 +911,18 @@ How ours compared, and what the rebuild now does:
   from the Sheet tab: pick contours, reverse, undo, clear) and **View CNC** / **Export CNC**.
 - *Simulation*: **Beginning, Previous, Run/Pause, Next, End, Stop**, a **Simulation Speed**
   choice (1×, 5×, 20× (default), 50×, 200× real time) and the **Simulation Window**. The program
-  plays in order (per part its markings first, then each contour: rapid, pierce, lead-in,
-  contour, lead-out; punched contours hit by hit). Done cuts turn green (C057), markings light
-  green, punch hits orange; the head is a red ring with a cross (SM3). Previous/Next jump
-  between cutting operations; the slider moves anywhere.
+  plays in order (per part its markings first, then each contour along the beam's own path —
+  the one the program and the times use: rapid, pierce, lead-in, contour, loops, overlap,
+  lead-out; a micro-joint is jumped and pierced again, a joint with leads leaves along its
+  lead-out and comes back along its lead-in; punched contours hit by hit). The head stands
+  still at each pierce for the pierce time. Done cuts turn green (C057), markings light green,
+  punch hits orange, with a pierce mark where each run started (SM2); the head is a red ring
+  with a cross (SM3). Previous/Next jump pierce by pierce (and to each marking and hit); the
+  slider moves anywhere. The next rapid starts where the beam stopped (after the lead-out, the
+  overlap or the closing joint's lead-out), in the sheet's times too.
+- Fix: the head used to run lead-in, the whole contour and a straight line to the lead-out's
+  end, so it cut across micro-joints, skipped joint leads, loops and the overlap, and drew arc
+  lead-outs straight.
 - The Simulation Window shows the operation (e.g. *Cut contour 12 : hole of part 5 (Ring)*) with
   its colour, the head's X / Y, the **cutter radius 0.150** (half the 0.3 mm cut width — the
   value observed in the original) and **1 head**.
