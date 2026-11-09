@@ -444,6 +444,11 @@ impl App {
         }
         if resp.drag_stopped() {
             if self.cut_panel.sweep.is_some() {
+                // The last stretch, from the last held frame to where the button
+                // came up, belongs to the same sweep (and the same undo step).
+                if let Some(w) = resp.interact_pointer_pos().or_else(|| ui.input(|i| i.pointer.latest_pos())).map(to_w) {
+                    self.sweep_to(w, half);
+                }
                 self.sweep_end();
             }
             if let (Some(a), Some(b)) = (self.cut_panel.box_from.take(), resp.interact_pointer_pos()) {
