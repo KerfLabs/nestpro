@@ -141,7 +141,7 @@ pub fn set_state(part: &mut Part, picks: &[usize], state: ContourState, same: bo
         }
         if !list[k].closed && state == ContourState::Cut {
             return Err(format!(
-                "Contour {} is an open line: cutting open lines isn't built yet (FEATURES TEC-21), and cut through the part it could split it. Set it to mark, no-cut, bend-line or leave-out.",
+                "Contour {} is an open line: cutting open lines isn't built yet (FEATURES TEC-22), and cut through the part it could split it. Set it to mark, no-cut, bend-line or leave-out.",
                 k + 1
             ));
         }

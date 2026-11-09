@@ -582,8 +582,9 @@ impl TechEdit {
                 if let Some(e) = every {
                     x.joint_every = e.max(0.0);
                 } else if x.joint_every <= 0.0 {
-                    let q = crate::leads::quality_number(x.quality);
-                    x.joint_every = dist[q.clamp(1, 12) - 1][0];
+                    // The part's own quality, else the outline's usual one (CQ1).
+                    let q = x.quality.unwrap_or(crate::nest::CutQuality::FALLBACK).number();
+                    x.joint_every = dist[q - 1][0];
                 }
                 x.micro_joints = 0;
                 if x.joint_width <= 0.0 || (*gap_wins && *gap > 0.0) {

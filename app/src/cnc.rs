@@ -497,13 +497,13 @@ impl Timing {
         Timing { speeds, settings, rapid_acc, line_acc }
     }
 
-    /// The cutting speed of a contour of machine quality `qn` whose part asks
-    /// for `q`: the machine's (CTM8); with no machine speed at all, our
-    /// typical laser speeds × the quality's factor (estimate).
-    pub fn feed(&self, qn: usize, q: CutQuality) -> f64 {
+    /// The cutting speed of a contour of quality `q`: the machine's (CTM8);
+    /// with no machine speed at all, our typical laser speeds × the quality's
+    /// factor (CQ3, estimate).
+    pub fn feed(&self, q: CutQuality) -> f64 {
         match self.speeds.source {
             crate::techtable::SpeedSource::Estimate => self.speeds.cut_for(1) * q.speed_factor(),
-            _ => self.speeds.cut_for(qn),
+            _ => self.speeds.cut_for(q.number()),
         }
     }
 
@@ -687,6 +687,57 @@ fn pull_in(parts: &[Part], placed: &[Placed], manual: &[ManualCut], i: usize, h:
     }
 }
 
+/// Where a cut contour's quality comes from (CQ1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QualityFrom {
+    /// The part's own size-range row that holds the contour (CT1).
+    SizeRange,
+    /// The part's own quality.
+    Part,
+    /// The machine section's size band (MTL10, TT8).
+    SizeBand,
+    /// Nothing sets one: quality 3 (estimate).
+    Fallback,
+}
+
+impl QualityFrom {
+    /// For people and agents (part-info, Cut technology by size).
+    pub fn label(self) -> &'static str {
+        match self {
+            QualityFrom::SizeRange => "part size range",
+            QualityFrom::Part => "part",
+            QualityFrom::SizeBand => "machine size band",
+            QualityFrom::Fallback => "default",
+        }
+    }
+}
+
+/// A closed contour's size as the size ranges and bands measure it: the
+/// radius of the circle with the same area, mm (CT1).
+pub fn contour_radius(pts: &[P]) -> f64 {
+    crate::nest::equivalent_radius(signed_area2(pts) / 2.0)
+}
+
+/// The cut quality of a closed contour `pts` of a part with technology
+/// `tech` on the machine's tables `mt` (CQ1): the part's own size-range row
+/// for the contour's equivalent radius; else the part's own quality; else,
+/// when the part has no size ranges of its own, the machine's size band;
+/// else quality 3.
+pub fn contour_quality(tech: &PartTech, mt: &crate::ct1::MachineTech, pts: &[P]) -> (CutQuality, QualityFrom) {
+    let r_eq = contour_radius(pts);
+    if let Some(q) = crate::nest::quality_for_radius(&tech.cut_ranges, r_eq, 0.0) {
+        return (q, QualityFrom::SizeRange);
+    }
+    if let Some(q) = tech.quality {
+        return (q, QualityFrom::Part);
+    }
+    let own_ranges = tech.cut_ranges.iter().any(|c| c.on);
+    match mt.band_quality(r_eq).and_then(CutQuality::new) {
+        Some(q) if !own_ranges => (q, QualityFrom::SizeBand),
+        _ => (CutQuality::FALLBACK, QualityFrom::Fallback),
+    }
+}
+
 /// Like `plan`, with some contours cut by hand first.
 pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: &[ManualCut]) -> SheetPlan {
     let mut left: Vec<usize> = (0..placed.len()).collect();
@@ -740,7 +791,7 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
     let jobs = cut_jobs(parts, placed, &order, manual);
     let mut marked = vec![false; placed.len()];
     // Parts without their own technology: the machine's automatic leads, no joints.
-    let auto_tech = PartTech { lead_in: 0.0, lead_out: 0.0, micro_joints: 0, joint_width: 0.0, quality: CutQuality::Normal, lead_type: LeadType::Machine, corner_start: true, position: 0, ..PartTech::default() };
+    let auto_tech = PartTech { lead_in: 0.0, lead_out: 0.0, micro_joints: 0, joint_width: 0.0, quality: None, lead_type: LeadType::Machine, corner_start: true, position: 0, ..PartTech::default() };
     let tol = mt.leads.lin_tol;
     // Kerf compensation for this sheet's material and thickness (KC1–KC14).
     let cutter_r = crate::kerf::cutter_radius(&mt);
@@ -755,18 +806,11 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
         // (tables by contour class) and no joints.
         let tech = part.tech.unwrap_or(auto_tech);
         let (mut pts, inner) = obst[i].1[ci].clone();
-        // Cut quality by contour size: the first matching range for the
-        // contour's equivalent radius (rule CT1).
-        let r_eq = crate::nest::equivalent_radius(signed_area2(&pts) / 2.0);
-        let cq = crate::nest::quality_for_radius(&tech.cut_ranges, r_eq, 0.0);
-        // A part that leaves the quality to the machine (no size ranges of its
-        // own, Normal quality) takes the quality of the machine section's
-        // size band (MTL10, TT8); else the part's (rule AL1).
-        let own_ranges = tech.cut_ranges.iter().any(|c| c.on);
-        let band = (!own_ranges && tech.quality == CutQuality::Normal).then(|| mt.band_quality(r_eq)).flatten();
-        let qn = band.unwrap_or_else(|| crate::leads::quality_number(cq.unwrap_or(tech.quality)));
-        // The contour's cutting speed (CTM8).
-        let feed = timing.feed(qn, cq.unwrap_or(tech.quality));
+        // The contour's cut quality (CQ1), which picks its leads (AL1), kerf
+        // row (KC5), joint distance, speed (CTM8) and LC5 codes (BL22).
+        let (cq, _) = contour_quality(&tech, &mt, &pts);
+        let qn = cq.number();
+        let feed = timing.feed(cq);
         let lq = mt.leads.quality(qn);
         // Marking first, while the part is still held by the sheet.
         if !marked[i] {
@@ -1559,16 +1603,17 @@ mod joint_tests {
         use crate::nest::{equivalent_radius, quality_for_radius, CutQuality, CutRange};
         // A circle of radius 4 has equivalent radius 4.
         assert!((equivalent_radius(std::f64::consts::PI * 16.0) - 4.0).abs() < 1e-9);
-        let rows = [CutRange { on: true, min_r: 0.0, max_r: 5.0, quality: CutQuality::Fine }, CutRange { on: true, min_r: 5.0, max_r: 50.0, quality: CutQuality::Rough }, CutRange::default()];
-        assert_eq!(quality_for_radius(&rows, 4.0, 0.0), Some(CutQuality::Fine));
-        assert_eq!(quality_for_radius(&rows, 5.0, 0.0), Some(CutQuality::Rough), "upper limit not included");
+        let q = |n| CutQuality::new(n).unwrap();
+        let rows = [CutRange { on: true, min_r: 0.0, max_r: 5.0, quality: q(1) }, CutRange { on: true, min_r: 5.0, max_r: 50.0, quality: q(3) }, CutRange::default()];
+        assert_eq!(quality_for_radius(&rows, 4.0, 0.0), Some(q(1)));
+        assert_eq!(quality_for_radius(&rows, 5.0, 0.0), Some(q(3)), "upper limit not included");
         assert_eq!(quality_for_radius(&rows, 60.0, 0.0), None);
-        let late = [CutRange { on: true, min_r: 10.0, max_r: 20.0, quality: CutQuality::Fine }, CutRange::default(), CutRange::default()];
+        let late = [CutRange { on: true, min_r: 10.0, max_r: 20.0, quality: q(1) }, CutRange::default(), CutRange::default()];
         assert_eq!(quality_for_radius(&late, 4.0, 0.0), None, "first row starts above the radius");
-        // In the plan: the part's outside (r ≈ 79.8) keeps Normal, a fine row slows a matching contour.
-        let t = PartTech { cut_ranges: [CutRange { on: true, min_r: 0.0, max_r: 100.0, quality: CutQuality::Fine }, CutRange::default(), CutRange::default()], ..PartTech::default() };
-        let (fine, normal) = (plan_for(t), plan_for(PartTech::default()));
-        assert!(fine.contours[0].feed < normal.contours[0].feed);
+        // In the plan: the part's outside (r ≈ 79.8) keeps quality 3, a quality-1 row slows a matching contour.
+        let t = PartTech { cut_ranges: [CutRange { on: true, min_r: 0.0, max_r: 100.0, quality: q(1) }, CutRange::default(), CutRange::default()], ..PartTech::default() };
+        let (slow, normal) = (plan_for(t), plan_for(PartTech::default()));
+        assert!(slow.contours[0].feed < normal.contours[0].feed);
     }
 
     #[test]
@@ -1952,11 +1997,11 @@ mod kerf_plan_tests {
         // its ranges fits: the machine's bands don't apply to it (MTL10).
         let (mut parts, placed, spec) = plate_job(1, 3.0);
         let mut ranges: [crate::nest::CutRange; 3] = Default::default();
-        ranges[0] = crate::nest::CutRange { on: true, min_r: 0.0, max_r: 5.0, quality: CutQuality::Fine };
+        ranges[0] = crate::nest::CutRange { on: true, min_r: 0.0, max_r: 5.0, quality: CutQuality::new(1).unwrap() };
         parts[0].tech = Some(PartTech { cut_ranges: ranges, ..PartTech::default() });
         let own = plan(&parts, &placed, &spec);
         let q: Vec<usize> = own.contours.iter().map(|c| c.quality).collect();
-        assert_eq!(q, vec![crate::leads::quality_number(CutQuality::Fine), crate::leads::quality_number(PartTech::default().quality)]);
+        assert_eq!(q, vec![1, CutQuality::FALLBACK.number()]);
         // No table record for 5 mm: the machine's default speed for every contour.
         let p5 = plate_with_hole(1, 5.0);
         assert!(p5.contours.iter().all(|c| c.feed == 3000.0));

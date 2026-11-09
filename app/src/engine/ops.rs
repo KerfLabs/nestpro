@@ -129,7 +129,7 @@ const SHAPES: &[&str] = &["rectangle", "plate-hole", "strip", "l-bracket", "disc
 const MACHINES: &[&str] = &["laser", "plasma", "oxyfuel", "waterjet", "laserpunch", "punch"];
 const LEADS: &[&str] = &["machine", "perpendicular", "line", "arc", "line-arc", "corner"];
 const JOINTS: &[&str] = &["gap", "leads", "leads-inclined", "corner"];
-const QUALITIES: &[&str] = &["rough", "normal", "fine"];
+const QUALITIES: &[&str] = &["auto", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"];
 const TEXTS: &[&str] = &["mark", "special", "note"];
 const CONTOUR_STATES: &[&str] = &["cut", "mark", "no-cut", "bend-line", "leave-out"];
 
@@ -257,7 +257,7 @@ pub static OPS: &[Op] = &[
     Op { name: "loops", group: "Technology", kind: Kind::Write, help: "Loops at sharp outer corners on or off.", args: &[r("on", Ty::Bool, "true = add loops, false = remove"), PARTS, a("size", Ty::Num, "Loop size, mm")] },
     Op { name: "cut-tech", group: "Technology", kind: Kind::Write, help: "Own technology with the defaults (own), back to the sheet's automatic technology (delete), or cut quality by contour size (ranges).", args: &[
         Arg { name: "mode", ty: Ty::Str, required: true, help: "own, delete or ranges", choices: &["own", "delete", "ranges"] }, PARTS,
-        a("ranges", Ty::Str, "ranges: up to 3 \"from-to:quality\" by equivalent radius in mm, e.g. \"0-5:fine,5-20:normal\" (empty = off)"),
+        a("ranges", Ty::Str, "ranges: up to 3 \"from-to:quality\" by equivalent radius in mm, quality 1-12, e.g. \"0-5:1,5-20:2\" (empty = off)"),
     ] },
     Op { name: "tech-set", group: "Technology", kind: Kind::Write, help: "Set technology values on parts directly (the technology settings windows).", args: &[
         PARTS, a("lead_in", Ty::Num, "Lead-in length, mm"), a("lead_out", Ty::Num, "Lead-out length, mm"), c("lead_type", LEADS, "Lead shape"), a("position", Ty::Int, "Keypad position 1-9"),
@@ -265,7 +265,7 @@ pub static OPS: &[Op] = &[
         a("micro_joints", Ty::Int, "Joints per outside contour"), a("joint_width", Ty::Num, "Joint gap, mm"), c("joint_type", JOINTS, "Joint type"),
         a("joint_lead", Ty::Num, "Joint lead length, mm"), a("joint_angle", Ty::Num, "Joint lead angle, degrees"), a("joint_every", Ty::Num, "Automatic joints: one per this many mm of each contour, holes too (0 = use micro_joints)"),
         a("joint_lead_out", Ty::Num, "Joint lead-out distance, mm (default: the same as joint_lead)"),
-        a("loops", Ty::Bool, "Loops at sharp corners"), a("loop_size", Ty::Num, "Loop size, mm"), c("quality", QUALITIES, "Cut quality"),
+        a("loops", Ty::Bool, "Loops at sharp corners"), a("loop_size", Ty::Num, "Loop size, mm"), c("quality", QUALITIES, "Cut quality: the machine's quality 1-12 for every contour the part's size ranges don't set, or auto = the machine's size bands decide"),
     ] },
     Op { name: "text", group: "Technology", kind: Kind::Write, help: "Add a text along the bottom of parts (mark = engraved, special = filled in: #REF #QTY #MAT #THK #NUM, note = not machined), or delete all their texts.", args: &[
         Arg { name: "mode", ty: Ty::Str, required: true, help: "add or delete", choices: &["add", "delete"] }, PARTS,
@@ -439,8 +439,25 @@ fn lead_key(t: LeadType) -> &'static str {
 fn joint_from(s: &str) -> Result<JointType, String> {
     pick(s, "joint type", &[("gap", JointType::Gap), ("leads", JointType::Leads), ("leads-inclined", JointType::LeadsInclined), ("corner", JointType::Corner)])
 }
-fn quality_from(s: &str) -> Result<CutQuality, String> {
-    pick(s, "quality", &[("rough", CutQuality::Rough), ("normal", CutQuality::Normal), ("fine", CutQuality::Fine)])
+/// One of the machine's cut qualities, 1–12.
+fn numbered_quality(s: &str) -> Option<CutQuality> {
+    s.trim().parse::<usize>().ok().and_then(CutQuality::new)
+}
+fn old_name(s: &str) -> bool {
+    matches!(s.trim().to_lowercase().as_str(), "rough" | "normal" | "fine")
+}
+/// A part's quality: auto (None, the machine's size bands decide) or 1–12 (CQ1, CQ2).
+fn quality_from(s: &str) -> Result<Option<CutQuality>, String> {
+    if s.trim().eq_ignore_ascii_case("auto") {
+        return Ok(None);
+    }
+    let old = if old_name(s) { "; the old rough / normal / fine are 3 / auto / 1" } else { "" };
+    numbered_quality(s).map(Some).ok_or_else(|| format!("quality '{s}': give one of the machine's cut qualities, 1 to 12, or auto to let its size bands decide{old}"))
+}
+/// A size-range row's quality: 1–12 (CQ2).
+fn range_quality_from(s: &str) -> Result<CutQuality, String> {
+    let old = if old_name(s) { "; the old rough / normal / fine are 3 / 2 / 1" } else { "" };
+    numbered_quality(s).ok_or_else(|| format!("ranges: quality '{}': a row takes one of the machine's cut qualities, 1 to 12{old}", s.trim()))
 }
 fn text_kind_from(s: &str) -> Result<TextKind, String> {
     pick(s, "text kind", &[("mark", TextKind::Mark), ("special", TextKind::Special), ("note", TextKind::Note)])
@@ -584,9 +601,9 @@ pub fn tech_json(t: &Option<PartTech>) -> Value {
             "lead_in": t.lead_in, "lead_out": t.lead_out, "lead_type": lead_key(t.lead_type), "position": t.position,
             "corner_start": t.corner_start, "overlap": t.overlap, "micro_joints": t.micro_joints, "joint_width": t.joint_width,
             "joint_type": format!("{:?}", t.joint_type).to_lowercase(), "joint_every": t.joint_every, "joint_lead": t.joint_lead, "joint_lead_out": t.joint_lead_out.unwrap_or(t.joint_lead), "joint_angle": t.joint_angle,
-            "loops": t.loops, "loop_size": t.loop_size, "quality": t.quality.label().to_lowercase(),
+            "loops": t.loops, "loop_size": t.loop_size, "quality": t.quality.map_or(json!("auto"), |q| json!(q.number())),
             "leads_on_elements": t.starts.iter().flatten().count(), "joints_on_elements": t.joint_picks.iter().flatten().count(),
-            "cut_ranges": t.cut_ranges.iter().filter(|c| c.on).map(|c| format!("{}-{}:{}", c.min_r, c.max_r, c.quality.label().to_lowercase())).collect::<Vec<_>>(),
+            "cut_ranges": t.cut_ranges.iter().filter(|c| c.on).map(|c| format!("{}-{}:{}", c.min_r, c.max_r, c.quality.number())).collect::<Vec<_>>(),
         }),
     }
 }
@@ -688,12 +705,20 @@ fn part_info(job: &JobFile, i: usize) -> Value {
     // by the same numbers.
     let list = contours::list(p);
     let numbers = dxf::cut_order(&list);
+    let (tech, mt) = (p.tech.unwrap_or_default(), crate::ct1::for_spec(&job.spec));
     let contours: Vec<Value> = list
         .iter()
         .enumerate()
         .map(|(k, c)| {
             let shape = if c.closed { crate::machine::recognise(&c.pts).map(|s| s.label()) } else { None };
-            json!({"contour": k + 1, "kind": contours::kind(&list, k), "closed": c.closed, "state": c.state.key(), "length_mm": r1(c.length()), "standard_shape": shape})
+            let mut v = json!({"contour": k + 1, "kind": contours::kind(&list, k), "closed": c.closed, "state": c.state.key(), "length_mm": r1(c.length()), "standard_shape": shape});
+            // CQ1: the cut quality each cut contour gets on this job's machine, and why.
+            if c.closed && c.state == dxf::ContourState::Cut {
+                let (q, from) = cnc::contour_quality(&tech, &mt, &c.pts);
+                v["quality"] = json!(q.number());
+                v["quality_from"] = json!(from.label());
+            }
+            v
         })
         .collect();
     json!({
@@ -793,6 +818,7 @@ fn speeds_json(spec: &crate::nest::SheetSpec, t: &crate::ct1::MachineTech) -> Va
         "table_file": f.table.as_ref().and_then(|t| name(&t.source)), "time_file": name(&f.time.source), "gas": f.gas,
         "cut_mm_min_by_quality": (1..=12).map(|q| r1(sp.cut_for(q))).collect::<Vec<_>>(),
         "pierce_s_by_quality": (1..=12).map(|q| (sp.pierce_for(q) * 1000.0).round() / 1000.0).collect::<Vec<_>>(),
+        "pierce_mode_by_quality": (1..=12).map(|q| sp.pierce_mode(q)).collect::<Vec<_>>(),
         "mark_mm_min": r1(sp.mark), "rapid_mm_min": r1(sp.rapid),
     })
 }
@@ -2083,7 +2109,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                     let (span, q) = t.split_once(':').ok_or_else(|| format!("ranges: '{t}' is not from-to:quality"))?;
                     let (lo, hi) = span.split_once('-').ok_or_else(|| format!("ranges: '{span}' is not from-to"))?;
                     let num = |s: &str| s.trim().parse::<f64>().map_err(|_| format!("ranges: '{s}' is not a number"));
-                    ranges[k] = nest::CutRange { on: true, min_r: num(lo)?, max_r: num(hi)?, quality: quality_from(q.trim())? };
+                    ranges[k] = nest::CutRange { on: true, min_r: num(lo)?, max_r: num(hi)?, quality: range_quality_from(q)? };
                 }
                 let t = parts_sel(&job.parts, a.get("parts"), true)?;
                 for &i in &t {

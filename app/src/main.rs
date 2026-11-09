@@ -413,8 +413,8 @@ fn demo_parts() -> Vec<Part> {
     .map(|mut part| {
         // Two sample parts carry their own technology.
         part.tech = match part.name.as_str() {
-            "Square hole" => Some(nest::PartTech { lead_in: 4.0, lead_out: 2.0, micro_joints: 4, joint_width: 0.6, joint_type: nest::JointType::Leads, quality: nest::CutQuality::Fine, corner_start: true, lead_type: nest::LeadType::LineArc, ..Default::default() }),
-            "1210" => Some(nest::PartTech { lead_in: 6.0, lead_out: 0.0, micro_joints: 6, joint_width: 0.8, quality: nest::CutQuality::Normal, ..Default::default() }),
+            "Square hole" => Some(nest::PartTech { lead_in: 4.0, lead_out: 2.0, micro_joints: 4, joint_width: 0.6, joint_type: nest::JointType::Leads, quality: nest::CutQuality::new(1), corner_start: true, lead_type: nest::LeadType::LineArc, ..Default::default() }),
+            "1210" => Some(nest::PartTech { lead_in: 6.0, lead_out: 0.0, micro_joints: 6, joint_width: 0.8, quality: None, ..Default::default() }),
             _ => None,
         };
         // The holed plate carries its reference as a special marking text.
@@ -3233,6 +3233,14 @@ fn main() -> eframe::Result {
                 app.tab = Tab::Technology;
                 app.show_path = true;
                 app.zoom = 3.0;
+            }
+            // --cut-ranges (screenshots): Quality by size on the plate with holes,
+            // its rows and each contour's quality (CQ1).
+            if std::env::args().any(|a| a == "--cut-ranges") {
+                app.tab = Tab::Technology;
+                app.sel_part = app.parts.iter().position(|p| p.name == "Square hole");
+                app.tech_nest_all = Some(false);
+                app.show_cut_ranges = true;
             }
             // --sheet-tab (screenshots): the Sheet tab, e.g. its machine-table line.
             if std::env::args().any(|a| a == "--sheet-tab") {

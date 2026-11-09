@@ -49,6 +49,13 @@ impl Record {
         self.qfield(q, 7).filter(|&v| v > 0.001)
     }
 
+    /// The post's pierce mode for quality `q` (BL22): field 26 of the
+    /// quality's block (1 smooth, 2 fast, 4 booster); None when the record
+    /// has none.
+    pub fn pierce_mode(&self, q: usize) -> Option<u32> {
+        self.qfield(q, 26).filter(|&v| v >= 0.0).map(|v| v.round() as u32)
+    }
+
     /// Marking speed, mm/min: C009, the same for every quality (TT6).
     pub fn mark_speed(&self) -> Option<f64> {
         self.num("C009").filter(|&v| v > 0.001)
@@ -353,6 +360,9 @@ pub struct Speeds {
     pub rapid: f64,
     /// Pierce time by quality 1–12, s.
     pub pierce: [f64; 13],
+    /// The post's pierce mode by quality 1–12 from the picked record, used
+    /// by the LC5 whatever the time file says (BL22).
+    pub pierce_mode: [Option<u32>; 13],
     pub source: SpeedSource,
     /// Some qualities had no table speed and took the fallback (our choice, FEATURES MAC-20).
     pub fell_back: bool,
@@ -375,6 +385,7 @@ impl Speeds {
         let fallback = active.unwrap_or(estimate);
         let mut cut = [fallback; 13];
         let mut pierce = [ts.pierce_secs(keys.thickness, None); 13];
+        let mut pierce_mode = [None; 13];
         let mut fell_back = false;
         let use_table = matches!(ts.cut_source, Src::Table | Src::TableReduced);
         if let Some((r, _)) = picked {
@@ -386,6 +397,7 @@ impl Speeds {
                     }
                 }
                 pierce[q] = ts.pierce_secs(keys.thickness, Some(r.pierce_secs(q, &files.fields)));
+                pierce_mode[q] = r.pierce_mode(q);
             }
         } else if use_table {
             fell_back = true;
@@ -401,7 +413,7 @@ impl Speeds {
             _ if active.is_some() => SpeedSource::Machine,
             _ => SpeedSource::Estimate,
         };
-        Speeds { cut, mark, rapid: rapid.filter(|&v| v > 0.001).unwrap_or(RAPID_DEFAULT), pierce, source, fell_back }
+        Speeds { cut, mark, rapid: rapid.filter(|&v| v > 0.001).unwrap_or(RAPID_DEFAULT), pierce, pierce_mode, source, fell_back }
     }
 
     pub fn cut_for(&self, q: usize) -> f64 {
@@ -410,6 +422,11 @@ impl Speeds {
 
     pub fn pierce_for(&self, q: usize) -> f64 {
         self.pierce.get(q).copied().filter(|_| q >= 1).unwrap_or(self.pierce[1])
+    }
+
+    /// The table's pierce mode for quality `q` (BL22); None without one.
+    pub fn pierce_mode(&self, q: usize) -> Option<u32> {
+        self.pierce_mode.get(q).copied().flatten().filter(|_| q >= 1)
     }
 
     /// One line for the window and agents.

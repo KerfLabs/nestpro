@@ -945,14 +945,15 @@ fn an_agent_sees_the_table_speeds_and_the_time_split() {
     assert!(sp["source"].as_str().unwrap().contains("technology table"), "{r}");
     assert_eq!((sp["cut_mm_min_by_quality"][0].as_f64(), sp["cut_mm_min_by_quality"][2].as_f64()), (Some(1500.0), Some(9500.0)));
     assert_eq!((sp["mark_mm_min"].as_f64(), sp["rapid_mm_min"].as_f64(), sp["gas"].as_u64()), (Some(7500.0), Some(40000.0), Some(1)));
-    // The sheet's time by kind adds up to its time; parts cut at quality 1 (no size bands): 1500 mm/min.
+    // The sheet's time by kind adds up to its time; with no quality of their
+    // own and no size bands, contours are cut at quality 3 (CQ1): 9500 mm/min.
     let info = call(&mut s, "info", None, json!({}));
     let sh = &info["data"]["sheets"][0];
     let t = &sh["times_s"];
     let sum: f64 = ["cut", "mark", "rapid", "pierce", "head"].iter().map(|k| t[k].as_f64().unwrap()).sum();
     assert!((sum - sh["time_s"].as_f64().unwrap()).abs() < 0.3, "{sh}");
-    // Two 600 mm outsides at 1500 mm/min ≈ 48 s of cutting; two head-ups of 0.7 s.
-    assert!((t["cut"].as_f64().unwrap() - 48.0).abs() < 2.0, "{t}");
+    // Two 600 mm outsides at 9500 mm/min ≈ 7.6 s of cutting; two head-ups of 0.7 s.
+    assert!((t["cut"].as_f64().unwrap() - 7.6).abs() < 0.5, "{t}");
     assert!((t["head"].as_f64().unwrap() - 1.4).abs() < 0.05, "{t}");
     crate::ct1::set_thread_active(None);
 }
@@ -1390,4 +1391,141 @@ fn a_line_across_corners_stays_a_bend_line_and_the_outline_stays_whole() {
     let got: Vec<(String, String, i64)> = contour_rows(&mut s, cases.len() + 1).into_iter().map(|r| (r.1, r.2, r.3.round() as i64)).collect();
     assert_eq!(got, [("outside".to_string(), "cut".to_string(), 600), ("open".to_string(), "bend-line".to_string(), 100)]);
     let _ = std::fs::remove_dir_all(&d);
+}
+
+// ---------------------------------------------------------------------------
+// The machine's numbered cut qualities on the LC5 (MAC-34, MTL10, BL22, BL23).
+// ---------------------------------------------------------------------------
+
+/// A made-up laser for 12.9–20.1 mm mild steel: size bands send equivalent
+/// radii below 5 mm to quality 1, 5–12 mm to quality 2 and the rest to 3; its
+/// technology table pierces quality 1 with code 1, 2 with 4 and 3 with 2.
+fn thick_plate_laser() {
+    let mut mt = crate::ct1::MachineTech::from_text("A051 40000\nA058 3000\nZ000 \"##MATEXP0010##\"\nZ001 12.9\nZ002 20.1\nZ010 0\nZ011 5\nZ012 0\nZ010 5\nZ011 12\nZ012 1\nZ010 12\nZ011 99999\nZ012 2\nZ999 0\n");
+    let table = "#- LASER -#\nW000 3\nA000 \"##MATEXP0010##\"\nA001 12.9\nA002 20.1\nA005 3\nA008 1\nC009 3000\nD007 600\nD026 1\nD057 900\nD076 4\nD107 1200\nD126 2\n";
+    mt.speed_files = std::sync::Arc::new(crate::techtable::SpeedFiles { time: Default::default(), table: Some(crate::techtable::Table::from_text(table)), fields: Default::default(), gas: 3 });
+    crate::ct1::set_thread_active(Some(mt));
+}
+
+/// A 300 × 200 plate with a Ø6 hole, a Ø16 hole and a line on layer MARK.
+fn plate_with_two_holes(d: &Path) -> PathBuf {
+    let sq = "0\nLWPOLYLINE\n8\n0\n90\n4\n70\n1\n10\n0\n20\n0\n10\n300\n20\n0\n10\n300\n20\n200\n10\n0\n20\n200\n";
+    let hole = |x: f64, r: f64| format!("0\nCIRCLE\n8\n0\n10\n{x}\n20\n100\n30\n0\n40\n{r}\n");
+    let mark = "0\nLWPOLYLINE\n8\nMARK\n90\n2\n70\n0\n10\n200\n20\n40\n10\n260\n20\n40\n";
+    let dxf = d.join("DEMO-001.dxf");
+    std::fs::write(&dxf, format!("0\nSECTION\n2\nENTITIES\n{sq}{}{}{mark}0\nENDSEC\n0\nEOF\n", hole(60.0, 3.0), hole(130.0, 8.0))).unwrap();
+    dxf
+}
+
+/// (pierce, quality) of every NEXT_L in a program, sorted.
+fn next_l_codes(text: &str) -> Vec<(u32, u32)> {
+    let mut v: Vec<(u32, u32)> = text
+        .lines()
+        .filter_map(|l| l.strip_prefix("NEXT_L(")?.strip_suffix(')').map(|a| a.split(',').map(str::trim).collect::<Vec<_>>()))
+        .filter(|a| a.len() == 5)
+        .map(|a| (a[3].parse().unwrap(), a[4].parse().unwrap()))
+        .collect();
+    v.sort();
+    v
+}
+
+#[test]
+fn an_lc5_program_cuts_each_contour_at_its_own_quality_and_pierce() {
+    thick_plate_laser();
+    let d = dir("lc5_qualities");
+    let job = d.join("plate.snjob");
+    let mut ctx = Ctx::builtin();
+    ctx.blm.on = true;
+    let mut s = Session::new(ctx);
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1500, "h": 1000, "material": "mild steel", "thickness": 15}));
+    call(&mut s, "import-drawing", None, json!({"path": plate_with_two_holes(&d).to_str().unwrap(), "qty": 1, "layers": "MARK=mark"}));
+
+    // part-info: each contour's quality from the machine's size bands.
+    let info = call(&mut s, "part-info", None, json!({"part": 1}));
+    // Only cut contours carry a quality (the mark line is a contour too, CS1).
+    let mut q: Vec<(f64, u64)> = info["data"]["contours"].as_array().unwrap().iter().filter(|c| c.get("quality").is_some()).map(|c| (c["length_mm"].as_f64().unwrap(), c["quality"].as_u64().unwrap_or(0))).collect();
+    q.sort_by(|a, b| a.0.total_cmp(&b.0));
+    assert_eq!(q.iter().map(|c| c.1).collect::<Vec<_>>(), vec![1, 2, 3], "{info}");
+
+    // The program: the Ø6 hole at quality 1 (pierce 1), the Ø16 hole at 2
+    // (pierce 4), the outline at 3 (pierce 2), the mark at pierce 0, quality 9.
+    call(&mut s, "nest", None, json!({"stock": "off"}));
+    let text = call(&mut s, "program", None, json!({"sheet": 1}))["data"].as_str().unwrap().to_string();
+    assert_eq!(next_l_codes(&text), vec![(0, 9), (1, 1), (2, 3), (4, 2)], "{text}");
+
+    // BL23: the job sheet flags exactly the pierce codes and qualities used.
+    let out = d.join("cnc");
+    let e = call(&mut s, "export", None, json!({"dir": out.to_str().unwrap()}));
+    let xml = e["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).find(|f| f.to_uppercase().ends_with(".XML")).unwrap().to_string();
+    let xml = std::fs::read_to_string(xml).unwrap();
+    let flagged = |block: &str| -> Vec<u32> {
+        let b = xml.split(&format!("<{block}>")).nth(1).unwrap().split(&format!("</{block}>")).next().unwrap();
+        b.lines().filter(|l| l.contains(">1<")).map(|l| l.trim().trim_start_matches("<Id").split('>').next().unwrap().parse().unwrap()).collect()
+    };
+    assert_eq!((flagged("Foratura"), flagged("Taglio")), (vec![0, 1, 2, 4], vec![1, 2, 3, 9]), "{xml}");
+    crate::ct1::set_thread_active(None);
+}
+
+#[test]
+fn a_job_saved_with_rough_normal_fine_opens_and_exports_with_numbered_qualities() {
+    thick_plate_laser();
+    let d = dir("old_qualities");
+    let job = d.join("old.snjob");
+    let jp = job.to_str().unwrap();
+    let mut ctx = Ctx::builtin();
+    ctx.blm.on = true;
+    let mut s = Session::new(ctx);
+    call(&mut s, "new", Some(jp), json!({"w": 1500, "h": 1000, "material": "mild steel", "thickness": 15}));
+    let dxf = plate_with_two_holes(&d);
+    for _ in 0..3 {
+        call(&mut s, "import-drawing", None, json!({"path": dxf.to_str().unwrap(), "qty": 1, "layers": "MARK=mark"}));
+    }
+    call(&mut s, "cut-tech", None, json!({"mode": "own"}));
+    call(&mut s, "nest", None, json!({"stock": "off"}));
+    // The file as the app saved it before the machine's numbered qualities:
+    // part 1 Normal, part 2 Rough with a Fine row up to r 5 mm and a Normal
+    // row from 5 to 12 mm, part 3 Fine.
+    let mut old: Value = serde_json::from_str(&std::fs::read_to_string(&job).unwrap()).unwrap();
+    for (k, q) in ["Normal", "Rough", "Fine"].into_iter().enumerate() {
+        old["parts"][k]["tech"]["quality"] = json!(q);
+    }
+    old["parts"][1]["tech"]["cut_ranges"][0] = json!({"on": true, "min_r": 0.0, "max_r": 5.0, "quality": "Fine"});
+    old["parts"][1]["tech"]["cut_ranges"][1] = json!({"on": true, "min_r": 5.0, "max_r": 12.0, "quality": "Normal"});
+    std::fs::write(&job, serde_json::to_string_pretty(&old).unwrap()).unwrap();
+
+    // Normal leaves the quality to the machine's size bands; Rough is quality
+    // 3 where the part's rows (Fine 1, Normal 2) don't hold a contour; Fine is
+    // quality 1 on every contour (CQ2).
+    let mut s = Session::new({
+        let mut c = Ctx::builtin();
+        c.blm.on = true;
+        c
+    });
+    let quality = |s: &mut Session, part: usize| {
+        let info = call(s, "part-info", Some(jp), json!({"part": part}));
+        let mut q: Vec<(f64, u64, String)> = info["data"]["contours"].as_array().unwrap().iter().filter(|c| c.get("quality").is_some()).map(|c| (c["length_mm"].as_f64().unwrap(), c["quality"].as_u64().unwrap_or(0), c["quality_from"].as_str().unwrap_or("").to_string())).collect();
+        q.sort_by(|a, b| a.0.total_cmp(&b.0));
+        (info["data"]["technology"]["quality"].clone(), q.into_iter().map(|c| (c.1, c.2)).collect::<Vec<_>>())
+    };
+    let from = |v: &[(u64, &str)]| v.iter().map(|&(q, f)| (q, f.to_string())).collect::<Vec<_>>();
+    assert_eq!(quality(&mut s, 1), (json!("auto"), from(&[(1, "machine size band"), (2, "machine size band"), (3, "machine size band")])));
+    assert_eq!(quality(&mut s, 2), (json!(3), from(&[(1, "part size range"), (2, "part size range"), (3, "part")])));
+    assert_eq!(quality(&mut s, 3), (json!(1), from(&[(1, "part"), (1, "part"), (1, "part")])));
+
+    // And it still exports: each part's subprogram at its own codes.
+    let text = call(&mut s, "program", Some(jp), json!({"sheet": 1}))["data"].as_str().unwrap().to_string();
+    let mut subs: Vec<Vec<(u32, u32)>> = text.split("; ==== ").map(next_l_codes).filter(|c| !c.is_empty()).collect();
+    subs.sort();
+    assert_eq!(subs, vec![vec![(0, 9), (1, 1), (1, 1), (1, 1)], vec![(0, 9), (1, 1), (2, 3), (4, 2)], vec![(0, 9), (1, 1), (2, 3), (4, 2)]], "{text}");
+    let out = d.join("cnc");
+    call(&mut s, "export", Some(jp), json!({"dir": out.to_str().unwrap()}));
+
+    // Agents give a number or auto; an old name is refused with what it is now.
+    let e = err(&mut s, "tech-set", json!({"parts": "3", "quality": "fine"}));
+    assert!(e.contains("1 to 12") && e.contains("fine are 3 / auto / 1"), "{e}");
+    let e = err(&mut s, "cut-tech", json!({"mode": "ranges", "parts": "3", "ranges": "0-5:normal"}));
+    assert!(e.contains("1 to 12") && e.contains("fine are 3 / 2 / 1"), "{e}");
+    call(&mut s, "tech-set", None, json!({"parts": "3", "quality": 2}));
+    assert_eq!(quality(&mut s, 3), (json!(2), from(&[(2, "part"), (2, "part"), (2, "part")])));
+    crate::ct1::set_thread_active(None);
 }
