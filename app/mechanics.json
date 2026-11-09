@@ -4652,6 +4652,36 @@
   "group": "dxf",
   "value": "16",
   "source": "MECHANICS DX2"
+ },
+ {
+  "name": "hidden and drafting objects start as Leave out (frozen / off layers, invisible, dashed line types)",
+  "group": "dxf",
+  "value": true,
+  "source": "MECHANICS DX3"
+ },
+ {
+  "name": "objects drawn twice in the same place are cut once (grid mm)",
+  "group": "dxf",
+  "value": 0.001,
+  "source": "MECHANICS DX4"
+ },
+ {
+  "name": "export stops on a part drawn wrong (outline crosses itself, hole outside, holes overlap)",
+  "group": "verify",
+  "value": true,
+  "source": "MECHANICS VP1"
+ },
+ {
+  "name": "export stops on a lead-in that pierces off the sheet (tolerance mm)",
+  "group": "verify",
+  "value": 0.01,
+  "source": "MECHANICS VP2"
+ },
+ {
+  "name": "sheet edge is a lead obstacle",
+  "group": "leads",
+  "value": true,
+  "source": "MECHANICS VP3"
  }
 ]
 }

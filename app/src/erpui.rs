@@ -162,7 +162,8 @@ fn fetch_step(c: Box<dyn Connector>, group: Group, wo: erp::Ref, step_id: String
 pub fn part_from(ip: &ImportPart, text: &str, drawing_units: Units, color: usize) -> Result<(Part, Vec<String>), String> {
     // In mm: the file's own unit, else the integration's drawing unit.
     let d = crate::dxf::read_in(text, drawing_units.mm())?;
-    let roles: std::collections::BTreeMap<String, crate::dxf::LayerRole> = d.layers().keys().map(|l| (l.clone(), guess_role(l))).collect();
+    // DX3: what the drawing hides or draws as drafting lines stays out whatever its name.
+    let roles: std::collections::BTreeMap<String, crate::dxf::LayerRole> = d.layers().keys().map(|l| (l.clone(), if d.hidden.contains_key(l) { crate::dxf::LayerRole::Ignore } else { guess_role(l) })).collect();
     let (g, rep) = crate::dxf::build(&d, &roles)?;
     let mut notes = vec![];
     let ignored: Vec<&String> = roles.iter().filter(|(_, r)| **r == crate::dxf::LayerRole::Ignore).map(|(l, _)| l).collect();

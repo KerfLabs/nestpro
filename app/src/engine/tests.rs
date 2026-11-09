@@ -1103,3 +1103,43 @@ fn the_xml_import_names_what_a_drawing_lost_and_refuses_multi_part_files() {
     assert!(notes.contains("DEMO-2") && notes.contains("holds 2 parts"), "{notes}");
     assert_eq!(im.added, 1);
 }
+
+#[test]
+fn export_stops_on_a_part_drawn_wrong_or_a_pierce_off_the_sheet() {
+    let d = dir("stops");
+    let job = d.join("stops.snjob");
+    let jp = job.to_str().unwrap();
+    let out = d.join("cnc");
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(jp), json!({"w": 1000, "h": 500, "material": "steel", "thickness": 5}));
+
+    // MAC-46, VP2: a plate flush in the sheet's corner with no margin; its
+    // machine lead sits on that corner and can only shorten (not move), so it
+    // still starts off the sheet.
+    call(&mut s, "set-sheet", None, json!({"margin": 0}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 100, "h": 100, "qty": 1, "name": "Edge"}));
+    call(&mut s, "place", None, json!({"part": 1, "x": 0, "y": 0}));
+    call(&mut s, "leads", None, json!({"mode": "machine"}));
+    let v = call(&mut s, "verify", None, json!({}));
+    assert!(v.to_string().contains("pierces off the sheet"), "{v}");
+    let e = err(&mut s, "export", json!({"dir": out.to_str().unwrap()}));
+    assert!(e.contains("Export stopped: sheet 1") && e.contains("pierces off the sheet") && e.contains("margin"), "{e}");
+    assert!(err(&mut s, "program", json!({"sheet": 1})).contains("pierces off the sheet"));
+    // Moved in, the same part exports.
+    call(&mut s, "move", None, json!({"sheet": 1, "item": 1, "x": 50, "y": 50}));
+    call(&mut s, "export", None, json!({"dir": out.to_str().unwrap()}));
+
+    // JOB-41, VP1: a plate whose two holes overlap is refused, and so are the
+    // job's earlier programs (they'd be run by mistake).
+    let sq = "0\nLWPOLYLINE\n8\n0\n90\n4\n70\n1\n10\n0\n20\n0\n10\n200\n20\n0\n10\n200\n20\n100\n10\n0\n20\n100\n";
+    let c = |x: f64| format!("0\nCIRCLE\n8\n0\n10\n{x}\n20\n50\n30\n0\n40\n20\n");
+    let dxf = d.join("HOLES.dxf");
+    std::fs::write(&dxf, format!("0\nSECTION\n2\nENTITIES\n{sq}{}{}0\nENDSEC\n0\nEOF\n", c(80.0), c(110.0))).unwrap();
+    call(&mut s, "import-drawing", None, json!({"path": dxf.to_str().unwrap(), "qty": 1}));
+    call(&mut s, "place", None, json!({"part": 2, "x": 300, "y": 50}));
+    call(&mut s, "leads", None, json!({"mode": "machine"}));
+    let v = call(&mut s, "verify", None, json!({}));
+    assert!(v.to_string().contains("holes 1 and 2 overlap"), "{v}");
+    let e = err(&mut s, "export", json!({"dir": out.to_str().unwrap()}));
+    assert!(e.contains("part 'HOLES': holes 1 and 2 overlap") && e.contains("No program of this job is left"), "{e}");
+}

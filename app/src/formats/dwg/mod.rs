@@ -21,7 +21,6 @@ mod r2007;
 use crate::dxf::Drawing;
 use bits::Ver;
 use objects::Kind;
-use std::collections::HashMap;
 
 /// How a DWG is read. Defaults follow the original's converter settings where they
 /// matter for geometry.
@@ -83,7 +82,7 @@ pub fn read_native(bytes: &[u8], opts: &Options) -> Result<Drawing, String> {
     .map_err(|e| if e.contains("password") || e.contains("encrypted") { e } else { unreadable(e) })?;
 
     let reader = objects::Reader { buf: &layout.objects, ver, classes: layout.classes.iter().map(|c| (c.num, c.clone())).collect() };
-    let mut db = geom::Db { objs: HashMap::new(), order: vec![], layers: HashMap::new(), blocks: HashMap::new(), owned: HashMap::new() };
+    let mut db = geom::Db::default();
     let mut damaged = 0usize;
     for &(handle, off) in &layout.map {
         match reader.read(off) {

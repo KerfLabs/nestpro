@@ -77,7 +77,7 @@ pub fn xml_import(cfg: &AppSettings, lib: Option<&crate::library::Library>, path
                         }
                     });
                     match one {
-                        // Every layer cut, except a format's marking layers (the import has no layer roles).
+                        // Every layer cut, except a format's marking layers and what the drawing hides (DX3).
                         Ok(rp) => match dxf::build(&rp.drawing, &crate::formats::default_roles([&rp])) {
                             Ok((g, rep)) => {
                                 // What the drawing's import left out, named per product.

@@ -286,7 +286,8 @@ pub fn default_roles<'a>(parts: impl IntoIterator<Item = &'a ReadPart>) -> BTree
     let mut roles = BTreeMap::new();
     for p in parts {
         for l in p.drawing.layers().keys() {
-            let r = if p.mark_layers.iter().any(|m| m == l) { crate::dxf::LayerRole::Mark } else { crate::dxf::LayerRole::Cut };
+            // DX3: what the drawing hides or draws as drafting lines starts as "Leave out".
+            let r = if p.mark_layers.iter().any(|m| m == l) { crate::dxf::LayerRole::Mark } else { p.drawing.default_role(l) };
             roles.entry(l.clone()).or_insert(r);
         }
     }

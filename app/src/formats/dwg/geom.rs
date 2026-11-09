@@ -462,6 +462,7 @@ pub fn plain_text(raw: &str) -> String {
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+#[derive(Default)]
 pub struct Db {
     pub objs: HashMap<u64, Obj>,
     pub order: Vec<u64>,
@@ -470,6 +471,41 @@ pub struct Db {
     pub blocks: HashMap<u64, (String, V3)>,
     /// Owner handle → owned entity handles, in file order.
     pub owned: HashMap<u64, Vec<u64>>,
+    /// Layer name (upper case) → its state in the drawing (frozen, off, line type), DX3.
+    /// Only the DXF reader fills it; a layer not listed is on, in a solid line.
+    pub layer_info: HashMap<String, LayerInfo>,
+    /// Object handle → its own line type, when it isn't BYLAYER (DX3).
+    pub ltypes: HashMap<u64, String>,
+    /// Line types (upper case) drawn with dashes or dots, from the drawing's
+    /// line type table; `None` when it has none (every type but CONTINUOUS
+    /// then counts as broken).
+    pub broken: Option<std::collections::HashSet<String>>,
+}
+
+/// A layer as the drawing's layer table has it (DX3).
+#[derive(Default, Clone, Debug)]
+pub struct LayerInfo {
+    pub frozen: bool,
+    pub off: bool,
+    pub ltype: String,
+}
+
+/// Why the objects of a layer row start as "Leave out" (DX3): the drawing
+/// hides them, or draws them in a centre / hidden / dashed line type. Ours.
+pub fn hidden_reason(frozen: bool, off: bool, invisible: bool, ltype: Option<&str>) -> Vec<String> {
+    let mut tags = vec![];
+    if let Some(t) = ltype {
+        tags.push(t.to_string());
+    }
+    if frozen {
+        tags.push("frozen".into());
+    } else if off {
+        tags.push("off".into());
+    }
+    if invisible {
+        tags.push("invisible".into());
+    }
+    tags
 }
 
 pub struct Ctx<'a> {
@@ -486,6 +522,12 @@ pub struct Ctx<'a> {
     skip_seen: std::collections::HashSet<String>,
     /// Bytes of text made so far (texts in blocks are made once per insert).
     text_bytes: usize,
+    /// Inside a block insert: the insert's line type (for BYBLOCK objects),
+    /// and whether the insert is on a frozen layer or invisible, which hides
+    /// all it holds (DX3).
+    in_ltype: Option<String>,
+    in_frozen: bool,
+    in_invisible: bool,
 }
 
 /// Most bytes of text and layer names one drawing may make.
@@ -498,7 +540,7 @@ fn short_name(n: &str) -> String {
 
 impl<'a> Ctx<'a> {
     pub fn new(db: &'a Db, explode: bool, skip_invisible: bool) -> Ctx<'a> {
-        Ctx { db, d: Drawing::default(), explode, skip_invisible, points: 0, visits: 0, depth_hit: false, over: false, skip_seen: Default::default(), text_bytes: 0 }
+        Ctx { db, d: Drawing::default(), explode, skip_invisible, points: 0, visits: 0, depth_hit: false, over: false, skip_seen: Default::default(), text_bytes: 0, in_ltype: None, in_frozen: false, in_invisible: false }
     }
 
     /// Why the drawing can't be imported whole, if it can't.
@@ -533,6 +575,64 @@ impl<'a> Ctx<'a> {
             self.over = true;
         }
         name
+    }
+
+    /// The object's line type in force: its own, its layer's (BYLAYER, the
+    /// default) or the enclosing insert's (BYBLOCK), upper case.
+    fn ltype_of(&self, o: &Obj, layer: &str) -> String {
+        let own = self.db.ltypes.get(&o.handle).map(|t| t.to_ascii_uppercase());
+        match own.as_deref() {
+            None | Some("BYLAYER") | Some("") => self.info(layer).map(|l| l.ltype.to_ascii_uppercase()).unwrap_or_default(),
+            Some("BYBLOCK") => self.in_ltype.clone().unwrap_or_default(),
+            Some(t) => t.to_string(),
+        }
+    }
+
+    fn info(&self, layer: &str) -> Option<&LayerInfo> {
+        if self.db.layer_info.is_empty() {
+            return None;
+        }
+        self.db.layer_info.get(&layer.to_uppercase())
+    }
+
+    /// Whether a line type is drawn with dashes or dots (a centre line, a
+    /// hidden line…): such objects are drafting, not cut (DX3).
+    fn broken(&self, t: &str) -> bool {
+        if t.is_empty() || t == "CONTINUOUS" || t == "BYLAYER" || t == "BYBLOCK" {
+            return false;
+        }
+        self.db.broken.as_ref().is_none_or(|b| b.contains(t))
+    }
+
+    /// The layer row an object goes on (DX3): its layer, or "<layer> [CENTER]",
+    /// "<layer> [frozen]", "<layer> [CENTER/invisible]"… for objects the drawing hides
+    /// or draws as drafting lines. Those rows start as "Leave out".
+    fn row(&mut self, o: &Obj, layer: &str) -> String {
+        let info = self.info(layer).cloned().unwrap_or_default();
+        let t = self.ltype_of(o, layer);
+        let lt = self.broken(&t).then_some(t.as_str());
+        let tags = hidden_reason(info.frozen || self.in_frozen, info.off, o.invisible || self.in_invisible, lt);
+        if tags.is_empty() {
+            return layer.to_string();
+        }
+        // Joined by "/" (agents list layers split by commas).
+        let row = format!("{layer} [{}]", tags.join("/"));
+        if !self.d.hidden.contains_key(&row) {
+            let mut why = vec![];
+            if let Some(t) = lt {
+                why.push(format!("drawn in the {t} line type"));
+            }
+            if info.frozen || self.in_frozen {
+                why.push("layer frozen in the drawing".into());
+            } else if info.off {
+                why.push("layer turned off in the drawing".into());
+            }
+            if o.invisible || self.in_invisible {
+                why.push("invisible in the drawing".into());
+            }
+            self.d.hidden.insert(row.clone(), why.join(", "));
+        }
+        row
     }
 
     /// How many more points the drawing may have.
@@ -642,7 +742,8 @@ impl<'a> Ctx<'a> {
         if self.skip_invisible && o.invisible {
             return;
         }
-        let layer = self.layer_name(o, inherit);
+        let lname = self.layer_name(o, inherit);
+        let layer = self.row(o, &lname);
         let sc = m.scale();
         let mut counted = true;
         match &o.kind {
@@ -753,6 +854,11 @@ impl<'a> Ctx<'a> {
                     self.over = true;
                     return;
                 }
+                // DX3: what the insert hides or draws in its line type, its contents do.
+                let ins_lt = self.ltype_of(o, &lname);
+                let saved = (self.in_ltype.replace(ins_lt), self.in_frozen, self.in_invisible);
+                self.in_frozen |= self.info(&lname).is_some_and(|l| l.frozen);
+                self.in_invisible |= o.invisible;
                 for ri in 0..rows {
                     for ci in 0..cols {
                         // Over a limit: stop expanding at once (the drawing is refused).
@@ -778,11 +884,12 @@ impl<'a> Ctx<'a> {
                                 if matches!(child.kind, Kind::Vertex { .. } | Kind::BlockHeader { .. } | Kind::Layer { .. } | Kind::Other) {
                                     continue;
                                 }
-                                self.entity(child, &mm, Some(&layer), depth + 1);
+                                self.entity(child, &mm, Some(&lname), depth + 1);
                             }
                         }
                     }
                 }
+                (self.in_ltype, self.in_frozen, self.in_invisible) = saved;
             }
             Kind::Skip { name, annotation } => {
                 counted = false;

@@ -157,12 +157,12 @@ pub static OPS: &[Op] = &[
     Op { name: "import-program", group: "Job", kind: Kind::Create, help: "Open a BLM LC5 machine program set (<NEST>.zip, its .XML, or a Lantek .nxp) as a new editable job: its parts, where they sit, the sheet, material and thickness, and the cut-off as a remnant line.", args: &[
         r("path", Ty::Path, "The program set (.zip / .XML / .nxp)"), a("force", Ty::Bool, "Overwrite the job file if it exists"),
     ] },
-    Op { name: "drawing-layers", group: "Parts", kind: Kind::Global, help: "List a part drawing's layers (DXF/DWG layers, IGES levels, DSTV blocks, ESSI cut/mark…) and how many objects each holds, before importing it. Also answers to dxf-layers.", args: &[
+    Op { name: "drawing-layers", group: "Parts", kind: Kind::Global, help: "List a part drawing's layers (DXF/DWG layers, IGES levels, DSTV blocks, ESSI cut/mark…) and how many objects each holds, before importing it. Objects the drawing hides (frozen or off layers, invisible) or draws in a centre / hidden / dashed line type get their own row, such as `0 [CENTER]`, that starts as left out. Also answers to dxf-layers.", args: &[
         r("path", Ty::Path, "The drawing file"), c("format", FORMATS, "Read the file as this format (default: by its extension and content)"),
         c("dialect", &["ESSI", "BURNY", "ESAB", "MESSER", "VULCAN"], "ESSI programs: the cutting control's dialect (default: by extension)"),
         c("pdf_layers", &["colour", "pdf", "one"], "PDF drawings: layers by line colour (default), by the PDF's own layers, or all on one layer"),
     ] },
-    Op { name: "import-drawing", group: "Parts", kind: Kind::Write, help: "Import part drawings as parts: DXF, DWG, Lantek MEC, IGES, PDF, ESSI, DSTV (NC1) or GEO, picked by extension and content. Every layer is cut unless `layers` says otherwise (a format's marking layers start as mark). Quantity comes from `qty`, else the file's own part data, else the file name (Settings → name format); a file holding several parts gives several parts. Also answers to import-dxf.", args: &[
+    Op { name: "import-drawing", group: "Parts", kind: Kind::Write, help: "Import part drawings as parts: DXF, DWG, Lantek MEC, IGES, PDF, ESSI, DSTV (NC1) or GEO, picked by extension and content. Every layer is cut unless `layers` says otherwise (a format's marking layers start as mark; rows like `0 [CENTER]` or `HOLES [frozen]` — what the drawing hides or draws as centre / dashed lines — start as left out, `layers=0 [CENTER]=cut` cuts them). An object drawn twice in the same place is cut once. Quantity comes from `qty`, else the file's own part data, else the file name (Settings → name format); a file holding several parts gives several parts. Also answers to import-dxf.", args: &[
         r("path", Ty::Path, "Drawing file, or several separated by ';'"), c("format", FORMATS, "Read every file as this format (default: by extension and content)"),
         c("dialect", &["ESSI", "BURNY", "ESAB", "MESSER", "VULCAN"], "ESSI programs: the cutting control's dialect (default: by extension — .MPG ESAB, .LOS MESSER, .DAT VULCAN, else ESSI)"),
         a("scale", Ty::Num, "PDF drawings: the drawing's scale, real size = drawing size × scale (4 for a 1:4 drawing; default 1)"),
@@ -1029,9 +1029,12 @@ pub fn run_global(ctx: &Ctx, name: &str, args: &Value) -> Result<Outcome, String
                 })
                 .collect();
             let first = sizes.first().and_then(|v| Some((v["w"].as_f64()?, v["h"].as_f64()?))).map_or(String::new(), |(w, h)| format!(", {w} × {h} mm"));
+            // DX3: rows that start as "Leave out", with why.
+            let hidden: BTreeMap<String, String> = parts.iter().flat_map(|p| p.drawing.hidden.clone()).collect();
             let data = json!({
                 "layers": layers,
                 "default_roles": roles.iter().map(|(k, v)| (k.clone(), v.label())).collect::<BTreeMap<_, _>>(),
+                "left_out_by_default": hidden,
                 "parts": parts.len(),
                 "sizes": sizes,
             });
@@ -2225,6 +2228,11 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
         "program" => {
             let s = sheet_idx(job, &a)?;
             let plans = job.plans();
+            // JOB-41, MAC-46: the same stop as export.
+            let stops = stop_issues(&job.parts, &job.sheets[s], &job.spec_at(s), &plans[s]);
+            if !stops.is_empty() {
+                return Err(stop_refusal(s + 1, &stops));
+            }
             let text = if ctx.blm.on {
                 let set = crate::blm::sheet_set(s + 1, &job.parts, &job.sheets[s], &job.spec_at(s), &plans[s], job.cuts(s), &blm_for(&job.spec, &ctx.blm, &job.name, &ctx.cfg));
                 // BL39: the same refusal as export.

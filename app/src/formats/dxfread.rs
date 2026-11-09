@@ -164,9 +164,45 @@ impl Builder {
         if let Some(o) = owner {
             self.db.owned.entry(o).or_default().push(handle);
         }
+        // DX3: the object's own line type (6), when it isn't its layer's.
+        if let Some(t) = r.s(6).map(str::trim).filter(|t| !t.is_empty() && !t.eq_ignore_ascii_case("BYLAYER")) {
+            self.db.ltypes.insert(handle, t.to_string());
+        }
         self.db.order.push(handle);
         self.db.objs.insert(handle, Obj { handle, kind, entmode, owner, layer, invisible, next: None });
         handle
+    }
+
+    /// The drawing's layer and line type tables (DX3): which layers are frozen
+    /// or off, each layer's line type, and which line types have dashes.
+    fn tables(&mut self, recs: &[Rec]) {
+        let mut broken = std::collections::HashSet::new();
+        let mut any_ltype = false;
+        for r in recs {
+            match r.name {
+                "LTYPE" => {
+                    any_ltype = true;
+                    // 73 = number of dash elements; 0 is a solid line.
+                    if let Some(n) = r.s(2).filter(|_| r.i(73) > 0) {
+                        broken.insert(n.trim().to_ascii_uppercase());
+                    }
+                }
+                "LAYER" => {
+                    let Some(name) = r.s(2) else { continue };
+                    let info = super::dwg::geom::LayerInfo {
+                        frozen: r.i(70) & 1 != 0,
+                        // A negative colour number is how a layer is turned off.
+                        off: r.i(62) < 0,
+                        ltype: r.s(6).unwrap_or("").trim().to_string(),
+                    };
+                    self.db.layer_info.insert(name.chars().take(255).collect::<String>().to_uppercase(), info);
+                }
+                _ => {}
+            }
+        }
+        if any_ltype {
+            self.db.broken = Some(broken);
+        }
     }
 
     /// The objects of one section; `owner` = the block they belong to, if any.
@@ -390,7 +426,10 @@ fn header_units(pairs: &[(i32, &str)]) -> Option<f64> {
 
 pub fn read(pairs: &[(i32, &str)], opts: &Options) -> Result<Drawing, String> {
     let start = section(pairs, "ENTITIES").ok_or("This file has no drawing (ENTITIES section) — is it an ASCII DXF?")?;
-    let mut b = Builder { db: Db { objs: HashMap::new(), order: vec![], layers: HashMap::new(), blocks: HashMap::new(), owned: HashMap::new() }, next: 0, layer_ids: HashMap::new(), block_ids: HashMap::new() };
+    let mut b = Builder { db: Db::default(), next: 0, layer_ids: HashMap::new(), block_ids: HashMap::new() };
+    if let Some(ts) = section(pairs, "TABLES") {
+        b.tables(&records(pairs, ts));
+    }
     if let Some(bs) = section(pairs, "BLOCKS") {
         b.entities(&records(pairs, bs), None, true);
     }
@@ -626,5 +665,78 @@ mod tests {
         assert_eq!(d.texts.len(), 1);
         assert_eq!(d.texts[0].1, "DEMO-001");
         assert!(d.report.skipped.is_empty(), "{:?}", d.report.skipped);
+    }
+
+    /// A 100 × 100 square on layer 0 and a Ø10 circle at x, with extra codes.
+    fn square() -> String {
+        "0\nLWPOLYLINE\n8\n0\n90\n4\n70\n1\n10\n0\n20\n0\n10\n100\n20\n0\n10\n100\n20\n100\n10\n0\n20\n100\n".to_string()
+    }
+    fn circle(x: f64, layer: &str, extra: &str) -> String {
+        format!("0\nCIRCLE\n8\n{layer}\n{extra}10\n{x}\n20\n50\n30\n0\n40\n5\n")
+    }
+
+    #[test]
+    fn what_the_drawing_hides_or_draws_as_centre_lines_starts_left_out() {
+        // DX3: line types (CENTER has dashes, SOLIDX none) and layers (CL drawn in
+        // CENTER, OFFL turned off, FRZ frozen) from the drawing's tables.
+        let tables = "0\nSECTION\n2\nTABLES\n0\nTABLE\n2\nLTYPE\n\
+0\nLTYPE\n2\nCONTINUOUS\n70\n0\n73\n0\n0\nLTYPE\n2\nCENTER\n70\n0\n73\n4\n0\nLTYPE\n2\nSOLIDX\n70\n0\n73\n0\n0\nENDTAB\n\
+0\nTABLE\n2\nLAYER\n0\nLAYER\n2\n0\n70\n0\n62\n7\n6\nCONTINUOUS\n0\nLAYER\n2\nCL\n70\n0\n62\n1\n6\nCENTER\n\
+0\nLAYER\n2\nOFFL\n70\n0\n62\n-7\n6\nCONTINUOUS\n0\nLAYER\n2\nFRZ\n70\n1\n62\n7\n6\nCONTINUOUS\n0\nENDTAB\n0\nENDSEC\n";
+        // A bolt circle as a block: its circle is BYBLOCK, the insert is CENTER.
+        let blocks = "0\nBLOCK\n8\n0\n2\nBOLT\n70\n0\n10\n0\n20\n0\n30\n0\n0\nCIRCLE\n8\n0\n6\nBYBLOCK\n10\n0\n20\n0\n30\n0\n40\n8\n0\nENDBLK\n";
+        let ents = [
+            square(),
+            circle(15.0, "0", "6\nCENTER\n"),
+            circle(30.0, "CL", ""),
+            circle(45.0, "OFFL", ""),
+            circle(60.0, "FRZ", ""),
+            circle(75.0, "0", "60\n1\n"),
+            circle(90.0, "0", "6\nSOLIDX\n"),
+            "0\nINSERT\n8\n0\n6\nCENTER\n2\nBOLT\n10\n50\n20\n20\n30\n0\n".to_string(),
+        ]
+        .concat();
+        let text = format!("{tables}{}", dxf(blocks, &ents));
+        let d = read(&text).unwrap();
+        let rows: Vec<&String> = d.hidden.keys().collect();
+        assert_eq!(rows, ["0 [CENTER]", "0 [invisible]", "CL [CENTER]", "FRZ [frozen]", "OFFL [off]"], "{:?}", d.layers());
+        assert_eq!(d.layers().get("0 [CENTER]"), Some(&2), "the CENTER circle and the bolt circle");
+        assert!(d.hidden["FRZ [frozen]"].contains("frozen"));
+        // Left out unless asked: the square and the solid circle are cut.
+        let (g, rep) = build(&d, &BTreeMap::new()).unwrap();
+        assert_eq!(g.holes.len(), 1, "only the SOLIDX circle is a hole");
+        let out: usize = rep.hidden_left_out.iter().map(|x| x.1).sum();
+        assert_eq!(out, 6, "{:?}", rep.hidden_left_out);
+        let notes = crate::engine::import_notes("DEMO-001", &rep);
+        assert!(notes.iter().any(|n| n.contains("centre / dashed") && n.contains("'0 [CENTER]'")), "{notes:?}");
+        // Set to Cut, a row is cut like any layer.
+        let roles: BTreeMap<String, crate::dxf::LayerRole> = [("0 [CENTER]".to_string(), crate::dxf::LayerRole::Cut)].into();
+        assert_eq!(build(&d, &roles).unwrap().0.holes.len(), 3, "the solid circle, the CENTER circle and the bolt circle");
+        // The same file without tables: any line type but CONTINUOUS is broken.
+        let bare = read(&dxf(blocks, &ents)).unwrap();
+        assert!(bare.hidden.contains_key("0 [SOLIDX]") && bare.hidden.contains_key("0 [CENTER]"), "{:?}", bare.hidden);
+        assert!(!bare.hidden.keys().any(|k| k.starts_with("FRZ") || k.starts_with("OFFL")));
+    }
+
+    #[test]
+    fn an_object_drawn_twice_is_cut_once() {
+        // DX4: the same hole twice (once as a circle, once as the same circle
+        // drawn the other way round on another layer) and one edge drawn twice.
+        let line = |a: [f64; 2], b: [f64; 2]| format!("0\nLINE\n8\n0\n10\n{}\n20\n{}\n11\n{}\n21\n{}\n", a[0], a[1], b[0], b[1]);
+        let ents = [
+            line([0.0, 0.0], [100.0, 0.0]),
+            line([100.0, 0.0], [100.0, 100.0]),
+            line([100.0, 100.0], [0.0, 100.0]),
+            line([0.0, 100.0], [0.0, 0.0]),
+            line([100.0, 0.0], [0.0, 0.0]),
+            circle(50.0, "0", ""),
+            circle(50.0, "HOLES", ""),
+        ]
+        .concat();
+        let d = read(&dxf("", &ents)).unwrap();
+        let (g, rep) = build(&d, &BTreeMap::new()).unwrap();
+        assert_eq!((g.holes.len(), rep.duplicates, rep.open_pieces), (1, 2, 0), "{rep:?}");
+        assert!((g.w - 100.0).abs() < 1e-9 && (g.h - 100.0).abs() < 1e-9);
+        assert!(crate::engine::import_notes("DEMO-001", &rep).iter().any(|n| n.contains("2 object(s) drawn twice")));
     }
 }
