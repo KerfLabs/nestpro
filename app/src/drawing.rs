@@ -26,8 +26,11 @@ pub const C_MARK: [u8; 3] = [0, 255, 0];
 pub const C_DONE: [u8; 3] = [0, 200, 0];
 /// Drawing background (near-black navy, as in the original).
 pub const C_BACKGROUND: [u8; 3] = [0, 0, 16];
-/// Simulation: seconds per contour when running.
-pub const SIM_STEP_S: f64 = 0.7;
+/// The part's simulation speeds, × real time: slower than the sheet's, so a
+/// lead-in can be followed into its contour (our choice).
+pub const PART_SIM_SPEEDS: [f64; 5] = [0.1, 0.25, 0.5, 1.0, 5.0];
+/// The part's default simulation speed: real time.
+pub const PART_SIM_SPEED: f64 = 1.0;
 /// Snap aperture for the measuring tool (screen px).
 pub const SNAP_PX: f32 = 10.0;
 
@@ -89,12 +92,15 @@ pub struct DrawView {
     pub measure: Vec<P>,
     pub zoom_window: bool,
     pub full_screen: bool,
-    /// Simulation: how many contours are cut so far.
-    pub sim: Option<usize>,
+    /// Simulation: seconds into the part's program (None = not simulating).
+    pub sim: Option<f64>,
     pub sim_run: bool,
     pub sim_last: f64,
-    /// Seconds per contour while the simulation runs (the Speed group).
-    pub sim_step: f64,
+    /// Simulation speed, × real time (the Speed group).
+    pub sim_speed: f64,
+    /// Bring the head into view on the next frame (after Beginning,
+    /// Previous, Next or End, when zoomed in).
+    pub sim_follow: bool,
     pub cursor: Option<P>,
 }
 
@@ -122,7 +128,8 @@ impl Default for DrawView {
             sim: None,
             sim_run: false,
             sim_last: 0.0,
-            sim_step: SIM_STEP_S,
+            sim_speed: PART_SIM_SPEED,
+            sim_follow: false,
             cursor: None,
         }
     }
@@ -975,34 +982,40 @@ impl App {
     }
 
     fn ribbon_draw_sim(&mut self, ui: &mut egui::Ui) {
-        let n = self.shown_part().map_or(0, |i| {
-            let g = self.parts[i].geometry();
-            g.holes.len() + 1
-        });
-        let on = self.dv.machining;
+        // The part's program, played like the sheet's: the head moves along
+        // each beam run (pierce, lead-in, contour, lead-out) in real time.
+        let (ops, n) = self.part_sim_ops();
+        let total: f64 = ops.iter().map(|o| o.secs).sum();
+        let on = self.dv.machining && !ops.is_empty();
+        let now = ui.input(|i| i.time);
         ribbon_group(ui, "Simulate", |ui| {
-            let k = self.dv.sim.unwrap_or(0);
+            let t = self.dv.sim.unwrap_or(0.0);
             if ribbon_button(ui, Icon::SkipStart, "Beginning", false, on).clicked() {
-                self.dv.sim = Some(0);
+                self.dv.sim = Some(0.0);
                 self.dv.sim_run = false;
+                self.dv.sim_follow = true;
             }
-            if ribbon_button(ui, Icon::StepBack, "Previous", false, on && k > 0).clicked() {
-                self.dv.sim = Some(k.saturating_sub(1));
+            if ribbon_button(ui, Icon::StepBack, "Previous", false, on && t > 0.0).on_hover_text("Back to the previous pierce").clicked() {
+                self.dv.sim = Some(crate::sheetsim::step_time(&ops, t, -1));
                 self.dv.sim_run = false;
+                self.dv.sim_follow = true;
             }
             if ribbon_button_ex(ui, if self.dv.sim_run { Icon::Pause } else { Icon::Play }, if self.dv.sim_run { "Pause" } else { "Run" }, self.dv.sim_run, on, true).clicked() {
-                if self.dv.sim.is_none_or(|s| s >= n) {
-                    self.dv.sim = Some(0);
+                if self.dv.sim.is_none_or(|s| s >= total - 1e-6) {
+                    self.dv.sim = Some(0.0);
                 }
                 self.dv.sim_run = !self.dv.sim_run;
+                self.dv.sim_last = now;
             }
-            if ribbon_button(ui, Icon::StepFwd, "Next", false, on && k < n).clicked() {
-                self.dv.sim = Some((k + 1).min(n));
+            if ribbon_button(ui, Icon::StepFwd, "Next", false, on && t < total - 1e-6).on_hover_text("On to the next pierce").clicked() {
+                self.dv.sim = Some(crate::sheetsim::step_time(&ops, t, 1));
                 self.dv.sim_run = false;
+                self.dv.sim_follow = true;
             }
             if ribbon_button(ui, Icon::SkipEnd, "End", false, on).clicked() {
-                self.dv.sim = Some(n);
+                self.dv.sim = Some(total);
                 self.dv.sim_run = false;
+                self.dv.sim_follow = true;
             }
             if ribbon_button(ui, Icon::Stop, "Stop", false, self.dv.sim.is_some()).clicked() {
                 self.dv.sim = None;
@@ -1011,25 +1024,24 @@ impl App {
             ui.vertical(|ui| {
                 ui.add_space(10.0);
                 let txt = match self.dv.sim {
-                    Some(k) => format!("{k} of {n} contours cut"),
+                    Some(t) => format!("{} of {n} contours cut", crate::sheetsim::contours_done(&ops, n, t)),
                     None => format!("{n} contours"),
                 };
                 ui.label(RichText::new(txt).size(12.0).color(th().text_dim));
+                if let Some(t) = self.dv.sim {
+                    ui.label(RichText::new(format!("{t:.1} of {total:.1} s")).size(12.0).color(th().text_dim));
+                }
             });
         });
-        // The same Speed group as the sheet's simulation, in contours per second.
+        // Like the sheet's Speed group (× real time), with slow motion.
         ribbon_group(ui, "Speed", |ui| {
             ui.vertical(|ui| {
                 ui.add_space(8.0);
-                let label = |s: f64| match s {
-                    s if s >= 1.4 => "Slow",
-                    s if s >= 0.6 => "Normal",
-                    _ => "Fast",
-                };
-                egui::ComboBox::from_id_salt("part_sim_speed").width(90.0).selected_text(label(self.dv.sim_step)).show_ui(ui, |ui| {
-                    for (s, t) in [(1.5, "Slow — a contour every 1.5 s"), (SIM_STEP_S, "Normal — every 0.7 s"), (0.25, "Fast — every 0.25 s")] {
-                        if ui.selectable_label((self.dv.sim_step - s).abs() < 1e-9, t).clicked() {
-                            self.dv.sim_step = s;
+                let label = |s: f64| if s < 1.0 { format!("{s}× real time") } else { format!("{s:.0}× real time") };
+                egui::ComboBox::from_id_salt("part_sim_speed").width(110.0).selected_text(label(self.dv.sim_speed)).show_ui(ui, |ui| {
+                    for s in PART_SIM_SPEEDS {
+                        if ui.selectable_label((self.dv.sim_speed - s).abs() < 1e-9, label(s)).clicked() {
+                            self.dv.sim_speed = s;
                         }
                     }
                 });
@@ -1092,20 +1104,19 @@ impl App {
         self.missing_group(ui);
     }
 
-    /// Simulation: advance while running.
-    pub fn sim_tick(&mut self, now: f64, n: usize, ctx: &egui::Context) {
+    /// Simulation: advance the part's program clock while running (the
+    /// program lasts `total` seconds at real time).
+    pub fn sim_tick(&mut self, now: f64, total: f64, ctx: &egui::Context) {
         if !self.dv.sim_run {
             return;
         }
         ctx.request_repaint();
-        if now - self.dv.sim_last >= self.dv.sim_step {
-            self.dv.sim_last = now;
-            let k = self.dv.sim.unwrap_or(0) + 1;
-            self.dv.sim = Some(k.min(n));
-            if k >= n {
-                self.dv.sim_run = false;
-                self.status = format!("Simulation finished: {n} contours cut.");
-            }
+        let t = (self.dv.sim.unwrap_or(0.0) + (now - self.dv.sim_last).clamp(0.0, 0.25) * self.dv.sim_speed).min(total);
+        self.dv.sim_last = now;
+        self.dv.sim = Some(t);
+        if t >= total {
+            self.dv.sim_run = false;
+            self.status = format!("Simulation finished: {total:.1} s of machining.");
         }
     }
 

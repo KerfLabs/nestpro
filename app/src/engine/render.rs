@@ -220,7 +220,7 @@ fn draw_plan(sc: &mut Scene, plan: &SheetPlan, numbers: bool) {
             let p = c.lead_in;
             sc.label(&(k + 1).to_string(), [p[0], p[1] + 9.0 / sc.scale], 9.0, LEAD);
         }
-        at = Some(c.lead_out.unwrap_or(c.points[0]));
+        at = Some(if c.punch.is_some() { c.punch.as_ref().and_then(|p| p.hits.last().copied()).unwrap_or(c.lead_in) } else { cnc::beam_end(c) });
     }
     for (_, m) in &plan.marks {
         sc.line(m.clone(), false, MARK, 1.2);
