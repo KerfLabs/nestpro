@@ -38,6 +38,23 @@ const CUTLINE: Rgba = [192, 38, 211, 255];
 const REMNANT: Rgba = [134, 239, 172, 120];
 const MARK: Rgba = [8, 145, 178, 255];
 const ELEM: Rgba = [29, 78, 216, 255];
+/// No cut contours and Bend lines (CS3): drawn, never machined.
+const NO_CUT: Rgba = [148, 163, 184, 255];
+const BEND: Rgba = [147, 51, 234, 255];
+
+/// A part's No cut contours (thin) and Bend lines (dashed), each point taken
+/// through `map` (CS3).
+fn draw_shown_only(sc: &mut Scene, part: &nest::Part, map: impl Fn(P) -> P) {
+    let Some(c) = &part.custom else { return };
+    for shown in c.shown_only() {
+        let pts: Vec<P> = shown.path().into_iter().map(&map).collect();
+        if shown.state == crate::dxf::ContourState::BendLine {
+            sc.dashed(pts, BEND, 1.2);
+        } else {
+            sc.line(pts, false, NO_CUT, 0.8);
+        }
+    }
+}
 
 fn part_rgba(color: usize, a: u8) -> Rgba {
     let (r, g, b) = crate::ui_parts::PALETTE[color % crate::ui_parts::PALETTE.len()];
@@ -263,6 +280,7 @@ pub fn sheet_scene(job: &JobFile, k: usize, width_px: u32, path: bool) -> Result
         for h in holes {
             sc.line(h, true, INK, 0.8);
         }
+        draw_shown_only(&mut sc, &job.parts[pl.part], |q| pl.map(q));
     }
     if path {
         let plans = job.plans();
@@ -297,6 +315,7 @@ pub fn part_scene(job: &JobFile, i: usize, width_px: u32, path: bool) -> Scene {
     for hh in &g.holes {
         sc.line(hh.clone(), true, INK, 1.2);
     }
+    draw_shown_only(&mut sc, p, |q| q);
     for t in &p.texts {
         let col = if t.kind.machined() { MARK } else { [100, 116, 139, 255] };
         for s in t.strokes(&t.text) {

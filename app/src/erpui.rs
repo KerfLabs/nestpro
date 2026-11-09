@@ -171,7 +171,10 @@ pub fn part_from(ip: &ImportPart, text: &str, drawing_units: Units, color: usize
         notes.push(format!("{}: layer(s) {} left out", ip.name, ignored.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")));
     }
     if rep.open_pieces > 0 {
-        notes.push(format!("{}: {} open piece(s) left out", ip.name, rep.open_pieces));
+        notes.push(format!("{}: {} open piece(s) off the part left out", ip.name, rep.open_pieces));
+    }
+    if rep.open_kept > 0 {
+        notes.push(format!("{}: {} open line(s) kept on the part as Bend line or No cut, never cut", ip.name, rep.open_kept));
     }
     if rep.outside_loops > 0 {
         notes.push(format!("{}: {} outline(s) outside the part left out", ip.name, rep.outside_loops));
