@@ -625,13 +625,156 @@ pub fn read_with(text: &str, opts: &crate::formats::dxfread::Options) -> Result<
     crate::formats::dxfread::read(&pairs, opts)
 }
 
+/// Where three or more piece ends meet (within 0.01 mm), the ends alone don't
+/// say which way a contour goes on: a line across the part ending on the
+/// outline's corners could take a corner's place in the outline (CS2). For
+/// each group of pieces joined through such a point, the outside boundary is
+/// taken as the closed contour, walked from the group's lowest point keeping
+/// the outside on the right (always the rightmost turn); the pieces inside it
+/// are left to join as usual, so they stay open lines. Returns the pieces left
+/// to join, in drawing order: all of them when no three ends meet anywhere, so
+/// such drawings join exactly as before.
+fn take_branch_boundaries(open: Vec<Vec<P>>, loops: &mut Vec<Vec<P>>) -> Result<Vec<Vec<P>>, String> {
+    use std::f64::consts::{FRAC_PI_2, PI, TAU};
+    let eps = JOIN_TOL;
+    // Piece ends filed into points (nodes).
+    let mut nodes: Vec<P> = vec![];
+    let mut grid = EndGrid::new(eps);
+    let mut ends: Vec<Option<[usize; 2]>> = Vec::with_capacity(open.len());
+    for c in &open {
+        if c.len() < 2 || !c.iter().all(|p| p[0].is_finite() && p[1].is_finite()) {
+            ends.push(None);
+            continue;
+        }
+        let mut pair = [0; 2];
+        for (j, p) in [c[0], c[c.len() - 1]].into_iter().enumerate() {
+            let found = grid.first(p, |_| true, |n| close(nodes[n], p, eps));
+            if grid.work > JOIN_WORK {
+                return Err(join_too_complex());
+            }
+            pair[j] = match found {
+                Some(n) => n,
+                None => {
+                    nodes.push(p);
+                    grid.add(p, nodes.len() - 1);
+                    nodes.len() - 1
+                }
+            };
+        }
+        ends.push(Some(pair));
+    }
+    let mut at: Vec<Vec<(usize, bool)>> = vec![vec![]; nodes.len()];
+    for (k, e) in ends.iter().enumerate() {
+        if let Some([a, b]) = *e {
+            at[a].push((k, true));
+            at[b].push((k, false));
+        }
+    }
+    if at.iter().all(|h| h.len() < 3) {
+        return Ok(open);
+    }
+    // Groups of pieces joined through their ends; each group's lowest (then
+    // leftmost) point.
+    fn root(parent: &mut [usize], mut x: usize) -> usize {
+        while parent[x] != x {
+            parent[x] = parent[parent[x]];
+            x = parent[x];
+        }
+        x
+    }
+    let mut parent: Vec<usize> = (0..nodes.len()).collect();
+    for [a, b] in ends.iter().flatten().copied() {
+        let (ra, rb) = (root(&mut parent, a), root(&mut parent, b));
+        parent[ra] = rb;
+    }
+    let mut lowest: BTreeMap<usize, usize> = BTreeMap::new();
+    let mut branched: std::collections::BTreeSet<usize> = Default::default();
+    for n in 0..nodes.len() {
+        let r = root(&mut parent, n);
+        if at[n].len() >= 3 {
+            branched.insert(r);
+        }
+        let low = lowest.entry(r).or_insert(n);
+        if nodes[n][1] < nodes[*low][1] || (nodes[n][1] == nodes[*low][1] && nodes[n][0] < nodes[*low][0]) {
+            *low = n;
+        }
+    }
+    // The direction a piece leaves a node by, and arrives at its far end by.
+    let leave = |(k, from_start): (usize, bool)| {
+        let c = &open[k];
+        let (p, q) = if from_start { (c[0], c[1]) } else { (c[c.len() - 1], c[c.len() - 2]) };
+        (q[1] - p[1]).atan2(q[0] - p[0])
+    };
+    let arrive = |(k, from_start): (usize, bool)| {
+        let c = &open[k];
+        let (p, q) = if from_start { (c[c.len() - 2], c[c.len() - 1]) } else { (c[1], c[0]) };
+        (q[1] - p[1]).atan2(q[0] - p[0])
+    };
+    let far = |(k, from_start): (usize, bool)| ends[k].map_or(0, |e| if from_start { e[1] } else { e[0] });
+    let mut taken = vec![false; open.len()];
+    for r in branched {
+        let start = lowest[&r];
+        // Walk round the outside, as if arriving at the lowest point from below.
+        let (mut v, mut heading, mut came) = (start, FRAC_PI_2, None::<(usize, bool)>);
+        let mut walk: Vec<(usize, bool)> = vec![];
+        let ok = loop {
+            let back = heading + PI;
+            let turn = |h: (usize, bool)| match (leave(h) - back).rem_euclid(TAU) {
+                a if a < 1e-12 => TAU,
+                a => a,
+            };
+            let rev = came.map(|(k, s)| (k, !s));
+            let next = at[v].iter().copied().filter(|h| Some(*h) != rev).min_by(|a, b| turn(*a).total_cmp(&turn(*b))).or(rev);
+            let Some(h) = next else { break false };
+            if walk.first() == Some(&h) {
+                break true;
+            }
+            walk.push(h);
+            if walk.len() > 2 * open.len() + 2 {
+                break false;
+            }
+            (v, heading, came) = (far(h), arrive(h), Some(h));
+        };
+        // Pieces walked twice stick out of the boundary (or join two parts of
+        // it); the ones walked once are the boundary.
+        let mut times: BTreeMap<usize, usize> = BTreeMap::new();
+        for h in &walk {
+            *times.entry(h.0).or_insert(0) += 1;
+        }
+        let once: Vec<(usize, bool)> = walk.iter().copied().filter(|h| times[&h.0] == 1).collect();
+        let joined = |i: usize| far(once[i]) == far((once[(i + 1) % once.len()].0, !once[(i + 1) % once.len()].1));
+        if !ok || once.is_empty() || !(0..once.len()).all(joined) {
+            continue;
+        }
+        let mut ring: Vec<P> = vec![];
+        for &(k, from_start) in &once {
+            let mut c = open[k].clone();
+            if !from_start {
+                c.reverse();
+            }
+            let skip = usize::from(!ring.is_empty());
+            ring.extend(c.into_iter().skip(skip));
+        }
+        ring.pop();
+        if ring.len() >= 3 {
+            loops.push(ring);
+            for &(k, _) in &once {
+                taken[k] = true;
+            }
+        }
+    }
+    Ok(open.into_iter().zip(taken).filter(|(_, t)| !t).map(|(c, _)| c).collect())
+}
+
 /// Join open pieces end to end into closed loops (added to `loops`): first
 /// within 0.01 mm; then (IM8) only the chains still open get gaps up to 0.5 mm
 /// closed, so a contour that closes on its own never loses a piece to a nearby
 /// loose line. Piece ends are filed in a grid, so joining stays in step with
 /// the drawing's size; the piece chosen is the same as a plain search would
-/// choose. Returns the chains that stay open.
-fn join_pieces(mut open: Vec<Vec<P>>, loops: &mut Vec<Vec<P>>, report: &mut ImportReport) -> Result<Vec<Vec<P>>, String> {
+/// choose. Where three or more ends meet, the outside boundary closes first
+/// (`take_branch_boundaries`). Returns the chains that stay open.
+fn join_pieces(pieces: Vec<Vec<P>>, loops: &mut Vec<Vec<P>>, report: &mut ImportReport) -> Result<Vec<Vec<P>>, String> {
+    let mut open = take_branch_boundaries(pieces, loops)?;
     let eps = JOIN_TOL;
     let mut left: Vec<Vec<P>> = vec![];
     {

@@ -1351,3 +1351,43 @@ fn open_lines_start_by_layer_line_type_and_shape() {
     assert_eq!((got.get(&160).map(String::as_str), got.get(&30).map(String::as_str)), (Some("cut"), Some("bend-line")), "{got:?}");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn a_line_across_corners_stays_a_bend_line_and_the_outline_stays_whole() {
+    // S1: a 200 × 100 plate drawn as four lines, with a straight line on the
+    // same layer ending on its corners (or one corner and the far edge). The
+    // outline is the whole rectangle and the line a Bend line, whatever order
+    // the drawing lists them in.
+    let d = dir("contour_branch");
+    let job = d.join("plate.snjob");
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "steel", "thickness": 3}));
+    let line = |a: [f64; 2], b: [f64; 2]| format!("0\nLINE\n8\n0\n10\n{}\n20\n{}\n11\n{}\n21\n{}\n", a[0], a[1], b[0], b[1]);
+    let edges = [line([0.0, 0.0], [200.0, 0.0]), line([200.0, 0.0], [200.0, 100.0]), line([200.0, 100.0], [0.0, 100.0]), line([0.0, 100.0], [0.0, 0.0])];
+    let corner_to_corner = line([0.0, 0.0], [200.0, 100.0]);
+    let corner_to_edge = line([0.0, 0.0], [200.0, 50.0]);
+    let cases = [(&corner_to_corner, 0, 224), (&corner_to_corner, 2, 224), (&corner_to_corner, 4, 224), (&corner_to_edge, 0, 206), (&corner_to_edge, 4, 206)];
+    for (n, (across, at, len)) in cases.into_iter().enumerate() {
+        let mut body = edges.to_vec();
+        body.insert(at, across.clone());
+        let dxf = d.join(format!("DEMO-{n}.dxf"));
+        std::fs::write(&dxf, format!("0\nSECTION\n2\nENTITIES\n{}0\nENDSEC\n0\nEOF\n", body.concat())).unwrap();
+        call(&mut s, "import-drawing", None, json!({"path": dxf.to_str().unwrap(), "qty": 1}));
+        let rows = contour_rows(&mut s, n + 1);
+        let got: Vec<(&str, &str, i64)> = rows.iter().map(|r| (r.1.as_str(), r.2.as_str(), r.3.round() as i64)).collect();
+        assert_eq!(got, [("outside", "cut", 600), ("open", "bend-line", len)], "case {n}: line at {at}");
+        let pi = call(&mut s, "part-info", None, json!({"part": n + 1}));
+        assert_eq!((pi["data"]["w"].as_f64(), pi["data"]["h"].as_f64(), pi["data"]["machining"]["pierces"].as_u64()), (Some(200.0), Some(100.0), Some(1)), "case {n}: {pi}");
+    }
+    // As a flat pattern is often drawn: the edges split where the bend line meets them.
+    let split = [
+        line([0.0, 0.0], [100.0, 0.0]), line([100.0, 100.0], [100.0, 0.0]), line([100.0, 0.0], [200.0, 0.0]), line([200.0, 0.0], [200.0, 100.0]),
+        line([200.0, 100.0], [100.0, 100.0]), line([100.0, 100.0], [0.0, 100.0]), line([0.0, 100.0], [0.0, 0.0]),
+    ];
+    let dxf = d.join("DEMO-SPLIT.dxf");
+    std::fs::write(&dxf, format!("0\nSECTION\n2\nENTITIES\n{}0\nENDSEC\n0\nEOF\n", split.concat())).unwrap();
+    call(&mut s, "import-drawing", None, json!({"path": dxf.to_str().unwrap(), "qty": 1}));
+    let got: Vec<(String, String, i64)> = contour_rows(&mut s, cases.len() + 1).into_iter().map(|r| (r.1, r.2, r.3.round() as i64)).collect();
+    assert_eq!(got, [("outside".to_string(), "cut".to_string(), 600), ("open".to_string(), "bend-line".to_string(), 100)]);
+    let _ = std::fs::remove_dir_all(&d);
+}

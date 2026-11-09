@@ -4684,6 +4684,12 @@
   "source": "MECHANICS CS2"
  },
  {
+  "name": "where three or more line ends meet, the outside boundary closes and the lines inside stay open",
+  "group": "contours",
+  "value": true,
+  "source": "MECHANICS CS2"
+ },
+ {
   "name": "layer name that makes open lines bend lines",
   "group": "contours",
   "value": "BEND",
