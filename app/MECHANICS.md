@@ -1632,14 +1632,16 @@ Still estimated: the rows' values (they come from the material/thickness table, 
 
 A cut quality is one of the machine's 12 numbered sets of cutting settings (its technology table
 holds speed, pierce and the rest per quality, TT3). The app uses those numbers everywhere: a part's
-own quality, the rows of Cut technology by size, the times, leads, kerf table and the LC5 program.
+own quality, the rows of Cut technology by size, a contour's own quality set by hand, the times,
+leads, kerf table and the LC5 program.
 Screens show "Quality n" until the machine's names and colours are read (FEATURES TEC-21).
 
 | # | Rule | Source |
 |---|------|--------|
-| CQ1 | **Each cut contour's quality**: the part's own size-range row that holds the contour (CT1); else the part's own quality, when it has one; else, for a part with no size ranges of its own, the machine section's size band for the contour (MTL10); else **quality 3**. Part-info lists each contour's quality and where it came from. | Order observed (CT1, MTL10); quality 3 as the last fallback is estimated: real LC5 programs cut outlines at 3, the fastest of the usual laser table's Slow 1 / Medium 2 / Fast 3 |
+| CQ1 | **Each cut contour's quality**: the quality set on the contour by hand (CQ6); else the part's own size-range row that holds the contour (CT1); else the part's own quality, when it has one; else, for a part with no size ranges of its own, the machine section's size band for the contour (MTL10); else **quality 3**. Part-info lists each contour's quality and where it came from. | Order observed (CT1, MTL10); quality 3 as the last fallback is estimated: real LC5 programs cut outlines at 3, the fastest of the usual laser table's Slow 1 / Medium 2 / Fast 3 |
 | CQ2 | **Jobs and products saved with the old three qualities** open with numbers: a part's own *Normal* becomes "no quality of its own" (Normal was what let the size bands decide), *Fine* becomes 1 and *Rough* 3; a size-range row's *Fine* is 1, *Normal* 2 and *Rough* 3. | Estimated (FEATURES MAC-54) |
 | CQ3 | When the machine gives no speed at all, a contour is cut at our typical laser speed × 0.7 at quality 1, × 0.85 at quality 2 and × 1.0 at the others. | Estimated |
+| CQ6 | **A cut quality set by hand on a contour** (agents: `contour-tech quality=1…12`) wins over the rest of CQ1: the part's size-range rows, the part's own quality and the machine's size bands. It is that contour's quality everywhere: times, leads, kerf and the LC5's NEXT_L with the pierce code its quality has (BL22). Only a Cut contour takes one. A Mark is refused (marks are always made at the machine's marking quality, with no pierce); so is a No cut, Bend line or Leave out contour (set it to Cut with the quality instead), and a quality outside the machine's 1–12. `auto` gives the contour back to the rest of CQ1. A contour set to anything but Cut loses its hand-set quality, so when it is cut again the rest of CQ1 decides. With *All the same contours* (CS5) every equal contour that is cut takes it; equal contours that aren't cut are left as they are and named. Part-info shows the quality as set "by hand". Kept with the job and the library product; files saved before have none. | Estimated (own design, ADR 0001; the original's per-contour technology isn't studied) |
 
 
 ## Machine technology file (MchFiles\PstAdi06.CT1, the BLM laser)

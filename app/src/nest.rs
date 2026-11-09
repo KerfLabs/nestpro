@@ -886,6 +886,16 @@ impl Part {
     pub fn pierces(&self) -> usize {
         1 + self.geometry().holes.len()
     }
+
+    /// The quality set by hand on each contour the part cuts, in the order of
+    /// `geometry()` (holes, then the outline); empty or `None` where nothing
+    /// is set by hand (CQ6). A built-in shape has none.
+    pub fn cut_qualities(&self) -> Vec<Option<CutQuality>> {
+        match (self.shape, &self.custom) {
+            (Shape::Custom, Some(c)) => c.cut_qualities(),
+            _ => vec![],
+        }
+    }
 }
 
 pub fn area(poly: &[P]) -> f64 {

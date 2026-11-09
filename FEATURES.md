@@ -78,7 +78,7 @@ original (or a real job).
 | TEC-1 | Lead-ins: types 14–16, force placement, dynamic and custom leads, move point, lead-out like lead-in | Partial | ★★ | automatic leads by contour class from the machine's tables (types 1–13, zones, corner rules, round-hole limits, collision test) are built: MECHANICS AL1–AL11, `leads.rs` |
 | TEC-2 | Micro-joints: per-class joint records from the material file (V lines), zone modes, nano-joints, move point, to geometry, semi-automatic | Partial | ★ | automatic joints (count per F150, even, size-class fewest/most, holes too, centred, corner joints, joint leads) are built: MECHANICS AM1–AM6, `joints.rs`; the joint table per material × thickness section too (MTL7) |
 | TEC-3 | **Bridges**: join parts so they cut as one | Missing | ★★ | |
-| TEC-4 | Cut technologies: no cut, clean cut, dynamic, hatch, bending lines | Partial | ★★ | cut quality per part and marking texts are built; every contour's state (Cut, Mark, No cut, Bend line, Leave out) with open lines kept at import, for agents (`contour-tech`, `part-info`; MECHANICS CS1–CS5, 2026-11-09). Still missing: the window's cut technology panel (paint by click, box or sweep, Ctrl+Z, Esc), a cut quality per contour, clean cut, dynamic, hatch |
+| TEC-4 | Cut technologies: no cut, clean cut, dynamic, hatch, bending lines | Partial | ★★ | cut quality per part and marking texts are built; every contour's state (Cut, Mark, No cut, Bend line, Leave out) with open lines kept at import, for agents (`contour-tech`, `part-info`; MECHANICS CS1–CS5, 2026-11-09); a cut quality per contour set by hand, winning over the part's size ranges and quality and the machine's size bands (`contour-tech quality=`, MECHANICS CQ6, 2026-11-09). Still missing: the window's cut technology panel (paint by click, box or sweep, Ctrl+Z, Esc), clean cut, dynamic, hatch |
 | TEC-5 | Texts: QR codes, templates, vectorize, written text | Partial | ★★ | marked / note / special, curved |
 | TEC-6 | Loops type 2, round angles | Partial | ★ | |
 | TEC-7 | Bevel (standard, 3D) | Missing | ★ | bevel heads only |
@@ -96,6 +96,7 @@ original (or a real job).
 | TEC-20 | Marker kind per mark (powder, pen, drill); every mark is made with the cutting head at the machine's marking quality | Missing | ★ | planning 2026-11-09 (`GLOSSARY.md`, `docs/adr/`) |
 | TEC-21 | Cut quality names and colours (Slow, Medium, Fast, Marking…) from the machine's files: screens and `part-info` show "Quality n" | Missing | ★★ | MECHANICS CQ section; GitHub issue #25 |
 | TEC-22 | Cutting an open line (a slit, or a line through the part): an open contour can't be set to Cut, the nester, leads and posts only cut closed contours | Missing | ★ | MECHANICS CS4; `contour-tech` refuses it |
+| TEC-24 | A cut quality set by hand that the sheet's technology table has no settings for: every quality 1–12 is taken (TT3), and one without a speed or pierce mode in the sheet's record is cut at the machine's default speed (TT10) with pierce code 2 (BL22), without a warning; checking it against the record, per sheet, isn't built | Missing | ★ | MECHANICS CQ6 (estimate: "a quality the machine doesn't have" read as outside 1–12) |
 
 ## Machining and output (MAC)
 

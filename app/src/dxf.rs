@@ -108,9 +108,19 @@ pub struct Contour {
     pub pts: Vec<P>,
     pub closed: bool,
     pub state: ContourState,
+    /// The cut quality set on this contour by hand, which wins over the
+    /// part's size ranges and quality and the machine's size bands (CQ6).
+    /// Only a Cut contour has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality: Option<crate::nest::CutQuality>,
 }
 
 impl Contour {
+    /// A contour in `state` with no quality set by hand.
+    pub fn new(pts: Vec<P>, closed: bool, state: ContourState) -> Contour {
+        Contour { pts, closed, state, quality: None }
+    }
+
     /// The points to draw or mark along: a closed contour back to its start.
     pub fn path(&self) -> Vec<P> {
         let mut pts = self.pts.clone();
@@ -151,11 +161,19 @@ impl CustomGeo {
             return self.contours.clone();
         }
         let closed_mark = |m: &Vec<P>| m.len() > 3 && close(m[0], m[m.len() - 1], JOIN_TOL);
-        let mut list: Vec<Contour> = self.holes.iter().map(|h| Contour { pts: h.clone(), closed: true, state: ContourState::Cut }).collect();
-        list.extend(self.marks.iter().filter(|m| closed_mark(m)).map(|m| Contour { pts: m[..m.len() - 1].to_vec(), closed: true, state: ContourState::Mark }));
-        list.push(Contour { pts: self.outline.clone(), closed: true, state: ContourState::Cut });
-        list.extend(self.marks.iter().filter(|m| !closed_mark(m)).map(|m| Contour { pts: m.clone(), closed: false, state: ContourState::Mark }));
+        let mut list: Vec<Contour> = self.holes.iter().map(|h| Contour::new(h.clone(), true, ContourState::Cut)).collect();
+        list.extend(self.marks.iter().filter(|m| closed_mark(m)).map(|m| Contour::new(m[..m.len() - 1].to_vec(), true, ContourState::Mark)));
+        list.push(Contour::new(self.outline.clone(), true, ContourState::Cut));
+        list.extend(self.marks.iter().filter(|m| !closed_mark(m)).map(|m| Contour::new(m.clone(), false, ContourState::Mark)));
         list
+    }
+
+    /// The quality set by hand on each contour the part cuts, in the order of
+    /// its geometry (holes, then the outline; `cut_order`), `None` where the
+    /// part's size ranges, quality or the machine's size bands decide (CQ6).
+    /// Empty for a part saved before contour states.
+    pub fn cut_qualities(&self) -> Vec<Option<crate::nest::CutQuality>> {
+        cut_order(&self.contours).into_iter().map(|k| self.contours[k].quality).collect()
     }
 
     /// Make the outline, holes, marking lines and fills from the contours'
@@ -1008,7 +1026,7 @@ pub fn build(d: &Drawing, roles: &BTreeMap<String, LayerRole>) -> Result<(Custom
         }
         let state = open_line_start(&pts, bendish, |p| inside.near_edge(p, CLOSE_TOL, &mut work));
         report.open_kept += 1;
-        lines.push(Contour { pts, closed: false, state });
+        lines.push(Contour::new(pts, false, state));
     }
     let (mut ox, mut oy, mut mx, mut my) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
     for p in &outline {
@@ -1020,7 +1038,7 @@ pub fn build(d: &Drawing, roles: &BTreeMap<String, LayerRole>) -> Result<(Custom
     // Contour numbers (CS1): holes and other closed contours first, the
     // outline, then the open lines. Closed contours start as Cut, marking
     // layers' as Mark.
-    let contour = |pts: Vec<P>, closed: bool, state: ContourState| Contour { pts, closed, state };
+    let contour = Contour::new;
     let (closed_marks, open_marks): (Vec<_>, Vec<_>) = mark_pieces.into_iter().filter(|m| !m.0.is_empty()).partition(|m| m.1);
     let mut contours: Vec<Contour> = holes.into_iter().map(|h| contour(h, true, ContourState::Cut)).collect();
     contours.extend(closed_marks.into_iter().map(|(pts, _)| contour(pts, true, ContourState::Mark)));

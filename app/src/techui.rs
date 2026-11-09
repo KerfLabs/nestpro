@@ -499,7 +499,8 @@ impl App {
         let mut edit = cur;
         // The first target's contours, to show the quality each one takes.
         let mt = self.machine_tech();
-        let geo = targets.first().map(|&i| self.parts[i].geometry());
+        // With the qualities set on its contours by hand (CQ6).
+        let geo = targets.first().map(|&i| (self.parts[i].geometry(), self.parts[i].cut_qualities()));
         egui::Window::new("Cut technology by size").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
             ui.label(RichText::new("Each contour's size is the radius of a circle with the same area. The first ticked row it falls in sets its quality (from ≤ r < up to).").size(12.0));
             ui.add_space(6.0);
@@ -523,10 +524,10 @@ impl App {
                     }
                 });
             });
-            if let Some(g) = &geo {
+            if let Some((g, hand)) = &geo {
                 ui.separator();
-                for (hole, pts) in g.holes.iter().map(|h| (true, h)).chain(std::iter::once((false, &g.outline))) {
-                    let (q, from) = crate::cnc::contour_quality(&edit, &mt, pts);
+                for (k, (hole, pts)) in g.holes.iter().map(|h| (true, h)).chain(std::iter::once((false, &g.outline))).enumerate() {
+                    let (q, from) = crate::cnc::contour_quality(&edit, &mt, pts, hand.get(k).copied().flatten());
                     let by_row = from == crate::cnc::QualityFrom::SizeRange;
                     ui.label(
                         RichText::new(format!("{} r {:.1} mm → {} ({})", if hole { "Hole" } else { "Outside" }, crate::cnc::contour_radius(pts), q.label(), from.label()))
