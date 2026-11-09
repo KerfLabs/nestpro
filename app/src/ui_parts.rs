@@ -2215,7 +2215,7 @@ impl App {
                 };
                 egui::ComboBox::from_id_salt("quality").width(130.0).selected_text(shown).show_ui(ui, |ui| {
                     changed |= ui.selectable_value(&mut t.quality, None, crate::techui::part_quality_label(None, &names)).changed();
-                    for q in crate::techui::offered_qualities(&names, t.quality) {
+                    for q in crate::techui::offered_qualities(&names) {
                         changed |= ui.selectable_value(&mut t.quality, Some(q), crate::techui::quality_text(ui, &names, q)).changed();
                     }
                 });

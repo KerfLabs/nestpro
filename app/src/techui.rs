@@ -515,7 +515,7 @@ impl App {
                         ui.add(egui::DragValue::new(&mut row.min_r).range(0.0..=99999.0).speed(0.1).suffix(" mm"));
                         ui.add(egui::DragValue::new(&mut row.max_r).range(0.0..=99999.0).speed(0.1).suffix(" mm"));
                         egui::ComboBox::from_id_salt(("cut_q", k)).width(120.0).selected_text(quality_text(ui, &mt.qualities, row.quality)).show_ui(ui, |ui| {
-                            for q in offered_qualities(&mt.qualities, Some(row.quality)) {
+                            for q in offered_qualities(&mt.qualities) {
                                 ui.selectable_value(&mut row.quality, q, quality_text(ui, &mt.qualities, q));
                             }
                         });
@@ -579,10 +579,25 @@ pub fn quality_text(ui: &egui::Ui, names: &crate::qualities::CutQualities, q: cr
     job
 }
 
-/// The qualities a picker lists: every one the machine doesn't hide (CQ4),
-/// and the one already chosen even when hidden.
-pub fn offered_qualities(names: &crate::qualities::CutQualities, chosen: Option<crate::nest::CutQuality>) -> Vec<crate::nest::CutQuality> {
-    crate::nest::CutQuality::all().filter(|&q| names.offered(q) || Some(q) == chosen).collect()
+/// The qualities a picker lists: every one the machine doesn't hide (CQ4). A
+/// hidden quality already chosen stays chosen and shows as the picker's text.
+pub fn offered_qualities(names: &crate::qualities::CutQualities) -> Vec<crate::nest::CutQuality> {
+    crate::nest::CutQuality::all().filter(|&q| names.offered(q)).collect()
+}
+
+#[cfg(test)]
+mod quality_picker_tests {
+    use crate::nest::CutQuality;
+
+    #[test]
+    fn a_hidden_quality_stays_out_of_the_picker_even_when_chosen() {
+        let codes = [("A923".to_string(), "\"<HIDE>\"".to_string())].into_iter().collect();
+        let names = crate::qualities::CutQualities::from_codes(&codes);
+        let listed = super::offered_qualities(&names);
+        assert_eq!(listed.len(), 11);
+        assert!(!listed.iter().any(|q| q.number() == 2));
+        assert!(listed.contains(&CutQuality::all().next().unwrap()));
+    }
 }
 
 fn short_kind(k: crate::nest::TextKind) -> &'static str {
