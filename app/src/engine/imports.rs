@@ -283,18 +283,22 @@ pub struct PreviewPart {
 pub struct DrawingPreview {
     pub format: crate::formats::Format,
     pub parts: Vec<PreviewPart>,
+    /// Each part as read, to make it again with other layer roles and
+    /// contour choices (IM11).
+    pub reads: Vec<crate::formats::Incoming>,
 }
 
 /// Read a drawing file for the import window's preview (IM10): the same
-/// reading, part names and starting layer roles as Import drawings, without
-/// adding anything to the job.
+/// reading, part names and starting layer roles as Import drawings and
+/// `import-drawing`, without adding anything to the job.
 pub fn drawing_preview(cfg: &AppSettings, spec: &SheetSpec, path: &Path) -> Result<DrawingPreview, String> {
     let (format, parts) = crate::formats::read_path(path, None, cfg, Default::default())?;
     let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Drawing".into());
-    let parts = crate::formats::incoming(&stem, parts)
-        .into_iter()
+    let reads = crate::formats::incoming(&stem, parts);
+    let roles = DrawingChoices::default().roles(&reads);
+    let parts = reads
+        .iter()
         .map(|inc| {
-            let roles = crate::formats::default_roles([&inc.part]);
             let (mut min, mut max) = ([f64::MAX; 2], [f64::MIN; 2]);
             let pieces = inc
                 .part
@@ -313,8 +317,127 @@ pub fn drawing_preview(cfg: &AppSettings, spec: &SheetSpec, path: &Path) -> Resu
                 (min, max) = ([0.0; 2], [0.0; 2]);
             }
             let part = part_from_read(cfg, spec, &inc.file, &inc.name, &inc.part.drawing, &inc.part.meta, &roles, 0);
-            PreviewPart { name: inc.name, pieces, min, max, layers: inc.part.drawing.layers().len(), part }
+            PreviewPart { name: inc.name.clone(), pieces, min, max, layers: inc.part.drawing.layers().len(), part }
         })
         .collect();
-    Ok(DrawingPreview { format, parts })
+    Ok(DrawingPreview { format, parts, reads })
+}
+
+/// One contour choice made before a drawing is imported (IM11, IM12):
+/// contours by number on the part its layer roles make, painted as
+/// `contour-tech` paints them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ContourChoice {
+    /// Contour numbers, from 0.
+    pub contours: Vec<usize>,
+    pub paint: contours::Paint,
+    /// All the same contours (CS5).
+    pub same: bool,
+}
+
+/// The part one part of a drawing makes with layer roles `roles`, then each
+/// of `choices` painted in turn with `contours::paint` (IM11, IM12): the import
+/// preview's panel and `import-drawing contours=` both make parts this way. A
+/// choice the part can't take is refused as `contour-tech` refuses it.
+pub fn chosen_part(cfg: &AppSettings, spec: &SheetSpec, read: &crate::formats::Incoming, roles: &BTreeMap<String, dxf::LayerRole>, choices: &[ContourChoice], color: usize) -> Result<(Part, Vec<String>), String> {
+    let (part, notes) = part_from_read(cfg, spec, &read.file, &read.name, &read.part.drawing, &read.part.meta, roles, color)?;
+    let mut parts = vec![part];
+    for c in choices {
+        contours::paint(&mut parts, &[], &mut [], 0, &c.contours, c.paint, c.same).map_err(|e| format!("{}: {e}", read.name))?;
+    }
+    Ok((parts.swap_remove(0), notes))
+}
+
+/// What the programmer set in the import preview for one drawing file
+/// (IM11): layer rows set in the cut technology panel, and each part's
+/// contour choices in the order they were painted.
+#[derive(Clone, Default, Debug, PartialEq)]
+pub struct DrawingChoices {
+    /// Layer rows set by hand; the others keep the role they start with.
+    pub roles: BTreeMap<String, dxf::LayerRole>,
+    /// Each part's contour choices, by its place in the file.
+    pub contours: BTreeMap<usize, Vec<ContourChoice>>,
+}
+
+impl DrawingChoices {
+    /// The layer roles for the file's parts `reads`: the ones they start
+    /// with, as `import-drawing` gives them (D5, DX3), with the rows set here.
+    pub fn roles(&self, reads: &[crate::formats::Incoming]) -> BTreeMap<String, dxf::LayerRole> {
+        let mut roles = crate::formats::default_roles(reads.iter().map(|r| &r.part));
+        for (l, r) in &self.roles {
+            if let Some(role) = roles.get_mut(l) {
+                *role = *r;
+            }
+        }
+        roles
+    }
+
+    /// Part `ix`'s contour choices.
+    pub fn of(&self, ix: usize) -> &[ContourChoice] {
+        self.contours.get(&ix).map_or(&[], Vec::as_slice)
+    }
+}
+
+/// Whether two contours are the same shape in the same place.
+fn same_place(a: &dxf::Contour, b: &dxf::Contour) -> bool {
+    let (ba, bb) = (crate::nest::bbox_of(&a.pts), crate::nest::bbox_of(&b.pts));
+    contours::same_shape(a, b) && (ba[0] - bb[0]).abs() <= dxf::JOIN_TOL && (ba[1] - bb[1]).abs() <= dxf::JOIN_TOL
+}
+
+/// The contours painted by hand on `painted` (made from `start`), as choices
+/// for `now`, the part the drawing makes after a layer row changed: each one
+/// `now` still has in the same place, starting as it did, keeps its paint;
+/// one the change left out, or made start as something else (it is on that
+/// layer), takes the layer's. Also says how many gave way.
+fn carry(start: &Part, painted: &Part, now: &Part) -> (Vec<ContourChoice>, usize) {
+    let (s, p, n) = (contours::list(start), contours::list(painted), contours::list(now));
+    let mut part = now.clone();
+    let (mut out, mut gave_way) = (vec![], 0);
+    for (k, (sk, pk)) in s.iter().zip(&p).enumerate() {
+        if (sk.state, sk.quality) == (pk.state, pk.quality) {
+            continue;
+        }
+        let paint = if pk.state == dxf::ContourState::Cut { contours::Paint::cut_at(pk.quality) } else { contours::Paint::state(pk.state) };
+        let Some(j) = n.iter().position(|c| c.state == s[k].state && same_place(c, pk)) else {
+            gave_way += 1;
+            continue;
+        };
+        let mut parts = vec![part.clone()];
+        match contours::paint(&mut parts, &[], &mut [], 0, &[j], paint, false) {
+            Ok(_) => {
+                part = parts.swap_remove(0);
+                out.push(ContourChoice { contours: vec![j], paint, same: false });
+            }
+            Err(_) => gave_way += 1,
+        }
+    }
+    (out, gave_way)
+}
+
+/// A layer row set to `role` in the import preview's panel (IM11): the
+/// file's parts are made again with it, so every contour on that layer takes
+/// it (D5, CS2). A contour painted by hand that the change leaves in place,
+/// starting as before, keeps its paint; one on that layer takes the layer's.
+/// The new choices, and how many contours painted by hand gave way.
+pub fn set_layer(cfg: &AppSettings, spec: &SheetSpec, reads: &[crate::formats::Incoming], choices: &DrawingChoices, layer: &str, role: dxf::LayerRole) -> (DrawingChoices, usize) {
+    let before = choices.roles(reads);
+    let mut next = choices.clone();
+    next.roles.insert(layer.to_string(), role);
+    let after = next.roles(reads);
+    let mut gave_way = 0;
+    for (&ix, list) in &choices.contours {
+        let Some(read) = reads.get(ix) else { continue };
+        let made = |roles: &BTreeMap<String, dxf::LayerRole>, ch: &[ContourChoice]| chosen_part(cfg, spec, read, roles, ch, 0).ok().map(|r| r.0);
+        let (kept, lost) = match (made(&before, &[]), made(&before, list), made(&after, &[])) {
+            (Some(start), Some(painted), Some(now)) => carry(&start, &painted, &now),
+            _ => (vec![], list.iter().map(|c| c.contours.len()).sum()),
+        };
+        gave_way += lost;
+        if kept.is_empty() {
+            next.contours.remove(&ix);
+        } else {
+            next.contours.insert(ix, kept);
+        }
+    }
+    (next, gave_way)
 }

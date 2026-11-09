@@ -136,8 +136,6 @@ pub enum Pending {
     TechPartEdit { idx: usize, draft: Part },
     /// Material or thickness change while parts are nested.
     NestedSpecChange { new_spec: SheetSpec },
-    /// Drawings with several layers: choose each layer's role.
-    DxfLayers { files: Vec<formats::Incoming>, roles: std::collections::BTreeMap<String, dxf::LayerRole> },
     /// The open job's file was changed outside the app while it also changed here.
     JobFileChanged { path: PathBuf },
     /// Export CNC: what will be written, where and for which machine, shown
@@ -1048,7 +1046,11 @@ impl App {
         groups.into_iter().map(|(i, n, _)| (i, n)).collect()
     }
 
-    /// Add part drawings (DXF files) as products.
+    /// Add part drawings as parts (dropped on the window, picked in the
+    /// system's file picker). A drawing with several layer rows, or rows that
+    /// start as Leave out (DX3), opens the Import drawings window instead,
+    /// picked and with its cut technology panel open, so its layers are set
+    /// before it comes in (IM12).
     pub fn import_drawings(&mut self, paths: Vec<PathBuf>) {
         // Lantek import files (xsd\Importers: <Import><Product …>) go to the XML importer.
         let (xml, paths): (Vec<PathBuf>, Vec<PathBuf>) = paths.into_iter().partition(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("xml")));
@@ -1061,65 +1063,97 @@ impl App {
         let mut added = 0;
         let mut notes: Vec<String> = vec![];
         let mut first = true;
-        let mut layered: Vec<formats::Incoming> = vec![];
+        let mut layered: Vec<PathBuf> = vec![];
         for path in paths {
             let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Drawing".into());
-            let parts = match formats::read_file(&path, None, &self.cfg) {
-                Ok(p) => p,
+            let reads = match formats::read_file(&path, None, &self.cfg) {
+                Ok(p) => formats::incoming(&stem, p),
                 Err(e) => {
                     notes.push(e);
                     continue;
                 }
             };
-            for inc in formats::incoming(&stem, parts) {
-                // Drawings with several layers: ask which layer is cut, marked or left out
-                // (original maps each layer to a machining code; default 13 = cut).
-                // DX3: a drawing with rows that start as "Leave out" is shown too.
-                if inc.part.drawing.layers().len() > 1 || !inc.part.drawing.hidden.is_empty() {
-                    layered.push(inc);
-                    continue;
-                }
-                let roles = formats::default_roles([&inc.part]);
-                if self.add_drawing(&inc, &roles, &mut notes, &mut first) {
-                    added += 1;
-                }
+            if reads.iter().any(|r| r.part.drawing.layers().len() > 1 || !r.part.drawing.hidden.is_empty()) {
+                layered.push(path);
+                continue;
             }
+            added += self.add_drawing(&reads, &Default::default(), &mut notes, &mut first);
         }
         if !layered.is_empty() {
-            // Every layer starts as Cut, the original's default role (code 13);
-            // a format's marking layers start as Mark; what the drawing hides or
-            // draws as centre / dashed lines starts as Leave out (DX3).
-            let roles = formats::default_roles(layered.iter().map(|x| &x.part));
-            self.pending = Some(Pending::DxfLayers { files: layered, roles });
+            self.review_drawings(layered);
         }
         self.finish_import(added, notes);
     }
 
-    /// Build one drawing with the given layer roles and add it as a product.
-    fn add_drawing(
-        &mut self,
-        inc: &formats::Incoming,
-        roles: &std::collections::BTreeMap<String, dxf::LayerRole>,
-        notes: &mut Vec<String>,
-        first: &mut bool,
-    ) -> bool {
-        let rp = &inc.part;
-        match engine::part_from_read(&self.cfg, &self.spec, &inc.file, &inc.name, &rp.drawing, &rp.meta, roles, self.color_seq) {
-            Ok((part, n)) => {
-                if *first {
-                    self.checkpoint();
-                    *first = false;
+    /// Open the Import drawings window on drawings whose layers need a look
+    /// (IM12): picked, the first shown, with the cut technology panel open.
+    fn review_drawings(&mut self, files: Vec<PathBuf>) {
+        let Some(dir) = files.first().and_then(|f| f.parent()).map(std::path::Path::to_path_buf) else { return };
+        let mut dirs = vec![dir];
+        dirs.extend(self.cfg.import_dirs.iter().map(PathBuf::from));
+        self.importui.show(&dirs);
+        self.importui.picked = files.iter().cloned().collect();
+        self.importui.focus = files.first().cloned();
+        self.importui.panel.open = true;
+        let names: Vec<String> = files.iter().filter_map(|f| f.file_name()).map(|n| n.to_string_lossy().to_string()).collect();
+        self.status = format!("{} {} layers: set them in Cut technology, then Import.", names.join(", "), if names.len() == 1 { "has several" } else { "have several" });
+    }
+
+    /// Import drawings from the Import drawings window (IM11): each with the
+    /// drawing as its preview read it and what was set for it there, or read
+    /// now with the layer roles it starts with.
+    pub fn import_chosen(&mut self, files: Vec<(PathBuf, Option<(std::sync::Arc<engine::imports::DrawingPreview>, engine::imports::DrawingChoices)>)>) {
+        let (xml, files): (Vec<_>, Vec<_>) = files.into_iter().partition(|(p, _)| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("xml")));
+        for (x, _) in &xml {
+            self.import_xml(x);
+        }
+        if files.is_empty() {
+            return;
+        }
+        let mut added = 0;
+        let mut notes: Vec<String> = vec![];
+        let mut first = true;
+        for (path, chosen) in files {
+            let (reads, choices) = match chosen {
+                Some((d, c)) => (d.reads.clone(), c),
+                None => {
+                    let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Drawing".into());
+                    match formats::read_file(&path, None, &self.cfg) {
+                        Ok(p) => (formats::incoming(&stem, p), Default::default()),
+                        Err(e) => {
+                            notes.push(e);
+                            continue;
+                        }
+                    }
                 }
-                notes.extend(n);
-                self.parts.push(part);
-                self.color_seq += 1;
-                true
-            }
-            Err(e) => {
-                notes.push(e);
-                false
+            };
+            added += self.add_drawing(&reads, &choices, &mut notes, &mut first);
+        }
+        self.finish_import(added, notes);
+    }
+
+    /// Make each part of one drawing file with the layers and contours chosen
+    /// for it (IM11; `engine::imports::chosen_part`, as `import-drawing`) and
+    /// add it to the job; how many were added.
+    fn add_drawing(&mut self, reads: &[formats::Incoming], choices: &engine::imports::DrawingChoices, notes: &mut Vec<String>, first: &mut bool) -> usize {
+        let roles = choices.roles(reads);
+        let mut added = 0;
+        for (ix, inc) in reads.iter().enumerate() {
+            match engine::imports::chosen_part(&self.cfg, &self.spec, inc, &roles, choices.of(ix), self.color_seq) {
+                Ok((part, n)) => {
+                    if *first {
+                        self.checkpoint();
+                        *first = false;
+                    }
+                    notes.extend(n);
+                    self.parts.push(part);
+                    self.color_seq += 1;
+                    added += 1;
+                }
+                Err(e) => notes.push(e),
             }
         }
+        added
     }
 
     fn finish_import(&mut self, added: usize, notes: Vec<String>) {
@@ -1129,7 +1163,7 @@ impl App {
             self.refresh();
         }
         if added == 0 && notes.is_empty() {
-            return; // waiting for the layer question
+            return; // the Import drawings window shows the rest (IM12)
         }
         self.status = if notes.is_empty() {
             format!("Imported {added} drawing(s). Set quantities, then Nest all.")
@@ -1161,18 +1195,6 @@ impl App {
     }
 
     /// Finish drawings that waited for the layer question.
-    pub fn import_layered(&mut self, files: Vec<formats::Incoming>, roles: std::collections::BTreeMap<String, dxf::LayerRole>) {
-        let mut notes = vec![];
-        let mut first = true;
-        let mut added = 0;
-        for inc in &files {
-            if self.add_drawing(inc, &roles, &mut notes, &mut first) {
-                added += 1;
-            }
-        }
-        self.finish_import(added, notes);
-    }
-
     /// Save the selected part as DXF (outline and holes on CUT, marking on MARK),
     /// with a one-line text file of the same name beside it — the way the original
     /// hands a part to its bending program (rule D1).
@@ -1261,7 +1283,6 @@ impl App {
         let title = match &p {
             Pending::TechPartEdit { .. } => "Part with technology",
             Pending::NestedSpecChange { .. } => "Nested parts will change",
-            Pending::DxfLayers { .. } => "Drawing layers",
             Pending::JobFileChanged { .. } => "Job changed on disk",
             Pending::ExportReview { .. } => "Export CNC programs",
         };
@@ -1414,59 +1435,6 @@ impl App {
                             let primary = egui::Button::new(RichText::new("Remove nestings").color(Color32::WHITE).strong()).fill(th().accent);
                             if ui.add(primary).on_hover_text("Take the parts off the sheets and free the sheets").clicked() {
                                 self.apply_spec_change(new_spec.clone(), true);
-                                close = true;
-                            }
-                            if ui.button("Cancel").clicked() {
-                                close = true;
-                            }
-                        });
-                    }
-                    Pending::DxfLayers { files, mut roles } => {
-                        let names: Vec<&str> = files.iter().map(|f| f.name.as_str()).collect();
-                        ui.label(format!("{} has several layers. Choose what each layer is:", names.join(", ")));
-                        ui.add_space(6.0);
-                        let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
-                        let mut why: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
-                        for f in &files {
-                            for (l, n) in f.part.drawing.layers() {
-                                *counts.entry(l).or_insert(0) += n;
-                            }
-                            for (l, w) in &f.part.drawing.hidden {
-                                why.entry(l.clone()).or_insert_with(|| w.clone());
-                            }
-                        }
-                        let mut changed = false;
-                        egui::Grid::new("layer_roles").num_columns(3).spacing([14.0, 6.0]).show(ui, |ui| {
-                            for (layer, n) in &counts {
-                                let name = ui.label(RichText::new(layer).strong());
-                                if let Some(w) = why.get(layer) {
-                                    name.on_hover_text(format!("Starts as Leave out: {w}."));
-                                }
-                                ui.label(RichText::new(format!("{n} object(s)")).color(th().text_dim));
-                                let start = if why.contains_key(layer) { dxf::LayerRole::Ignore } else { dxf::LayerRole::Cut };
-                                let role = roles.entry(layer.clone()).or_insert(start);
-                                ui.horizontal(|ui| {
-                                    for r in dxf::LayerRole::ALL {
-                                        changed |= ui.selectable_value(role, r, r.label()).changed();
-                                    }
-                                });
-                                ui.end_row();
-                            }
-                        });
-                        if !why.is_empty() {
-                            ui.add_space(4.0);
-                            ui.label(RichText::new("Rows in [ ] hold what the drawing hides (frozen or off layers, invisible objects) or draws as centre / dashed lines. They start as Leave out; hover a name for why.").size(11.0).color(th().text_dim));
-                        }
-                        if changed {
-                            if let Some(Pending::DxfLayers { roles: r, .. }) = self.pending.as_mut() {
-                                *r = roles.clone();
-                            }
-                        }
-                        ui.add_space(8.0);
-                        ui.horizontal(|ui| {
-                            let primary = egui::Button::new(RichText::new("Import").color(Color32::WHITE).strong()).fill(th().accent);
-                            if ui.add(primary).clicked() {
-                                self.import_layered(files.clone(), roles.clone());
                                 close = true;
                             }
                             if ui.button("Cancel").clicked() {
@@ -3062,6 +3030,37 @@ fn main() -> eframe::Result {
                     app.importui.focus = Some(f.clone());
                     app.importui.picked.insert(f);
                 }
+                // --import-panel (screenshots): the preview's cut technology panel
+                // (IM11). --import-layer=<layer>=<cut|mark|ignore> sets a layer row
+                // and --import-paint="7=mark; 1=leave-out" paints contours, both
+                // through the panel's own functions; --import-row=<state> chooses a row.
+                if std::env::args().any(|a| a == "--import-panel") {
+                    app.importui.panel.open = true;
+                    let (cfg, spec) = (app.cfg.clone(), app.spec.clone());
+                    app.importui.want_preview(&cfg, &spec, &egui::Context::default());
+                    let state = |w: &str| dxf::ContourState::ALL.into_iter().find(|s| s.key() == w.trim());
+                    let row = |st: dxf::ContourState| match st {
+                        dxf::ContourState::Cut => cutpanel::Row::Cut(None),
+                        dxf::ContourState::Mark => cutpanel::Row::Mark,
+                        dxf::ContourState::NoCut => cutpanel::Row::NoCut,
+                        dxf::ContourState::BendLine => cutpanel::Row::BendLine,
+                        dxf::ContourState::LeaveOut => cutpanel::Row::LeaveOut,
+                    };
+                    for a in std::env::args().filter_map(|a| a.strip_prefix("--import-layer=").map(str::to_string)) {
+                        if let Some((l, r)) = a.rsplit_once('=') {
+                            let role = dxf::LayerRole::ALL.into_iter().find(|x| x.label().eq_ignore_ascii_case(r) || (r == "ignore" && *x == dxf::LayerRole::Ignore));
+                            if let Some(role) = role {
+                                app.preview_set_layer(l, role);
+                            }
+                        }
+                    }
+                    if let Some(p) = std::env::args().find_map(|a| a.strip_prefix("--import-paint=").map(str::to_string)) {
+                        for (k, st) in p.split(';').filter_map(|c| c.split_once('=')).filter_map(|(k, w)| Some((k.trim().parse::<usize>().ok()?.checked_sub(1)?, state(w)?))) {
+                            app.preview_paint(&[k], row(st), false);
+                        }
+                    }
+                    app.importui.panel.row = std::env::args().find_map(|a| a.strip_prefix("--import-row=").and_then(state)).map(row);
+                }
             }
             // --nest-stock: nest again from the library's sheet stock;
             // --stock: show the Sheet stock window (screenshots).
@@ -3322,8 +3321,8 @@ fn main() -> eframe::Result {
             // two parts' drawings. --open-job-menu: the Open job list, with a
             // job file and a Library job saved under the (temporary) home.
             // --import=<drawing>: import it as if dropped on the window (the
-            // Drawing layers window opens for a drawing with several rows).
-            if let Some(p) = std::env::args().find_map(|a| a.strip_prefix("--import=").map(PathBuf::from)) {
+            // Import drawings window opens on a drawing with several rows, IM12).
+            if let Some(p) = std::env::args().find_map(|a| a.strip_prefix("--import=").map(PathBuf::from)).filter(|p| p.is_file()) {
                 app.import_drawings(vec![p]);
             }
             if std::env::args().any(|a| a == "--import-card") {

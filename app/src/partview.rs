@@ -17,7 +17,7 @@ use egui::{Align2, Color32, CornerRadius, FontId, Pos2, Rect, RichText, Sense, S
 
 /// Half-size of the capture square around the cursor, in screen pixels (estimate;
 /// the original's caller passes the pick aperture in, rule E1).
-const APERTURE_PX: f32 = 6.0;
+pub(crate) const APERTURE_PX: f32 = 6.0;
 /// Part view zoom limits (× the fitted size).
 pub const PART_ZOOM_MIN: f32 = 0.3;
 pub const PART_ZOOM_MAX: f32 = 40.0;

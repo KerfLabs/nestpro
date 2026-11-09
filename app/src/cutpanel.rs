@@ -7,7 +7,7 @@
 
 use crate::dxf::{Contour, ContourState};
 use crate::engine::contours::{self, Look, Paint};
-use crate::nest::{CutQuality, P};
+use crate::nest::{CutQuality, Part, P};
 use crate::qualities::CutQualities;
 use crate::theme::th;
 use crate::App;
@@ -156,10 +156,10 @@ pub fn drag_kind(list: &[Contour], start: P, half: f64) -> Drag {
     }
 }
 
-/// The panel's state while a part is open.
-#[derive(Default)]
-pub struct CutPanel {
-    /// The panel is shown on the part's drawing screen.
+/// The panel's state: on the part's drawing screen (`B` the job's undo
+/// snapshot) or in the import preview (IM11, `B` the drawing's choices).
+pub struct CutPanel<B = crate::Snapshot> {
+    /// The panel is shown.
     pub open: bool,
     /// The row chosen: while one is, clicks, boxes and sweeps paint (CS6).
     pub row: Option<Row>,
@@ -167,32 +167,341 @@ pub struct CutPanel {
     /// one (CS5). Off by default.
     pub same: bool,
     /// A sweep in progress.
-    sweep: Option<Sweep>,
+    sweep: Option<Sweep<B>>,
     /// A box being drawn from this point (screen).
     box_from: Option<egui::Pos2>,
     /// Screenshots only (--paint-card=…): show this row's hover card.
     pub card: Option<Row>,
 }
 
-impl CutPanel {
+impl<B> Default for CutPanel<B> {
+    fn default() -> Self {
+        CutPanel { open: false, row: None, same: false, sweep: None, box_from: None, card: None }
+    }
+}
+
+impl<B> CutPanel<B> {
     /// A row is chosen: the pointer paints contours.
     pub fn painting(&self) -> bool {
         self.open && self.row.is_some()
     }
+
+    /// The part a sweep in progress paints (the caller's number for it).
+    pub fn sweeping(&self) -> Option<usize> {
+        self.sweep.as_ref().map(|s| s.part)
+    }
 }
 
 /// A sweep in progress: one undo step for all of it.
-struct Sweep {
+struct Sweep<B> {
     part: usize,
     row: Row,
     same: bool,
     /// Where the pointer was last (part mm).
     last: P,
-    /// The job before the sweep.
-    before: crate::Snapshot,
+    /// What it was before the sweep.
+    before: B,
     /// The contours it painted, and those it passed that can't take the row.
     painted: Vec<usize>,
     refused: Vec<(usize, String)>,
+}
+
+/// Where the panel's paints go (CS6, IM11): a part of the job on its drawing
+/// screen, or the part a drawing will make in the import preview. Every paint
+/// is the engine's `contours::paint`; the target keeps its own undo (Ctrl+Z).
+pub trait PaintTarget {
+    /// What it was before a paint, to take the paint back.
+    type Before;
+    /// The part painted.
+    fn part(&self) -> Option<&Part>;
+    /// Paint contours `picks` with `row` through `contours::paint`, without an
+    /// undo step: what it did, or the refusal.
+    fn paint_now(&mut self, picks: &[usize], row: Row, same: bool) -> Result<String, String>;
+    fn before(&self) -> Self::Before;
+    /// Make the change since `before` one undo step.
+    fn push_undo(&mut self, before: Self::Before);
+    /// Say what was done, or why not.
+    fn say(&mut self, s: String);
+}
+
+/// Paint contours `picks` (numbers from 0) with `row`, and with `same` every
+/// contour equal to one of them (CS5): the engine's `contour-tech` rules, one
+/// undo step. Says what it did, or why not; true when something changed.
+pub fn paint_contours<T: PaintTarget>(t: &mut T, picks: &[usize], row: Row, same: bool) -> bool {
+    paint_step(t, picks, row, same, &[])
+}
+
+/// `paint_contours`, naming afterwards the contours `refused` left as they are.
+fn paint_step<T: PaintTarget>(t: &mut T, picks: &[usize], row: Row, same: bool, refused: &[(usize, String)]) -> bool {
+    let before = t.before();
+    match t.paint_now(picks, row, same) {
+        Ok(m) => {
+            t.push_undo(before);
+            t.say(m + &left_as_they_are(refused));
+            true
+        }
+        Err(e) => {
+            t.say(first_sentence(&e));
+            false
+        }
+    }
+}
+
+/// Of contours `picks`, those that can take `row`, and the others with the
+/// engine's reason (CS4, CQ6).
+fn takers<T: PaintTarget>(t: &T, picks: &[usize], row: Row) -> (Vec<usize>, Vec<(usize, String)>) {
+    let Some(p) = t.part() else { return (vec![], vec![]) };
+    let (mut ok, mut refused) = (vec![], vec![]);
+    for &k in picks {
+        match contours::refusal(p, k, row.paint()) {
+            None => ok.push(k),
+            Some(e) => refused.push((k, e)),
+        }
+    }
+    (ok, refused)
+}
+
+/// Paint the contours a box gathered (CS6): those that can take `row` are
+/// painted as one undo step; the rest are left as they are and named, with
+/// why for the first of them.
+pub fn paint_gathered<T: PaintTarget>(t: &mut T, picks: &[usize], row: Row, same: bool) -> bool {
+    let (ok, refused) = takers(t, picks, row);
+    if ok.is_empty() {
+        if let Some(r) = refused.first() {
+            t.say(first_sentence(&r.1));
+        }
+        return false;
+    }
+    paint_step(t, &ok, row, same, &refused)
+}
+
+/// Start a sweep of part `part` (the caller's number for it) at `at` (part
+/// mm): the contour under the pointer is painted at once. `half` is the pick
+/// aperture, mm.
+#[allow(clippy::too_many_arguments)]
+pub fn sweep_start<T: PaintTarget>(t: &mut T, panel: &mut CutPanel<T::Before>, part: usize, at: P, row: Row, same: bool, half: f64) {
+    let before = t.before();
+    panel.sweep = Some(Sweep { part, row, same, last: at, before, painted: vec![], refused: vec![] });
+    sweep_to(t, panel, at, half);
+}
+
+/// The pointer moved to `at` with the button held: paint every contour it
+/// passed over since the last move (CS6). `t` is the sweep's part.
+pub fn sweep_to<T: PaintTarget>(t: &mut T, panel: &mut CutPanel<T::Before>, at: P, half: f64) {
+    let Some(mut sw) = panel.sweep.take() else { return };
+    let Some(p) = t.part() else { return };
+    let met: Vec<usize> = contours_on_stroke(&contours::list(p), sw.last, at, half).into_iter().filter(|k| !sw.painted.contains(k) && !sw.refused.iter().any(|r| r.0 == *k)).collect();
+    sw.last = at;
+    let (ok, refused) = takers(t, &met, sw.row);
+    sw.refused.extend(refused);
+    if !ok.is_empty() {
+        match t.paint_now(&ok, sw.row, sw.same) {
+            Ok(_) => sw.painted.extend(ok),
+            Err(e) => sw.refused.extend(ok.into_iter().map(|k| (k, e.clone()))),
+        }
+    }
+    panel.sweep = Some(sw);
+}
+
+/// The button was let go: the sweep becomes one undo step, and the status
+/// line says what it painted and what it left. `t` is the sweep's part.
+pub fn sweep_end<T: PaintTarget>(t: &mut T, panel: &mut CutPanel<T::Before>, names: &CutQualities) {
+    let Some(sw) = panel.sweep.take() else { return };
+    if sw.painted.is_empty() {
+        if let Some(r) = sw.refused.first() {
+            t.say(first_sentence(&r.1));
+        }
+        return;
+    }
+    t.push_undo(sw.before);
+    let mut painted = sw.painted;
+    painted.sort_unstable();
+    let n: Vec<String> = painted.iter().map(|k| (k + 1).to_string()).collect();
+    let same = if sw.same { " and every contour the same as them" } else { "" };
+    t.say(format!("Swept contour{} {}{same}: {}.{}", if n.len() == 1 { "" } else { "s" }, n.join(", "), sw.row.label(names), left_as_they_are(&sw.refused)));
+}
+
+/// Esc: end painting (CS6). A sweep in progress ends first; no row is
+/// chosen after, and the pointer picks again.
+pub fn end_painting<T: PaintTarget>(t: &mut T, panel: &mut CutPanel<T::Before>, names: &CutQualities) {
+    sweep_end(t, panel, names);
+    panel.row = None;
+    panel.box_from = None;
+    t.say("Painting ended.".into());
+}
+
+/// While a row is chosen: a click paints the contour under the pointer, a
+/// drag from a contour sweeps, a drag from open space draws a box (CS6); Esc
+/// ends painting. `part` is the caller's number for the part `t` paints (a
+/// sweep of another part must have ended first); `half` is the pick
+/// aperture, mm.
+#[allow(clippy::too_many_arguments)]
+pub fn canvas<T: PaintTarget>(
+    t: &mut T,
+    panel: &mut CutPanel<T::Before>,
+    ui: &egui::Ui,
+    resp: &egui::Response,
+    painter: &egui::Painter,
+    part: usize,
+    to_s: &dyn Fn(P) -> egui::Pos2,
+    to_w: &dyn Fn(egui::Pos2) -> P,
+    half: f64,
+    names: &CutQualities,
+) {
+    let Some(row) = panel.row else { return };
+    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        end_painting(t, panel, names);
+        return;
+    }
+    let Some(list) = t.part().map(contours::list) else { return };
+    let same = panel.same;
+    let at = resp.hover_pos().or(resp.interact_pointer_pos()).map(to_w);
+    // The contour under the pointer, in the row's colour.
+    if let Some(k) = at.and_then(|w| contour_at(&list, w, half)).filter(|_| panel.box_from.is_none()) {
+        let col = row.swatch(names).unwrap_or(egui::Color32::WHITE);
+        painter.add(egui::Shape::line(list[k].path().into_iter().map(to_s).collect(), egui::Stroke::new(4.0, crate::ui_parts::with_alpha(col, 150))));
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    if resp.clicked() {
+        if let Some(k) = at.and_then(|w| contour_at(&list, w, half)) {
+            paint_contours(t, &[k], row, same);
+        }
+    }
+    if resp.drag_started_by(egui::PointerButton::Primary) {
+        if let Some(w) = resp.interact_pointer_pos().map(to_w) {
+            // Where the button went down, not where the drag was noticed.
+            let from = ui.input(|i| i.pointer.press_origin()).map(to_w).unwrap_or(w);
+            match drag_kind(&list, from, half) {
+                Drag::Sweep => {
+                    sweep_start(t, panel, part, from, row, same, half);
+                    sweep_to(t, panel, w, half);
+                }
+                Drag::Box => panel.box_from = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos()),
+            }
+        }
+    }
+    if resp.dragged_by(egui::PointerButton::Primary) {
+        if let (Some(_), Some(w)) = (&panel.sweep, resp.interact_pointer_pos().map(to_w)) {
+            sweep_to(t, panel, w, half);
+        }
+        if let (Some(a), Some(b)) = (panel.box_from, resp.interact_pointer_pos()) {
+            let r = egui::Rect::from_two_pos(a, b);
+            painter.rect_filled(r, egui::CornerRadius::same(2), crate::ui_parts::with_alpha(th().accent, 30));
+            painter.extend(egui::Shape::dashed_line(&[r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom(), r.left_top()], egui::Stroke::new(1.0, th().accent_fg), 5.0, 3.0));
+        }
+    }
+    if resp.drag_stopped() {
+        if panel.sweep.is_some() {
+            // The last stretch, from the last held frame to where the button
+            // came up, belongs to the same sweep (and the same undo step).
+            if let Some(w) = resp.interact_pointer_pos().or_else(|| ui.input(|i| i.pointer.latest_pos())).map(to_w) {
+                sweep_to(t, panel, w, half);
+            }
+            sweep_end(t, panel, names);
+        }
+        if let (Some(a), Some(b)) = (panel.box_from.take(), resp.interact_pointer_pos()) {
+            let picks = contours_in_box(&list, to_w(a), to_w(b));
+            if picks.is_empty() {
+                t.say("No contour lies wholly inside the box.".into());
+            } else {
+                paint_gathered(t, &picks, row, same);
+            }
+        }
+    }
+}
+
+/// The panel's hint, its rows with their swatches and hover cards, and All
+/// the same contours (CS6), on the part's drawing screen and in the import
+/// preview (IM11). `locked` says why nothing can be painted (the rows can't be
+/// chosen then). True when a row was chosen or let go.
+pub fn rows_ui<B>(ui: &mut egui::Ui, panel: &mut CutPanel<B>, names: &CutQualities, locked: Option<&str>) -> bool {
+    let editable = locked.is_none();
+    egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 0)).show(ui, |ui| {
+        let hint = match locked {
+            Some(why) => why,
+            None if panel.row.is_some() => "Click, box or sweep (drag across) contours: each takes the row at once. Ctrl+Z undoes, Esc ends painting.",
+            None => "Choose a row, then click, box or sweep over contours.",
+        };
+        ui.label(egui::RichText::new(hint).size(11.5).color(th().text_dim));
+    });
+    ui.add_space(4.0);
+    let mut rows = vec![Row::Cut(None)];
+    rows.extend(crate::techui::offered_qualities(names).into_iter().map(|q| Row::Cut(Some(q))));
+    rows.extend([Row::Mark, Row::NoCut, Row::BendLine, Row::LeaveOut]);
+    let mut clicked = false;
+    for row in rows {
+        if row == Row::Mark {
+            ui.add_space(6.0);
+        }
+        let r = panel_row(ui, panel.row == Some(row), row, names, editable);
+        if panel.card == Some(row) {
+            let at = r.rect.left_top() + egui::Vec2::new(-286.0, 0.0);
+            egui::Area::new(egui::Id::unique("cut_panel_card")).order(egui::Order::Tooltip).fixed_pos(at).show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| row_card(ui, row, names));
+            });
+        }
+        if r.clicked() {
+            panel.row = if panel.row == Some(row) { None } else { Some(row) };
+            clicked = true;
+        }
+    }
+    ui.add_space(10.0);
+    ui.horizontal(|ui| {
+        ui.add_space(6.0);
+        ui.add_enabled(editable, egui::Checkbox::new(&mut panel.same, "All the same contours"))
+            .on_hover_text("Also paint every contour of the same shape as the one you paint (moved, not turned or mirrored); never the outline");
+    });
+    clicked
+}
+
+/// One row of the panel: its swatch and name, chosen or not; its hover card
+/// says what it does.
+fn panel_row(ui: &mut egui::Ui, chosen: bool, row: Row, names: &CutQualities, enabled: bool) -> egui::Response {
+    let indent = if matches!(row, Row::Cut(Some(_))) { 22.0 } else { 6.0 };
+    let (rect, resp) = ui.allocate_exact_size(egui::Vec2::new(ui.available_width(), 24.0), if enabled { egui::Sense::click() } else { egui::Sense::hover() });
+    let p = ui.painter();
+    if chosen {
+        p.rect_filled(rect.shrink2(egui::Vec2::new(3.0, 1.0)), egui::CornerRadius::same(5), th().accent);
+    } else if resp.hovered() && enabled {
+        p.rect_filled(rect.shrink2(egui::Vec2::new(3.0, 1.0)), egui::CornerRadius::same(5), th().hover);
+    }
+    let sw = egui::Rect::from_center_size(egui::Pos2::new(rect.left() + indent + 9.0, rect.center().y), egui::Vec2::splat(13.0));
+    paint_swatch(p, sw, row, names);
+    let text = if chosen { egui::Color32::WHITE } else if enabled { th().text } else { th().text_dim };
+    let label = egui::RichText::new(row.label(names)).size(13.0).color(text);
+    let label = if matches!(row, Row::Cut(Some(_))) { label } else { label.strong() };
+    p.text(egui::Pos2::new(sw.right() + 8.0, rect.center().y), egui::Align2::LEFT_CENTER, label.text(), egui::FontId::proportional(13.0), text);
+    resp.on_hover_ui(|ui| row_card(ui, row, names))
+}
+
+/// A part of the job painted on its drawing screen (CS6).
+struct JobPart<'a> {
+    app: &'a mut App,
+    part: usize,
+}
+
+impl PaintTarget for JobPart<'_> {
+    type Before = crate::Snapshot;
+
+    fn part(&self) -> Option<&Part> {
+        self.app.parts.get(self.part)
+    }
+
+    fn paint_now(&mut self, picks: &[usize], row: Row, same: bool) -> Result<String, String> {
+        self.app.paint_now(self.part, picks, row, same)
+    }
+
+    fn before(&self) -> crate::Snapshot {
+        self.app.snapshot()
+    }
+
+    fn push_undo(&mut self, before: crate::Snapshot) {
+        self.app.push_undo(before);
+    }
+
+    fn say(&mut self, s: String) {
+        self.app.status = s;
+    }
 }
 
 impl App {
@@ -215,101 +524,45 @@ impl App {
         Ok(done.message)
     }
 
-    /// Paint contours `picks` (numbers from 0) of part `part` with `row`, and
-    /// with `same` every contour equal to one of them (CS5): the engine's
-    /// `contour-tech` rules, one undo step (Ctrl+Z). Says what it did, or
-    /// why not, in the status line; true when something changed.
+    /// Run `f` on part `part` of the job with the panel (taken out of the
+    /// window for the while).
+    fn with_panel<R>(&mut self, part: usize, f: impl FnOnce(&mut JobPart, &mut CutPanel) -> R) -> R {
+        let mut panel = std::mem::take(&mut self.cut_panel);
+        let r = f(&mut JobPart { app: self, part }, &mut panel);
+        self.cut_panel = panel;
+        r
+    }
+
+    /// Paint contours `picks` (numbers from 0) of part `part` with `row`
+    /// (`paint_contours`): one undo step (Ctrl+Z); the status line says what
+    /// it did, or why not. True when something changed.
     pub fn paint_contours(&mut self, part: usize, picks: &[usize], row: Row, same: bool) -> bool {
-        let before = self.snapshot();
-        match self.paint_now(part, picks, row, same) {
-            Ok(m) => {
-                self.push_undo(before);
-                self.status = m;
-                true
-            }
-            Err(e) => {
-                self.status = first_sentence(&e);
-                false
-            }
-        }
+        paint_contours(&mut JobPart { app: self, part }, picks, row, same)
     }
 
-    /// Of contours `picks`, those that can take `row`, and the others with
-    /// the engine's reason (CS4, CQ6).
-    fn takers(&self, part: usize, picks: &[usize], row: Row) -> (Vec<usize>, Vec<(usize, String)>) {
-        let Some(p) = self.parts.get(part) else { return (vec![], vec![]) };
-        let (mut ok, mut refused) = (vec![], vec![]);
-        for &k in picks {
-            match contours::refusal(p, k, row.paint()) {
-                None => ok.push(k),
-                Some(e) => refused.push((k, e)),
-            }
-        }
-        (ok, refused)
-    }
-
-    /// Paint the contours a box gathered (CS6): those that can take `row`
-    /// are painted as one undo step; the rest are left as they are and named
-    /// in the status line, with why for the first of them.
+    /// Paint the contours of part `part` a box gathered (`paint_gathered`).
     pub fn paint_gathered(&mut self, part: usize, picks: &[usize], row: Row, same: bool) -> bool {
-        let (ok, refused) = self.takers(part, picks, row);
-        if ok.is_empty() {
-            if let Some(r) = refused.first() {
-                self.status = first_sentence(&r.1);
-            }
-            return false;
-        }
-        let changed = self.paint_contours(part, &ok, row, same);
-        if changed {
-            self.status.push_str(&left_as_they_are(&refused));
-        }
-        changed
+        paint_gathered(&mut JobPart { app: self, part }, picks, row, same)
     }
 
-    /// Start a sweep at `at` (part mm): the contour under the pointer is
-    /// painted at once. `half` is the pick aperture, mm.
+    /// Start a sweep of part `part` at `at` (part mm).
     pub fn sweep_start(&mut self, part: usize, at: P, row: Row, same: bool, half: f64) {
-        let before = self.snapshot();
-        self.cut_panel.sweep = Some(Sweep { part, row, same, last: at, before, painted: vec![], refused: vec![] });
-        self.sweep_to(at, half);
+        self.with_panel(part, |t, p| sweep_start(t, p, part, at, row, same, half));
     }
 
-    /// The pointer moved to `at` with the button held: paint every contour it
-    /// passed over since the last move (CS6).
+    /// The pointer moved to `at` with the button held.
     pub fn sweep_to(&mut self, at: P, half: f64) {
-        let Some(sw) = self.cut_panel.sweep.take() else { return };
-        let Some(p) = self.parts.get(sw.part) else { return };
-        let mut sw = sw;
-        let met: Vec<usize> = contours_on_stroke(&contours::list(p), sw.last, at, half).into_iter().filter(|k| !sw.painted.contains(k) && !sw.refused.iter().any(|r| r.0 == *k)).collect();
-        sw.last = at;
-        let (ok, refused) = self.takers(sw.part, &met, sw.row);
-        sw.refused.extend(refused);
-        if !ok.is_empty() {
-            match self.paint_now(sw.part, &ok, sw.row, sw.same) {
-                Ok(_) => sw.painted.extend(ok),
-                Err(e) => sw.refused.extend(ok.into_iter().map(|k| (k, e.clone()))),
-            }
+        if let Some(part) = self.cut_panel.sweeping() {
+            self.with_panel(part, |t, p| sweep_to(t, p, at, half));
         }
-        self.cut_panel.sweep = Some(sw);
     }
 
-    /// The button was let go: the sweep becomes one undo step, and the status
-    /// line says what it painted and what it left.
+    /// The button was let go: the sweep is one undo step.
     pub fn sweep_end(&mut self) {
-        let Some(sw) = self.cut_panel.sweep.take() else { return };
-        if sw.painted.is_empty() {
-            if let Some(r) = sw.refused.first() {
-                self.status = first_sentence(&r.1);
-            }
-            return;
-        }
-        self.push_undo(sw.before);
-        let mut painted = sw.painted;
-        painted.sort_unstable();
         let names = crate::ct1::for_spec(&self.spec).qualities;
-        let n: Vec<String> = painted.iter().map(|k| (k + 1).to_string()).collect();
-        let same = if sw.same { " and every contour the same as them" } else { "" };
-        self.status = format!("Swept contour{} {}{same}: {}.{}", if n.len() == 1 { "" } else { "s" }, n.join(", "), sw.row.label(&names), left_as_they_are(&sw.refused));
+        if let Some(part) = self.cut_panel.sweeping() {
+            self.with_panel(part, |t, p| sweep_end(t, p, &names));
+        }
     }
 
     /// The cut technology panel (CS6): the rows with their swatches and hover
@@ -322,144 +575,30 @@ impl App {
         let close = ui.put(egui::Rect::from_center_size(head.right_center() - egui::Vec2::new(14.0, 0.0), egui::Vec2::splat(20.0)), egui::Button::new("✖").small().frame(false));
         let open = !close.on_hover_text("Close the cut technology panel").clicked();
         let editable = part.is_some_and(|i| self.parts[i].shape == crate::nest::Shape::Custom);
+        let locked = (!editable).then_some("A built-in shape's contours are always cut. Save it as a drawing and import that to set its contours.");
         ui.add_space(4.0);
-        egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 0)).show(ui, |ui| {
-            let hint = if !editable {
-                "A built-in shape's contours are always cut. Save it as a drawing and import that to set its contours."
-            } else if self.cut_panel.row.is_some() {
-                "Click, box or sweep (drag across) contours: each takes the row at once. Ctrl+Z undoes, Esc ends painting."
-            } else {
-                "Choose a row, then click, box or sweep over contours."
-            };
-            ui.label(egui::RichText::new(hint).size(11.5).color(th().text_dim));
-        });
-        ui.add_space(4.0);
-        let mut rows = vec![Row::Cut(None)];
-        rows.extend(crate::techui::offered_qualities(&names).into_iter().map(|q| Row::Cut(Some(q))));
-        rows.extend([Row::Mark, Row::NoCut, Row::BendLine, Row::LeaveOut]);
         egui::ScrollArea::vertical().id_salt("cut_panel_rows").show(ui, |ui| {
-            for row in rows {
-                if row == Row::Mark {
-                    ui.add_space(6.0);
-                }
-                let r = self.panel_row(ui, row, &names, editable);
-                if self.cut_panel.card == Some(row) {
-                    let at = r.rect.left_top() + egui::Vec2::new(-286.0, 0.0);
-                    egui::Area::new(egui::Id::unique("cut_panel_card")).order(egui::Order::Tooltip).fixed_pos(at).show(ui.ctx(), |ui| {
-                        egui::Frame::popup(ui.style()).show(ui, |ui| row_card(ui, row, &names));
-                    });
-                }
-                if r.clicked() {
-                    self.cut_panel.row = if self.cut_panel.row == Some(row) { None } else { Some(row) };
-                    self.dv.measure_on = false;
-                    self.dv.zoom_window = false;
-                    self.placing_text = false;
-                }
+            if rows_ui(ui, &mut self.cut_panel, &names, locked) {
+                self.dv.measure_on = false;
+                self.dv.zoom_window = false;
+                self.placing_text = false;
             }
-            ui.add_space(10.0);
-            ui.horizontal(|ui| {
-                ui.add_space(6.0);
-                ui.add_enabled(editable, egui::Checkbox::new(&mut self.cut_panel.same, "All the same contours"))
-                    .on_hover_text("Also paint every contour of the same shape as the one you paint (moved, not turned or mirrored); never the outline");
-            });
         });
         open
     }
 
-    /// One row of the panel: its swatch and name, chosen or not; its hover
-    /// card says what it does.
-    fn panel_row(&self, ui: &mut egui::Ui, row: Row, names: &CutQualities, enabled: bool) -> egui::Response {
-        let chosen = self.cut_panel.row == Some(row);
-        let indent = if matches!(row, Row::Cut(Some(_))) { 22.0 } else { 6.0 };
-        let (rect, resp) = ui.allocate_exact_size(egui::Vec2::new(ui.available_width(), 24.0), if enabled { egui::Sense::click() } else { egui::Sense::hover() });
-        let p = ui.painter();
-        if chosen {
-            p.rect_filled(rect.shrink2(egui::Vec2::new(3.0, 1.0)), egui::CornerRadius::same(5), th().accent);
-        } else if resp.hovered() && enabled {
-            p.rect_filled(rect.shrink2(egui::Vec2::new(3.0, 1.0)), egui::CornerRadius::same(5), th().hover);
-        }
-        let sw = egui::Rect::from_center_size(egui::Pos2::new(rect.left() + indent + 9.0, rect.center().y), egui::Vec2::splat(13.0));
-        paint_swatch(p, sw, row, names);
-        let text = if chosen { egui::Color32::WHITE } else if enabled { th().text } else { th().text_dim };
-        let label = egui::RichText::new(row.label(names)).size(13.0).color(text);
-        let label = if matches!(row, Row::Cut(Some(_))) { label } else { label.strong() };
-        p.text(egui::Pos2::new(sw.right() + 8.0, rect.center().y), egui::Align2::LEFT_CENTER, label.text(), egui::FontId::proportional(13.0), text);
-        resp.on_hover_ui(|ui| row_card(ui, row, names))
-    }
-
-    /// While a row is chosen on the part's drawing screen: a click paints the
-    /// contour under the pointer, a drag from a contour sweeps, a drag from
-    /// open space draws a box (CS6); Esc ends painting. `half` is the pick
-    /// aperture, mm.
+    /// While a row is chosen on the part's drawing screen: click, box or
+    /// sweep paint part `idx` (`canvas`). `half` is the pick aperture, mm.
     #[allow(clippy::too_many_arguments)]
     pub fn cut_panel_canvas(&mut self, ui: &egui::Ui, resp: &egui::Response, painter: &egui::Painter, idx: usize, to_s: &dyn Fn(P) -> egui::Pos2, to_w: &dyn Fn(egui::Pos2) -> P, half: f64) {
-        let Some(row) = self.cut_panel.row else { return };
-        if self.cut_panel.sweep.as_ref().is_some_and(|s| s.part != idx) {
-            self.sweep_end();
-        }
-        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-            self.sweep_end();
-            self.cut_panel.row = None;
-            self.cut_panel.box_from = None;
-            self.status = "Painting ended.".into();
+        if self.cut_panel.row.is_none() {
             return;
         }
+        if self.cut_panel.sweeping().is_some_and(|p| p != idx) {
+            self.sweep_end();
+        }
         let names = crate::ct1::for_spec(&self.spec).qualities;
-        let list = contours::list(&self.parts[idx]);
-        let same = self.cut_panel.same;
-        let at = resp.hover_pos().or(resp.interact_pointer_pos()).map(to_w);
-        // The contour under the pointer, in the row's colour.
-        if let Some(k) = at.and_then(|w| contour_at(&list, w, half)).filter(|_| self.cut_panel.box_from.is_none()) {
-            let col = row.swatch(&names).unwrap_or(egui::Color32::WHITE);
-            painter.add(egui::Shape::line(list[k].path().into_iter().map(to_s).collect(), egui::Stroke::new(4.0, crate::ui_parts::with_alpha(col, 150))));
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        }
-        if resp.clicked() {
-            if let Some(k) = at.and_then(|w| contour_at(&list, w, half)) {
-                self.paint_contours(idx, &[k], row, same);
-            }
-        }
-        if resp.drag_started_by(egui::PointerButton::Primary) {
-            if let Some(w) = resp.interact_pointer_pos().map(to_w) {
-                // Where the button went down, not where the drag was noticed.
-                let from = ui.input(|i| i.pointer.press_origin()).map(to_w).unwrap_or(w);
-                match drag_kind(&list, from, half) {
-                    Drag::Sweep => {
-                        self.sweep_start(idx, from, row, same, half);
-                        self.sweep_to(w, half);
-                    }
-                    Drag::Box => self.cut_panel.box_from = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos()),
-                }
-            }
-        }
-        if resp.dragged_by(egui::PointerButton::Primary) {
-            if let (Some(_), Some(w)) = (&self.cut_panel.sweep, resp.interact_pointer_pos().map(to_w)) {
-                self.sweep_to(w, half);
-            }
-            if let (Some(a), Some(b)) = (self.cut_panel.box_from, resp.interact_pointer_pos()) {
-                let r = egui::Rect::from_two_pos(a, b);
-                painter.rect_filled(r, egui::CornerRadius::same(2), crate::ui_parts::with_alpha(th().accent, 30));
-                painter.extend(egui::Shape::dashed_line(&[r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom(), r.left_top()], egui::Stroke::new(1.0, th().accent_fg), 5.0, 3.0));
-            }
-        }
-        if resp.drag_stopped() {
-            if self.cut_panel.sweep.is_some() {
-                // The last stretch, from the last held frame to where the button
-                // came up, belongs to the same sweep (and the same undo step).
-                if let Some(w) = resp.interact_pointer_pos().or_else(|| ui.input(|i| i.pointer.latest_pos())).map(to_w) {
-                    self.sweep_to(w, half);
-                }
-                self.sweep_end();
-            }
-            if let (Some(a), Some(b)) = (self.cut_panel.box_from.take(), resp.interact_pointer_pos()) {
-                let picks = contours_in_box(&list, to_w(a), to_w(b));
-                if picks.is_empty() {
-                    self.status = "No contour lies wholly inside the box.".into();
-                } else {
-                    self.paint_gathered(idx, &picks, row, same);
-                }
-            }
-        }
+        self.with_panel(idx, |t, p| canvas(t, p, ui, resp, painter, idx, to_s, to_w, half, &names));
     }
 }
 

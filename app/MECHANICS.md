@@ -138,11 +138,13 @@ How the rebuild uses them:
   **frozen** or **turned off** (a negative colour in its layer table), **invisible** objects, and
   objects drawn in a **dashed or dotted line type** (CENTER, HIDDEN, PHANTOM…; a line type with dash
   elements in the drawing's table, or any type but CONTINUOUS when it has no table) go on a row of
-  their own in "Drawing layers": `0 [CENTER]`, `HOLES [frozen]`, `0 [CENTER/invisible]`. The line type
+  their own in the drawing's layer list (the import preview's cut technology panel, IM11): `0 [CENTER]`,
+  `HOLES [frozen]`, `0 [CENTER/invisible]`. The line type
   is the object's own, else its layer's (BYLAYER), else the block insert's (BYBLOCK). A block inserted
   on a frozen layer, or an invisible insert, hides all it holds. These rows start as Leave out and say
   why on hover; set one to Cut and it is cut like any layer. The import notes count what was left
-  out. A drawing whose only rows are such rows opens the window too, so nothing vanishes unseen.
+  out. A dropped drawing whose only rows are such rows opens the Import drawings window too (IM12), so
+  nothing vanishes unseen.
   Agents see the rows in `drawing-layers` (`left_out_by_default`) and set them with
   `layers=0 [CENTER]=cut`. A closed centreline (a bolt circle) would otherwise be cut as a hole and drop
   the middle of the plate. Estimated (own design): the original looks objects up by layer **and** line
@@ -155,8 +157,9 @@ How the rebuild uses them:
   once"). Objects that only overlap in part are not merged. Estimated (own design).
 - **At least 16 pieces to the full circle (DX2)**: however small the arc, so small holes stay round,
   are recognised as round and reach the LC5 as arcs. Estimated (own design).
-- **Layers (D5)**: a drawing with more than one layer opens "Drawing layers". Every layer
-  starts as **Cut** (code 13) and can be set to **Mark** or **Leave out**. Marking lines show
+- **Layers (D5)**: a drawing's layers are listed in the import preview's cut technology panel
+  (IM11); a dropped drawing with more than one layer opens the Import drawings window with it (IM12).
+  Every layer starts as **Cut** (code 13) and can be set to **Mark** or **Leave out**. Marking lines show
   dashed on the part, are done before the part is cut (`M10 ( MARK ON )` … `M11`), and count
   toward time at the machine's marking speed (CTM9). The sample plate
   has a MARK layer.
@@ -185,7 +188,8 @@ Leave out) and part data from the file name follow the DXF rules above. The file
 picked by its extension and checked against its content (a DWG named `.dxf` is still read as DWG).
 Window: Import drawings (Jobs and Nesting ribbons; a file browser with a preview, IM10) or drop files on the
 window; agents: `import-drawing` / `drawing-layers` (`import-dxf` / `dxf-layers` still work; `drawing-layers` also
-gives each part's size and holes, as the preview shows them).
+gives each part's size, holes and numbered contours, as the preview shows them; `import-drawing contours=` sets
+contours as the preview's panel does, IM12).
 
 What the file itself says about the part is used: its quantity (before the file name's), and its
 material and thickness are compared with the job's and reported when they differ. A file holding
@@ -210,6 +214,8 @@ nesting, huge declared sizes) is refused whole — no part comes in quietly miss
 | IM8 | Open contours are closed within 0.5 mm; largest radius 99 999.999; discretisation 10 mm; verify and smoothing off. | observed |
 | IM9 | Detect equal parts off; order contours off (when on: outer clockwise, inner counter-clockwise). | observed |
 | IM10 | The open window for part drawings shows the picked drawing on its right before it is imported, with a check box that turns the preview off (on by default, IM5) and a Configure… button for the import settings. The rebuild draws the part as the import will make it (same reading, part name and starting layer roles), with its width and height, holes, format, layers, quantity and the notes the import will give; a file no part can be made from shows its lines and the reason; a file of several parts shows them one at a time. The window opens in the folder last imported from and lists the six last ones. The check box only turns the picture on and off; it is not animated, and off leaves the preview blank. | observed (window, check box, Configure), Rebuild (what the preview shows) |
+| IM11 | **The cut technology panel in the import preview** (*Cut technology* beside Preview; it opens by itself for a dropped drawing, IM12): the part's panel (CS6: rows, swatches, hover cards, All the same contours, click / box / sweep; Esc ends painting, a second Esc closes the window) on the part the shown drawing is about to make, drawn in the contour colours (CS7; Leave out faint and dashed while the panel is open). Each paint goes through the same engine function and rules as `contour-tech` and shows at once; Ctrl+Z takes back the last paint or layer change on the shown drawing, not a change to the job behind. Above the rows are the drawing's **layer rows**, each with its object count, set to **Cut**, **Mark** or **Leave out** (D5); rows holding what the drawing hides or draws as centre / dashed lines start as Leave out and say why on hover (DX3). Setting a layer makes the part again with it, so all its lines take it (a Cut layer's contours start as CS2 says, a Mark layer's as Mark, a left-out layer's aren't on the part). A contour painted by hand that the change leaves in the same place, starting as before, keeps its paint; one on that layer takes the layer's, and the panel says how many did. While the panel is open the places column makes room and the preview grows, and the line under the part's size says what the last paint or layer change did. **Import** brings in each picked drawing with what was set for it: the same part as `import-drawing` with the same `layers` and `contours` (IM12). A picked drawing that was never shown comes in with the roles it starts with. What was set is kept while the window stays open, for the reading of the file it was set on. | estimated (own design, ADR 0001: the original imports everything as cut and has the programmer fix contours afterwards) |
+| IM12 | **Choosing contours with the import**: `import-drawing` takes contour choices next to `layers=`: `contours="7=mark; 1=leave-out; 2=quality 1 same"`, each the contour numbers (as `contour-tech` takes them) and a state, `quality 1-12` or `auto`, and/or `same`, painted in order with `contour-tech`'s rules (CS4, CS5, CQ6) on the part the layer roles make. The numbers are those `drawing-layers` lists for each part (`contours`: number, kind, starting state, length) with the same `layers`. Only for one drawing of one part (contour numbers belong to one part); a choice the part can't take refuses the whole import, saying why. The separate Drawing layers window is retired: a drawing dropped on the window or picked in the system's file picker that has several layer rows, or rows that start as Leave out, opens the Import drawings window with it picked and the cut technology panel open, so its layers are set before it comes in; drawings with one layer come in at once. | estimated (own design, ADR 0001) |
 
 Every format joins at 0.01 mm and then closes gaps up to 0.5 mm (IM8, as for DXF above; how the
 original closes a gap — a new straight piece or moving an end — isn't traced). Asking for a name,
@@ -415,8 +421,8 @@ Every contour of a part, closed or open, has a state that says what the machine 
 kinds per element (cut, marking, no cut, bending geometry) and imports a drawing with everything
 cut; the rebuild keeps open lines too and gives each contour a starting state. Agents:
 `part-info` lists the contours, `contour-tech` sets them. On the part's drawing screen the cut
-technology panel paints them (CS6, CS7); the same panel in the import preview isn't built yet
-(FEATURES TEC-4).
+technology panel paints them (CS6, CS7); the same panel in the import preview paints them before
+the part is made, with the drawing's layers (IM11), and `import-drawing contours=` does it for agents (IM12).
 
 | # | Rule | |
 |---|------|---|
