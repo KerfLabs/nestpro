@@ -1550,3 +1550,89 @@ fn a_job_saved_with_rough_normal_fine_opens_and_exports_with_numbered_qualities(
     assert_eq!(quality(&mut s, 3), (json!(2), from(&[(2, "part"), (2, "part"), (2, "part")])));
     crate::ct1::set_thread_active(None);
 }
+
+// ---------------------------------------------------------------------------
+// The cut qualities by the machine's names and colours (CQ4, CQ5).
+// ---------------------------------------------------------------------------
+
+/// A made-up Lantek folder whose machine file starts with `names` (A922–A933
+/// lines, Latin-1 like the original's files) and gives the thick-plate size
+/// bands of `thick_plate_laser`; the machine as the app loads it from there.
+fn laser_install(root: &Path, names: &str) -> crate::ct1::MachineTech {
+    std::fs::create_dir_all(root.join("MchFiles")).unwrap();
+    let ct1 = format!("{names}A051 40000\nA058 3000\nZ000 \"##MATEXP0010##\"\nZ001 12.9\nZ002 20.1\nZ010 0\nZ011 5\nZ012 0\nZ010 5\nZ011 12\nZ012 1\nZ010 12\nZ011 99999\nZ012 2\nZ999 0\n");
+    let latin1: Vec<u8> = ct1.chars().map(|c| c as u32 as u8).collect();
+    std::fs::write(root.join("MchFiles").join("PstAdi06.CT1"), latin1).unwrap();
+    crate::ct1::MachineTech::for_machine(&crate::settings::Machine::default(), root.to_str().unwrap())
+}
+
+/// Each contour's quality as part-info shows it, smallest contour first.
+fn contour_quality_names(s: &mut Session) -> Vec<String> {
+    let info = call(s, "part-info", None, json!({"part": 1}));
+    // Only cut contours carry a quality (the mark line is a contour too, CS1).
+    let mut q: Vec<(f64, String)> = info["data"]["contours"].as_array().unwrap().iter().filter(|c| c.get("quality_name").is_some()).map(|c| (c["length_mm"].as_f64().unwrap(), c["quality_name"].as_str().unwrap_or("").to_string())).collect();
+    q.sort_by(|a, b| a.0.total_cmp(&b.0));
+    q.into_iter().map(|c| c.1).collect()
+}
+
+#[test]
+fn part_info_names_each_contours_quality_as_the_machine_file_does() {
+    let d = dir("quality_names");
+    let names = "A922 \"Slow\"                ; Nombre para la calidad de corte  1.\nA923 \"Medium\"              ; Nombre para la calidad de corte  2.\nA924 \"R\u{e1}pido  \"           ; Nombre para la calidad de corte  3.\nA930 \"Marking\"             ; Nombre para la calidad de corte  9.\n";
+    crate::ct1::set_thread_active(Some(laser_install(&d.join("Named"), names)));
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(d.join("plate.snjob").to_str().unwrap()), json!({"w": 1500, "h": 1000, "material": "mild steel", "thickness": 15}));
+    call(&mut s, "import-drawing", None, json!({"path": plate_with_two_holes(&d).to_str().unwrap(), "qty": 1, "layers": "MARK=mark"}));
+    // The Ø6 hole Slow (1), the Ø16 hole Medium (2), the outline Rápido (3).
+    assert_eq!(contour_quality_names(&mut s), ["Slow (1)", "Medium (2)", "R\u{e1}pido (3)"]);
+
+    // A machine file that leaves the names empty (as the shop's BLM file does).
+    crate::ct1::set_thread_active(Some(laser_install(&d.join("Plain"), "A922 \"\"                    ; Nombre para la calidad de corte  1.\n")));
+    assert_eq!(contour_quality_names(&mut s), ["Quality 1", "Quality 2", "Quality 3"]);
+    crate::ct1::set_thread_active(None);
+}
+
+#[test]
+fn machine_tech_lists_the_qualities_by_name_and_leaves_out_hidden_ones() {
+    let d = dir("quality_list");
+    let names = "A922 \"Slow\"\nA923 \"Medium\"\nA924 \"Fast\"\nA925 \"<HIDE>\"\nA930 \"Marking\"\nA931 \"Center\"\n";
+    let mt = laser_install(&d.join("Expert"), names);
+    crate::ct1::set_thread_active(Some(mt.clone()));
+    let mut ctx = Ctx::builtin();
+    ctx.tech = mt;
+    let mut s = Session::new(ctx);
+    call(&mut s, "new", Some(d.join("plate.snjob").to_str().unwrap()), json!({"material": "mild steel", "thickness": 15}));
+    let r = call(&mut s, "machine-tech", None, json!({}));
+    let q = r["data"]["qualities"].as_array().unwrap_or_else(|| panic!("{r}"));
+    let labels: Vec<&str> = q.iter().map(|q| q["name"].as_str().unwrap()).collect();
+    assert_eq!(labels, ["Slow (1)", "Medium (2)", "Fast (3)", "Quality 4", "Quality 5", "Quality 6", "Quality 7", "Quality 8", "Marking (9)", "Center (10)", "Quality 11", "Quality 12"]);
+    // A quality the file names <HIDE> isn't offered in the pickers (the machine still has it).
+    let offered: Vec<u64> = q.iter().filter(|q| q["offered"] == json!(true)).map(|q| q["quality"].as_u64().unwrap()).collect();
+    assert_eq!(offered, [1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12]);
+    // The machines list shows the active machine's names too.
+    let m = call(&mut s, "machines", None, json!({}));
+    assert_eq!(m["data"]["technology"]["qualities"][8]["name"], json!("Marking (9)"), "{m}");
+    crate::ct1::set_thread_active(None);
+}
+
+#[test]
+fn each_quality_takes_the_colour_of_the_originals_colour_settings_else_its_shipped_one() {
+    let d = dir("quality_colours");
+    let colours = |s: &mut Session| -> Vec<String> {
+        let r = call(s, "machine-tech", None, json!({}));
+        r["data"]["qualities"].as_array().unwrap().iter().map(|q| q["colour"].as_str().unwrap_or("").to_string()).collect()
+    };
+    // A Lantek folder whose colour settings give qualities 1 and 3 their own colours.
+    let root = d.join("Expert");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("LANTEKIN.CNI"), "#- Colores: Rojo Verde Azul Estilo Anchura -#\nC008 255 255 0 0 1 ;\nC041 200 10 20 0 1 ;\nC043   0 255   0 0 1       ; x\nC053 0 255 0 0 1 ;\n").unwrap();
+    crate::ct1::set_thread_active(Some(laser_install(&root, "")));
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(d.join("plate.snjob").to_str().unwrap()), json!({"material": "mild steel", "thickness": 15}));
+    assert_eq!(colours(&mut s), ["#c80a14", "#0080c0", "#00ff00", "#008000", "#800080", "#804040", "#0080ff", "#008080", "#004080", "#8080ff", "#80ffff", "#ff80ff"]);
+
+    // No colour settings: the colours the original ships with.
+    crate::ct1::set_thread_active(Some(laser_install(&d.join("Bare"), "")));
+    assert_eq!(colours(&mut s)[..3], ["#ff8040", "#0080c0", "#ff00ff"]);
+    crate::ct1::set_thread_active(None);
+}

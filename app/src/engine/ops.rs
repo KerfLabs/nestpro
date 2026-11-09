@@ -177,7 +177,7 @@ pub static OPS: &[Op] = &[
         a("rotate", Ty::Bool, "May turn 90°"), a("mirror", Ty::Bool, "May be mirrored"), a("group", Ty::Str, "Group"), c("tech", &["copy", "drop"], "Size change on a part with technology"),
     ] },
     Op { name: "remove-part", group: "Parts", kind: Kind::Write, help: "Take a part out of the job (its placed copies go too).", args: &[PART] },
-    Op { name: "part-info", group: "Parts", kind: Kind::Read, help: "A part's geometry and technology: size, area, cut length, every contour (numbered: holes first, the outline, then open lines; open or closed; its state: cut, mark, no-cut, bend-line or leave-out, set with contour-tech), every element (numbered, for lead-at / joint-at), texts, and Verify Part / Verify Machining results.", args: &[PART] },
+    Op { name: "part-info", group: "Parts", kind: Kind::Read, help: "A part's geometry and technology: size, area, cut length, every contour (numbered: holes first, the outline, then open lines; open or closed; its state: cut, mark, no-cut, bend-line or leave-out, set with contour-tech; cut contours with their cut quality by the machine's name, e.g. Slow (1), or Quality n when the machine names none), every element (numbered, for lead-at / joint-at), texts, and Verify Part / Verify Machining results.", args: &[PART] },
     Op { name: "contour-tech", group: "Technology", kind: Kind::Write, help: "Set contours of an imported part (numbers from part-info: holes first, the outline, then open lines) to cut, mark (marked on the surface, open or closed), no-cut (kept on the part and shown, never machined), bend-line (a no-cut line in its own colour) or leave-out (not on the part). same=true also sets every contour equal to one of them (same shape, moved). The outline is always cut, and open lines can't be cut yet.", args: &[
         PART, r("contours", Ty::Str, "Contour numbers from part-info, e.g. \"5\", \"1,3\" or \"2-4\""),
         Arg { name: "state", ty: Ty::Str, required: true, help: "What the contours become", choices: CONTOUR_STATES },
@@ -245,7 +245,7 @@ pub static OPS: &[Op] = &[
         Arg { name: "mode", ty: Ty::Str, required: true, help: "auto or delete", choices: &["auto", "delete"] }, PARTS,
         a("every", Ty::Num, "auto: one joint per this many mm of each contour (default: the machine's maximum distance for the part's quality)"),
     ] },
-    Op { name: "machine-tech", group: "Technology", kind: Kind::Read, help: "Which material × thickness section of the machine's technology file applies to the job (or to another material/thickness), and the values it gives: lead and joint tables, joint gap, pierce and loop radius, kerf, part gap and margins (compare with the sheet's; take them with set-sheet machine_spacing=true), and the cutting speeds, pierce times and time settings that time the job (from the machine's technology table and time file).", args: &[
+    Op { name: "machine-tech", group: "Technology", kind: Kind::Read, help: "Which material × thickness section of the machine's technology file applies to the job (or to another material/thickness), and the values it gives: lead and joint tables, joint gap, pierce and loop radius, kerf, part gap and margins (compare with the sheet's; take them with set-sheet machine_spacing=true), the cutting speeds, pierce times and time settings that time the job (from the machine's technology table and time file), and the machine's 12 cut qualities by name and colour (offered = listed in the window's pickers).", args: &[
         a("material", Ty::Str, "Look at this material instead of the job's (name or number)"), a("thickness", Ty::Num, "Look at this thickness instead of the job's, mm"),
     ] },
     Op { name: "compensation", group: "Machining", kind: Kind::Write, help: "Kerf compensation: how the beam is kept half a kerf on the scrap side of each cut — control (the program writes G41/G42 and the corrector number, the CNC offsets) and/or system (the program carries the already-offset path). Shows the machine's settings, the job's choice and, per contour of a sheet, its side, corrector and radius, plus the contours system compensation can't cut (holes no bigger than the kerf, slots narrower than it). control/system set the job's choice (on, off, or machine = the machine file's).", args: &[
@@ -452,12 +452,12 @@ fn quality_from(s: &str) -> Result<Option<CutQuality>, String> {
         return Ok(None);
     }
     let old = if old_name(s) { "; the old rough / normal / fine are 3 / auto / 1" } else { "" };
-    numbered_quality(s).map(Some).ok_or_else(|| format!("quality '{s}': give one of the machine's cut qualities, 1 to 12, or auto to let its size bands decide{old}"))
+    numbered_quality(s).map(Some).ok_or_else(|| format!("quality '{s}': give one of the machine's cut qualities, 1 to 12 (machine-tech lists their names), or auto to let its size bands decide{old}"))
 }
 /// A size-range row's quality: 1–12 (CQ2).
 fn range_quality_from(s: &str) -> Result<CutQuality, String> {
     let old = if old_name(s) { "; the old rough / normal / fine are 3 / 2 / 1" } else { "" };
-    numbered_quality(s).ok_or_else(|| format!("ranges: quality '{}': a row takes one of the machine's cut qualities, 1 to 12{old}", s.trim()))
+    numbered_quality(s).ok_or_else(|| format!("ranges: quality '{}': a row takes one of the machine's cut qualities, 1 to 12 (machine-tech lists their names){old}", s.trim()))
 }
 fn text_kind_from(s: &str) -> Result<TextKind, String> {
     pick(s, "text kind", &[("mark", TextKind::Mark), ("special", TextKind::Special), ("note", TextKind::Note)])
@@ -716,6 +716,7 @@ fn part_info(job: &JobFile, i: usize) -> Value {
             if c.closed && c.state == dxf::ContourState::Cut {
                 let (q, from) = cnc::contour_quality(&tech, &mt, &c.pts);
                 v["quality"] = json!(q.number());
+                v["quality_name"] = json!(mt.qualities.label(q));
                 v["quality_from"] = json!(from.label());
             }
             v
@@ -796,6 +797,7 @@ fn machine_tech_report(spec: &SheetSpec, job: &SheetSpec) -> (String, Value) {
         "loop_radius": t.loop_radius, "pierce_radius": opt(t.pierce_radius),
         "cutter_radius": opt(t.cutter_radius), "kerf": opt(t.cutter_radius.map(|r| 2.0 * r)), "cut_speed": opt(t.cut_speed),
         "speeds": speeds_json(spec, &t),
+        "qualities": qualities_json(&t.qualities),
         "compensation": crate::kerf::status_line(spec),
         "spacing": {
             "machine_gap": opt(t.part_gap), "machine_margins": t.margins.map(|m| json!({"bottom": m[0], "top": m[1], "left": m[2], "right": m[3]})),
@@ -804,6 +806,12 @@ fn machine_tech_report(spec: &SheetSpec, job: &SheetSpec) -> (String, Value) {
         },
     });
     (msg, data)
+}
+
+/// The machine's 12 cut qualities as screens show them: number, name and
+/// whether the pickers offer it (CQ4), colour (CQ5).
+fn qualities_json(q: &crate::qualities::CutQualities) -> Value {
+    json!(nest::CutQuality::all().map(|c| json!({"quality": c.number(), "name": q.label(c), "colour": q.colour_hex(c), "offered": q.offered(c)})).collect::<Vec<_>>())
 }
 
 /// Where a sheet's speeds and times come from (TT1–TT10, CTM8–CTM16): the
@@ -878,6 +886,7 @@ fn machines(ctx: &Ctx) -> Value {
             "lead_in": t.lead_in, "lead_out": t.lead_out, "overlap": t.overlap, "position": t.zone, "hole_lead_in": t.hole_lead_in,
             "joint_gap": t.joint_gap, "joint_every": t.joint_every, "group_parts": t.group_parts, "zones": [t.zones_x, t.zones_y],
             "material_sections": t.file.sections.len(),
+            "qualities": qualities_json(&t.qualities),
             "note": "These are the machine's own values; a job's material and thickness may pick a section of the file instead (machine-tech).",
         },
         "post": { "extension": ctx.post.file_name("JOB", 1) },

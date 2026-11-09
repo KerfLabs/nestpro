@@ -514,9 +514,9 @@ impl App {
                         ui.checkbox(&mut row.on, format!("Row {}", k + 1));
                         ui.add(egui::DragValue::new(&mut row.min_r).range(0.0..=99999.0).speed(0.1).suffix(" mm"));
                         ui.add(egui::DragValue::new(&mut row.max_r).range(0.0..=99999.0).speed(0.1).suffix(" mm"));
-                        egui::ComboBox::from_id_salt(("cut_q", k)).width(90.0).selected_text(row.quality.label()).show_ui(ui, |ui| {
-                            for q in crate::nest::CutQuality::all() {
-                                ui.selectable_value(&mut row.quality, q, q.label());
+                        egui::ComboBox::from_id_salt(("cut_q", k)).width(120.0).selected_text(quality_text(ui, &mt.qualities, row.quality)).show_ui(ui, |ui| {
+                            for q in offered_qualities(&mt.qualities) {
+                                ui.selectable_value(&mut row.quality, q, quality_text(ui, &mt.qualities, q));
                             }
                         });
                         ui.end_row();
@@ -528,15 +528,17 @@ impl App {
                 for (hole, pts) in g.holes.iter().map(|h| (true, h)).chain(std::iter::once((false, &g.outline))) {
                     let (q, from) = crate::cnc::contour_quality(&edit, &mt, pts);
                     let by_row = from == crate::cnc::QualityFrom::SizeRange;
-                    ui.label(
-                        RichText::new(format!("{} r {:.1} mm → {} ({})", if hole { "Hole" } else { "Outside" }, crate::cnc::contour_radius(pts), q.label(), from.label()))
-                            .size(11.5)
-                            .color(if by_row { th().text_strong } else { th().text_dim }),
-                    );
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        ui.label(RichText::new(format!("{} r {:.1} mm →", if hole { "Hole" } else { "Outside" }, crate::cnc::contour_radius(pts))).size(11.5).color(th().text_dim));
+                        ui.label(RichText::new("●").size(11.5).color(quality_colour(&mt.qualities, q)));
+                        ui.label(RichText::new(format!("{} ({})", mt.qualities.label(q), from.label())).size(11.5).color(if by_row { th().text_strong } else { th().text_dim }));
+                    });
                 }
             }
             ui.add_space(4.0);
-            if ui.button("Example: small holes at quality 1").on_hover_text(format!("Row 1: holes up to r {} mm cut at quality 1", crate::nest::SMALL_HOLE_RADIUS_EXAMPLE)).clicked() {
+            let slowest = mt.qualities.label(crate::nest::CutQuality::new(1).unwrap_or(crate::nest::CutQuality::FALLBACK));
+            if ui.button(format!("Example: small holes at {slowest}")).on_hover_text(format!("Row 1: holes up to r {} mm cut at {slowest}", crate::nest::SMALL_HOLE_RADIUS_EXAMPLE)).clicked() {
                 edit.cut_ranges = Default::default();
                 edit.cut_ranges[0].on = true;
             }
@@ -555,10 +557,47 @@ impl App {
     }
 }
 
-/// A part's own cut quality on screen: "Quality n", or "Auto (size bands)"
-/// when the machine's size bands decide (CQ1; agents' `auto`).
-pub fn part_quality_label(q: Option<crate::nest::CutQuality>) -> String {
-    q.map_or_else(|| "Auto (size bands)".to_string(), |q| q.label())
+/// A part's own cut quality on screen: the machine's name for it (CQ4), or
+/// "Auto (size bands)" when the machine's size bands decide (CQ1; agents' `auto`).
+pub fn part_quality_label(q: Option<crate::nest::CutQuality>, names: &crate::qualities::CutQualities) -> String {
+    q.map_or_else(|| "Auto (size bands)".to_string(), |q| names.label(q))
+}
+
+/// A cut quality's colour on screen (CQ5).
+pub fn quality_colour(names: &crate::qualities::CutQualities, q: crate::nest::CutQuality) -> egui::Color32 {
+    let [r, g, b] = names.colour(q);
+    egui::Color32::from_rgb(r, g, b)
+}
+
+/// A cut quality as the pickers show it: a dot in its colour (CQ5), then the
+/// machine's name for it (CQ4).
+pub fn quality_text(ui: &egui::Ui, names: &crate::qualities::CutQualities, q: crate::nest::CutQuality) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    let (font, valign) = (egui::FontSelection::Default, egui::Align::Center);
+    RichText::new("● ").color(quality_colour(names, q)).append_to(&mut job, ui.style(), font.clone(), valign);
+    RichText::new(names.label(q)).append_to(&mut job, ui.style(), font, valign);
+    job
+}
+
+/// The qualities a picker lists: every one the machine doesn't hide (CQ4). A
+/// hidden quality already chosen stays chosen and shows as the picker's text.
+pub fn offered_qualities(names: &crate::qualities::CutQualities) -> Vec<crate::nest::CutQuality> {
+    crate::nest::CutQuality::all().filter(|&q| names.offered(q)).collect()
+}
+
+#[cfg(test)]
+mod quality_picker_tests {
+    use crate::nest::CutQuality;
+
+    #[test]
+    fn a_hidden_quality_stays_out_of_the_picker_even_when_chosen() {
+        let codes = [("A923".to_string(), "\"<HIDE>\"".to_string())].into_iter().collect();
+        let names = crate::qualities::CutQualities::from_codes(&codes);
+        let listed = super::offered_qualities(&names);
+        assert_eq!(listed.len(), 11);
+        assert!(!listed.iter().any(|q| q.number() == 2));
+        assert!(listed.contains(&CutQuality::all().next().unwrap()));
+    }
 }
 
 fn short_kind(k: crate::nest::TextKind) -> &'static str {
