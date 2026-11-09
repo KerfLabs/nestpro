@@ -241,15 +241,44 @@
    "estimated": true
   },
   {
-   "name": "quality speed factor rough",
+   "name": "quality speed factor, quality 1",
    "group": "part technology",
-   "value": 1.2,
+   "value": 0.7,
+   "source": "CQ3",
    "estimated": true
   },
   {
-   "name": "quality speed factor fine",
+   "name": "quality speed factor, quality 2",
    "group": "part technology",
-   "value": 0.7,
+   "value": 0.85,
+   "source": "CQ3",
+   "estimated": true
+  },
+  {
+   "name": "quality speed factor, other qualities",
+   "group": "part technology",
+   "value": 1.0,
+   "source": "CQ3",
+   "estimated": true
+  },
+  {
+   "name": "cut contour quality order",
+   "group": "part technology",
+   "value": "part's size-range row, else part's quality, else machine size band (parts without size ranges), else 3",
+   "source": "CQ1"
+  },
+  {
+   "name": "cut quality when nothing sets one",
+   "group": "part technology",
+   "value": 3,
+   "source": "CQ1",
+   "estimated": true
+  },
+  {
+   "name": "old cut qualities in saved files",
+   "group": "part technology",
+   "value": "part: Normal = none (size bands), Fine = 1, Rough = 3; size-range row: Fine = 1, Normal = 2, Rough = 3",
+   "source": "CQ2",
    "estimated": true
   },
   {
@@ -1541,20 +1570,39 @@
   {
    "name": "NEXT_L cut quality code",
    "group": "blm",
-   "value": 3,
-   "source": "MECHANICS BL5; observed: BLM program output"
+   "value": "the contour's own cut quality 1-12 (CQ1)",
+   "source": "BL22"
   },
   {
    "name": "NEXT_L marking quality code",
    "group": "blm",
    "value": 9,
-   "source": "MECHANICS BL5; observed: BLM program output"
+   "source": "BL22"
   },
   {
    "name": "NEXT_L pierce code for cutting",
    "group": "blm",
+   "value": "the technology table's pierce mode for the contour's quality (field 26 of its block)",
+   "source": "BL22"
+  },
+  {
+   "name": "NEXT_L pierce code without a table record or pierce mode",
+   "group": "blm",
    "value": 2,
-   "source": "MECHANICS BL5, BL2; observed: BLM program output"
+   "source": "BL22",
+   "estimated": true
+  },
+  {
+   "name": "NEXT_L marking pierce code",
+   "group": "blm",
+   "value": 0,
+   "source": "BL22"
+  },
+  {
+   "name": "XML tool flags",
+   "group": "blm",
+   "value": "Foratura Id<p> / Taglio Id<q> = 1 for every pierce code / quality the sheet's NEXT_L lines use; a cut-off line adds 2 / 3",
+   "source": "BL23"
   },
   {
    "name": "generate XML file",
@@ -3311,7 +3359,7 @@
  {
   "name": "hole-size bands",
   "group": "machine file sections",
-  "value": "Z010/Z011/Z012 triples pick a contour quality by equivalent radius (index → quality by TT8), for parts that leave the quality to the machine",
+  "value": "Z010/Z011/Z012 triples pick a contour quality by equivalent radius (index → quality by TT8), for parts with no size ranges and no quality of their own",
   "source": "MECHANICS MTL10",
   "estimated": true
  },

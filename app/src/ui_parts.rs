@@ -2192,10 +2192,11 @@ impl App {
                 ui.label("Joint width");
                 changed |= ui.add(egui::DragValue::new(&mut t.joint_width).range(0.1..=5.0).clamp_existing_to_range(false).speed(0.05).suffix(" mm")).changed();
                 ui.end_row();
-                ui.label("Cut quality");
-                egui::ComboBox::from_id_salt("quality").width(110.0).selected_text(t.quality.label()).show_ui(ui, |ui| {
-                    for q in crate::nest::CutQuality::ALL {
-                        changed |= ui.selectable_value(&mut t.quality, q, q.label()).changed();
+                ui.label("Cut quality").on_hover_text("The machine's quality for every contour the size ranges don't set; Auto lets the machine's size bands decide, so small holes are cut slower");
+                egui::ComboBox::from_id_salt("quality").width(110.0).selected_text(crate::techui::part_quality_label(t.quality)).show_ui(ui, |ui| {
+                    changed |= ui.selectable_value(&mut t.quality, None, crate::techui::part_quality_label(None)).changed();
+                    for q in crate::nest::CutQuality::all() {
+                        changed |= ui.selectable_value(&mut t.quality, Some(q), q.label()).changed();
                     }
                 });
                 ui.end_row();
