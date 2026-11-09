@@ -607,33 +607,84 @@ pub fn nearest_contour(parts: &[Part], placed: &[Placed], p: P, tol: f64) -> Opt
 /// contour, any of its holes not cut yet go first (a hole is every contour not
 /// labelled ##EXTCUT, rule MM2, and holes are cut before
 /// the outside so the part doesn't drop). A contour is cut once
-/// (rule MM3). Then the rest automatically.
-pub fn cut_jobs(parts: &[Part], placed: &[Placed], order: &[usize], manual: &[ManualCut]) -> Vec<(usize, usize, Option<(P, bool)>)> {
-    let count = |i: usize| parts[placed[i].part].geometry().holes.len() + 1;
-    let mut jobs: Vec<(usize, usize, Option<(P, bool)>)> = vec![];
-    let done = |jobs: &Vec<(usize, usize, Option<(P, bool)>)>, i: usize, ci: usize| jobs.iter().any(|j| j.0 == i && j.1 == ci);
+/// (rule MM3). A picked hole, or a hole pulled in by a picked outside, first
+/// cuts every part sitting in it, whole, so none drops with its scrap (CO2).
+/// Then the rest automatically.
+pub fn cut_jobs(parts: &[Part], placed: &[Placed], order: &[usize], manual: &[ManualCut]) -> Vec<CutJob> {
+    let mut jobs: Vec<CutJob> = vec![];
+    let mut busy = vec![false; placed.len()];
     for m in manual {
-        if m.placed >= placed.len() || m.contour >= count(m.placed) || done(&jobs, m.placed, m.contour) {
+        if m.placed >= placed.len() || m.contour >= contour_count(parts, placed, m.placed) || job_done(&jobs, m.placed, m.contour) {
             continue;
         }
-        let outer = m.contour == count(m.placed) - 1;
-        if outer {
-            for h in 0..count(m.placed) - 1 {
-                if !done(&jobs, m.placed, h) {
-                    jobs.push((m.placed, h, None));
-                }
-            }
+        if m.contour + 1 == contour_count(parts, placed, m.placed) {
+            // The outside: the whole part, holes first (MM2).
+            cut_whole(parts, placed, manual, m.placed, &mut jobs, &mut busy);
+        } else {
+            busy[m.placed] = true;
+            pull_in(parts, placed, manual, m.placed, m.contour, &mut jobs, &mut busy);
+            busy[m.placed] = false;
+            jobs.push((m.placed, m.contour, Some((m.start, m.reverse))));
         }
-        jobs.push((m.placed, m.contour, Some((m.start, m.reverse))));
     }
     for &i in order {
-        for ci in 0..count(i) {
-            if !done(&jobs, i, ci) {
+        for ci in 0..contour_count(parts, placed, i) {
+            if !job_done(&jobs, i, ci) {
                 jobs.push((i, ci, None));
             }
         }
     }
     jobs
+}
+
+/// One cut: placed part, contour (holes first, outside last), and for a
+/// picked contour where it starts and whether it runs the other way.
+pub type CutJob = (usize, usize, Option<(P, bool)>);
+
+fn contour_count(parts: &[Part], placed: &[Placed], i: usize) -> usize {
+    parts[placed[i].part].geometry().holes.len() + 1
+}
+
+fn job_done(jobs: &[CutJob], i: usize, ci: usize) -> bool {
+    jobs.iter().any(|j| j.0 == i && j.1 == ci)
+}
+
+/// What is left of placed part `i`: each hole after the parts sitting in it,
+/// then the outside. A contour picked by hand keeps its start and direction.
+fn cut_whole(parts: &[Part], placed: &[Placed], manual: &[ManualCut], i: usize, jobs: &mut Vec<CutJob>, busy: &mut [bool]) {
+    busy[i] = true;
+    let n = contour_count(parts, placed, i);
+    for ci in 0..n {
+        if job_done(jobs, i, ci) {
+            continue;
+        }
+        if ci + 1 < n {
+            pull_in(parts, placed, manual, i, ci, jobs, busy);
+        }
+        let pick = manual.iter().find(|m| m.placed == i && m.contour == ci).map(|m| (m.start, m.reverse));
+        jobs.push((i, ci, pick));
+    }
+    busy[i] = false;
+}
+
+/// CO2: every part sitting in hole `h` of placed part `i` is cut whole before
+/// that hole, or it drops with the hole's scrap uncut. `busy` marks the parts
+/// being cut, so parts moved over each other by hand can't loop.
+fn pull_in(parts: &[Part], placed: &[Placed], manual: &[ManualCut], i: usize, h: usize, jobs: &mut Vec<CutJob>, busy: &mut [bool]) {
+    let hole = sheet_contours(&parts[placed[i].part], &placed[i]).swap_remove(h).0;
+    let lo = hole.iter().fold([f64::MAX; 2], |a, p| [a[0].min(p[0]), a[1].min(p[1])]);
+    let hi = hole.iter().fold([f64::MIN; 2], |a, p| [a[0].max(p[0]), a[1].max(p[1])]);
+    for (j, pl) in placed.iter().enumerate() {
+        if j == i || busy[j] {
+            continue;
+        }
+        // Parts never overlap, so one point of the outline in the hole puts the part in it.
+        let Some(&first) = parts[pl.part].geometry().outline.first() else { continue };
+        let q = pl.map(first);
+        if q[0] >= lo[0] && q[0] <= hi[0] && q[1] >= lo[1] && q[1] <= hi[1] && crate::nest::point_in_poly(&hole, q) {
+            cut_whole(parts, placed, manual, j, jobs, busy);
+        }
+    }
 }
 
 /// Like `plan`, with some contours cut by hand first.
@@ -1632,6 +1683,45 @@ mod manual_tests {
         let order: Vec<(usize, usize, bool)> = jobs.iter().map(|j| (j.0, j.1, j.2.is_some())).collect();
         // The small part, then the plate's hole (automatic, inserted), then its outside.
         assert_eq!(order, vec![(1, 0, true), (0, 0, false), (0, 1, true)]);
+    }
+
+    /// A 600 plate with a Ø240 hole, a 50 square in the hole and one beside it.
+    fn frame() -> (Vec<Part>, Vec<Placed>, SheetSpec) {
+        let (mut parts, _, spec) = setup();
+        parts[0].w = 600.0;
+        parts[0].h = 600.0;
+        parts[1].w = 50.0;
+        parts[1].h = 50.0;
+        let at = |part, x, y, w, h| Placed { part, x, y, w, h, turns: 0, mirror: false };
+        (parts, vec![at(0, 10.0, 10.0, 600.0, 600.0), at(1, 285.0, 285.0, 50.0, 50.0), at(1, 700.0, 10.0, 50.0, 50.0)], spec)
+    }
+
+    #[test]
+    fn a_picked_frame_cuts_the_part_in_its_hole_first() {
+        // CO2: picking the plate's outside or its hole cuts the part sitting
+        // in the hole first, and a pick on that part keeps its start.
+        let (parts, placed, _) = frame();
+        let outer = ManualCut { placed: 0, contour: 1, start: [10.0, 300.0], reverse: false };
+        let hole = ManualCut { placed: 0, contour: 0, start: [430.0, 310.0], reverse: false };
+        let inner = ManualCut { placed: 1, contour: 0, start: [285.0, 300.0], reverse: true };
+        let order = |m: &[ManualCut]| cut_jobs(&parts, &placed, &[1, 0, 2], m).iter().map(|j| (j.0, j.1, j.2.is_some())).collect::<Vec<_>>();
+        assert_eq!(order(&[outer, inner]), vec![(1, 0, true), (0, 0, false), (0, 1, true), (2, 0, false)]);
+        assert_eq!(order(&[hole]), vec![(1, 0, false), (0, 0, true), (0, 1, false), (2, 0, false)]);
+    }
+
+    #[test]
+    fn verify_flags_a_part_cut_after_the_hole_it_sits_in() {
+        let (parts, placed, spec) = frame();
+        let late = |t: &String| t.contains("sitting in it (2)") && t.contains("drop first");
+        let pick = ManualCut { placed: 0, contour: 1, start: [10.0, 300.0], reverse: false };
+        let mut p = plan_manual(&parts, &placed, &spec, &[pick]);
+        assert!(!crate::drawing::verify_machining(&p).iter().any(late));
+        // The part in the hole moved to the end, after the plate's hole.
+        let k = p.contours.iter().position(|c| c.part_no == 2).unwrap();
+        let c = p.contours.remove(k);
+        p.contours.push(c);
+        let probs = crate::drawing::verify_machining(&p);
+        assert!(probs.iter().any(late), "{probs:?}");
     }
 
     #[test]

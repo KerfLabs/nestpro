@@ -69,6 +69,7 @@ original (or a real job).
 | NST-16 | Inches everywhere: only the part gap, edge margin, moves and Settings → Nesting follow the units setting; sheet sizes, part sizes, coordinates in hover cards, the status bar and reports are still in mm | Partial | ★★ | MECHANICS HM12, `units.rs` |
 | NST-17 | Selection extras: Trap (polyline) selection, invert selection, select by part / all copies of a part, multihead groups (Alt+M) | Missing | ★ | MECHANICS HM7 |
 | NST-19 | "One Sheet (redo)" as the original does it: the rebuild's **Nest sheet** re-nests only the parts already on the sheet onto the same sheet (RN1); whether the original also pulls in parts not yet nested, and "Do All on selected sheets", weren't traced | Estimate | ★★ | MECHANICS RN1, RN2; ROADMAP Home tab |
+| NST-20 | Parts in holes can't be turned off: the machine's "test parts inside holes" setting (B134) is read but the nester always fills every hole bigger than B076. There is no switch per job or per part, for example to keep a gasket's centre whole for another job | Partial | ★★ | `ct1::MachineTech::parts_in_holes`, `nest::Engine::profile` |
 
 ## Technology (TEC)
 
@@ -134,6 +135,7 @@ original (or a real job).
 | MAC-39 | LC5 gas is one per machine in Settings, while real programs choose it per job (mild steel is cut with either gas, even at one thickness). Real programs code oxygen as 3 (BL16); our unused fallback in `for_spec` calls it 2 | Partial | ★★★ | `blm::BlmSettings::for_spec`, `engine::Ctx`, MECHANICS BL6 |
 | MAC-40 | LC5 `CORNER`: our limit is 119.9°, but real programs never write it above about 95° (BL28), so we mark corners the original leaves alone | Estimate | ★★ | `blm::CORNER_MAX_ANGLE_DEG`, MECHANICS BL5 |
 | MAC-41 | LC5 cut-off lines: a cut-off that should stop where it meets another (an L-shaped remnant) is written across the whole sheet, which splits the remnant | Partial | ★★ | `blm` trim writer, `progimport.rs` |
+| MAC-48 | Automatic cut order with parts in holes: every part in every hole on the sheet is cut before any outer part, even across cutting zones, so the head crosses the sheet twice. Cutting each frame's contents just before that frame would save rapids. A part counts as "inside" by its box, so a part in an L-shaped part's notch is cut early too (harmless) | Estimate | ★ | `cnc::plan_manual`, MECHANICS CO1 |
 | OUT-7 | Open program (LC5 set): open cuts without a lead-in are lost, with no warning, so a re-exported program misses them; a stepped cut-off comes back as one slanted line, which the read-back then refuses (MAC-44) | Missing | ★★ | `progimport::parse_sub`, `progimport::parse_set` |
 
 ## Jobs, parts and data (JOB)
@@ -219,6 +221,7 @@ original (or a real job).
 | ID | What | Built |
 |---|---|---|
 | JOB-42 | **Import window with a preview**: Import drawings opens a file browser in the app (places, recent folders, drives, sorting, search, multi-pick, keyboard) that draws the picked drawing as it will come in, with its size, holes, layers and the import's notes; Configure… for name format and prefix/suffix; the system dialog is one click away. Agents' `drawing-layers` reports each part's size and holes | 2026-11-09 (`importui.rs`, `engine::imports::drawing_preview`, MECHANICS IM10) |
+| MAC-47 | **Manual cutting keeps parts in holes**: picking a hole, or the outside of a part with holes, cuts the parts sitting in that hole first; Verify Machining reports a part cut after the hole it sits in; the LC5 calls a part in a hole before its frame. A round part in a round part's hole (a washer's or ring's) no longer counts as overlapping it | 2026-11-09 (MECHANICS CO2, `cnc::cut_jobs`) |
 | MAC-38 | **LC5 straight edges stay straight**: a run of moves becomes an arc only if every move stays within 0.105 mm of it; big discs, slots and reopened programs are split finely enough to still fit; every set is read back before export and refused if it wouldn't cut the plan | 2026-11-06 (`blm::arc_fit`, `engine/readback.rs`, MECHANICS BL38, BL39) |
 | JOB-35 | **Small holes are round**: at least 16 pieces to a circle, so holes of any size are recognised as round and reach the LC5 as arcs | 2026-11-06 (`dxf::arc_segments`, MECHANICS DX2) |
 | MAC-43 | **LC5 sheet header**: free margins come from what's written, not fixed values | 2026-11-06 (`blm::sheet_margins`, MECHANICS BL17) |
