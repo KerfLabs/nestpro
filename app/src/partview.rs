@@ -23,6 +23,9 @@ pub const PART_ZOOM_MIN: f32 = 0.3;
 pub const PART_ZOOM_MAX: f32 = 40.0;
 /// Free room around the drawing when it is fitted (screen px).
 pub const PART_FIT_MARGIN_PX: f32 = 64.0;
+/// Height kept free at the bottom for the Simulation Window while the part
+/// is simulated (the window and the legend under it).
+pub const SIM_WINDOW_BAND_PX: f32 = 150.0;
 /// Zoom step of the - / + buttons; zooming in divides by the same factor
 /// (rule V1 uses 1.0 / f).
 pub const ZOOM_STEP: f32 = 1.25;
@@ -239,12 +242,26 @@ impl App {
         }
     }
 
+    /// The part's machining on its own, at the drawing's origin.
+    fn part_plan(&self, idx: usize) -> cnc::SheetPlan {
+        let (w, h) = self.parts[idx].bbox();
+        let placed = Placed { part: idx, x: 0.0, y: 0.0, w, h, turns: 0, mirror: false };
+        cnc::plan(&self.parts, &[placed], &self.spec)
+    }
+
+    /// The shown part's program as simulation steps (the sheet's, for this
+    /// part alone), and its number of contours.
+    pub fn part_sim_ops(&self) -> (Vec<crate::sheetsim::Op>, usize) {
+        let Some(idx) = self.shown_part() else { return (vec![], 0) };
+        let plan = self.part_plan(idx);
+        (crate::sheetsim::ops(&plan, std::slice::from_ref(&self.parts[idx].name)), plan.contours.len())
+    }
+
     /// The opened part, large, with everything its technology does.
     fn part_canvas(&mut self, ui: &mut egui::Ui) {
         let Some(idx) = self.shown_part() else { return };
         let (w, h) = self.parts[idx].bbox();
-        let placed = Placed { part: idx, x: 0.0, y: 0.0, w, h, turns: 0, mirror: false };
-        let plan = cnc::plan(&self.parts, &[placed], &self.spec);
+        let plan = self.part_plan(idx);
 
         let (rect, resp) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
         // The last check of this part stays in view (top right) until closed.
@@ -294,8 +311,10 @@ impl App {
         let (ew, eh) = ((ext[2] - ext[0]).max(1.0) as f32, (ext[3] - ext[1]).max(1.0) as f32);
         let ctr = Vec2::new(((ext[0] + ext[2]) / 2.0) as f32, ((ext[1] + ext[3]) / 2.0) as f32);
         let margin = PART_FIT_MARGIN_PX;
-        let fit = ((rect.width() - 2.0 * margin) / ew).min((rect.height() - 2.0 * margin) / eh).max(0.001);
-        let origin = |zoom: f32, pan: Vec2| rect.center() + pan + Vec2::new(-ctr.x * fit * zoom, ctr.y * fit * zoom);
+        // While simulating, the part fits above the Simulation Window.
+        let view = if self.dv.sim.is_some() && self.dv.machining { Rect::from_min_max(rect.min, Pos2::new(rect.right(), rect.bottom() - SIM_WINDOW_BAND_PX)) } else { rect };
+        let fit = ((view.width() - 2.0 * margin) / ew).min((view.height() - 2.0 * margin) / eh).max(0.001);
+        let origin = |zoom: f32, pan: Vec2| view.center() + pan + Vec2::new(-ctr.x * fit * zoom, ctr.y * fit * zoom);
         let now = ui.input(|i| i.time);
         // Scroll zooms about the pointer: the point under it stays put
         // (rule V1: x0' = p - (p - x0)*f, and zooming in uses 1/f).
@@ -339,10 +358,13 @@ impl App {
         self.dv.cursor = resp.hover_pos().map(to_w);
         self.paint_drawing_overlays(&painter, rect, &to_s, resp.hover_pos());
         let now_t = ui.input(|i| i.time);
-        self.sim_tick(now_t, plan.contours.len(), ui.ctx());
         if !self.dv.machining {
             self.dv.sim = None;
+            self.dv.sim_run = false;
         }
+        let sim_ops = if self.dv.sim.is_some() { crate::sheetsim::ops(&plan, std::slice::from_ref(&self.parts[idx].name)) } else { vec![] };
+        let sim_total: f64 = sim_ops.iter().map(|o| o.secs).sum();
+        self.sim_tick(now_t, sim_total, ui.ctx());
 
         // Part.
         let part = &self.parts[idx];
@@ -470,7 +492,7 @@ impl App {
                 // Zoom Window: the box fills the view.
                 let (wa, wb) = (to_w(a), to_w(b));
                 let (bw, bh) = ((wa[0] - wb[0]).abs().max(1e-3) as f32, (wa[1] - wb[1]).abs().max(1e-3) as f32);
-                let s2 = ((rect.width() - 2.0 * margin) / bw).min((rect.height() - 2.0 * margin) / bh);
+                let s2 = ((view.width() - 2.0 * margin) / bw).min((view.height() - 2.0 * margin) / bh);
                 self.push_part_view();
                 self.part_zoom = (s2 / fit).clamp(PART_ZOOM_MIN, PART_ZOOM_MAX);
                 let s2 = fit * self.part_zoom;
@@ -655,18 +677,6 @@ impl App {
                 pts.extend(l.iter().map(|&q| to_s(q)));
                 painter.add(EShape::line(pts, Stroke::new(2.0, jcol)));
             }
-            // Simulation: contours already cut in green, the one being cut in white.
-            if let Some(done) = self.dv.sim {
-                let col = if k < done { Some((crate::drawing::rgb(crate::drawing::C_DONE), 3.0)) } else if k == done { Some((Color32::WHITE, 3.2)) } else { None };
-                if let Some((col, wd)) = col {
-                    let mut pts: Vec<Pos2> = c.points.iter().map(|&q| to_s(q)).collect();
-                    pts.push(pts[0]);
-                    painter.add(EShape::line(pts, Stroke::new(wd, col)));
-                    if k == done {
-                        painter.circle_filled(to_s(c.points[0]), 6.0, Color32::from_rgb(248, 80, 90));
-                    }
-                }
-            }
             if !self.dv.machining {
                 continue;
             }
@@ -677,6 +687,29 @@ impl App {
             let tag = Rect::from_center_size(pierce + Vec2::new(13.0, -13.0), Vec2::new(18.0, 16.0));
             painter.rect_filled(tag, CornerRadius::same(4), th().overlay);
             painter.text(tag.center(), Align2::CENTER_CENTER, format!("{}", k + 1), FontId::proportional(10.5), Color32::WHITE);
+        }
+
+        // Simulation: the head follows the beam's path (pierce, lead-in,
+        // contour, joints, lead-out), cuts done so far green, as on the sheet.
+        if let Some(t) = self.dv.sim.filter(|_| !sim_ops.is_empty()) {
+            let kerf_px = (crate::kerf::kerf_mm(&self.spec) as f32 * s).max(2.4);
+            if let Some((cur, head)) = crate::sheetsim::paint_progress(&painter, &sim_ops, t, &to_s, kerf_px) {
+                // Keep the head in view while it runs, and bring it back after
+                // a step (when zoomed in).
+                let hp = to_s(head);
+                if (self.dv.sim_run || self.dv.sim_follow) && !view.shrink2(view.size() * 0.2).contains(hp) {
+                    self.part_pan += view.center() - hp;
+                }
+                self.dv.sim_follow = false;
+                // The Simulation Window, above the legend.
+                let wr = Rect::from_min_size(Pos2::new(rect.left() + 12.0, rect.bottom() - SIM_WINDOW_BAND_PX - 12.0), Vec2::new(560.0f32.min(rect.width() - 24.0), 120.0));
+                let cutter = crate::kerf::cutter_radius(&crate::ct1::for_spec(&self.spec));
+                let mut tt = t;
+                if crate::sheetsim::sim_window(ui, "part_sim_window", wr, &mut tt, sim_total, &sim_ops[cur], head, cutter) {
+                    self.dv.sim = Some(tt);
+                    self.dv.sim_run = false;
+                }
+            }
         }
 
         // View Geometry: every element's points and direction.
@@ -1111,6 +1144,32 @@ mod view_tests {
         assert_eq!((a.part_zoom, a.part_pan), (3.0, Vec2::new(40.0, -10.0)));
         a.previous_part_view();
         assert_eq!(a.part_zoom, 1.0);
+    }
+
+    #[test]
+    fn the_part_simulation_plays_its_program_in_real_time() {
+        // A part with a hole and micro-joints with leads: the simulation runs
+        // on the part's own program, at the chosen × real time.
+        let mut a = App::new(None);
+        let i = a.parts.iter().position(|p| p.name == "Square hole").expect("demo part");
+        a.open_part(i);
+        let (ops, n) = a.part_sim_ops();
+        assert_eq!(n, 2);
+        let total: f64 = ops.iter().map(|o| o.secs).sum();
+        assert!((total - a.part_plan(i).seconds).abs() < 1e-6);
+        // Running moves the clock by elapsed time × speed, and stops at the end.
+        let ctx = egui::Context::default();
+        a.dv.sim = Some(0.0);
+        a.dv.sim_run = true;
+        a.dv.sim_speed = 0.5;
+        a.dv.sim_last = 10.0;
+        a.sim_tick(10.2, total, &ctx);
+        assert!((a.dv.sim.unwrap() - 0.1).abs() < 1e-9);
+        a.dv.sim = Some(total - 0.01);
+        a.sim_tick(10.4, total, &ctx);
+        assert_eq!(a.dv.sim, Some(total));
+        assert!(!a.dv.sim_run);
+        assert_eq!(crate::sheetsim::contours_done(&ops, n, total), n);
     }
 
     #[test]

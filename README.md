@@ -41,6 +41,7 @@ job file) opens the app as before; a known operation name runs it headless:
 nestpro new  jobs/frames.snjob --w=3000 --h=1500 --material=steel --thickness=5
 nestpro import-dxf jobs/frames.snjob --path="C:\Drawings\BR-100.dxf" --qty=20
 nestpro stock --mode=create --w=3000 --h=1500 --thickness=5 --material=steel --qty=10
+nestpro contour-tech jobs/frames.snjob --part=1 --contours=5 --state=mark   # numbers from part-info
 nestpro nest jobs/frames.snjob                      # takes sheets from stock (remnants first)
 nestpro leads jobs/frames.snjob --mode=machine
 nestpro machine-tech jobs/frames.snjob               # which material/thickness table of the machine file applies

@@ -22,6 +22,8 @@ pub const HEADS: u32 = 1;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum OpKind {
     Rapid,
+    /// The head stands at the start of a beam run while the beam pierces.
+    Pierce,
     Cut,
     Mark,
     Punch,
@@ -34,6 +36,8 @@ pub struct Op {
     pub label: String,
     pub path: Vec<P>,
     pub secs: f64,
+    /// The plan's contour this step belongs to (the rapid to it included).
+    pub contour: Option<usize>,
 }
 
 fn len(path: &[P]) -> f64 {
@@ -41,13 +45,17 @@ fn len(path: &[P]) -> f64 {
 }
 
 /// The sheet's machining as timed operations, in program order: each part's
-/// markings first, then each contour — rapid to the pierce, then the
-/// lead-in and contour (or the punch hits). Each step takes the plan's time
-/// for it (MECHANICS "Machining time and speeds"), so the whole run lasts as
-/// long as the sheet's time.
+/// markings first, then each contour along the beam's own path (the one the
+/// program and the times use, `cnc::beam_runs`): rapid to the pierce, the
+/// pierce, then the run — lead-in, contour, loops, overlap, lead-out. A
+/// micro-joint is jumped with a rapid and pierced again; a joint with leads
+/// leaves along its lead-out and comes back along its lead-in. Punched
+/// contours go hit by hit. Each step takes the plan's time for it
+/// (MECHANICS "Machining time and speeds"), so the whole run lasts as long
+/// as the sheet's time.
 pub fn ops(plan: &SheetPlan, part_names: &[String]) -> Vec<Op> {
     let tm = &plan.timing;
-    let rapid = |a: P, b: P| Op { kind: OpKind::Rapid, label: "Rapid".into(), path: vec![a, b], secs: tm.rapid(a, b) };
+    let rapid = |a: P, b: P, contour: Option<usize>| Op { kind: OpKind::Rapid, label: "Rapid".into(), path: vec![a, b], secs: tm.rapid(a, b), contour };
     let mut out = vec![];
     let mut pos: P = [0.0, 0.0];
     let name_of = |no: usize| part_names.get(no.wrapping_sub(1)).cloned().unwrap_or_default();
@@ -57,8 +65,8 @@ pub fn ops(plan: &SheetPlan, part_names: &[String]) -> Vec<Op> {
         while next_mark < plan.marks.len() && plan.mark_before.get(next_mark).is_none_or(|&b| b <= k) {
             let (no, m) = &plan.marks[next_mark];
             if let Some(&s) = m.first() {
-                out.push(rapid(*pos, s));
-                out.push(Op { kind: OpKind::Mark, label: format!("Mark contour : part {no} ({})", name_of(*no)), path: m.clone(), secs: tm.mark(m).total() });
+                out.push(rapid(*pos, s, None));
+                out.push(Op { kind: OpKind::Mark, label: format!("Mark contour : part {no} ({})", name_of(*no)), path: m.clone(), secs: tm.mark(m).total(), contour: None });
                 *pos = *m.last().unwrap_or(&s);
             }
             next_mark += 1;
@@ -70,39 +78,76 @@ pub fn ops(plan: &SheetPlan, part_names: &[String]) -> Vec<Op> {
         if let Some(p) = &c.punch {
             // The same split as the plan's: rapids between hits, a fixed time per hit.
             for h in &p.hits {
-                out.push(rapid(pos, *h));
-                out.push(Op { kind: OpKind::Punch, label: format!("{} : part {} ({name})", p.label(), c.part_no), path: vec![*h], secs: crate::machine::HIT_SECONDS });
+                out.push(rapid(pos, *h, Some(k)));
+                out.push(Op { kind: OpKind::Punch, label: format!("{} : part {} ({name})", p.label(), c.part_no), path: vec![*h], secs: crate::machine::HIT_SECONDS, contour: Some(k) });
                 pos = *h;
             }
             continue;
         }
-        out.push(rapid(pos, c.lead_in));
-        let mut path = c.lead_path.clone();
-        if path.is_empty() {
-            path.push(c.lead_in);
-        }
-        path.extend(c.points.iter().copied());
-        path.push(c.points[0]);
-        if let Some(lo) = c.lead_out {
-            path.push(lo);
-        }
         let what = if c.inner { "hole" } else { "outside" };
-        out.push(Op { kind: OpKind::Cut, label: format!("Cut contour {} : {what} of part {} ({name})", k + 1, c.part_no), secs: c.time.total(), path });
-        // Where the next rapid starts: the plan's (the lead-out's end, or the
-        // closing joint's lead-out).
-        let start = c.points[0];
-        pos = if c.closing { c.joint_leads.last().map_or(start, |l| *l.0.last().unwrap()) } else { c.lead_out.unwrap_or(start) };
+        let cut = format!("Cut contour {} : {what} of part {} ({name})", k + 1, c.part_no);
+        let pierce = format!("Pierce contour {} : {what} of part {} ({name})", k + 1, c.part_no);
+        // The contour's time split the way `Timing::contour` adds it up:
+        // head down before the first pierce, head up after the last run.
+        let s = &tm.settings;
+        let runs = crate::cnc::beam_runs(c);
+        let last = runs.len().saturating_sub(1);
+        for (r, run) in runs.iter().enumerate() {
+            let Some(&start) = run.first() else { continue };
+            out.push(rapid(pos, start, Some(k)));
+            let t = tm.run(c, run);
+            let down = if r == 0 { s.head_down } else { 0.0 };
+            let up = if r == last { s.head_up } else { 0.0 };
+            out.push(Op { kind: OpKind::Pierce, label: pierce.clone(), path: vec![start], secs: down + t.pierce, contour: Some(k) });
+            out.push(Op { kind: OpKind::Cut, label: cut.clone(), path: run.clone(), secs: t.cut + t.head + up, contour: Some(k) });
+            pos = *run.last().unwrap_or(&start);
+        }
     }
     // Markings of parts none of whose contours are cut.
     marks_upto(usize::MAX, &mut out, &mut pos);
     out
 }
 
+/// Where Previous / Next go from time `t`: the start of the previous / next
+/// step that begins work — a pierce (each beam run), a marking or a punch
+/// hit — or the very end.
+pub fn step_time(ops: &[Op], t: f64, dir: i32) -> f64 {
+    let mut starts = vec![];
+    let mut acc = 0.0;
+    for o in ops {
+        if matches!(o.kind, OpKind::Pierce | OpKind::Mark | OpKind::Punch) {
+            starts.push(acc);
+        }
+        acc += o.secs;
+    }
+    starts.push(acc);
+    if dir > 0 {
+        starts.iter().copied().find(|&s| s > t + 1e-6).unwrap_or(acc)
+    } else {
+        starts.iter().rev().copied().find(|&s| s < t - 1e-6).unwrap_or(0.0)
+    }
+}
+
+/// How many of the plan's `n` contours are finished at time `t`.
+pub fn contours_done(ops: &[Op], n: usize, t: f64) -> usize {
+    let mut end = vec![0.0f64; n];
+    let mut acc = 0.0;
+    for o in ops {
+        acc += o.secs;
+        if let Some(e) = o.contour.and_then(|k| end.get_mut(k)) {
+            *e = acc;
+        }
+    }
+    end.iter().filter(|&&e| e <= t + 1e-9).count()
+}
+
 /// Where the head is at time `t`: (op index, point, share of that op done).
+/// A step owns its start, so a step's first moment (where Previous / Next
+/// land) shows that step, not the one before.
 pub fn head_at(ops: &[Op], t: f64) -> Option<(usize, P, f64)> {
     let mut acc = 0.0;
     for (i, o) in ops.iter().enumerate() {
-        if t <= acc + o.secs || i + 1 == ops.len() {
+        if t < acc + o.secs || i + 1 == ops.len() {
             let f = if o.secs > 0.0 { ((t - acc) / o.secs).clamp(0.0, 1.0) } else { 1.0 };
             return Some((i, point_along(&o.path, f), f));
         }
@@ -189,20 +234,11 @@ impl App {
         self.sheet_ops().iter().map(|o| o.secs).sum()
     }
 
-    /// Step to the start of the previous / next cutting operation.
+    /// Step to the start of the previous / next pierce, marking or hit.
     fn sim_step(&mut self, dir: i32) {
         let ops = self.sheet_ops();
         let t = self.ssim.as_ref().map_or(0.0, |s| s.t);
-        let mut starts = vec![];
-        let mut acc = 0.0;
-        for o in &ops {
-            if o.kind != OpKind::Rapid {
-                starts.push(acc);
-            }
-            acc += o.secs;
-        }
-        starts.push(acc);
-        let to = if dir > 0 { starts.iter().copied().find(|&s| s > t + 1e-6).unwrap_or(acc) } else { starts.iter().rev().copied().find(|&s| s < t - 1e-6).unwrap_or(0.0) };
+        let to = step_time(&ops, t, dir);
         let s = self.ssim.get_or_insert_with(SheetSim::default);
         s.t = to;
         s.running = false;
@@ -342,101 +378,127 @@ impl App {
             }
             ui.ctx().request_repaint();
         }
-        let Some((cur, head, f)) = head_at(&ops, sim.t) else { return };
-        // Done so far: cuts green, markings light green, punch hits orange; rapids dashed.
-        let cut = crate::drawing::rgb(crate::drawing::C_DONE);
-        let mark = Color32::from_rgb(140, 255, 140);
-        let punch = Color32::from_rgb(255, 140, 60);
         // A cut is drawn at least as wide as the real kerf at this zoom.
         let px_per_mm = (to_s([1.0, 0.0]).x - to_s([0.0, 0.0]).x).abs();
         let kerf_px = (crate::kerf::kerf_mm(&self.cur_spec()) as f32 * px_per_mm).max(2.4);
-        for (i, o) in ops.iter().enumerate().take(cur + 1) {
-            let pts: Vec<P> = if i == cur { path_upto(&o.path, f) } else { o.path.clone() };
-            let sp: Vec<Pos2> = pts.iter().map(|&q| to_s(q)).collect();
-            match o.kind {
-                OpKind::Cut => {
-                    painter.add(egui::Shape::line(sp, Stroke::new(kerf_px, cut)));
-                }
-                OpKind::Mark => {
-                    painter.add(egui::Shape::line(sp, Stroke::new(1.6, mark)));
-                }
-                OpKind::Punch => {
-                    if let Some(&q) = sp.first() {
-                        painter.circle_filled(q, 3.0, punch);
-                    }
-                }
-                OpKind::Rapid => {
-                    if i == cur {
-                        painter.extend(egui::Shape::dashed_line(&sp, Stroke::new(1.0, Color32::from_rgb(120, 255, 160)), 4.0, 4.0));
-                    }
-                }
-            }
-        }
-        // The cut being made right now: bright, so the head is seen on it.
-        if let Some(o) = ops.get(cur).filter(|o| o.kind != OpKind::Rapid) {
-            let sp: Vec<Pos2> = path_upto(&o.path, f).iter().map(|&q| to_s(q)).collect();
-            let tail = sp.len().saturating_sub(12);
-            painter.add(egui::Shape::line(sp[tail..].to_vec(), Stroke::new(3.0, Color32::WHITE)));
-        }
-        // The head (SM3): a red ring with a cross at its point.
-        let h = to_s(head);
-        painter.circle_filled(h, 3.5, Color32::from_rgb(255, 230, 120));
+        let Some((cur, head)) = paint_progress(painter, &ops, sim.t, to_s, kerf_px) else { return };
         // Follow the head: if it leaves the middle of the view, bring it back.
+        let h = to_s(head);
         if sim.follow && sim.running && !rect.shrink2(rect.size() * 0.2).contains(h) {
             self.pan += rect.center() - h;
             ui.ctx().request_repaint();
         }
-        let red = Color32::from_rgb(255, 40, 40);
-        painter.circle_stroke(h, 9.0, Stroke::new(2.0, red));
-        painter.line_segment([h - Vec2::new(13.0, 0.0), h + Vec2::new(13.0, 0.0)], Stroke::new(1.5, red));
-        painter.line_segment([h - Vec2::new(0.0, 13.0), h + Vec2::new(0.0, 13.0)], Stroke::new(1.5, red));
-        // Simulation Window.
         if sim.window {
             let w = Rect::from_min_size(Pos2::new(rect.left() + 12.0, rect.bottom() - 132.0), Vec2::new(560.0f32.min(rect.width() - 24.0), 120.0));
-            egui::Area::new(egui::Id::unique("sim_window")).fixed_pos(w.min).order(egui::Order::Foreground).show(ui.ctx(), |ui| {
-                egui::Frame::new().fill(th().card).stroke(Stroke::new(1.0, th().border)).corner_radius(CornerRadius::same(10)).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
-                    ui.set_width(w.width() - 20.0);
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("Simulation Window").strong().color(th().text_strong));
-                        ui.label(RichText::new(format!("{:.1} / {:.1} s", sim.t, total)).color(th().text_dim));
-                    });
-                    let mut t = sim.t;
-                    ui.spacing_mut().slider_width = w.width() - 40.0;
-                    if ui.add(egui::Slider::new(&mut t, 0.0..=total).show_value(false)).changed() {
-                        sim.t = t;
-                        sim.running = false;
-                    }
-                    let op = &ops[cur];
-                    let col = match op.kind {
-                        OpKind::Cut => cut,
-                        OpKind::Mark => mark,
-                        OpKind::Punch => punch,
-                        OpKind::Rapid => Color32::from_gray(150),
-                    };
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("Operation:").strong());
-                        ui.label(&op.label);
-                        let (r, _) = ui.allocate_exact_size(Vec2::new(26.0, 12.0), egui::Sense::hover());
-                        ui.painter().rect_filled(r, CornerRadius::same(2), col);
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("X:").strong());
-                        ui.label(format!("{:.3}", head[0]));
-                        ui.add_space(12.0);
-                        ui.label(RichText::new("Y:").strong());
-                        ui.label(format!("{:.3}", head[1]));
-                        ui.add_space(12.0);
-                        ui.label(RichText::new("Cutter radius:").strong());
-                        ui.label(format!("{:.3}", crate::kerf::cutter_radius(&crate::ct1::for_spec(&self.cur_spec()))));
-                        ui.add_space(12.0);
-                        ui.label(RichText::new("Number of heads:").strong());
-                        ui.label(format!("{HEADS}"));
-                    });
-                });
-            });
+            let cutter = crate::kerf::cutter_radius(&crate::ct1::for_spec(&self.cur_spec()));
+            if sim_window(ui, "sim_window", w, &mut sim.t, total, &ops[cur], head, cutter) {
+                sim.running = false;
+            }
         }
         self.ssim = Some(sim);
     }
+}
+
+/// Colours of the simulation: done cuts (C057), markings, punch hits, pierces.
+fn op_colour(kind: OpKind) -> Color32 {
+    match kind {
+        OpKind::Cut => crate::drawing::rgb(crate::drawing::C_DONE),
+        OpKind::Mark => Color32::from_rgb(140, 255, 140),
+        OpKind::Punch => Color32::from_rgb(255, 140, 60),
+        OpKind::Pierce => Color32::from_rgb(248, 80, 90),
+        OpKind::Rapid => Color32::from_gray(150),
+    }
+}
+
+/// Draw the program done up to time `t` (the sheet's and the part's
+/// simulation): cuts green and at least `kerf_px` wide, markings light
+/// green, punch hits orange, a pierce mark where each run started (SM2);
+/// the rapid being made dashed, the last of the cut being made bright white,
+/// and the head (SM3). Returns the step being made and the head's point.
+pub fn paint_progress(painter: &egui::Painter, ops: &[Op], t: f64, to_s: &dyn Fn(P) -> Pos2, kerf_px: f32) -> Option<(usize, P)> {
+    let (cur, head, f) = head_at(ops, t)?;
+    let mut pierces = vec![];
+    for (i, o) in ops.iter().enumerate().take(cur + 1) {
+        let pts: Vec<P> = if i == cur { path_upto(&o.path, f) } else { o.path.clone() };
+        let sp: Vec<Pos2> = pts.iter().map(|&q| to_s(q)).collect();
+        match o.kind {
+            OpKind::Cut => {
+                painter.add(egui::Shape::line(sp, Stroke::new(kerf_px, op_colour(o.kind))));
+            }
+            OpKind::Mark => {
+                painter.add(egui::Shape::line(sp, Stroke::new(1.6, op_colour(o.kind))));
+            }
+            OpKind::Punch => {
+                if let Some(&q) = sp.first() {
+                    painter.circle_filled(q, 3.0, op_colour(o.kind));
+                }
+            }
+            OpKind::Pierce => pierces.extend(sp.first().copied()),
+            OpKind::Rapid => {
+                if i == cur {
+                    painter.extend(egui::Shape::dashed_line(&sp, Stroke::new(1.0, Color32::from_rgb(120, 255, 160)), 4.0, 4.0));
+                }
+            }
+        }
+    }
+    for q in pierces {
+        painter.circle_filled(q, 2.6, op_colour(OpKind::Pierce));
+    }
+    // The cut being made right now: bright, so the head is seen on it.
+    if let Some(o) = ops.get(cur).filter(|o| o.kind == OpKind::Cut || o.kind == OpKind::Mark) {
+        let sp: Vec<Pos2> = path_upto(&o.path, f).iter().map(|&q| to_s(q)).collect();
+        let tail = sp.len().saturating_sub(12);
+        painter.add(egui::Shape::line(sp[tail..].to_vec(), Stroke::new(3.0, Color32::WHITE)));
+    }
+    // The head (SM3): a red ring with a cross at its point.
+    let h = to_s(head);
+    painter.circle_filled(h, 3.5, Color32::from_rgb(255, 230, 120));
+    let red = Color32::from_rgb(255, 40, 40);
+    painter.circle_stroke(h, 9.0, Stroke::new(2.0, red));
+    painter.line_segment([h - Vec2::new(13.0, 0.0), h + Vec2::new(13.0, 0.0)], Stroke::new(1.5, red));
+    painter.line_segment([h - Vec2::new(0.0, 13.0), h + Vec2::new(0.0, 13.0)], Stroke::new(1.5, red));
+    Some((cur, head))
+}
+
+/// The Simulation Window (SM4) at `at`: time, position slider, the step
+/// being made with its colour, the head's X / Y, the cutter radius and the
+/// number of heads. Returns true when the slider moved `t`.
+#[allow(clippy::too_many_arguments)]
+pub fn sim_window(ui: &egui::Ui, id: &str, at: Rect, t: &mut f64, total: f64, op: &Op, head: P, cutter: f64) -> bool {
+    let mut moved = false;
+    egui::Area::new(egui::Id::unique(id)).fixed_pos(at.min).order(egui::Order::Foreground).show(ui.ctx(), |ui| {
+        egui::Frame::new().fill(th().card).stroke(Stroke::new(1.0, th().border)).corner_radius(CornerRadius::same(10)).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
+            ui.set_width(at.width() - 20.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Simulation Window").strong().color(th().text_strong));
+                ui.label(RichText::new(format!("{:.1} / {:.1} s", *t, total)).color(th().text_dim));
+            });
+            ui.spacing_mut().slider_width = at.width() - 40.0;
+            if ui.add(egui::Slider::new(t, 0.0..=total).show_value(false)).changed() {
+                moved = true;
+            }
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Operation:").strong());
+                ui.label(&op.label);
+                let (r, _) = ui.allocate_exact_size(Vec2::new(26.0, 12.0), egui::Sense::hover());
+                ui.painter().rect_filled(r, CornerRadius::same(2), op_colour(op.kind));
+            });
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("X:").strong());
+                ui.label(format!("{:.3}", head[0]));
+                ui.add_space(12.0);
+                ui.label(RichText::new("Y:").strong());
+                ui.label(format!("{:.3}", head[1]));
+                ui.add_space(12.0);
+                ui.label(RichText::new("Cutter radius:").strong());
+                ui.label(format!("{cutter:.3}"));
+                ui.add_space(12.0);
+                ui.label(RichText::new("Number of heads:").strong());
+                ui.label(format!("{HEADS}"));
+            });
+        });
+    });
+    moved
 }
 
 #[cfg(test)]
@@ -474,6 +536,100 @@ mod sim_tests {
         a.ssim = None;
         let _ = a.sim_total();
         let _ = &mut a;
+    }
+
+    fn d(a: P, b: P) -> f64 {
+        ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
+    }
+
+    /// Distance from `q` to a polyline.
+    fn off_path(q: P, path: &[P]) -> f64 {
+        path.windows(2)
+            .map(|w| {
+                let (a, b) = (w[0], w[1]);
+                let ab = [b[0] - a[0], b[1] - a[1]];
+                let l2 = (ab[0] * ab[0] + ab[1] * ab[1]).max(1e-12);
+                let t = (((q[0] - a[0]) * ab[0] + (q[1] - a[1]) * ab[1]) / l2).clamp(0.0, 1.0);
+                d(q, [a[0] + ab[0] * t, a[1] + ab[1] * t])
+            })
+            .fold(f64::MAX, f64::min)
+    }
+
+    #[test]
+    fn the_head_follows_the_beam_from_lead_in_into_the_contour() {
+        // Every demo part on its own (as the part's Simulation tab plays it),
+        // and the first sheet: the head never jumps, each contour is cut along
+        // the program's beam runs (lead-in first, then the contour), and
+        // micro-joint gaps stay uncut.
+        let a = App::new(None);
+        let mut plans: Vec<(crate::cnc::SheetPlan, Vec<String>)> = (0..a.parts.len())
+            .map(|i| {
+                let (w, h) = a.parts[i].bbox();
+                let pl = crate::nest::Placed { part: i, x: 0.0, y: 0.0, w, h, turns: 0, mirror: false };
+                (crate::cnc::plan(&a.parts, &[pl], &a.spec), vec![a.parts[i].name.clone()])
+            })
+            .collect();
+        if let Some(p) = a.plans.first() {
+            plans.push((crate::cnc::plan(&a.parts, &a.result.sheets[0], &a.spec), a.result.sheets[0].iter().map(|p| a.parts[p.part].name.clone()).collect()));
+            assert!(!p.contours.is_empty());
+        }
+        let mut joints_seen = 0;
+        for (plan, names) in &plans {
+            let ops = ops(plan, names);
+            let total: f64 = ops.iter().map(|o| o.secs).sum();
+            assert!((total - plan.seconds).abs() < 1e-6, "{total} vs {}", plan.seconds);
+            // The head starts each step where the last one left it.
+            for w in ops.windows(2) {
+                let (e, s) = (*w[0].path.last().unwrap(), w[1].path[0]);
+                assert!(d(e, s) < 1e-6, "{names:?}: '{}' ends at {e:?}, '{}' starts at {s:?}", w[0].label, w[1].label);
+            }
+            for (k, c) in plan.contours.iter().enumerate().filter(|(_, c)| c.punch.is_none()) {
+                let cuts: Vec<&Op> = ops.iter().filter(|o| o.contour == Some(k) && o.kind == OpKind::Cut).collect();
+                let runs = crate::cnc::beam_runs(c);
+                assert_eq!(cuts.len(), runs.len(), "{names:?} contour {}", k + 1);
+                for (o, r) in cuts.iter().zip(&runs) {
+                    assert_eq!(&o.path, r);
+                }
+                // Each run is pierced first, where it starts.
+                let pierces: Vec<&Op> = ops.iter().filter(|o| o.contour == Some(k) && o.kind == OpKind::Pierce).collect();
+                assert_eq!(pierces.len(), runs.len());
+                assert_eq!(pierces[0].path, vec![c.lead_in]);
+                // The first run is the lead-in, then the contour from its start.
+                if c.lead_path.len() >= 2 {
+                    assert_eq!(&cuts[0].path[..c.lead_path.len()], &c.lead_path[..]);
+                }
+                assert!(cuts[0].path.iter().any(|&q| d(q, c.points[0]) < 1e-6));
+                // No cut crosses a micro-joint.
+                for &(ja, jb) in &c.joints {
+                    let mid = crate::cnc::point_at(&c.points, (ja + jb) / 2.0);
+                    for o in &cuts {
+                        assert!(off_path(mid, &o.path) > (jb - ja) / 4.0, "{names:?} contour {} cut across its joint at {mid:?}", k + 1);
+                    }
+                    joints_seen += 1;
+                }
+            }
+        }
+        assert!(joints_seen > 0, "the demo parts have micro-joints");
+        // Stepping goes pierce by pierce, then to the end.
+        let (plan, names) = &plans[0];
+        let ops = ops(plan, names);
+        let total: f64 = ops.iter().map(|o| o.secs).sum();
+        let mut t = 0.0;
+        let mut steps = 0;
+        while t < total - 1e-9 {
+            let n = step_time(&ops, t, 1);
+            assert!(n > t);
+            if n < total - 1e-9 {
+                let (i, _, _) = head_at(&ops, n).unwrap();
+                assert!(matches!(ops[i].kind, OpKind::Pierce | OpKind::Mark | OpKind::Punch), "{:?}", ops[i].kind);
+            }
+            t = n;
+            steps += 1;
+        }
+        assert_eq!(steps, ops.iter().filter(|o| matches!(o.kind, OpKind::Pierce | OpKind::Mark | OpKind::Punch)).count() + 1);
+        assert!(step_time(&ops, t, -1) < t);
+        assert_eq!(contours_done(&ops, plan.contours.len(), 0.0), 0);
+        assert_eq!(contours_done(&ops, plan.contours.len(), total), plan.contours.len());
     }
 }
 

@@ -2971,7 +2971,7 @@ fn main() -> eframe::Result {
                     "machining" => Tab::Machining,
                     "view" => Tab::View,
                     "simulation" => {
-                        app.dv.sim = Some(1);
+                        app.dv.sim = Some(0.0);
                         Tab::Simulation
                     }
                     "notes" => Tab::Notes,
@@ -2987,6 +2987,16 @@ fn main() -> eframe::Result {
                 };
             }
             app.apply_settings(true);
+            // --part-sim-at=<share>: the part's simulation that far through its program.
+            if let Some(f) = args.iter().find_map(|a| a.strip_prefix("--part-sim-at=").and_then(|v| v.parse::<f64>().ok())) {
+                let total: f64 = app.part_sim_ops().0.iter().map(|o| o.secs).sum();
+                app.dv.sim = Some(total * f.clamp(0.0, 1.0));
+                app.dv.sim_follow = true;
+            }
+            // --part-zoom=<z>: the part view zoomed in (with --part-sim-at, on the head).
+            if let Some(z) = args.iter().find_map(|a| a.strip_prefix("--part-zoom=").and_then(|v| v.parse::<f32>().ok())) {
+                app.part_zoom = z.clamp(crate::partview::PART_ZOOM_MIN, crate::partview::PART_ZOOM_MAX);
+            }
             // The database's jobs at start-up (Settings → General).
             if load_layout && app.cfg.auto_db && app.db_ready() {
                 app.db_open_now();
@@ -3005,6 +3015,10 @@ fn main() -> eframe::Result {
             }
             if let Some(p) = &job_open {
                 app.open_job_file(p);
+                // With --part, the opened job's first part in the Drawing module.
+                if want_part {
+                    app.open_part(0);
+                }
             }
             if let Some(p) = &import_xml {
                 app.import_xml(p);

@@ -538,9 +538,7 @@ impl Timing {
             if let Some(e) = last {
                 t.rapid += self.rapid(e, run[0]);
             }
-            t.pierce += self.speeds.pierce_for(c.quality) * s.factors[crate::cuttime::F_PIERCE];
-            t.cut += crate::cuttime::path_secs(run, c.feed, s.v90, &self.line_acc) * s.factors[crate::cuttime::F_CUT];
-            t.head += s.cut_off;
+            t += self.run(c, run);
             last = run.last().copied();
         }
         if !runs.is_empty() {
@@ -548,6 +546,26 @@ impl Timing {
         }
         (t, runs.len())
     }
+
+    /// One beam run of a contour (CTM10, CTM11): its pierce, the cut along
+    /// it, and the beam going off at its end. Head down / up and the jumps
+    /// between runs are the contour's (`contour`).
+    pub fn run(&self, c: &Contour, run: &[P]) -> TimeSplit {
+        let s = &self.settings;
+        TimeSplit {
+            pierce: self.speeds.pierce_for(c.quality) * s.factors[crate::cuttime::F_PIERCE],
+            cut: crate::cuttime::path_secs(run, c.feed, s.v90, &self.line_acc) * s.factors[crate::cuttime::F_CUT],
+            head: s.cut_off,
+            ..Default::default()
+        }
+    }
+}
+
+/// Where the beam stops on a contour: the end of its last run (after the
+/// lead-out, the overlap or the closing joint's lead-out). The next rapid
+/// starts here.
+pub fn beam_end(c: &Contour) -> P {
+    beam_runs(c).last().and_then(|r| r.last().copied()).unwrap_or(c.lead_in)
 }
 
 fn dist(a: P, b: P) -> f64 {
@@ -1136,8 +1154,9 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
             cut_len += len;
             (con.time, con.pierces) = timing.contour(&con);
             times += con.time;
-            let start = con.points[0];
-            pos = if con.closing { con.joint_leads.last().map_or(start, |l| *l.0.last().unwrap()) } else { con.lead_out.unwrap_or(start) };
+            // The next rapid starts where the beam stopped (after the
+            // lead-out, the overlap, or the closing joint's lead-out).
+            pos = beam_end(&con);
             contours.push(con);
         }
     }
@@ -1809,7 +1828,7 @@ mod kerf_plan_tests {
     }
     /// A drawing part from outline and holes as drawn (direction kept).
     fn drawn(outline: Vec<P>, holes: Vec<Vec<P>>) -> Part {
-        let g = crate::dxf::CustomGeo { w: 100.0, h: 60.0, outline, holes, fills: vec![], hole_fills: vec![], marks: vec![], texts: vec![] };
+        let g = crate::dxf::CustomGeo { w: 100.0, h: 60.0, outline, holes, fills: vec![], hole_fills: vec![], marks: vec![], texts: vec![], contours: vec![] };
         part(Shape::Custom, 100.0, 60.0, Some(g))
     }
     fn sides(p: &SheetPlan) -> Vec<(bool, Side)> {
@@ -1955,7 +1974,7 @@ mod kerf_plan_tests {
             let a = k as f64 * std::f64::consts::TAU / 48.0;
             [100.0 + 3.0 * a.cos(), 50.0 + 3.0 * a.sin()]
         }).collect();
-        part.custom = Some(std::sync::Arc::new(crate::dxf::CustomGeo { outline: vec![[0.0, 0.0], [200.0, 0.0], [200.0, 100.0], [0.0, 100.0]], holes: vec![hole], fills: vec![], hole_fills: vec![], marks: vec![], texts: vec![], w: 200.0, h: 100.0 }));
+        part.custom = Some(std::sync::Arc::new(crate::dxf::CustomGeo { outline: vec![[0.0, 0.0], [200.0, 0.0], [200.0, 100.0], [0.0, 100.0]], holes: vec![hole], fills: vec![], hole_fills: vec![], marks: vec![], texts: vec![], w: 200.0, h: 100.0, contours: vec![] }));
         part.shape = Shape::Custom;
         let pl = Placed { part: 0, x: 50.0, y: 50.0, w: 200.0, h: 100.0, turns: 0, mirror: false };
         let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material, thickness, level: 3, machine: Default::default(), kerf: Default::default() };

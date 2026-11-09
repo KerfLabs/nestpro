@@ -1026,7 +1026,7 @@ pub fn placed_shape(parts: &[Part], pl: &Placed) -> (Vec<P>, Vec<Vec<P>>) {
     (g.outline.iter().map(|&q| pl.map(q)).collect(), g.holes.iter().map(|h| h.iter().map(|&q| pl.map(q)).collect()).collect())
 }
 
-fn seg_point_dist(p: P, a: P, b: P) -> f64 {
+pub(crate) fn seg_point_dist(p: P, a: P, b: P) -> f64 {
     let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
     let l2 = dx * dx + dy * dy;
     let t = if l2 < 1e-18 { 0.0 } else { (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2).clamp(0.0, 1.0) };

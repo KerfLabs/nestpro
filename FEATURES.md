@@ -78,7 +78,7 @@ original (or a real job).
 | TEC-1 | Lead-ins: types 14–16, force placement, dynamic and custom leads, move point, lead-out like lead-in | Partial | ★★ | automatic leads by contour class from the machine's tables (types 1–13, zones, corner rules, round-hole limits, collision test) are built: MECHANICS AL1–AL11, `leads.rs` |
 | TEC-2 | Micro-joints: per-class joint records from the material file (V lines), zone modes, nano-joints, move point, to geometry, semi-automatic | Partial | ★ | automatic joints (count per F150, even, size-class fewest/most, holes too, centred, corner joints, joint leads) are built: MECHANICS AM1–AM6, `joints.rs`; the joint table per material × thickness section too (MTL7) |
 | TEC-3 | **Bridges**: join parts so they cut as one | Missing | ★★ | |
-| TEC-4 | Cut technologies: no cut, clean cut, dynamic, hatch, bending lines | Partial | ★★ | cut quality per part and marking texts are built |
+| TEC-4 | Cut technologies: no cut, clean cut, dynamic, hatch, bending lines | Partial | ★★ | cut quality per part and marking texts are built; every contour's state (Cut, Mark, No cut, Bend line, Leave out) with open lines kept at import, for agents (`contour-tech`, `part-info`; MECHANICS CS1–CS5, 2026-11-09). Still missing: the window's cut technology panel (paint by click, box or sweep, Ctrl+Z, Esc), a cut quality per contour, clean cut, dynamic, hatch |
 | TEC-5 | Texts: QR codes, templates, vectorize, written text | Partial | ★★ | marked / note / special, curved |
 | TEC-6 | Loops type 2, round angles | Partial | ★ | |
 | TEC-7 | Bevel (standard, 3D) | Missing | ★ | bevel heads only |
@@ -95,6 +95,7 @@ original (or a real job).
 | TEC-19 | Auxiliary geometry: named reference lines kept on the part with their own colour, line style and thickness, never machined | Missing | ★ | planning 2026-11-09 (`GLOSSARY.md`, `docs/adr/`) |
 | TEC-20 | Marker kind per mark (powder, pen, drill); every mark is made with the cutting head at the machine's marking quality | Missing | ★ | planning 2026-11-09 (`GLOSSARY.md`, `docs/adr/`) |
 | TEC-23 | Cut quality names and colours, the rest: the original tags a quality its size bands use with "Automatic Technology" in its picker; mixes each quality's colour with the cut-technology type's colour; shows only 5 qualities on a 5-quality (waterjet) machine; keeps names per cut type on multi-head machines; edits the colours in its own Colors settings (the app only reads them from the original's colour settings). Our own: an unnamed quality shows "Quality n" (the original: the bare number), and a colour line missing from the original's settings takes the shipped colour (the original: black) | Partial | ★ | MECHANICS CQ4, CQ5; GitHub issue #25 |
+| TEC-22 | Cutting an open line (a slit, or a line through the part): an open contour can't be set to Cut, the nester, leads and posts only cut closed contours | Missing | ★ | MECHANICS CS4; `contour-tech` refuses it |
 
 ## Machining and output (MAC)
 
@@ -189,6 +190,7 @@ original (or a real job).
 | JOB-47 | Part tiles: each tile shows the part's reference and size (on by default); Ctrl + mouse wheel resizes the tiles | Missing | ★ | MECHANICS "Lantek Expert v44 new features" (3.1.2, 3.1.3) |
 | JOB-48 | Editing several parts or sheets at once: fields that differ show `<Different values>` and are left as they are unless changed | Missing | ★ | MECHANICS "Lantek Expert v44 new features" (1.1) |
 | JOB-49 | Remember a customer's contour choices (say, their red lines are marks) for their next drawing | Missing | ★ | planning 2026-11-09 (`GLOSSARY.md`, `docs/adr/`) |
+| JOB-50 | Joining drawings where lines branch and corners need the 0.5 mm gap closing: a rectangle with two 0.2 mm corner gaps plus a corner-to-corner bend line still imports as a cut triangle (Verify Part clean), and two touching parts with a gap become one crossed outline (Verify flags it, export refuses). Both were so before the contour states; one gap and exact corners now join right | Missing | ★★ | MECHANICS CS2, IM8; GitHub issue #41 |
 
 ## Part drawing (DRW)
 
@@ -199,7 +201,9 @@ original (or a real job).
 | DRW-3 | Move / edit one text | Missing | ★ | add / delete work |
 | DRW-4 | Utilities: contours, compare parts, lifting | Missing | ★ | |
 | DRW-5 | Zoom window / previous / scale, full screen | Partial | ★ | zoom, fit |
-| DRW-6 | Selection: every contour equal to the picked one; all outside or all inside contours | Missing | ★ | MECHANICS "Lantek Expert v44 new features" (2.1.1, 2.1.2) |
+| DRW-6 | Selection: every contour equal to the picked one; all outside or all inside contours | Partial | ★ | MECHANICS "Lantek Expert v44 new features" (2.1.1, 2.1.2); the equal-contour test is built for agents (`contour-tech same=true`, MECHANICS CS5: the same shape moved, not turned or mirrored — a guess, the original's test isn't studied); no selection in the window |
+| DRW-8 | Colours of No cut contours (dimmed grey) and Bend lines (dashed magenta in the Drawing module, purple elsewhere) are our own: the original's colours for no-cut and bending geometry aren't studied | Estimate | ★ | MECHANICS CS3, DR4 |
+| DRW-7 | Export DXF writes only the cut and marked contours: No cut contours and Bend lines aren't in it (a bending program would want the bend lines) | Missing | ★ | MECHANICS D1, CS3 |
 
 ## Simulation, reports, machine link (OUT)
 
@@ -210,6 +214,7 @@ original (or a real job).
 | OUT-3 | Importing other CAMs' programs (Amada, Trumpf, Messer…) and technology tables | Partial | ★ | Open program reads LC5 .zip / .XML / .SPF |
 | OUT-4 | Pallet / suction-cup unloading | Missing | ★ | |
 | OUT-5 | Simulation: next tool, reposition, extraction steps | Partial | ★ | the Simulation tab plays the program |
+| OUT-8 | Part simulation: the Simulation Window is always shown while simulating (the original's View → Simulation Window hides it) and the head is always followed while it runs (the sheet has a Follow head toggle) | Partial | ★ | our choice; `partview.rs` |
 
 ## Agents: command line and MCP (AGT)
 

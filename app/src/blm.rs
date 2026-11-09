@@ -1049,7 +1049,7 @@ mod blm_tests {
         // cuts the empty hole, the part in the other hole, then the rest of the
         // frame; the frame's call (all of it) must still follow the part.
         let r = |x0: f64, y0: f64, x1: f64, y1: f64| vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
-        let g = crate::dxf::CustomGeo { w: 400.0, h: 200.0, outline: r(0.0, 0.0, 400.0, 200.0), holes: vec![r(20.0, 20.0, 180.0, 180.0), r(220.0, 20.0, 380.0, 180.0)], fills: vec![], hole_fills: vec![], marks: vec![], texts: vec![] };
+        let g = crate::dxf::CustomGeo { w: 400.0, h: 200.0, outline: r(0.0, 0.0, 400.0, 200.0), holes: vec![r(20.0, 20.0, 180.0, 180.0), r(220.0, 20.0, 380.0, 180.0)], fills: vec![], hole_fills: vec![], marks: vec![], texts: vec![], contours: vec![] };
         let p = |name: &str, shape, w, h, custom| Part { name: name.into(), shape, w, h, qty: 1, rotate: false, color: 0, tech: None, custom, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
         let parts = vec![p("FRAME", Shape::Custom, 400.0, 200.0, Some(std::sync::Arc::new(g))), p("TAB", Shape::Rectangle, 50.0, 50.0, None)];
         let sheet = vec![Placed { part: 0, x: 10.0, y: 10.0, w: 400.0, h: 200.0, turns: 0, mirror: false }, Placed { part: 1, x: 285.0, y: 85.0, w: 50.0, h: 50.0, turns: 0, mirror: false }];

@@ -1199,10 +1199,17 @@
    "source": "MECHANICS DR4"
   },
   {
-   "name": "simulation step per contour",
+   "name": "part simulation speeds",
    "group": "drawing",
-   "value": 0.7,
-   "unit": "s",
+   "value": "0.1, 0.25, 0.5, 1, 5",
+   "unit": "x real time",
+   "estimated": true
+  },
+  {
+   "name": "default part simulation speed",
+   "group": "drawing",
+   "value": 1.0,
+   "unit": "x real time",
    "estimated": true
   },
   {
@@ -4743,6 +4750,54 @@
   "group": "dxf",
   "value": 0.001,
   "source": "MECHANICS DX4"
+ },
+ {
+  "name": "contour states",
+  "group": "contours",
+  "value": ["cut", "mark", "no-cut", "bend-line", "leave-out"],
+  "source": "MECHANICS CS1"
+ },
+ {
+  "name": "open line from edge to edge starts as a bend line: end to outline (mm)",
+  "group": "contours",
+  "value": 0.5,
+  "source": "MECHANICS CS2"
+ },
+ {
+  "name": "open line counts as straight within (mm)",
+  "group": "contours",
+  "value": 0.01,
+  "source": "MECHANICS CS2"
+ },
+ {
+  "name": "where three or more line ends meet, the outside boundary closes and the lines inside stay open",
+  "group": "contours",
+  "value": true,
+  "source": "MECHANICS CS2"
+ },
+ {
+  "name": "layer name that makes open lines bend lines",
+  "group": "contours",
+  "value": "BEND",
+  "source": "MECHANICS CS2"
+ },
+ {
+  "name": "no cut and bend line contours are never machined",
+  "group": "contours",
+  "value": true,
+  "source": "MECHANICS CS3"
+ },
+ {
+  "name": "the outline is always cut",
+  "group": "contours",
+  "value": true,
+  "source": "MECHANICS CS4"
+ },
+ {
+  "name": "equal contours: same shape moved, point tolerance (mm)",
+  "group": "contours",
+  "value": 0.01,
+  "source": "MECHANICS CS5"
  },
  {
   "name": "export stops on a part drawn wrong (outline crosses itself, hole outside, holes overlap)",

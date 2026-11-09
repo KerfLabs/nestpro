@@ -408,6 +408,23 @@ How the rebuild does it:
 - The hand-off files (O2/O5) and the separate program (O6) aren't imitated: the rebuild opens
   the part in the same window.
 
+## Contour states: cut, mark, no cut, bend line, leave out
+
+Every contour of a part, closed or open, has a state that says what the machine does with it
+(words in `GLOSSARY.md`; ADR 0001: the programmer sets it per contour). The original keeps the same
+kinds per element (cut, marking, no cut, bending geometry) and imports a drawing with everything
+cut; the rebuild keeps open lines too and gives each contour a starting state. Agents:
+`part-info` lists the contours, `contour-tech` sets them. The window's cut technology panel isn't
+built yet (FEATURES TEC-4).
+
+| # | Rule | |
+|---|------|---|
+| CS1 | A part's contours are numbered holes first (every closed contour inside the outline, marked ones too), then the outline, then the open lines. Each has a state: **Cut**, **Mark**, **No cut**, **Bend line** or **Leave out**. A left-out contour keeps its number, so it can be set back. The states are saved with the job and with a library product; a job or product saved before contour states opens exactly as it was, its holes and outline Cut and its marking lines Mark. | observed (the kinds); own design (numbering, open lines kept) |
+| CS2 | Starting states, after the layer roles (a layer set to Leave out, including DX3's hidden and dashed rows, puts nothing on the part; a Mark layer's contours start as Mark): a closed contour is **Cut**; an open line is a **Bend line** when it is drawn dashed (a DX3 row set to Cut), lies on a layer whose name has BEND in it, or is straight (within 0.01 mm) and runs from edge to edge of the part (both ends within 0.5 mm of the outline); any other open line is **No cut**. An open line is on the part when the middle of one of its pieces is inside the outline; the others are left out and counted in the import notes, as outlines outside the part are. Dashed and bend-layer pieces are joined only with each other, never with the other cut lines, so a bend line ending on an outline corner can't break the outline, while a hole or outline drawn dashed (its row set to Cut) or on a bend layer still closes and is cut. Where three or more line ends meet at one point (a line across the part ending on the outline's corners, or edges split where a bend line meets them), the lines joined there close along their outside boundary (found by going round the outside, always taking the rightmost turn; gaps up to 0.5 mm in them are closed first, each loose end to the nearest end, as IM8), and the lines inside it stay open lines with the starting states above; drawings where no three ends meet join exactly as before. | estimated (own design, ADR 0002: the original imports everything as cut, and cutting an open line can split the part) |
+| CS3 | Only **Cut** contours are cut: they alone are nested, given leads, joints and kerf, pierced, timed and checked by Verify Part. **Mark** contours, open or closed, are marking paths: marked before the part is cut and timed at the marking speed. **No cut** and **Bend line** contours are drawn on the part and on the sheet and never machined: in the Drawing module No cut is dimmed grey and a Bend line dashed magenta; on the sheet and in part pictures No cut is dotted in the part's colour and a Bend line dashed purple; in the agents' pictures (`render`) No cut is a thin grey line and a Bend line dashed purple. Verify Part names holes by these contour numbers. **Leave out** contours aren't drawn or machined. | observed (what each kind does); estimated (colours, our own) |
+| CS4 | Setting a state: the outline is always Cut (refused, "without it there is no part to cut out"); an open line can't be set to Cut yet (refused: it could split the part, FEATURES TEC-22); a built-in shape's contours are always cut. A lead-in or joint placed on a contour stays on it, and goes when the contour is no longer cut; so do contours picked by hand for the sheet's cut order. When the cut contours change the job is marked as changed since its nest (a part nested in a hole that is no longer cut would overlap it). | estimated (own design) |
+| CS5 | **All the same contours** (`same=true`) also sets every contour equal to a picked one: both open or both closed, the same number of points, and with their boxes' lower-left corners together every point within 0.01 mm, run either way and, closed, from any point. A turned or mirrored copy isn't the same; the outline is never included. | estimated (own design; the original's equal-contour test, DRW-6, isn't studied) |
+
 ## Selecting lines, arcs and circles, and placing leads on them
 
 How the drawing module picks elements and places a lead on a picked element.
@@ -830,8 +847,18 @@ How the rebuild uses them:
 - View: Axis, Color Display, Machining Window, Restore Panels, **Full Screen** (hides the
   panels), **Show Parts** (first / previous / next / last), Zoom All / Window / Previous / In /
   Out.
-- Simulation: **Beginning, Previous, Run/Pause, Next, End, Stop** — contours already cut turn
-  green (C057), the one being cut is white with the head marked; Run steps every 0.7 s.
+- Simulation: **Beginning, Previous, Run/Pause, Next, End, Stop** play the part's own program
+  the way the sheet's Simulation does (below): the head moves along each beam run — rapid,
+  pierce, lead-in, contour, lead-out — so it can be followed from the lead-in into the contour;
+  cuts already made turn green (C057), micro-joint gaps stay uncut, and the counter says how
+  many contours are cut. Speed is × real time — 0.1×, 0.25×, 0.5×, 1× (default), 5× (our
+  choice: slow enough to follow a lead-in). Previous / Next go pierce by pierce and bring the
+  head back into view when zoomed in; the head is followed while it runs. The Simulation Window
+  (slider, operation, X / Y, cutter radius, heads) sits under the part, which fits above it
+  while simulating.
+- Fix: the part's simulation used to light a whole contour at once with a fixed dot at its
+  start point and paint over its micro-joints, so the head never seemed to go from the lead-in
+  into the contour.
 - Notes: Dimension notes Automatic / Delete, Texts (new text), Modify (the selected text),
   Text and Dimensions on/off.
 - **Angle between three points** (DR8): click a point, the corner, then another point — the
@@ -900,10 +927,18 @@ How ours compared, and what the rebuild now does:
   from the Sheet tab: pick contours, reverse, undo, clear) and **View CNC** / **Export CNC**.
 - *Simulation*: **Beginning, Previous, Run/Pause, Next, End, Stop**, a **Simulation Speed**
   choice (1×, 5×, 20× (default), 50×, 200× real time) and the **Simulation Window**. The program
-  plays in order (per part its markings first, then each contour: rapid, pierce, lead-in,
-  contour, lead-out; punched contours hit by hit). Done cuts turn green (C057), markings light
-  green, punch hits orange; the head is a red ring with a cross (SM3). Previous/Next jump
-  between cutting operations; the slider moves anywhere.
+  plays in order (per part its markings first, then each contour along the beam's own path —
+  the one the program and the times use: rapid, pierce, lead-in, contour, loops, overlap,
+  lead-out; a micro-joint is jumped and pierced again, a joint with leads leaves along its
+  lead-out and comes back along its lead-in; punched contours hit by hit). The head stands
+  still at each pierce for the pierce time. Done cuts turn green (C057), markings light green,
+  punch hits orange, with a pierce mark where each run started (SM2); the head is a red ring
+  with a cross (SM3). Previous/Next jump pierce by pierce (and to each marking and hit); the
+  slider moves anywhere. The next rapid starts where the beam stopped (after the lead-out, the
+  overlap or the closing joint's lead-out), in the sheet's times too.
+- Fix: the head used to run lead-in, the whole contour and a straight line to the lead-out's
+  end, so it cut across micro-joints, skipped joint leads, loops and the overlap, and drew arc
+  lead-outs straight.
 - The Simulation Window shows the operation (e.g. *Cut contour 12 : hole of part 5 (Ring)*) with
   its colour, the head's X / Y, the **cutter radius 0.150** (half the 0.3 mm cut width — the
   value observed in the original) and **1 head**.

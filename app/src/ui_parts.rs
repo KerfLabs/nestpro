@@ -183,6 +183,10 @@ pub fn paint_part_placed(painter: &egui::Painter, part: &Part, pl: &crate::nest:
     }
 }
 
+/// Bend lines on the sheet and in part pictures (CS3; our own colour, the
+/// same purple as the agents' pictures).
+const BEND: Color32 = Color32::from_rgb(147, 51, 234);
+
 fn paint_part_ex(painter: &egui::Painter, part: &Part, map: impl Fn(P) -> Pos2, fill: Color32, edge: Stroke, hole: Color32, with_texts: bool) {
     let g = part.geometry();
     // Imported drawings are filled from triangles; paint them as one seamless mesh
@@ -205,6 +209,16 @@ fn paint_part_ex(painter: &egui::Painter, part: &Part, map: impl Fn(P) -> Pos2, 
             painter.add(EShape::closed_line(h.iter().map(|&p| map(p)).collect(), edge));
         }
         painter.add(EShape::closed_line(g.outline.iter().map(|&p| map(p)).collect(), edge));
+        // CS3: No cut contours dotted in the part's colour, Bend lines dashed
+        // in the bend colour; neither is machined.
+        for shown in c.shown_only() {
+            let pts: Vec<Pos2> = shown.path().into_iter().map(&map).collect();
+            if shown.state == crate::dxf::ContourState::BendLine {
+                painter.extend(EShape::dashed_line(&pts, Stroke::new(1.3, BEND), 7.0, 3.0));
+            } else {
+                painter.extend(EShape::dotted_line(&pts, darker(fill, 0.45), 3.0, 0.7));
+            }
+        }
         // Marking lines (drawing layers set to "Mark"): thin dashed lines.
         let mark = Stroke::new(1.2, darker(fill, 0.3));
         for m in &c.marks {
