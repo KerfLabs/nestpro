@@ -64,7 +64,7 @@ impl App {
         let picks = self.manual_cuts.get(self.cur_sheet).map_or(0, |v| v.len());
         ribbon_group(ui, "Manual cutting", |ui| {
             if ribbon_button(ui, Icon::PickOrder, "Pick\ncontours", self.manual_mode, has)
-                .on_hover_text("Click contours on the sheet in the order they should be cut. The cut starts where you click; holes of a part are always cut before its outside.")
+                .on_hover_text("Click contours on the sheet in the order they should be cut. The cut starts where you click; holes of a part are always cut before its outside, and parts sitting in a hole before that hole.")
                 .clicked()
             {
                 self.manual_mode = !self.manual_mode;

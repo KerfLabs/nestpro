@@ -353,7 +353,8 @@ pub fn verify_part(part: &Part) -> Vec<String> {
 }
 
 /// Problems found by "Verify the Machining": every contour pierced in its
-/// scrap (outside the outline, inside a hole) and holes cut before the outside.
+/// scrap (outside the outline, inside a hole), holes cut before the outside, and
+/// parts sitting in a hole cut before that hole (CO2).
 pub fn verify_machining(plan: &cnc::SheetPlan) -> Vec<String> {
     let mut out = vec![];
     // Parts whose outside is already cut (holes are checked per part, so a
@@ -373,6 +374,22 @@ pub fn verify_machining(plan: &cnc::SheetPlan) -> Vec<String> {
         }
         if !c.inner {
             outer_done.insert(c.part_no);
+        }
+    }
+    // CO2: a part cut after a hole it sits in drops with the hole's scrap.
+    for (k, c) in plan.contours.iter().enumerate().filter(|(_, c)| c.inner) {
+        let lo = c.points.iter().fold([f64::MAX; 2], |a, p| [a[0].min(p[0]), a[1].min(p[1])]);
+        let hi = c.points.iter().fold([f64::MIN; 2], |a, p| [a[0].max(p[0]), a[1].max(p[1])]);
+        let mut late: Vec<usize> = vec![];
+        for o in &plan.contours[k + 1..] {
+            let Some(&q) = o.points.first() else { continue };
+            if o.part_no != c.part_no && !late.contains(&o.part_no) && q[0] >= lo[0] && q[0] <= hi[0] && q[1] >= lo[1] && q[1] <= hi[1] && nest::point_in_poly(&c.points, q) {
+                late.push(o.part_no);
+            }
+        }
+        if !late.is_empty() {
+            let list = late.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ");
+            out.push(format!("contour {} (a hole of part {}) is cut before the part(s) sitting in it ({list}) — they may drop first", k + 1, c.part_no));
         }
     }
     // KC18 (our check): what system compensation can't cut.

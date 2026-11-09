@@ -1028,7 +1028,11 @@ pub fn clash_exact(parts: &[Part], a: &Placed, b: &Placed, gap: f64) -> bool {
         return false;
     }
     if let (Some((ca, ra)), Some((cb, rb))) = (placed_circle(parts, a), placed_circle(parts, b)) {
-        return dist(ca, cb) < ra + rb + gap;
+        let d = dist(ca, cb);
+        // One circle wholly inside the other may sit in its hole: the contours decide.
+        if d + ra.min(rb) > ra.max(rb) {
+            return d < ra + rb + gap;
+        }
     }
     let (sa, sb) = (placed_shape(parts, a), placed_shape(parts, b));
     contours_within(&sa.0, &sb.0, gap) || inside_clash(&sa.0, &sb, gap) || inside_clash(&sb.0, &sa, gap)
@@ -2390,6 +2394,16 @@ mod level_tests {
 
     fn part(name: &str, shape: Shape, w: f64, h: f64, qty: u32) -> Part {
         Part { name: name.into(), shape, w, h, qty, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }
+    }
+
+    #[test]
+    fn a_disc_in_a_round_parts_hole_is_no_clash() {
+        // A Ø300 disc has a Ø90 hole: a Ø20 disc fits in it, not on the ring.
+        let parts = vec![part("Ring", Shape::Disc, 300.0, 300.0, 1), part("Pin", Shape::Disc, 20.0, 20.0, 1)];
+        let at = |part, x, y, w| Placed { part, x, y, w, h: w, turns: 0, mirror: false };
+        let ring = at(0, 0.0, 0.0, 300.0);
+        assert!(!clash_exact(&parts, &at(1, 140.0, 140.0, 20.0), &ring, 5.0), "in the hole");
+        assert!(clash_exact(&parts, &at(1, 140.0, 40.0, 20.0), &ring, 5.0), "on the ring");
     }
     fn spec(level: u8) -> SheetSpec {
         SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level, machine: Default::default(), kerf: Default::default() }

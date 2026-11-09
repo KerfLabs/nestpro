@@ -624,8 +624,10 @@ pub fn sheet_set(sheet_no: usize, parts: &[Part], sheet: &[Placed], spec: &Sheet
     let [r23, r24, r523, r524] = sheet_margins(plan, cuts, spec.w, spec.h);
     let _ = write!(m, "R21={}\r\nR22={}\r\nR23={}\r\nR24={}\r\nR523={}\r\nR524={}\r\nR500=0\r\nINITNEST\r\n", plain(spec.w), plain(spec.h), plain(r23), plain(r24), plain(r523), plain(r524));
     let mut order: Vec<usize> = (0..sheet.len()).collect();
-    // Parts in the order they are cut.
-    order.sort_by_key(|&i| plan.contours.iter().position(|c| c.part_no == i + 1).unwrap_or(usize::MAX));
+    // Parts in the order they are finished (the outside is cut last, MM2). A
+    // part is one call, so a part sitting in another's hole is still called
+    // first when a hole of the other was picked before it (CO2).
+    order.sort_by_key(|&i| plan.contours.iter().rposition(|c| c.part_no == i + 1).unwrap_or(usize::MAX));
     for (n, &i) in order.iter().enumerate() {
         let o = origin_of(i);
         let _ = write!(m, "ORIG({},{},0)\r\n", plain(o[0]), plain(o[1]));
@@ -1003,6 +1005,24 @@ mod blm_tests {
         // Sheet 1200.15 x 1219.2; the line from the bottom edge to the top.
         let s = final_cut_sub([172.4, -0.02], [172.4, 1219.22], 1200.15, 1219.2, &AdiParams::default()).unwrap();
         assert!(s.contains("INITPART(1)\r\n;\r\nNEXT_L(0,10,0,0,3,1,0,20,0,-10)\r\nG01 G40 X0. Y10.\r\nPROFILE\r\nG01 X0. Y1209.24\r\nHD_DWN_OFF\r\nG01 X0. Y1229.24\r\nENDGEO\r\n"), "{s}");
+    }
+
+    #[test]
+    fn a_part_in_a_hole_is_called_before_its_frame() {
+        // CO2: the frame's empty hole picked first, then its outside. The plan
+        // cuts the empty hole, the part in the other hole, then the rest of the
+        // frame; the frame's call (all of it) must still follow the part.
+        let r = |x0: f64, y0: f64, x1: f64, y1: f64| vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+        let g = crate::dxf::CustomGeo { w: 400.0, h: 200.0, outline: r(0.0, 0.0, 400.0, 200.0), holes: vec![r(20.0, 20.0, 180.0, 180.0), r(220.0, 20.0, 380.0, 180.0)], fills: vec![], hole_fills: vec![], marks: vec![], texts: vec![] };
+        let p = |name: &str, shape, w, h, custom| Part { name: name.into(), shape, w, h, qty: 1, rotate: false, color: 0, tech: None, custom, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
+        let parts = vec![p("FRAME", Shape::Custom, 400.0, 200.0, Some(std::sync::Arc::new(g))), p("TAB", Shape::Rectangle, 50.0, 50.0, None)];
+        let sheet = vec![Placed { part: 0, x: 10.0, y: 10.0, w: 400.0, h: 200.0, turns: 0, mirror: false }, Placed { part: 1, x: 285.0, y: 85.0, w: 50.0, h: 50.0, turns: 0, mirror: false }];
+        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
+        let picks = [crate::cnc::ManualCut { placed: 0, contour: 0, start: [30.0, 100.0], reverse: false }, crate::cnc::ManualCut { placed: 0, contour: 2, start: [10.0, 100.0], reverse: false }];
+        let plan = crate::cnc::plan_manual(&parts, &sheet, &spec, &picks);
+        let s = sheet_set(1, &parts, &sheet, &spec, &plan, &[], &BlmSettings::for_spec(&spec, "LC5", "J-1"));
+        let main = &s.spf[0].1;
+        assert!(main.find("J1X1702_spf").unwrap() < main.find("J1X1701_spf").unwrap(), "{main}");
     }
 
     #[test]

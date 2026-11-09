@@ -587,7 +587,8 @@ How the rebuild uses them (Sheet tab → **Manual cutting**):
 - **Reverse direction** (or Shift+click for one pick) cuts it the other way.
 - **Undo pick** removes the last pick, and **Clear** goes back to fully automatic cutting.
 - A contour already picked can't be picked again (MM3). Picking a part's outside first cuts its
-  remaining holes before it, so the part doesn't drop (MM2).
+  remaining holes before it, so the part doesn't drop (MM2). Picking a hole, or the outside of a
+  part with holes, first cuts every part sitting in that hole, whole (CO2).
 - Picked contours are cut **first, in the picked order**, labelled `( MANUAL CUT )` in the
   G-code and shown with M1, M2… badges and a direction arrow. Every other contour follows
   automatically.
@@ -1276,6 +1277,7 @@ cut-off line (read from the example; `20u, −10u` is inferred from one vertical
 | BL37 | Copies of a part share one subprogram only when their **whole machining is the same** relative to their corner (turn, mirror, start point, leads). A copy whose lead was moved, for example clear of a neighbour, gets its own subprogram; otherwise it would be cut with the first copy's lead. | Rebuild |
 | KC19 | A post that turns one axis round swaps **G2 and G3** as well as G41 and G42; an arc that kept its word would cut the rest of the circle. | Rebuild |
 | CO1 | **Cut order with parts in holes**: the part inside the most other parts' boxes is cut first, so with rings in rings the innermost goes first and no hole drops with an uncut part in it. | Rebuild |
+| CO2 | **Manual cuts with parts in holes**: a hole is never cut before a part sitting in it. Picking the hole, or the outside of the part it belongs to, cuts the parts in it first (deepest first; a pick on one of them keeps its start and direction). Verify Machining reports a part cut after a hole it sits in. The LC5 calls each part once, when its outside is cut, so a part in a hole is called before its frame even when one of the frame's other holes was picked first. | Rebuild |
 | EXP1 | **Export CNC replaces the job's programs**: in the job's export folder, programs this job wrote earlier and this export didn't (sheets that are gone, or the other format, plain G-code vs. LC5 `.zip` / `.XML`) are removed, so nobody runs a sheet that no longer exists; with no sheets left, exporting refuses and removes them all. Other files are left alone. Remnant marks and cut lines run at their own speed (marking speed, or the normal cutting speed), not the last contour's. | Rebuild |
 
 The rebuild reads Z039, Z040, Z043 from `MchFiles\PstAdi06.PS1` and A005 from `PstAdi06.CF1` at export
