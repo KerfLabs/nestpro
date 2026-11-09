@@ -861,7 +861,10 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
             // the test (or for picked leads) a lead is still shortened when it
             // crosses its own part (our safety rule).
             let full = auto && mt.leads.test > 0;
-            let hits = |path: &[P], anchor: P, all: bool| lead_hits(path, anchor, i, ci, inner, &obst, all, tol);
+            // VP3: a lead that leaves the sheet collides with its edge, so it
+            // moves or shortens like one that hits a part (ours; MAC-46).
+            let off_sheet = |path: &[P]| spec.w > 0.0 && spec.h > 0.0 && path.iter().any(|q| q[0] < -0.01 || q[1] < -0.01 || q[0] > spec.w + 0.01 || q[1] > spec.h + 0.01);
+            let hits = |path: &[P], anchor: P, all: bool| off_sheet(path) || lead_hits(path, anchor, i, ci, inner, &obst, all, tol);
             let floor = (2.0 * tol).max(lq.min_lead);
             let (mv, sh) = if full { crate::leads::test_steps(mt.leads.test) } else { (false, true) };
             let bad = |g: &crate::leads::LeadGeo, q: &[P]| hits(&g.lead_in, q[0], full) || (!g.lead_out.is_empty() && hits(&g.lead_out, g.lead_out[0], full));
@@ -2056,5 +2059,34 @@ mod kerf_plan_tests {
         c2.lead_path[0][0] -= 3.0;
         let two = crate::blm::sheet_set(1, &parts, &placed, &spec(), &p, &[], &set);
         assert_eq!(two.spf.iter().filter(|f| f.0.contains("70")).count(), 2, "{:?}", two.spf.iter().map(|f| &f.0).collect::<Vec<_>>());
+    }
+}
+#[cfg(test)]
+mod edge_lead_tests {
+    use crate::nest::*;
+
+    fn plate(corner_start: bool) -> Part {
+        let t = PartTech { lead_type: LeadType::Machine, corner_start, ..Default::default() };
+        Part { name: "DEMO-001".into(), shape: Shape::Rectangle, w: 100.0, h: 100.0, qty: 1, rotate: true, color: 0, tech: Some(t), custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }
+    }
+
+    #[test]
+    fn a_lead_that_would_leave_the_sheet_moves_or_shortens() {
+        // VP3: the sheet's edge is an obstacle for leads, like another part.
+        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 0.0, gap: 5.0, material: 0, thickness: 5.0, level: 3, machine: Default::default(), kerf: Default::default() };
+        let on = |q: &P| q[0] >= -0.01 && q[1] >= -0.01 && q[0] <= spec.w + 0.01 && q[1] <= spec.h + 0.01;
+        // Flush in the sheet's corner, an automatic lead moves to a free side.
+        let flush = vec![Placed { part: 0, x: 0.0, y: 0.0, w: 100.0, h: 100.0, turns: 0, mirror: false }];
+        let plan = super::plan(&[plate(true)], &flush, &spec);
+        let c = &plan.contours[0];
+        assert!(c.lead_path.iter().all(on) && crate::leads::path_len(&c.lead_path) > 5.0, "{:?}", c.lead_path);
+        // 3 mm in from the edges, a fixed-position lead is shortened to fit.
+        let near = vec![Placed { part: 0, x: 3.0, y: 3.0, w: 100.0, h: 100.0, turns: 0, mirror: false }];
+        let c = &super::plan(&[plate(false)], &near, &spec).contours[0];
+        assert!(c.lead_path.iter().all(on), "{:?}", c.lead_path);
+        assert!(crate::drawing::pierces_off_sheet(&super::plan(&[plate(false)], &near, &spec), spec.w, spec.h).is_empty());
+        // Flush with no room at all, it can't be: the check names it.
+        let off = crate::drawing::pierces_off_sheet(&super::plan(&[plate(false)], &flush, &spec), spec.w, spec.h);
+        assert_eq!(off.len(), 1, "{off:?}");
     }
 }

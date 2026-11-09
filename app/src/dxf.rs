@@ -75,6 +75,11 @@ pub struct ImportReport {
     pub outside_loops: usize,
     /// Gaps between 0.01 and 0.5 mm that were closed (IM8).
     pub gaps_closed: usize,
+    /// Objects drawn twice in the same place, left out once (DX4).
+    pub duplicates: usize,
+    /// Objects the drawing hides or draws as drafting lines, left out (DX3):
+    /// (layer row, objects).
+    pub hidden_left_out: Vec<(String, usize)>,
 }
 
 /// One drawn object, already turned into points.
@@ -92,6 +97,10 @@ pub struct Drawing {
     /// Texts: (layer, text, insertion point, height, angle in degrees).
     pub texts: Vec<(String, String, P, f64, f64)>,
     pub report: ImportReport,
+    /// Layer rows that start as "Leave out" (DX3), with why: objects on a frozen
+    /// or turned-off layer, invisible objects, and objects in a centre, hidden
+    /// or other dashed line type ("0 [CENTER]", "HOLES [frozen]"…).
+    pub hidden: BTreeMap<String, String>,
 }
 
 impl Drawing {
@@ -106,6 +115,39 @@ impl Drawing {
         }
         m
     }
+
+    /// The role a layer row starts with: "Leave out" for what the drawing hides
+    /// or draws as drafting lines (DX3), else Cut.
+    pub fn default_role(&self, layer: &str) -> LayerRole {
+        if self.hidden.contains_key(layer) {
+            LayerRole::Ignore
+        } else {
+            LayerRole::Cut
+        }
+    }
+}
+
+/// A piece's points on a 0.001 mm grid, the same whichever end (or, closed,
+/// whichever point) it starts from and whichever way it runs: two objects
+/// drawn in the same place have the same key (DX4).
+fn piece_key(pts: &[P], closed: bool) -> Vec<(i64, i64)> {
+    let q: Vec<(i64, i64)> = pts.iter().map(|p| ((p[0] * 1000.0).round() as i64, (p[1] * 1000.0).round() as i64)).collect();
+    let mut q = q;
+    if closed && q.len() > 1 && q.first() == q.last() {
+        q.pop();
+    }
+    let forward = |v: &[(i64, i64)]| -> Vec<(i64, i64)> {
+        if !closed || v.is_empty() {
+            return v.to_vec();
+        }
+        let k = (0..v.len()).min_by_key(|&i| v[i]).unwrap_or(0);
+        v[k..].iter().chain(&v[..k]).copied().collect()
+    };
+    let a = forward(&q);
+    let mut r = q.clone();
+    r.reverse();
+    let b = forward(&r);
+    a.min(b)
 }
 
 /// Number of straight segments for an arc so it stays within ARC_CHORD_ERR,
@@ -412,13 +454,28 @@ pub fn read_with(text: &str, opts: &crate::formats::dxfread::Options) -> Result<
 
 /// Turn a read drawing into one part, using a role per layer (missing = Cut).
 pub fn build(d: &Drawing, roles: &BTreeMap<String, LayerRole>) -> Result<(CustomGeo, ImportReport), String> {
-    let role = |l: &str| roles.get(l).copied().unwrap_or(LayerRole::Cut);
+    let role = |l: &str| roles.get(l).copied().unwrap_or_else(|| d.default_role(l));
     let mut report = d.report.clone();
     let mut loops: Vec<Vec<P>> = vec![];
     let mut open: Vec<Vec<P>> = vec![];
     let mut marks: Vec<Vec<P>> = vec![];
+    // DX4: an object drawn twice in the same place is cut (or marked) once,
+    // whatever its layer, so a doubled circle isn't pierced and cut twice.
+    let mut seen: std::collections::HashSet<(bool, Vec<(i64, i64)>)> = Default::default();
+    let mut hidden: BTreeMap<&str, usize> = BTreeMap::new();
     for p in &d.pieces {
-        match role(&p.layer) {
+        let r = role(&p.layer);
+        if r == LayerRole::Ignore {
+            if d.hidden.contains_key(&p.layer) {
+                *hidden.entry(&p.layer).or_insert(0) += 1;
+            }
+            continue;
+        }
+        if !seen.insert((r == LayerRole::Mark, piece_key(&p.pts, p.closed))) {
+            report.duplicates += 1;
+            continue;
+        }
+        match r {
             LayerRole::Ignore => {}
             LayerRole::Mark => {
                 let mut pts = p.pts.clone();
@@ -436,6 +493,7 @@ pub fn build(d: &Drawing, roles: &BTreeMap<String, LayerRole>) -> Result<(Custom
             }
         }
     }
+    report.hidden_left_out = hidden.into_iter().map(|(l, n)| (l.to_string(), n)).collect();
     let eps = JOIN_TOL;
     // Join open cut pieces into loops: first end to end within 0.01 mm; then
     // (IM8) only the chains still open get gaps up to 0.5 mm closed, so a contour

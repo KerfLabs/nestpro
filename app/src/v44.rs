@@ -73,6 +73,8 @@ pub const ERR_KERF: u8 = 13;
 pub const ERR_SEPARATION: u8 = 20;
 /// A check this rebuild adds that has no code in the original.
 pub const OWN_CHECK: u8 = 255;
+/// A part whose drawing would be cut wrong (JOB-41, VP1; this rebuild's).
+pub const OWN_PART: u8 = 254;
 
 /// The original's message for a result code (rule VM3).
 pub fn verify_message(code: u8) -> &'static str {
@@ -97,6 +99,7 @@ pub fn verify_message(code: u8) -> &'static str {
         19 => "Collision avoidance has not been executed because there is machining of type:",
         20 => "Not enough separation between parts",
         OWN_CHECK => "Pierce check (this rebuild)",
+        OWN_PART => "A part's drawing would be cut wrong (this rebuild)",
         // VM3: the no-problem result, in words that can't be read as "the
         // sheet has been cut".
         _ => "No problems found — all machining is in place",

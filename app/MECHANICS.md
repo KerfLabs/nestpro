@@ -135,6 +135,25 @@ How the rebuild uses them:
   (`dxfread::Options::paper_space`). Estimated, as DW6.
 - **Arc smoothness 0.1 mm** (`dxf::ARC_CHORD_ERR`, D4): arcs, circles and bulges are split
   so no straight piece strays more than 0.1 mm from the true arc.
+- **Hidden and drafting objects start as "Leave out" (DX3)**: objects on a layer the drawing has
+  **frozen** or **turned off** (a negative colour in its layer table), **invisible** objects, and
+  objects drawn in a **dashed or dotted line type** (CENTER, HIDDEN, PHANTOM…; a line type with dash
+  elements in the drawing's table, or any type but CONTINUOUS when it has no table) go on a row of
+  their own in "Drawing layers": `0 [CENTER]`, `HOLES [frozen]`, `0 [CENTER/invisible]`. The line type
+  is the object's own, else its layer's (BYLAYER), else the block insert's (BYBLOCK). A block inserted
+  on a frozen layer, or an invisible insert, hides all it holds. These rows start as Leave out and say
+  why on hover; set one to Cut and it is cut like any layer. The import notes count what was left
+  out. A drawing whose only rows are such rows opens the window too, so nothing vanishes unseen.
+  Agents see the rows in `drawing-layers` (`left_out_by_default`) and set them with
+  `layers=0 [CENTER]=cut`. A closed centreline (a bolt circle) would otherwise be cut as a hole and drop
+  the middle of the plate. Estimated (own design): the original looks objects up by layer **and** line
+  type (D5) but its default table cuts everything (code 13), and it keeps invisible objects (DW13).
+  DXF only for layers and line types; the DWG reader reads neither yet (FEATURES JOB-19), only
+  invisible objects.
+- **An object drawn twice is cut once (DX4)**: cut or marking objects with the same points (to
+  0.001 mm, either way round, whatever their layer) are taken once, so a circle drawn twice isn't
+  pierced and cut twice; the notes say how many ("N object(s) drawn twice in the same place, cut
+  once"). Objects that only overlap in part are not merged. Estimated (own design).
 - **At least 16 pieces to the full circle (DX2)**: however small the arc, so small holes stay round,
   are recognised as round and reach the LC5 as arcs. Estimated (own design).
 - **Layers (D5)**: a drawing with more than one layer opens "Drawing layers". Every layer
@@ -213,7 +232,7 @@ equal-part detection and per-import defaults aren't built (FEATURES JOB-18).
 | DW10 | Splines with control points are evaluated exactly and split within 0.1 mm; splines with fit points only get a smooth cubic through them; closed when the ends meet or flagged closed. | estimated |
 | DW11 | TEXT and MTEXT become texts (position, height, angle) without formatting codes; %%c, %%d, %%p become Ø, °, ±. Attributes aren't imported. | observed (attributes off), estimated |
 | DW12 | Smoothed 2D polylines leave out their frame points; 3D polylines are laid flat; mesh and polyface polylines are skipped. | estimated |
-| DW13 | Invisible objects are kept (as the original's converter does). | observed |
+| DW13 | Invisible objects are kept (as the original's converter does). The rebuild keeps them too, but on their own layer row, which starts as Leave out (DX3). | observed; row own design |
 | DW14 | Numbers are millimetres, no unit conversion. | observed |
 | DW15 | Bad input never crashes the program; the message names the AutoCAD version and says to save as DXF. A drawing over the import limits (5 million points, 2 million objects, a block grid of more than 10 000 copies) is refused whole — DXF too — so no contour goes missing from a part that seems imported. | estimated (limits own design) |
 | DW16 | When a file can't be read, an installed ODA File Converter or `dwg2dxf` converts it to DXF, which is then read. | estimated |
@@ -1213,7 +1232,16 @@ Sized by what each would take to rebuild here (list in src/v44.rs, shown under O
 
 The rebuild (src/v44.rs) uses the same codes and messages: separation (20) and touching parts (3) from
 the outline-to-outline distance, parts outside the sheet (4), cut contours without a lead-in (8) and
-holes cut after the outside (10, "parts that fall"); its own pierce check is listed separately. The
+holes cut after the outside (10, "parts that fall"); its own pierce check is listed separately.
+
+| # | Rule (the rebuild's own checks) | |
+|---|---|---|
+| VP1 | **A part drawn so it would be cut wrong** is listed on every sheet it's on ("A part's drawing would be cut wrong"): an outside contour that isn't closed or crosses itself, a hole not wholly inside the outside contour (or touching it), holes that overlap. These are Verify Part's geometry checks; a text sticking out of the part is not one of them. **Export and the agents' `program` stop** on it and say which part and why. | estimated (own design) |
+| VP2 | **A lead-in that pierces off the sheet** (its pierce point, or any point of its path, more than 0.01 mm outside the sheet's edges) is listed as code 4, out of the work zone, with where it starts; **export and `program` stop** on it and say to raise the margin above the lead length, shorten the lead or move the part in. A shaped remnant is checked against its box (FEATURES MAC-49). | estimated (own design) |
+| VP3 | **The sheet's edge is an obstacle for leads**: a lead whose path would leave the sheet counts as a collision, so an automatic lead moves along its contour and/or shortens as for another part (AL11), and a fixed lead (picked, machine position) is shortened down to the floor (max(2·tol, B295)). What still leaves the sheet is stopped by VP2. | estimated (own design) |
+
+When an export stops (VP1, VP2, or the LC5 read-back BL39) nothing is written and the job's earlier
+programs in the folder are removed, so they can't be run by mistake. The
 panel follows VM1–VM5 (list order, read-only distance for the separation of parts, 0–99999.999 range,
 "Correct sheets:" / "Incorrect sheets:", "Current sheet"). Not built: auxiliary technologies (the
 rebuild has none) and the punch-only codes.

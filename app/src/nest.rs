@@ -979,7 +979,7 @@ pub(crate) fn seg_seg_dist(a: P, b: P, c: P, d: P) -> f64 {
     seg_point_dist(a, c, d).min(seg_point_dist(b, c, d)).min(seg_point_dist(c, a, b)).min(seg_point_dist(d, a, b))
 }
 
-fn bbox_of(poly: &[P]) -> [f64; 4] {
+pub(crate) fn bbox_of(poly: &[P]) -> [f64; 4] {
     poly.iter().fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, p| [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])])
 }
 

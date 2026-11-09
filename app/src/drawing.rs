@@ -320,29 +320,7 @@ pub fn soon_menu(r: &egui::Response, title: &str, items: &[&str]) {
 /// Problems found by "Verify Part": outline closed and simple, holes inside
 /// the outline, holes apart from each other, texts on the part.
 pub fn verify_part(part: &Part) -> Vec<String> {
-    let g = part.geometry();
-    let mut out = vec![];
-    if g.outline.len() < 3 {
-        out.push("the outside contour is not closed".into());
-        return out;
-    }
-    let crosses = |poly: &[P]| {
-        let n = poly.len();
-        (0..n).any(|i| (i + 2..n).any(|j| (i, j) != (0, n - 1) && nest::seg_seg_dist(poly[i], poly[(i + 1) % n], poly[j], poly[(j + 1) % n]) < 1e-9))
-    };
-    if crosses(&g.outline) {
-        out.push("the outside contour crosses itself".into());
-    }
-    for (k, h) in g.holes.iter().enumerate() {
-        if !h.iter().all(|&q| nest::point_in_poly(&g.outline, q)) || nest::contours_within(h, &g.outline, 1e-6) {
-            out.push(format!("hole {} is not inside the outside contour", k + 1));
-        }
-        for (j, h2) in g.holes.iter().enumerate().skip(k + 1) {
-            if nest::contours_within(h, h2, 1e-6) || nest::point_in_poly(h2, h[0]) || nest::point_in_poly(h, h2[0]) {
-                out.push(format!("holes {} and {} overlap", k + 1, j + 1));
-            }
-        }
-    }
+    let mut out = cut_problems(part);
     let (w, h) = part.bbox();
     for t in &part.texts {
         if t.strokes(&t.text).iter().flatten().any(|q| q[0] < -1e-6 || q[1] < -1e-6 || q[0] > w + 1e-6 || q[1] > h + 1e-6) {
@@ -350,6 +328,79 @@ pub fn verify_part(part: &Part) -> Vec<String> {
         }
     }
     out
+}
+
+/// Whether a closed contour crosses or touches itself away from its corners.
+/// Edges are swept by x, so a long outline is checked in step with its size.
+fn crosses_itself(poly: &[P]) -> bool {
+    let n = poly.len();
+    let mut segs: Vec<(f64, f64, usize)> = (0..n).map(|i| (poly[i][0].min(poly[(i + 1) % n][0]), poly[i][0].max(poly[(i + 1) % n][0]), i)).collect();
+    segs.sort_by(|a, b| a.0.total_cmp(&b.0));
+    for (k, &(_, x1, i)) in segs.iter().enumerate() {
+        let (a, b) = (poly[i], poly[(i + 1) % n]);
+        for &(x0j, _, j) in &segs[k + 1..] {
+            if x0j > x1 + 1e-9 {
+                break;
+            }
+            // Neighbouring edges share a corner.
+            if j == (i + 1) % n || i == (j + 1) % n {
+                continue;
+            }
+            let (c, d) = (poly[j], poly[(j + 1) % n]);
+            if a[1].max(b[1]) < c[1].min(d[1]) - 1e-9 || c[1].max(d[1]) < a[1].min(b[1]) - 1e-9 {
+                continue;
+            }
+            if nest::seg_seg_dist(a, b, c, d) < 1e-9 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// The part's geometry problems that would cut it wrong (JOB-41, VP1): an
+/// outline that isn't closed or crosses itself, a hole that isn't wholly
+/// inside the outline, holes that overlap. Export stops on these.
+pub fn cut_problems(part: &Part) -> Vec<String> {
+    let g = part.geometry();
+    let mut out = vec![];
+    if g.outline.len() < 3 {
+        out.push("the outside contour is not closed".into());
+        return out;
+    }
+    if crosses_itself(&g.outline) {
+        out.push("the outside contour crosses itself".into());
+    }
+    let boxes: Vec<[f64; 4]> = g.holes.iter().map(|h| nest::bbox_of(h)).collect();
+    for (k, h) in g.holes.iter().enumerate() {
+        if !h.iter().all(|&q| nest::point_in_poly(&g.outline, q)) || nest::contours_within(h, &g.outline, 1e-6) {
+            out.push(format!("hole {} is not inside the outside contour", k + 1));
+        }
+        for (j, h2) in g.holes.iter().enumerate().skip(k + 1) {
+            let (a, b) = (boxes[k], boxes[j]);
+            if a[2] < b[0] - 1e-6 || b[2] < a[0] - 1e-6 || a[3] < b[1] - 1e-6 || b[3] < a[1] - 1e-6 {
+                continue;
+            }
+            if nest::contours_within(h, h2, 1e-6) || nest::point_in_poly(h2, h[0]) || nest::point_in_poly(h, h2[0]) {
+                out.push(format!("holes {} and {} overlap", k + 1, j + 1));
+            }
+        }
+    }
+    out
+}
+
+/// Pierce points off the sheet (MAC-46, VP2): a lead-in that starts outside
+/// the sheet's edges (a lead longer than the margin), or a lead path that
+/// leaves it. (contour number from 1, placed part index, the point.)
+pub fn pierces_off_sheet(plan: &cnc::SheetPlan, w: f64, h: f64) -> Vec<(usize, usize, P)> {
+    const TOL: f64 = 0.01;
+    let off = |q: &P| q[0] < -TOL || q[1] < -TOL || q[0] > w + TOL || q[1] > h + TOL;
+    plan.contours
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.punch.is_none())
+        .filter_map(|(k, c)| std::iter::once(&c.lead_in).chain(&c.lead_path).find(|q| off(q)).map(|q| (k + 1, c.part_no.saturating_sub(1), *q)))
+        .collect()
 }
 
 /// Problems found by "Verify the Machining": every contour pierced in its

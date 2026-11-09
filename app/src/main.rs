@@ -1071,7 +1071,8 @@ impl App {
             for inc in formats::incoming(&stem, parts) {
                 // Drawings with several layers: ask which layer is cut, marked or left out
                 // (original maps each layer to a machining code; default 13 = cut).
-                if inc.part.drawing.layers().len() > 1 {
+                // DX3: a drawing with rows that start as "Leave out" is shown too.
+                if inc.part.drawing.layers().len() > 1 || !inc.part.drawing.hidden.is_empty() {
                     layered.push(inc);
                     continue;
                 }
@@ -1083,7 +1084,8 @@ impl App {
         }
         if !layered.is_empty() {
             // Every layer starts as Cut, the original's default role (code 13);
-            // a format's marking layers start as Mark.
+            // a format's marking layers start as Mark; what the drawing hides or
+            // draws as centre / dashed lines starts as Leave out (DX3).
             let roles = formats::default_roles(layered.iter().map(|x| &x.part));
             self.pending = Some(Pending::DxfLayers { files: layered, roles });
         }
@@ -1421,17 +1423,25 @@ impl App {
                         ui.label(format!("{} has several layers. Choose what each layer is:", names.join(", ")));
                         ui.add_space(6.0);
                         let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+                        let mut why: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
                         for f in &files {
                             for (l, n) in f.part.drawing.layers() {
                                 *counts.entry(l).or_insert(0) += n;
+                            }
+                            for (l, w) in &f.part.drawing.hidden {
+                                why.entry(l.clone()).or_insert_with(|| w.clone());
                             }
                         }
                         let mut changed = false;
                         egui::Grid::new("layer_roles").num_columns(3).spacing([14.0, 6.0]).show(ui, |ui| {
                             for (layer, n) in &counts {
-                                ui.label(RichText::new(layer).strong());
+                                let name = ui.label(RichText::new(layer).strong());
+                                if let Some(w) = why.get(layer) {
+                                    name.on_hover_text(format!("Starts as Leave out: {w}."));
+                                }
                                 ui.label(RichText::new(format!("{n} object(s)")).color(th().text_dim));
-                                let role = roles.entry(layer.clone()).or_insert(dxf::LayerRole::Cut);
+                                let start = if why.contains_key(layer) { dxf::LayerRole::Ignore } else { dxf::LayerRole::Cut };
+                                let role = roles.entry(layer.clone()).or_insert(start);
                                 ui.horizontal(|ui| {
                                     for r in dxf::LayerRole::ALL {
                                         changed |= ui.selectable_value(role, r, r.label()).changed();
@@ -1440,6 +1450,10 @@ impl App {
                                 ui.end_row();
                             }
                         });
+                        if !why.is_empty() {
+                            ui.add_space(4.0);
+                            ui.label(RichText::new("Rows in [ ] hold what the drawing hides (frozen or off layers, invisible objects) or draws as centre / dashed lines. They start as Leave out; hover a name for why.").size(11.0).color(th().text_dim));
+                        }
                         if changed {
                             if let Some(Pending::DxfLayers { roles: r, .. }) = self.pending.as_mut() {
                                 *r = roles.clone();
@@ -3241,6 +3255,11 @@ fn main() -> eframe::Result {
             // --import-card (screenshots): the card after importing the last
             // two parts' drawings. --open-job-menu: the Open job list, with a
             // job file and a Library job saved under the (temporary) home.
+            // --import=<drawing>: import it as if dropped on the window (the
+            // Drawing layers window opens for a drawing with several rows).
+            if let Some(p) = std::env::args().find_map(|a| a.strip_prefix("--import=").map(PathBuf::from)) {
+                app.import_drawings(vec![p]);
+            }
             if std::env::args().any(|a| a == "--import-card") {
                 // Two new drawings (made-up references), not yet nested.
                 for (k, name) in ["DEMO-101", "DEMO-102"].into_iter().enumerate() {

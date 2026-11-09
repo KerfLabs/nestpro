@@ -218,6 +218,13 @@ pub fn import_notes(name: &str, rep: &dxf::ImportReport) -> Vec<String> {
     if rep.outside_loops > 0 {
         notes.push(format!("{name}: {} outline(s) outside the part left out", rep.outside_loops));
     }
+    if rep.duplicates > 0 {
+        notes.push(format!("{name}: {} object(s) drawn twice in the same place, cut once", rep.duplicates));
+    }
+    if !rep.hidden_left_out.is_empty() {
+        let rows: Vec<String> = rep.hidden_left_out.iter().map(|(l, n)| format!("{n} on '{l}'")).collect();
+        notes.push(format!("{name}: left out what the drawing hides or draws as centre / dashed lines ({}); set the layer to Cut to cut it", rows.join(", ")));
+    }
     notes
 }
 
@@ -765,10 +772,46 @@ pub fn verify_sheet(parts: &[Part], sheet: &[Placed], spec: &SheetSpec, plan: &S
         .collect();
     issues.extend(no_lead_issues(plan));
     issues.extend(out_of_zone_issues(parts, sheet, spec.w, spec.h));
+    issues.extend(stop_issues(parts, sheet, spec, plan));
     if let Some(need) = safe {
         issues.extend(safe_distance_issues(parts, sheet, need));
     }
     issues
+}
+
+/// What stops an export of the sheet (JOB-41, MAC-46; VP1, VP2): a part whose
+/// drawing would be cut wrong (an outline that crosses itself, a hole outside
+/// the outline or over another hole), and a lead-in that pierces off the sheet.
+pub fn stop_issues(parts: &[Part], sheet: &[Placed], spec: &SheetSpec, plan: &SheetPlan) -> Vec<crate::v44::Issue> {
+    use crate::v44::*;
+    let mut out = vec![];
+    let mut seen = std::collections::BTreeSet::new();
+    for pl in sheet {
+        if !seen.insert(pl.part) {
+            continue;
+        }
+        let Some(p) = parts.get(pl.part) else { continue };
+        let probs = crate::drawing::cut_problems(p);
+        if !probs.is_empty() {
+            out.push(Issue { code: OWN_PART, text: format!("part '{}': {} (Verify Part; fix the drawing and import it again)", p.name, probs.join("; ")), at: None });
+        }
+    }
+    for (k, i, q) in crate::drawing::pierces_off_sheet(plan, spec.w, spec.h) {
+        let name = sheet.get(i).and_then(|pl| parts.get(pl.part)).map_or("?", |p| p.name.as_str());
+        out.push(Issue {
+            code: ERR_OUT_OF_ZONE,
+            text: format!("contour {k} of '{name}' pierces off the sheet at {:.2}, {:.2} (its lead-in is longer than the room to the edge; raise the sheet margin above the lead length, shorten the lead or move the part in)", q[0], q[1]),
+            at: Some((q, q)),
+        });
+    }
+    out
+}
+
+/// The refusal for an export (or program) that `stop_issues` stops.
+pub fn stop_refusal(sheet_no: usize, issues: &[crate::v44::Issue]) -> String {
+    let list: Vec<&str> = issues.iter().take(5).map(|i| i.text.as_str()).collect();
+    let more = if issues.len() > 5 { format!(" (+{} more)", issues.len() - 5) } else { String::new() };
+    format!("Export stopped: sheet {sheet_no} would be cut wrong — {}{more}.", list.join("; "))
 }
 
 /// Distance under which two parts count as touching (mm).
@@ -860,6 +903,15 @@ pub fn export(base: &Path, job_name: &str, parts: &[Part], sheets: &[Vec<Placed>
         // The job's earlier programs would still be there to run.
         let _ = remove_stale_programs(&dir, job_name, post, blm, &[]);
         return Err("Nothing to export — nest first.".into());
+    }
+    // JOB-41, MAC-46: a part drawn so it would be cut wrong, or a lead-in that
+    // pierces off the sheet, stops the export before anything is written.
+    for (k, (s, pl)) in sheets.iter().zip(plans).enumerate() {
+        let spec = &job_spec.for_format(&format_at(formats, job_spec, k));
+        let issues = stop_issues(parts, s, spec, pl);
+        if !issues.is_empty() {
+            return Err(format!("{}{}", stop_refusal(k + 1, &issues), remove_programs_note(&dir, job_name, post, blm)));
+        }
     }
     // BL39: every LC5 set is read back before anything is written; a set that
     // wouldn't cut the plan stops the whole export, and the job's earlier
