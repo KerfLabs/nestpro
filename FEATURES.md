@@ -190,6 +190,7 @@ original (or a real job).
 | JOB-47 | Part tiles: each tile shows the part's reference and size (on by default); Ctrl + mouse wheel resizes the tiles | Missing | ★ | MECHANICS "Lantek Expert v44 new features" (3.1.2, 3.1.3) |
 | JOB-48 | Editing several parts or sheets at once: fields that differ show `<Different values>` and are left as they are unless changed | Missing | ★ | MECHANICS "Lantek Expert v44 new features" (1.1) |
 | JOB-49 | Remember a customer's contour choices (say, their red lines are marks) for their next drawing | Missing | ★ | planning 2026-11-09 (`GLOSSARY.md`, `docs/adr/`) |
+| JOB-50 | Joining drawings where lines branch and corners need the 0.5 mm gap closing: a rectangle with two 0.2 mm corner gaps plus a corner-to-corner bend line still imports as a cut triangle (Verify Part clean), and two touching parts with a gap become one crossed outline (Verify flags it, export refuses). Both were so before the contour states; one gap and exact corners now join right | Missing | ★★ | MECHANICS CS2, IM8; GitHub issue #41 |
 
 ## Part drawing (DRW)
 
