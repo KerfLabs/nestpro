@@ -193,6 +193,7 @@ original (or a real job).
 | JOB-51 | Library shared by several PCs: the job and product lists are read once and again after your own saves or Refresh, so jobs and products another PC saved don't show until you refresh | Missing | ★★ | `App::lib_refresh`; shop setup plan |
 | JOB-52 | The same Library job open on two PCs: each save writes over the other's with no warning. Job files opened from disk are watched and ask which to keep (`filewatch.rs`); Library jobs aren't. What the original does with a job open twice isn't traced | Missing | ★★★ | `Library::save_job`, `App::open_library_job` |
 | JOB-53 | Two PCs saving to the Library at the same moment both rewrite the shared list through one temporary file: one entry can drop out of the list, or a save can report an error though its record was stored. Rescan repairs the list | Missing | ★★ | `Library::upsert`, `library::write_atomic` |
+| JOB-54 | Jobs in use and auto-refresh: what the study of the original couldn't pin down, so the rules are the rebuild's guesses until checked on a shop PC: the auto-refresh period's longest value (rebuild: 1440 min), exactly what one timed refresh reloads (the manual: the explorers, the open job and its views), whether deleting a job removes the holds on it (rebuild: yes), and whether a hold names the Windows user or the original's own login (rebuild: Windows user and PC name). The original's holds never expire; the rebuild's 2-minute expiry and Take over are its own | Estimate | ★★ | MECHANICS CU2, CU4, JX8, JX9; spec #44 |
 
 ## Part drawing (DRW)
 

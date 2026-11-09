@@ -4689,6 +4689,109 @@
   "group": "leads",
   "value": true,
   "source": "MECHANICS VP3"
+ },
+ {
+  "name": "warn when a job is in use (fresh install)",
+  "group": "jobs in use",
+  "value": false,
+  "source": "MECHANICS CU1"
+ },
+ {
+  "name": "allow opening a job in use (fresh install)",
+  "group": "jobs in use",
+  "value": true,
+  "source": "MECHANICS CU1"
+ },
+ {
+  "name": "concurrency settings kept per PC",
+  "group": "jobs in use",
+  "value": true,
+  "source": "MECHANICS CU1"
+ },
+ {
+  "name": "warn off: no holds written or checked",
+  "group": "jobs in use",
+  "value": true,
+  "source": "MECHANICS CU1, CU3"
+ },
+ {
+  "name": "jobs held per user per PC",
+  "group": "jobs in use",
+  "value": 1,
+  "source": "MECHANICS CU2"
+ },
+ {
+  "name": "hold removed when the job is closed or the program quits",
+  "group": "jobs in use",
+  "value": true,
+  "source": "MECHANICS CU2"
+ },
+ {
+  "name": "holds removed when the job is deleted",
+  "group": "jobs in use",
+  "value": true,
+  "estimated": true,
+  "source": "MECHANICS CU2"
+ },
+ {
+  "name": "job in use opens read-only",
+  "group": "jobs in use",
+  "value": false,
+  "source": "MECHANICS CU3"
+ },
+ {
+  "name": "take over a job in use (original)",
+  "group": "jobs in use",
+  "value": false,
+  "source": "MECHANICS CU3"
+ },
+ {
+  "name": "hold expires (original)",
+  "group": "jobs in use",
+  "value": false,
+  "source": "MECHANICS CU4"
+ },
+ {
+  "name": "hold counts as gone when not renewed for (rebuild)",
+  "group": "jobs in use",
+  "value": 120,
+  "unit": "s",
+  "estimated": true,
+  "source": "MECHANICS CU4"
+ },
+ {
+  "name": "auto-refresh on (fresh install)",
+  "group": "job explorer",
+  "value": false,
+  "source": "MECHANICS JX8"
+ },
+ {
+  "name": "auto-refresh only while the explorer is shown",
+  "group": "job explorer",
+  "value": true,
+  "source": "MECHANICS JX8"
+ },
+ {
+  "name": "auto-refresh period when first switched on",
+  "group": "job explorer",
+  "value": 1,
+  "unit": "min",
+  "source": "MECHANICS JX9"
+ },
+ {
+  "name": "auto-refresh shortest period",
+  "group": "job explorer",
+  "value": 1,
+  "unit": "min",
+  "source": "MECHANICS JX9"
+ },
+ {
+  "name": "auto-refresh longest period (rebuild)",
+  "group": "job explorer",
+  "value": 1440,
+  "unit": "min",
+  "estimated": true,
+  "source": "MECHANICS JX9"
  }
 ]
 }
