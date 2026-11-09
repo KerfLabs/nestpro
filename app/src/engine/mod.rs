@@ -214,7 +214,7 @@ pub fn import_notes(name: &str, rep: &dxf::ImportReport) -> Vec<String> {
         notes.push(format!("{name}: {} open piece(s) off the part left out", rep.open_pieces));
     }
     if rep.open_kept > 0 {
-        notes.push(format!("{name}: {} open line(s) kept on the part as Bend line or No cut, never cut (contour-tech changes them)", rep.open_kept));
+        notes.push(format!("{name}: {} open line(s) kept on the part as Bend line or No cut, never cut; set them in Cut technology", rep.open_kept));
     }
     if rep.gaps_closed > 0 {
         notes.push(format!("{name}: {} gap(s) up to 0.5 mm closed", rep.gaps_closed));

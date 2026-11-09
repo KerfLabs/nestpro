@@ -1101,8 +1101,9 @@ impl App {
 
     /// Import drawings from the Import drawings window (IM11): each with the
     /// drawing as its preview read it and what was set for it there, or read
-    /// now with the layer roles it starts with.
-    pub fn import_chosen(&mut self, files: Vec<(PathBuf, Option<(std::sync::Arc<engine::imports::DrawingPreview>, engine::imports::DrawingChoices)>)>) {
+    /// now with the layer roles it starts with. A drawing set in the preview
+    /// whose file changed since comes in as it starts, and the notes say so.
+    pub fn import_chosen(&mut self, files: Vec<(PathBuf, importui::Chosen)>) {
         let (xml, files): (Vec<_>, Vec<_>) = files.into_iter().partition(|(p, _)| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("xml")));
         for (x, _) in &xml {
             self.import_xml(x);
@@ -1114,10 +1115,13 @@ impl App {
         let mut notes: Vec<String> = vec![];
         let mut first = true;
         for (path, chosen) in files {
+            let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Drawing".into());
             let (reads, choices) = match chosen {
-                Some((d, c)) => (d.reads.clone(), c),
-                None => {
-                    let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Drawing".into());
+                importui::Chosen::Read(d, c) => (d.reads.clone(), c),
+                read_now => {
+                    if matches!(read_now, importui::Chosen::Changed) {
+                        notes.push(format!("{stem}: the file or the import settings changed after its layers and contours were set in the preview, so it came in as it starts; set them again in Cut technology"));
+                    }
                     match formats::read_file(&path, None, &self.cfg) {
                         Ok(p) => (formats::incoming(&stem, p), Default::default()),
                         Err(e) => {

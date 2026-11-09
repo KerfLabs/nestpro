@@ -274,6 +274,27 @@ pub struct LayerRow {
     pub why: Option<String>,
 }
 
+/// A drawing whose layers or contours were set in the preview (IM11): the
+/// reading they were set on, kept apart from the preview's cache (which
+/// forgets old previews), and what was set.
+#[derive(Clone)]
+struct Edited {
+    stamp: Stamp,
+    read: Arc<DrawingPreview>,
+    choices: DrawingChoices,
+}
+
+/// A picked drawing at Import (IM11).
+pub enum Chosen {
+    /// As the preview read it, with what was set for it there.
+    Read(Arc<DrawingPreview>, DrawingChoices),
+    /// Not read yet: read it with the roles it starts with.
+    Unread,
+    /// Set in the preview, but the file (or the import settings) changed
+    /// since: read it again as it starts, and say so.
+    Changed,
+}
+
 /// The shown drawing's layer rows with the roles `choices` give them.
 fn layer_rows(d: &DrawingPreview, choices: &DrawingChoices) -> Vec<LayerRow> {
     let roles = choices.roles(&d.reads);
@@ -308,7 +329,7 @@ struct Current {
 struct PreviewPaint<'a> {
     cur: &'a mut Current,
     names: &'a CutQualities,
-    undo: &'a mut Vec<(PathBuf, Stamp, DrawingChoices)>,
+    undo: &'a mut Vec<(PathBuf, Edited)>,
     note: &'a mut String,
 }
 
@@ -336,7 +357,7 @@ impl PaintTarget for PreviewPaint<'_> {
     }
 
     fn push_undo(&mut self, before: DrawingChoices) {
-        self.undo.push((self.cur.path.clone(), self.cur.stamp.clone(), before));
+        self.undo.push((self.cur.path.clone(), Edited { stamp: self.cur.stamp.clone(), read: self.cur.d.clone(), choices: before }));
     }
 
     fn say(&mut self, s: String) {
@@ -395,13 +416,13 @@ pub struct ImportUi {
     drives: Vec<Place>,
     /// Read previews on the window's thread (screenshots, so they're ready in time).
     pub sync: bool,
-    /// What was set in the preview for each drawing (IM11), for the reading
+    /// What was set in the preview for each drawing (IM11), with the reading
     /// it was set on.
-    choices: HashMap<PathBuf, (Stamp, DrawingChoices)>,
+    edited: HashMap<PathBuf, Edited>,
     /// The cut technology panel in the preview (IM11).
     pub panel: CutPanel<DrawingChoices>,
     /// Ctrl+Z in the preview: a drawing's choices before each paint or layer change.
-    undo: Vec<(PathBuf, Stamp, DrawingChoices)>,
+    undo: Vec<(PathBuf, Edited)>,
     /// The part the shown drawing makes with its choices, for (file, reading,
     /// part, choices).
     shown: Option<(PathBuf, Stamp, usize, DrawingChoices, Result<(Part, Vec<String>), String>)>,
@@ -436,7 +457,7 @@ impl Default for ImportUi {
             places: vec![],
             drives: vec![],
             sync: false,
-            choices: HashMap::new(),
+            edited: HashMap::new(),
             panel: CutPanel::default(),
             undo: vec![],
             shown: None,
@@ -454,7 +475,7 @@ impl ImportUi {
         self.cache.clear();
         self.name_text.clear();
         self.name_auto.clear();
-        self.choices.clear();
+        self.edited.clear();
         self.undo.clear();
         self.shown = None;
         self.note.clear();
@@ -519,11 +540,17 @@ impl ImportUi {
             if self.loading.as_ref() == Some(&p) {
                 self.loading = None;
             }
-            if self.cache.len() >= MAX_CACHED {
-                self.cache.clear();
-            }
-            self.cache.insert(p, (m, k, s));
+            self.file_preview(p, m, k, s);
         }
+    }
+
+    /// Keep a preview, forgetting the older ones when there are too many
+    /// (what was set for a drawing is kept apart, in `edited`).
+    fn file_preview(&mut self, p: PathBuf, m: Option<u64>, k: String, s: Shown) {
+        if self.cache.len() >= MAX_CACHED {
+            self.cache.clear();
+        }
+        self.cache.insert(p, (m, k, s));
     }
 
     /// Start reading the focused file when it has no preview yet (one at a
@@ -540,7 +567,7 @@ impl ImportUi {
         let (path, m) = (e.path.clone(), e.modified);
         if self.sync {
             let s = read_preview(cfg, spec, &path);
-            self.cache.insert(path, (m, key, s));
+            self.file_preview(path, m, key, s);
             return;
         }
         self.loading = Some(path.clone());
@@ -586,29 +613,49 @@ impl ImportUi {
         }
     }
 
-    /// File `path` as the preview read it, when it has been read with these
-    /// settings since its last change, and the stamp of that reading.
-    fn read_of(&self, path: &Path, cfg: &AppSettings, spec: &SheetSpec) -> Option<(Stamp, Arc<DrawingPreview>)> {
+    /// The stamp file `path` has now: its last change and these settings.
+    fn stamp_now(&self, path: &Path, cfg: &AppSettings, spec: &SheetSpec) -> Option<Stamp> {
         let modified = match self.entries.iter().find(|e| e.path == path) {
             Some(e) => e.modified,
             None => std::fs::metadata(path).ok()?.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()),
         };
-        let key = preview_key(cfg, spec);
+        Some((modified, preview_key(cfg, spec)))
+    }
+
+    /// File `path` as the preview read it, when it has been read with these
+    /// settings since its last change, and the stamp of that reading: the
+    /// reading something was set on, else the preview's.
+    fn read_of(&self, path: &Path, cfg: &AppSettings, spec: &SheetSpec) -> Option<(Stamp, Arc<DrawingPreview>)> {
+        let stamp = self.stamp_now(path, cfg, spec)?;
+        if let Some(e) = self.edited.get(path).filter(|e| e.stamp == stamp) {
+            return Some((stamp, e.read.clone()));
+        }
         match self.cache.get(path) {
-            Some((m, k, Shown::Drawing(d))) if *m == modified && *k == key => Some(((modified, key), d.clone())),
+            Some((m, k, Shown::Drawing(d))) if (m, k) == (&stamp.0, &stamp.1) => Some((stamp, d.clone())),
             _ => None,
         }
     }
 
     /// What was set for `path` on the reading `stamp` (IM11).
     fn choices_for(&self, path: &Path, stamp: &Stamp) -> DrawingChoices {
-        self.choices.get(path).filter(|(s, _)| s == stamp).map(|(_, c)| c.clone()).unwrap_or_default()
+        self.edited.get(path).filter(|e| &e.stamp == stamp).map(|e| e.choices.clone()).unwrap_or_default()
     }
 
-    /// Each picked file, with the drawing as the preview read it and what
-    /// was set for it there, when it was read (IM11).
-    pub fn chosen(&self, files: &[PathBuf], cfg: &AppSettings, spec: &SheetSpec) -> Vec<(PathBuf, Option<(Arc<DrawingPreview>, DrawingChoices)>)> {
-        files.iter().map(|f| (f.clone(), self.read_of(f, cfg, spec).map(|(st, d)| (d, self.choices_for(f, &st))))).collect()
+    /// Each picked file at Import (IM11): as the preview read it with what
+    /// was set for it, not read yet, or set on a reading the file no longer
+    /// has.
+    pub fn chosen(&self, files: &[PathBuf], cfg: &AppSettings, spec: &SheetSpec) -> Vec<(PathBuf, Chosen)> {
+        files
+            .iter()
+            .map(|f| {
+                let chosen = match self.edited.get(f) {
+                    Some(e) if Some(&e.stamp) == self.stamp_now(f, cfg, spec).as_ref() => Chosen::Read(e.read.clone(), e.choices.clone()),
+                    Some(_) => Chosen::Changed,
+                    None => self.read_of(f, cfg, spec).map_or(Chosen::Unread, |(_, d)| Chosen::Read(d, DrawingChoices::default())),
+                };
+                (f.clone(), chosen)
+            })
+            .collect()
     }
 
     /// The focused drawing, its part shown and the part it makes with what
@@ -618,6 +665,9 @@ impl ImportUi {
         let (stamp, d) = self.read_of(&path, cfg, spec)?;
         let ix = self.part_ix.min(d.parts.len().checked_sub(1)?);
         let choices = self.choices_for(&path, &stamp);
+        if self.edited.get(&path).is_some_and(|e| e.stamp != stamp) {
+            self.note = "The file or the import settings changed after its layers and contours were set here: they are shown as they start. Set them again.".into();
+        }
         let fresh = matches!(&self.shown, Some((p, st, i, c, _)) if *p == path && *st == stamp && *i == ix && *c == choices);
         if !fresh {
             let made = if choices == DrawingChoices::default() { d.parts[ix].part.clone() } else { imports::chosen_part(cfg, spec, &d.reads[ix], &choices.roles(&d.reads), choices.of(ix), 0) };
@@ -630,9 +680,9 @@ impl ImportUi {
     /// Keep what was set for the drawing `cur` shows.
     fn keep(&mut self, cur: Current) {
         if cur.choices == DrawingChoices::default() {
-            self.choices.remove(&cur.path);
+            self.edited.remove(&cur.path);
         } else {
-            self.choices.insert(cur.path.clone(), (cur.stamp.clone(), cur.choices.clone()));
+            self.edited.insert(cur.path.clone(), Edited { stamp: cur.stamp.clone(), read: cur.d.clone(), choices: cur.choices.clone() });
         }
         self.shown = Some((cur.path, cur.stamp, cur.ix, cur.choices, cur.made));
     }
@@ -657,7 +707,7 @@ impl ImportUi {
         }
         let (next, gave_way) = imports::set_layer(cfg, spec, &cur.d.reads, &cur.choices, layer, role);
         let before = std::mem::replace(&mut cur.choices, next);
-        self.undo.push((cur.path.clone(), cur.stamp.clone(), before));
+        self.undo.push((cur.path.clone(), Edited { stamp: cur.stamp.clone(), read: cur.d.clone(), choices: before }));
         let what = match role {
             LayerRole::Cut => "its lines are cut (open ones stay Bend line or No cut)",
             LayerRole::Mark => "its lines are marked",
@@ -680,11 +730,11 @@ impl ImportUi {
     fn undo_last(&mut self) -> bool {
         let Some(path) = self.focus.clone() else { return false };
         let Some(at) = self.undo.iter().rposition(|u| u.0 == path) else { return false };
-        let (path, stamp, before) = self.undo.remove(at);
-        if before == DrawingChoices::default() {
-            self.choices.remove(&path);
+        let (path, before) = self.undo.remove(at);
+        if before.choices == DrawingChoices::default() {
+            self.edited.remove(&path);
         } else {
-            self.choices.insert(path, (stamp, before));
+            self.edited.insert(path, before);
         }
         self.shown = None;
         self.note = "Undone.".into();
@@ -1746,6 +1796,52 @@ mod tests {
         let got = a.parts.last().unwrap().clone();
         let agents = agents_part(&d, &f, serde_json::json!({"layers": "ETCH=mark,OLD-REV [frozen]=cut", "contours": "8=mark"}));
         assert_eq!(crate::engine::contours::list(&got), crate::engine::contours::list(&agents));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn what_was_set_in_the_preview_survives_the_preview_forgetting_the_drawing() {
+        let (mut a, d, f) = window_on_layered_plate("evict");
+        use crate::cutpanel::Row;
+        // The big hole left out and the etched frame marked by its layer.
+        a.preview_paint(&[0], Row::LeaveOut, false);
+        a.preview_set_layer("ETCH", LayerRole::Mark);
+        let edited = ["leave-out", "cut", "cut", "mark", "cut", "bend-line", "no-cut"];
+        assert_eq!(states(&a.preview_part().unwrap()), edited);
+        // Read the folder again (⟳) and preview more drawings than the window
+        // keeps: the plate's preview is forgotten, the plate stays picked.
+        let square = "0\nSECTION\n2\nENTITIES\n0\nLWPOLYLINE\n8\n0\n90\n4\n70\n1\n10\n0\n20\n0\n10\n50\n20\n0\n10\n50\n20\n50\n10\n0\n20\n50\n0\nENDSEC\n0\nEOF\n";
+        for k in 0..=MAX_CACHED {
+            std::fs::write(d.join(format!("DEMO-SQUARE-{k}.dxf")), square).unwrap();
+        }
+        a.importui.refresh();
+        for k in 0..=MAX_CACHED {
+            a.importui.focus = Some(d.join(format!("DEMO-SQUARE-{k}.dxf")));
+            a.importui.want_preview(&a.cfg, &a.spec, &egui::Context::default());
+        }
+        assert!(!a.importui.cache.contains_key(&f), "the plate's preview should be forgotten");
+        assert!(a.importui.picked.contains(&f));
+        // Import still brings in the plate as it was set.
+        a.import_from_window(vec![f.clone()]);
+        assert_eq!(states(a.parts.last().unwrap()), edited);
+
+        // Set again, then the file changes on disk: it comes in as it starts,
+        // and the import says why, never quietly.
+        a.importui.open = true;
+        a.importui.focus = Some(f.clone());
+        a.importui.want_preview(&a.cfg, &a.spec, &egui::Context::default());
+        assert!(a.preview_paint(&[0], Row::LeaveOut, false));
+        let older = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        std::fs::File::options().write(true).open(&f).unwrap().set_modified(older).unwrap();
+        a.importui.refresh();
+        // Even previewed again as it is now.
+        a.importui.want_preview(&a.cfg, &a.spec, &egui::Context::default());
+        assert_eq!(states(&a.preview_part().unwrap())[0], "cut");
+        assert!(a.importui.note.contains("changed"), "{}", a.importui.note);
+        a.import_from_window(vec![f.clone()]);
+        assert_eq!(states(a.parts.last().unwrap())[0], "cut");
+        let card = a.result_card.as_ref().expect("a result card").lines.join(" ");
+        assert!(card.contains("changed") && card.contains("set them again"), "{card}");
         let _ = std::fs::remove_dir_all(&d);
     }
 
