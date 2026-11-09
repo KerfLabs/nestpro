@@ -1205,7 +1205,7 @@ How the rebuild uses them:
 
 ## Lantek Expert v44 new features (from its new-features notes)
 
-Sized by what each would take to rebuild here (list in src/v44.rs, shown under Options -> "Lantek v44 new features").
+Sized by what each would take to rebuild here. What isn't built is tracked in FEATURES.md.
 
 - **HUGE:** New Import Assistant (4.4); component extraction — stops, traps, lifts, magnetic cups with a 10 s timeout in LANTEKPR.CFG V145, lift strip collisions (3.4.2, mostly punch); nesting parts grouped by attributes into zones with remnant lines (3.1.1).
 - **Big:** nano-joints (2.2.1: reduced-power partial cut, point or length, qualities, green colour, automatic at contour ends; needs post support); Verify Machining command (3.1.4) — **built**.
