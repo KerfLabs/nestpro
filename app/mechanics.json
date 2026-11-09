@@ -1139,10 +1139,17 @@
    "source": "MECHANICS DR4"
   },
   {
-   "name": "simulation step per contour",
+   "name": "part simulation speeds",
    "group": "drawing",
-   "value": 0.7,
-   "unit": "s",
+   "value": "0.1, 0.25, 0.5, 1, 5",
+   "unit": "x real time",
+   "estimated": true
+  },
+  {
+   "name": "default part simulation speed",
+   "group": "drawing",
+   "value": 1.0,
+   "unit": "x real time",
    "estimated": true
   },
   {

@@ -214,6 +214,7 @@ original (or a real job).
 | OUT-3 | Importing other CAMs' programs (Amada, Trumpf, Messer…) and technology tables | Partial | ★ | Open program reads LC5 .zip / .XML / .SPF |
 | OUT-4 | Pallet / suction-cup unloading | Missing | ★ | |
 | OUT-5 | Simulation: next tool, reposition, extraction steps | Partial | ★ | the Simulation tab plays the program |
+| OUT-8 | Part simulation: the Simulation Window is always shown while simulating (the original's View → Simulation Window hides it) and the head is always followed while it runs (the sheet has a Follow head toggle) | Partial | ★ | our choice; `partview.rs` |
 
 ## Agents: command line and MCP (AGT)
 
