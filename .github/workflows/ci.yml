@@ -1,17 +1,31 @@
 name: CI
 
+# The Linux and Windows test builds. Docs-only changes skip them; the public
+# check (public-check.yml) still runs on those. FEATURES.md is compiled into
+# the tests, so a change to it does run them. Later patterns override earlier ones.
 on:
   push:
+    # The CLA bot's signature list lives on its own branch; nothing to test there.
+    branches-ignore: [cla-signatures]
+    paths:
+      - '**'
+      - '!**.md'
+      - '!LICENSE'
+      - '!docs/**'
+      - '!.github/workflows/cla.yml'
+      - '!.github/workflows/public-check.yml'
+      - 'FEATURES.md'
   pull_request:
+    paths:
+      - '**'
+      - '!**.md'
+      - '!LICENSE'
+      - '!docs/**'
+      - '!.github/workflows/cla.yml'
+      - '!.github/workflows/public-check.yml'
+      - 'FEATURES.md'
 
 jobs:
-  public-check:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: No research evidence, shop data or unreviewed images
-        run: tools/public-check.sh
-
   test-windows:
     runs-on: windows-latest
     steps:
