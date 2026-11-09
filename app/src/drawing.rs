@@ -16,19 +16,14 @@ use egui::{Color32, CornerRadius, FontId, Pos2, Rect, RichText, Stroke, Vec2};
 // rule DR2).
 /// C002 255 0 0, style 2 (dashed): the axes.
 pub const C_AXES: [u8; 3] = [255, 0, 0];
-/// C008 255 255 0: cut contours.
-pub const C_CONTOUR: [u8; 3] = [255, 255, 0];
+// C008 255 255 0 (yellow) is the original's cut contour colour; here each
+// contour is drawn in its cut quality's or its state's colour (CS7).
 /// C011 255 255 255, style 2: the cross cursor.
 pub const C_CURSOR: [u8; 3] = [255, 255, 255];
 /// C053 0 255 0: marking (machined) texts.
 pub const C_MARK: [u8; 3] = [0, 255, 0];
 /// C057 0 200 0, style 2: contours already cut in the simulation.
 pub const C_DONE: [u8; 3] = [0, 200, 0];
-/// No cut contours, dimmed (CS3; our own colour).
-pub const C_NO_CUT: [u8; 3] = [110, 110, 110];
-/// Bend lines, dashed (CS3; our own colour: the original's bending-geometry
-/// colour isn't studied).
-pub const C_BEND: [u8; 3] = [255, 0, 255];
 /// Drawing background (near-black navy, as in the original).
 pub const C_BACKGROUND: [u8; 3] = [0, 0, 16];
 /// The part's simulation speeds, × real time: slower than the sheet's, so a
@@ -520,29 +515,11 @@ pub fn measure(a: P, b: P) -> (f64, f64, f64, f64) {
     ((dx * dx + dy * dy).sqrt(), dx, dy, nest::norm_angle(dy.atan2(dx).to_degrees()))
 }
 
-/// The part as the Drawing module shows it: contours as lines in the cut
-/// colour, marking texts in green, notes thin and grey.
-pub fn paint_drawing_part(painter: &egui::Painter, part: &Part, to_s: &dyn Fn(P) -> Pos2, texts: bool) {
-    let g = part.geometry();
-    let st = Stroke::new(1.4, rgb(C_CONTOUR));
-    painter.add(egui::Shape::closed_line(g.outline.iter().map(|&p| to_s(p)).collect(), st));
-    for h in &g.holes {
-        painter.add(egui::Shape::closed_line(h.iter().map(|&p| to_s(p)).collect(), st));
-    }
-    if let Some(c) = &part.custom {
-        // CS3: No cut contours dimmed, Bend lines dashed in their own colour.
-        for shown in c.shown_only() {
-            let pts: Vec<Pos2> = shown.path().into_iter().map(to_s).collect();
-            if shown.state == crate::dxf::ContourState::BendLine {
-                painter.extend(egui::Shape::dashed_line(&pts, Stroke::new(1.3, rgb(C_BEND)), 9.0, 4.0));
-            } else {
-                painter.add(egui::Shape::line(pts, Stroke::new(1.0, rgb(C_NO_CUT))));
-            }
-        }
-        for m in &c.marks {
-            painter.add(egui::Shape::line(m.iter().map(|&p| to_s(p)).collect(), Stroke::new(1.2, rgb(C_MARK))));
-        }
-    }
+/// The part as the Drawing module shows it: each contour in its state or
+/// cut quality's colour (CS7; Leave out ones too with `left_out`, while the
+/// cut technology panel is open), marking texts in green, notes thin and grey.
+pub fn paint_drawing_part(painter: &egui::Painter, part: &Part, mt: &crate::ct1::MachineTech, to_s: &dyn Fn(P) -> Pos2, texts: bool, left_out: bool) {
+    crate::cutpanel::paint_contour_colours(painter, part, mt, to_s, 1.4, left_out);
     if !texts {
         return;
     }

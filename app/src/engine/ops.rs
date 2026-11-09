@@ -1542,62 +1542,24 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
         "contour-tech" => {
             let i = one_part(job, &a)?;
             let state = a.str("state").map(|s| contour_state_from(&s)).transpose()?;
-            let asked = a.str("quality");
-            let quality = asked.as_deref().map(contour_quality_from).transpose()?;
-            if state.is_none() && quality.is_none() {
-                return Err("Give a state (cut, mark, no-cut, bend-line or leave-out), a quality (1-12 or auto) for cut contours, or both.".into());
-            }
-            // CQ6: only a cut contour takes a quality; a mark always uses the
-            // machine's marking quality.
-            if let (Some(st), Some(_)) = (state, quality) {
-                if st != dxf::ContourState::Cut {
-                    let why = if st == dxf::ContourState::Mark {
-                        "marks are always made with the machine's marking quality and no pierce, so a mark can't be given a cutting quality"
-                    } else {
-                        "only cut contours take a cut quality"
-                    };
-                    return Err(format!("state={} with a quality: {why}. Leave out the quality, or use state=cut with it.", st.key()));
-                }
-            }
+            let quality = a.str("quality").as_deref().map(contour_quality_from).transpose()?;
             let picks = contours::parse_numbers(&a.need_str("contours")?, contours::list(&job.parts[i]).len())?;
             let same = a.bool("same")?.unwrap_or(false);
-            let numbers = |v: &[usize]| v.iter().map(|k| (k + 1).to_string()).collect::<Vec<_>>().join(", ");
-            let plural = |v: &[usize]| if v.len() == 1 { "" } else { "s" };
-            let name = job.parts[i].name.clone();
-            let mut data = json!({});
-            let mut msg = format!("Part {} '{name}':", i + 1);
-            let ch = match state {
-                Some(st) => {
-                    let ch = contours::set_state(&mut job.parts[i], &picks, st, same)?;
-                    msg.push_str(&format!(" contour{} {} set to {}.", plural(&ch.contours), numbers(&ch.contours), st.label()));
-                    data["contours"] = json!(ch.contours.iter().map(|k| k + 1).collect::<Vec<_>>());
-                    data["state"] = json!(st.key());
-                    Some(ch)
-                }
-                None => None,
-            };
-            if let Some(q) = quality {
-                let qc = contours::set_quality(&mut job.parts[i], &picks, q, same, asked.as_deref().unwrap_or_default())?;
-                let what = q.map_or("the part's size ranges and quality and the machine's size bands decide".to_string(), |q| format!("cut at quality {} (by hand)", q.number()));
-                msg.push_str(&format!(" Contour{} {}: {what}.", plural(&qc.contours), numbers(&qc.contours)));
-                if !qc.skipped.is_empty() {
-                    let left: Vec<String> = qc.skipped.iter().map(|(k, st)| format!("{} ({})", k + 1, st.key())).collect();
-                    msg.push_str(&format!(" Equal contour{} {} left as {}: only cut contours take a quality.", if left.len() == 1 { "" } else { "s" }, left.join(", "), if left.len() == 1 { "it is" } else { "they are" }));
-                }
-                data["contours"] = json!(qc.contours.iter().map(|k| k + 1).collect::<Vec<_>>());
-                data["quality"] = q.map_or(json!("auto"), |q| json!(q.number()));
-                data["skipped"] = json!(qc.skipped.iter().map(|(k, _)| k + 1).collect::<Vec<_>>());
-            }
-            if let Some(ch) = ch.filter(|ch| ch.cut_changed) {
-                contours::follow_on_sheets(&ch, i, &job.sheets, &mut job.manual_cuts);
+            // The same engine function as the window's cut technology panel (CS6).
+            let paint = contours::Paint { state, quality };
+            let done = contours::paint(&mut job.parts, &job.sheets, &mut job.manual_cuts, i, &picks, paint, same)?;
+            if done.nest_changed {
                 job.stale = true;
-                msg.push_str(if ch.cuts_fewer() {
-                    " It cuts fewer contours now: check its sheets (a part nested in a hole that is no longer cut overlaps it)."
-                } else {
-                    " It cuts more contours now."
-                });
             }
-            let mut o = Outcome::msg(msg);
+            let mut data = json!({"contours": done.contours.iter().map(|k| k + 1).collect::<Vec<_>>()});
+            if let Some(st) = state {
+                data["state"] = json!(st.key());
+            }
+            if let Some(q) = quality {
+                data["quality"] = q.map_or(json!("auto"), |q| json!(q.number()));
+                data["skipped"] = json!(done.skipped.iter().map(|(k, _)| k + 1).collect::<Vec<_>>());
+            }
+            let mut o = Outcome::msg(done.message);
             o.data = data;
             Ok(o)
         }
@@ -2475,6 +2437,7 @@ pub const GUI_MAP: &[(&str, &str)] = &[
     ("Cut technology/Own\ntechnology", "cut-tech"),
     ("Cut technology/Remove own\ntechnology", "cut-tech"),
     ("Cut technology/Quality\nby size", "cut-tech"),
+    ("Cut technology/Paint\ncontours", "contour-tech"),
     ("Text/Delete\ntexts", "text"),
     // --- Nesting screen: Machining, CNC, Simulation ---
     ("Manual cutting/Pick\ncontours", "cut-order"),

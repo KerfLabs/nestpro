@@ -209,6 +209,19 @@ impl App {
             self.dock_panels(ui);
         }
         self.missing_window(&ui.ctx().clone());
+        // The cut technology panel (CS6), opened from Technology → Paint contours.
+        if self.cut_panel.open {
+            let mut open = true;
+            egui::Panel::right("cut_tech_panel")
+                .resizable(true)
+                .default_size(250.0)
+                .frame(egui::Frame::new().fill(th().panel))
+                .show(ui, |ui| open = self.cut_panel_body(ui));
+            if !open {
+                self.cut_panel.open = false;
+                self.cut_panel.row = None;
+            }
+        }
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(th().bg).inner_margin(egui::Margin::same(3)))
             .show(ui, |ui| self.part_canvas(ui));
@@ -368,11 +381,20 @@ impl App {
 
         // Part.
         let part = &self.parts[idx];
+        let mt = crate::ct1::for_spec(&self.spec);
         if lantek {
-            crate::drawing::paint_drawing_part(&painter, part, &to_s, self.dv.texts_dims);
+            crate::drawing::paint_drawing_part(&painter, part, &mt, &to_s, self.dv.texts_dims, self.cut_panel.open);
         } else {
             let base = part_color(part.color);
             paint_part(&painter, part, to_s, base, Stroke::new(1.5, darker(base, 0.42)), th().canvas_a);
+            // Every contour in its state or quality colour (CS7).
+            crate::cutpanel::paint_contour_colours(&painter, part, &mt, &to_s, 1.6, self.cut_panel.open);
+        }
+        // Painting with the cut technology panel (CS6): clicks, boxes and
+        // sweeps paint contours instead of picking elements.
+        let painting = self.cut_panel.painting();
+        if painting && !space {
+            self.cut_panel_canvas(ui, &resp, &painter, idx, &to_s, &to_w, (APERTURE_PX / s) as f64);
         }
         // Escape leaves measuring / zoom window.
         if (self.dv.measure_on || self.dv.zoom_window) && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -413,7 +435,7 @@ impl App {
         }
         let elems = crate::nest::elements_of(&part.geometry());
         let ap = (APERTURE_PX / s) as f64; // capture square half-size in mm
-        let hover = resp.hover_pos().and_then(|hp| capture(&elems, to_w(hp), ap));
+        let hover = resp.hover_pos().filter(|_| !painting).and_then(|hp| capture(&elems, to_w(hp), ap));
         // Right-click (or S): the radial tool menu. An element under the pointer is
         // selected first, so the element tools act on it.
         if let Some(hp) = resp.hover_pos() {
@@ -459,7 +481,7 @@ impl App {
                     self.status = format!("Distance {d:.pr$} mm  ·  dX {dx:.pr$}  dY {dy:.pr$}  ·  angle {ang:.pr$}°");
                 }
             }
-        } else if resp.clicked() {
+        } else if resp.clicked() && !painting {
             match hover {
                 Some(e) if shift => {
                     if let Some(k) = self.sel_elems.iter().position(|&x| x == e) {
@@ -479,7 +501,7 @@ impl App {
             }
         }
         // Window selection: drag a box; elements fully inside are selected.
-        if resp.drag_started_by(egui::PointerButton::Primary) && !space {
+        if resp.drag_started_by(egui::PointerButton::Primary) && !space && !painting {
             self.box_start = resp.interact_pointer_pos();
         }
         if let (Some(a), Some(b)) = (self.box_start, resp.interact_pointer_pos()) {
