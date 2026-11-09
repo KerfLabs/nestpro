@@ -488,7 +488,7 @@ impl App {
 
 impl App {
     /// Cut quality by contour size (CT1): each contour's equivalent radius √(area / π) picks the first
-    /// matching row; contours outside every row keep the part's quality.
+    /// matching row; contours outside every row take the part's quality or the machine's size band (CQ1).
     pub fn cut_ranges_window(&mut self, ctx: &egui::Context) {
         if !self.show_cut_ranges {
             return;
@@ -497,15 +497,9 @@ impl App {
         let targets = self.tech_targets();
         let cur = targets.first().and_then(|&i| self.parts[i].tech).unwrap_or_default();
         let mut edit = cur;
-        // Contour sizes of the first target, to show which row each one takes.
-        let sizes: Vec<(bool, f64)> = targets
-            .first()
-            .map(|&i| {
-                let g = self.parts[i].geometry();
-                let area = |p: &[crate::nest::P]| (0..p.len()).map(|k| p[k][0] * p[(k + 1) % p.len()][1] - p[(k + 1) % p.len()][0] * p[k][1]).sum::<f64>() / 2.0;
-                g.holes.iter().map(|h| (true, crate::nest::equivalent_radius(area(h)))).chain(std::iter::once((false, crate::nest::equivalent_radius(area(&g.outline))))).collect()
-            })
-            .unwrap_or_default();
+        // The first target's contours, to show the quality each one takes.
+        let mt = self.machine_tech();
+        let geo = targets.first().map(|&i| self.parts[i].geometry());
         egui::Window::new("Cut technology by size").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
             ui.label(RichText::new("Each contour's size is the radius of a circle with the same area. The first ticked row it falls in sets its quality (from ≤ r < up to).").size(12.0));
             ui.add_space(6.0);
@@ -520,8 +514,8 @@ impl App {
                         ui.checkbox(&mut row.on, format!("Row {}", k + 1));
                         ui.add(egui::DragValue::new(&mut row.min_r).range(0.0..=99999.0).speed(0.1).suffix(" mm"));
                         ui.add(egui::DragValue::new(&mut row.max_r).range(0.0..=99999.0).speed(0.1).suffix(" mm"));
-                        egui::ComboBox::from_id_salt(("cut_q", k)).width(80.0).selected_text(row.quality.label()).show_ui(ui, |ui| {
-                            for q in crate::nest::CutQuality::ALL {
+                        egui::ComboBox::from_id_salt(("cut_q", k)).width(90.0).selected_text(row.quality.label()).show_ui(ui, |ui| {
+                            for q in crate::nest::CutQuality::all() {
                                 ui.selectable_value(&mut row.quality, q, q.label());
                             }
                         });
@@ -529,20 +523,20 @@ impl App {
                     }
                 });
             });
-            if !sizes.is_empty() {
+            if let Some(g) = &geo {
                 ui.separator();
-                let part_q = edit.quality;
-                for (hole, r) in &sizes {
-                    let q = crate::nest::quality_for_radius(&edit.cut_ranges, *r, 0.0);
+                for (hole, pts) in g.holes.iter().map(|h| (true, h)).chain(std::iter::once((false, &g.outline))) {
+                    let (q, from) = crate::cnc::contour_quality(&edit, &mt, pts);
+                    let by_row = from == crate::cnc::QualityFrom::SizeRange;
                     ui.label(
-                        RichText::new(format!("{} r {:.1} mm → {}{}", if *hole { "Hole" } else { "Outside" }, r, q.unwrap_or(part_q).label(), if q.is_some() { " (by size)" } else { "" }))
+                        RichText::new(format!("{} r {:.1} mm → {} ({})", if hole { "Hole" } else { "Outside" }, crate::cnc::contour_radius(pts), q.label(), from.label()))
                             .size(11.5)
-                            .color(if q.is_some() { th().text_strong } else { th().text_dim }),
+                            .color(if by_row { th().text_strong } else { th().text_dim }),
                     );
                 }
             }
             ui.add_space(4.0);
-            if ui.button("Example: small holes fine").on_hover_text(format!("Row 1: holes up to r {} mm cut with Fine quality", crate::nest::SMALL_HOLE_RADIUS_EXAMPLE)).clicked() {
+            if ui.button("Example: small holes at quality 1").on_hover_text(format!("Row 1: holes up to r {} mm cut at quality 1", crate::nest::SMALL_HOLE_RADIUS_EXAMPLE)).clicked() {
                 edit.cut_ranges = Default::default();
                 edit.cut_ranges[0].on = true;
             }
@@ -559,6 +553,12 @@ impl App {
             });
         }
     }
+}
+
+/// A part's own cut quality on screen: "Quality n", or "Auto (size bands)"
+/// when the machine's size bands decide (CQ1; agents' `auto`).
+pub fn part_quality_label(q: Option<crate::nest::CutQuality>) -> String {
+    q.map_or_else(|| "Auto (size bands)".to_string(), |q| q.label())
 }
 
 fn short_kind(k: crate::nest::TextKind) -> &'static str {

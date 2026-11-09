@@ -28,8 +28,10 @@ pub const MAX_SUBPROGRAMS: usize = 96;
 /// (PstAdi06.PS1 Z043 "valore dell'angolo massimo su cui inserire il
 /// comando"; BL5).
 pub const CORNER_MAX_ANGLE_DEG: f64 = 119.9;
-/// NEXT_L cut-quality code for cutting and for marking, and the pierce codes
-/// (seen in the example LC5 program; also the <Taglio>/<Foratura> flags).
+/// NEXT_L codes (BL22): marks are written at quality 9 with pierce 0; a cut
+/// contour at its own quality with the table's pierce mode for it, or pierce
+/// 2 when the table gives none (the example program's code). Cut-off lines
+/// keep pierce 2 at quality 3, also in the XML's <Taglio>/<Foratura> flags (BL23).
 pub const QUALITY_CUT: usize = 3;
 pub const QUALITY_MARK: usize = 9;
 pub const PIERCE_CUT: usize = 2;
@@ -328,10 +330,37 @@ fn move_end(m: &Move) -> P {
     }
 }
 
+/// What a path in a subprogram is: a marking line (pierce 0, quality 9) or a
+/// cut with its NEXT_L pierce code and quality (BL22).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PathKind {
+    Mark,
+    Cut { pierce: usize, quality: usize },
+}
+
+impl PathKind {
+    /// A cut contour: its own quality and the pierce mode the sheet's
+    /// technology table gives it, else pierce 2 (BL22).
+    fn of(plan: &SheetPlan, c: &crate::cnc::Contour) -> PathKind {
+        PathKind::Cut { pierce: plan.timing.speeds.pierce_mode(c.quality).map_or(PIERCE_CUT, |p| p as usize), quality: c.quality }
+    }
+    /// A cut-off line's codes.
+    const CUT_LINE: PathKind = PathKind::Cut { pierce: PIERCE_CUT, quality: QUALITY_CUT };
+
+    /// NEXT_L's pierce and quality codes.
+    fn codes(self) -> (usize, usize) {
+        match self {
+            PathKind::Mark => (PIERCE_MARK, QUALITY_MARK),
+            PathKind::Cut { pierce, quality } => (pierce, quality),
+        }
+    }
+}
+
 /// One path (closed contour or open marking line) in the subprogram's form.
 /// `comp` is the contour's compensation word on its first lead-in move
 /// (" G41" / " G42", or "" for none: system compensation or off; KC2).
-fn write_path(s: &mut String, pts: &[P], closed: bool, lead: &[P], comp: &str, first: bool, mark: bool) {
+fn write_path(s: &mut String, pts: &[P], closed: bool, lead: &[P], comp: &str, first: bool, kind: PathKind) {
+    let mark = kind == PathKind::Mark;
     let mut moves: Vec<P> = pts.to_vec();
     if closed && pts.len() > 1 {
         moves.push(pts[0]);
@@ -343,7 +372,7 @@ fn write_path(s: &mut String, pts: &[P], closed: bool, lead: &[P], comp: &str, f
     }
     let has_lead = !mark && lead.len() >= 2;
     let start = if has_lead { lead[0] } else { moves[0] };
-    let (pierce, quality) = if mark { (PIERCE_MARK, QUALITY_MARK) } else { (PIERCE_CUT, QUALITY_CUT) };
+    let (pierce, quality) = kind.codes();
     let _ = write!(s, "NEXT_L({},{},{},{},{})\r\n", coord(start[0]), coord(start[1]), if first { 0 } else { 1 }, pierce, quality);
     if has_lead {
         for (i, q) in lead.iter().enumerate().skip(1) {
@@ -409,7 +438,7 @@ pub fn subprogram(name: &str, plan: &SheetPlan, part_no: usize, origin: P) -> St
     let mut first = true;
     for (_, pts) in plan.marks.iter().filter(|m| m.0 == part_no) {
         let p: Vec<P> = pts.iter().map(|&q| rel(q)).collect();
-        write_path(&mut s, &p, false, &[], "", first, true);
+        write_path(&mut s, &p, false, &[], "", first, PathKind::Mark);
         first = false;
     }
     for c in plan.contours.iter().filter(|c| c.part_no == part_no && c.punch.is_none()) {
@@ -419,7 +448,7 @@ pub fn subprogram(name: &str, plan: &SheetPlan, part_no: usize, origin: P) -> St
         // or a clockwise drawing gets the other word. The LC5 post writes no
         // corrector number.
         let comp = c.comp.word().map_or(String::new(), |(side, _)| format!(" {}", side.word()));
-        write_path(&mut s, &p, true, &lead, &comp, first, false);
+        write_path(&mut s, &p, true, &lead, &comp, first, PathKind::of(plan, c));
         first = false;
     }
     s.push_str("ENDGEO\r\nIF R16==1\r\n\t  STOPRE\r\n\t  R16=0\r\n   GOTOB CICLA\r\nENDIF\r\nENDPART\r\nRET\r\n");
@@ -512,7 +541,7 @@ pub fn cut_path_sub(pts: &[P], origin: P) -> String {
     let p: Vec<P> = pts.iter().map(|q| [q[0] - origin[0], q[1] - origin[1]]).collect();
     let mut s = String::from(";M01\r\nR16=chk_pret\r\nCICLA:\r\nINITPART(1)\r\n;\r\n");
     let mut body = String::new();
-    write_path(&mut body, &p, false, &[], "", true, false);
+    write_path(&mut body, &p, false, &[], "", true, PathKind::CUT_LINE);
     s.push_str(&body);
     s.push_str("ENDGEO\r\nIF R16==1\r\n\t  STOPRE\r\n\t  R16=0\r\n   GOTOB CICLA\r\nENDIF\r\nENDPART\r\nRET\r\n");
     s
@@ -716,15 +745,22 @@ pub fn sheet_set(sheet_no: usize, parts: &[Part], sheet: &[Placed], spec: &Sheet
         x.push_str("\t\t\t\t\t</SubProgram>\r\n\t\t\t\t</Execution>\r\n\t\t\t</Executions>\r\n\t\t</Istanza>\r\n");
     }
     x.push_str("\t</Pezzi>\r\n\t<Utensili>\r\n\t\t<Foratura>\r\n");
-    let has_marks = !plan.marks.is_empty();
-    let has_cuts = plan.contours.iter().any(|c| c.punch.is_none()) || !cut_subs.is_empty();
+    // BL23: every pierce code and quality the sheet's NEXT_L lines use.
+    let mut used: Vec<PathKind> = plan.contours.iter().filter(|c| c.punch.is_none()).map(|c| PathKind::of(plan, c)).collect();
+    if !plan.marks.is_empty() {
+        used.push(PathKind::Mark);
+    }
+    if !cut_subs.is_empty() {
+        used.push(PathKind::CUT_LINE);
+    }
+    let used: Vec<(usize, usize)> = used.into_iter().map(PathKind::codes).collect();
     for i in 0..=6 {
-        let on = (i == PIERCE_MARK && has_marks) || (i == PIERCE_CUT && has_cuts);
+        let on = used.iter().any(|u| u.0 == i);
         tag(&mut x, 3, &format!("Id{i}"), if on { "1" } else { "0" });
     }
     x.push_str("\t\t</Foratura>\r\n\t\t<Taglio>\r\n");
     for i in 0..=12 {
-        let on = (i == QUALITY_MARK && has_marks) || (i == QUALITY_CUT && has_cuts);
+        let on = used.iter().any(|u| u.1 == i);
         tag(&mut x, 3, &format!("Id{i}"), if on { "1" } else { "0" });
     }
     x.push_str("\t\t</Taglio>\r\n\t</Utensili>\r\n</General>\r\n");

@@ -8,7 +8,7 @@
 //! lead type, distance D, angle A and radius R for the lead-in and lead-out.
 //! A keypad zone (1 = bottom left of the contour's box) says where it goes.
 
-use crate::nest::{CutQuality, P};
+use crate::nest::P;
 use std::collections::HashMap;
 
 /// "Not set" marker in the technology tables, compared within 1.0 (rule AL2).
@@ -23,18 +23,6 @@ pub const LIN_TOL: f64 = 0.01;
 pub const ANG_TOL: f64 = 0.1;
 /// Points per arc when a lead arc is drawn as a polyline (our own).
 pub const ARC_STEPS: usize = 8;
-
-/// The Lantek quality number for our three cut qualities. **Our own choice**
-/// (the original numbers qualities 1–12 per machine): Normal is quality 1 (the
-/// B block, which every quality without its own table copies), Fine is 2 (E000…),
-/// Rough is 3 (E071…).
-pub fn quality_number(q: CutQuality) -> usize {
-    match q {
-        CutQuality::Normal => 1,
-        CutQuality::Fine => 2,
-        CutQuality::Rough => 3,
-    }
-}
 
 /// One lead setting (the original's lead record, rule A2).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1012,8 +1000,6 @@ mod lead_tests {
         // Hole zone −1 takes the outer zone; min element ≥ |B156| + 4·tol.
         assert_eq!((q1.zone_for(true, None), q1.zone_for(true, Some(9)), q1.zone_for(false, Some(9))), (3, 9, 9));
         assert!(q1.min_len >= 0.5 + 4.0 * LIN_TOL);
-        assert_eq!(quality_number(CutQuality::Normal), 1);
-        assert_eq!(quality_number(CutQuality::Fine), 2);
     }
 
     #[test]
