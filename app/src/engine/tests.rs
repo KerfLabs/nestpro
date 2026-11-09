@@ -1388,8 +1388,29 @@ fn a_line_across_corners_stays_a_bend_line_and_the_outline_stays_whole() {
     let dxf = d.join("DEMO-SPLIT.dxf");
     std::fs::write(&dxf, format!("0\nSECTION\n2\nENTITIES\n{}0\nENDSEC\n0\nEOF\n", split.concat())).unwrap();
     call(&mut s, "import-drawing", None, json!({"path": dxf.to_str().unwrap(), "qty": 1}));
-    let got: Vec<(String, String, i64)> = contour_rows(&mut s, cases.len() + 1).into_iter().map(|r| (r.1, r.2, r.3.round() as i64)).collect();
+    let mut part = cases.len() + 1;
+    let got: Vec<(String, String, i64)> = contour_rows(&mut s, part).into_iter().map(|r| (r.1, r.2, r.3.round() as i64)).collect();
     assert_eq!(got, [("outside".to_string(), "cut".to_string(), 600), ("open".to_string(), "bend-line".to_string(), 100)]);
+
+    // With a 0.2 mm gap at a corner (closed by IM8): where the cross line
+    // doesn't meet it, and where it does; the cross line first and last.
+    let gap_far = [line([0.0, 0.0], [100.0, 0.0]), line([100.0, 0.0], [100.0, 100.0]), line([100.0, 100.0], [0.0, 100.0]), line([0.0, 99.8], [0.0, 0.0])];
+    let gap_near = [line([0.0, 0.0], [100.0, 0.0]), line([100.0, 0.0], [100.0, 100.0]), line([100.0, 100.0], [0.0, 100.0]), line([0.0, 100.0], [0.0, 0.2])];
+    let across = line([0.0, 0.0], [100.0, 100.0]);
+    for (edges, at) in [(&gap_far, 0), (&gap_far, 4), (&gap_near, 0), (&gap_near, 4)] {
+        let mut body = edges.to_vec();
+        body.insert(at, across.clone());
+        part += 1;
+        let dxf = d.join(format!("DEMO-GAP-{part}.dxf"));
+        std::fs::write(&dxf, format!("0\nSECTION\n2\nENTITIES\n{}0\nENDSEC\n0\nEOF\n", body.concat())).unwrap();
+        let r = call(&mut s, "import-drawing", None, json!({"path": dxf.to_str().unwrap(), "qty": 1}));
+        assert!(r["data"]["notes"].to_string().contains("1 gap(s) up to 0.5 mm closed"), "part {part}: {r}");
+        let got: Vec<(String, String, i64)> = contour_rows(&mut s, part).into_iter().map(|r| (r.1, r.2, r.3.round() as i64)).collect();
+        assert_eq!(got, [("outside".to_string(), "cut".to_string(), 400), ("open".to_string(), "bend-line".to_string(), 141)], "part {part}");
+        let pi = call(&mut s, "part-info", None, json!({"part": part}));
+        assert!((pi["data"]["area_mm2"].as_f64().unwrap() - 10000.0).abs() < 1.0, "part {part}: {pi}");
+        assert_eq!(pi["data"]["verify_part"], json!([]), "part {part}");
+    }
     let _ = std::fs::remove_dir_all(&d);
 }
 

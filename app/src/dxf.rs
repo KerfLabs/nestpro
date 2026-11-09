@@ -631,10 +631,13 @@ pub fn read_with(text: &str, opts: &crate::formats::dxfread::Options) -> Result<
 /// each group of pieces joined through such a point, the outside boundary is
 /// taken as the closed contour, walked from the group's lowest point keeping
 /// the outside on the right (always the rightmost turn); the pieces inside it
-/// are left to join as usual, so they stay open lines. Returns the pieces left
-/// to join, in drawing order: all of them when no three ends meet anywhere, so
-/// such drawings join exactly as before.
-fn take_branch_boundaries(open: Vec<Vec<P>>, loops: &mut Vec<Vec<P>>) -> Result<Vec<Vec<P>>, String> {
+/// are left to join as usual, so they stay open lines. Gaps up to 0.5 mm in
+/// such a group are closed first (IM8), each loose end with a straight piece to
+/// the nearest end within 0.5 mm, so a small gap at a corner can't send the
+/// walk across the part. Returns the pieces left to join, in drawing order: all
+/// of them when no three ends meet anywhere, so such drawings join exactly as
+/// before.
+fn take_branch_boundaries(open: Vec<Vec<P>>, loops: &mut Vec<Vec<P>>, report: &mut ImportReport) -> Result<Vec<Vec<P>>, String> {
     use std::f64::consts::{FRAC_PI_2, PI, TAU};
     let eps = JOIN_TOL;
     // Piece ends filed into points (nodes).
@@ -673,6 +676,37 @@ fn take_branch_boundaries(open: Vec<Vec<P>>, loops: &mut Vec<Vec<P>>) -> Result<
     if at.iter().all(|h| h.len() < 3) {
         return Ok(open);
     }
+    let branch_points: Vec<usize> = (0..nodes.len()).filter(|&n| at[n].len() >= 3).collect();
+    // IM8 inside the groups: each loose end gets a straight piece to the
+    // nearest other end within 0.5 mm (not its own piece's other end); these
+    // pieces only exist for the walk.
+    let real = open.len();
+    let mut open = open;
+    {
+        let mut near = EndGrid::new(CLOSE_TOL);
+        for (n, &p) in nodes.iter().enumerate() {
+            near.add(p, n);
+        }
+        let dist = |a: P, b: P| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt();
+        let mut gaps: std::collections::BTreeSet<(usize, usize)> = Default::default();
+        for f in (0..nodes.len()).filter(|&n| at[n].len() == 1) {
+            let (k, from_start) = at[f][0];
+            let own = ends[k].map(|e| if from_start { e[1] } else { e[0] });
+            let found = near.nearest(nodes[f], |n| n != f && Some(n) != own, |n| dist(nodes[n], nodes[f]));
+            if near.work > JOIN_WORK {
+                return Err(join_too_complex());
+            }
+            if let Some((n, _)) = found.filter(|(_, d)| *d <= CLOSE_TOL) {
+                gaps.insert((f.min(n), f.max(n)));
+            }
+        }
+        for (a, b) in gaps {
+            at[a].push((open.len(), true));
+            at[b].push((open.len(), false));
+            ends.push(Some([a, b]));
+            open.push(vec![nodes[a], nodes[b]]);
+        }
+    }
     // Groups of pieces joined through their ends; each group's lowest (then
     // leftmost) point.
     fn root(parent: &mut [usize], mut x: usize) -> usize {
@@ -687,13 +721,10 @@ fn take_branch_boundaries(open: Vec<Vec<P>>, loops: &mut Vec<Vec<P>>) -> Result<
         let (ra, rb) = (root(&mut parent, a), root(&mut parent, b));
         parent[ra] = rb;
     }
+    let branched: std::collections::BTreeSet<usize> = branch_points.into_iter().map(|n| root(&mut parent, n)).collect();
     let mut lowest: BTreeMap<usize, usize> = BTreeMap::new();
-    let mut branched: std::collections::BTreeSet<usize> = Default::default();
     for n in 0..nodes.len() {
         let r = root(&mut parent, n);
-        if at[n].len() >= 3 {
-            branched.insert(r);
-        }
         let low = lowest.entry(r).or_insert(n);
         if nodes[n][1] < nodes[*low][1] || (nodes[n][1] == nodes[*low][1] && nodes[n][0] < nodes[*low][0]) {
             *low = n;
@@ -755,15 +786,18 @@ fn take_branch_boundaries(open: Vec<Vec<P>>, loops: &mut Vec<Vec<P>>) -> Result<
             let skip = usize::from(!ring.is_empty());
             ring.extend(c.into_iter().skip(skip));
         }
-        ring.pop();
+        if ring.len() > 1 && close(ring[0], ring[ring.len() - 1], eps) {
+            ring.pop();
+        }
         if ring.len() >= 3 {
             loops.push(ring);
             for &(k, _) in &once {
                 taken[k] = true;
             }
+            report.gaps_closed += once.iter().filter(|h| h.0 >= real).count();
         }
     }
-    Ok(open.into_iter().zip(taken).filter(|(_, t)| !t).map(|(c, _)| c).collect())
+    Ok(open.into_iter().zip(taken).take(real).filter(|(_, t)| !t).map(|(c, _)| c).collect())
 }
 
 /// Join open pieces end to end into closed loops (added to `loops`): first
@@ -774,7 +808,7 @@ fn take_branch_boundaries(open: Vec<Vec<P>>, loops: &mut Vec<Vec<P>>) -> Result<
 /// choose. Where three or more ends meet, the outside boundary closes first
 /// (`take_branch_boundaries`). Returns the chains that stay open.
 fn join_pieces(pieces: Vec<Vec<P>>, loops: &mut Vec<Vec<P>>, report: &mut ImportReport) -> Result<Vec<Vec<P>>, String> {
-    let mut open = take_branch_boundaries(pieces, loops)?;
+    let mut open = take_branch_boundaries(pieces, loops, report)?;
     let eps = JOIN_TOL;
     let mut left: Vec<Vec<P>> = vec![];
     {
