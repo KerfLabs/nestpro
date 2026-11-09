@@ -19,6 +19,34 @@ pub fn list(part: &Part) -> Vec<Contour> {
     g.holes.iter().map(cut).chain(std::iter::once(cut(&g.outline))).collect()
 }
 
+/// How a contour shows on screen (CS7): a cut contour by its cut quality,
+/// the others by their state.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Look {
+    Cut(CutQuality),
+    Mark,
+    NoCut,
+    BendLine,
+    LeaveOut,
+}
+
+/// How each contour of `part` shows, in number order (CS7): a Cut contour
+/// at the quality it is cut at on the machine `mt` (CQ1, CQ6), the others
+/// by their state.
+pub fn looks(part: &Part, mt: &crate::ct1::MachineTech) -> Vec<Look> {
+    let tech = part.tech.unwrap_or_default();
+    list(part)
+        .iter()
+        .map(|c| match c.state {
+            ContourState::Cut => Look::Cut(crate::cnc::contour_quality(&tech, mt, &c.pts, c.quality).0),
+            ContourState::Mark => Look::Mark,
+            ContourState::NoCut => Look::NoCut,
+            ContourState::BendLine => Look::BendLine,
+            ContourState::LeaveOut => Look::LeaveOut,
+        })
+        .collect()
+}
+
 /// What a contour is on the part, for agents: "hole", "outside" (the
 /// outline) or "open".
 pub fn kind(list: &[Contour], k: usize) -> &'static str {
@@ -146,6 +174,25 @@ fn store(part: &mut Part, list: Vec<Contour>) {
     }
 }
 
+/// Why contour `k` (from 0) of `list` can't be set to `state` (CS4): the
+/// outline is always cut, and an open line can't be cut yet.
+fn state_refusal(list: &[Contour], k: usize, state: ContourState) -> Option<String> {
+    if Some(k) == dxf::outline_index(list) && state != ContourState::Cut {
+        return Some(format!(
+            "Contour {} is the part's outline: it is always cut — without it there is no part to cut out, so it can't be {}. Set the contours inside it instead, or take the part out of the job (remove-part).",
+            k + 1,
+            state.label()
+        ));
+    }
+    if !list[k].closed && state == ContourState::Cut {
+        return Some(format!(
+            "Contour {} is an open line: cutting open lines isn't built yet (FEATURES TEC-22), and cut through the part it could split it. Set it to mark, no-cut, bend-line or leave-out.",
+            k + 1
+        ));
+    }
+    None
+}
+
 /// Set contours (numbers from 0) of an imported part to a state; with `same`,
 /// every contour of the same shape as one of them too (CS4, CS5). The outline
 /// is always Cut and an open line can't be cut yet: those are refused, with
@@ -154,22 +201,9 @@ fn store(part: &mut Part, list: Vec<Contour>) {
 /// cut loses a quality set on it by hand (CQ6).
 pub fn set_state(part: &mut Part, picks: &[usize], state: ContourState, same: bool) -> Result<StateChange, String> {
     let mut list = custom_contours(part)?;
-    let outline = dxf::outline_index(&list);
     let chosen = with_same(&list, picks, same)?;
-    for &k in &chosen {
-        if Some(k) == outline && state != ContourState::Cut {
-            return Err(format!(
-                "Contour {} is the part's outline: it is always cut — without it there is no part to cut out, so it can't be {}. Set the contours inside it instead, or take the part out of the job (remove-part).",
-                k + 1,
-                state.label()
-            ));
-        }
-        if !list[k].closed && state == ContourState::Cut {
-            return Err(format!(
-                "Contour {} is an open line: cutting open lines isn't built yet (FEATURES TEC-22), and cut through the part it could split it. Set it to mark, no-cut, bend-line or leave-out.",
-                k + 1
-            ));
-        }
+    if let Some(e) = chosen.iter().find_map(|&k| state_refusal(&list, k, state)) {
+        return Err(e);
     }
     let before = dxf::cut_order(&list);
     for &k in &chosen {
@@ -233,6 +267,142 @@ pub fn set_quality(part: &mut Part, picks: &[usize], quality: Option<CutQuality>
     let skipped = skipped.into_iter().map(|k| (k, list[k].state)).collect();
     store(part, list);
     Ok(QualityChange { contours: set, skipped })
+}
+
+/// What painting contours sets: a state, a cut quality by hand, or both
+/// (CS4, CQ6). The agents' `contour-tech` and the window's cut technology
+/// panel (CS6) both paint with it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Paint {
+    pub state: Option<ContourState>,
+    /// `Some(Some(q))` sets quality `q` by hand; `Some(None)` gives the
+    /// contours back to the part's size ranges and quality and the machine's
+    /// size bands (CQ1).
+    pub quality: Option<Option<CutQuality>>,
+}
+
+impl Paint {
+    /// Set the contours to `state`, nothing else.
+    pub fn state(state: ContourState) -> Paint {
+        Paint { state: Some(state), quality: None }
+    }
+
+    /// Cut the contours, at quality `q` set by hand, or with `None` at the
+    /// quality the size ranges and bands give.
+    pub fn cut_at(q: Option<CutQuality>) -> Paint {
+        Paint { state: Some(ContourState::Cut), quality: Some(q) }
+    }
+
+    /// Why this paint can't go on any contour: it sets nothing, or gives a
+    /// quality to contours it makes something other than Cut (CQ6: a mark
+    /// always uses the machine's marking quality).
+    fn refusal(self) -> Option<String> {
+        match (self.state, self.quality) {
+            (None, None) => Some("Give a state (cut, mark, no-cut, bend-line or leave-out), a quality (1-12 or auto) for cut contours, or both.".into()),
+            (Some(st), Some(_)) if st != ContourState::Cut => {
+                let why = if st == ContourState::Mark {
+                    "marks are always made with the machine's marking quality and no pierce, so a mark can't be given a cutting quality"
+                } else {
+                    "only cut contours take a cut quality"
+                };
+                Some(format!("state={} with a quality: {why}. Leave out the quality, or use state=cut with it.", st.key()))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// A quality as an agent writes it, for refusals: its number, or auto.
+fn asked(q: Option<CutQuality>) -> String {
+    q.map_or("auto".to_string(), |q| q.number().to_string())
+}
+
+/// Why contour `k` (from 0) of `part` can't take `paint` on its own (CS4,
+/// CQ6), or `None` when `paint` would paint it: the refusal `paint` gives
+/// for it. The cut technology panel paints a box or a sweep with the
+/// contours that can take its row and names the rest (CS6).
+pub fn refusal(part: &Part, k: usize, paint: Paint) -> Option<String> {
+    if let Some(e) = paint.refusal() {
+        return Some(e);
+    }
+    let list = match custom_contours(part) {
+        Ok(list) => list,
+        Err(e) => return Some(e),
+    };
+    if k >= list.len() {
+        return Some(no_contour(list.len(), k + 1));
+    }
+    if let Some(e) = paint.state.and_then(|st| state_refusal(&list, k, st)) {
+        return Some(e);
+    }
+    // A quality goes on the contour once the paint has made it Cut.
+    match (paint.quality, paint.state.unwrap_or(list[k].state)) {
+        (Some(q), st) if st != ContourState::Cut => Some(not_cut(&list[k], k, &asked(q))),
+        _ => None,
+    }
+}
+
+/// What a paint did.
+pub struct Painted {
+    /// The contours set (numbers from 0).
+    pub contours: Vec<usize>,
+    /// Contours equal to a picked one left as they are because only cut
+    /// contours take a quality (CQ6), with their state.
+    pub skipped: Vec<(usize, ContourState)>,
+    /// The part cuts other contours than before, so its nest is out of date
+    /// (CS4).
+    pub nest_changed: bool,
+    /// What was done, in the shop's words.
+    pub message: String,
+}
+
+/// Paint contours `picks` (numbers from 0) of part `i` with `paint`; with
+/// `same`, every contour equal to one of them too (CS5). The one function the
+/// agents' `contour-tech` and the window's cut technology panel both call. A
+/// refusal (CS4, CQ6) leaves the part, its sheets and their hand-picked cut
+/// order as they were. Hand picks on the sheets follow the part's new cut
+/// contours (CS4); `nest_changed` says the caller's nest is out of date.
+pub fn paint(parts: &mut [Part], sheets: &[Vec<Placed>], manual: &mut [Vec<ManualCut>], i: usize, picks: &[usize], paint: Paint, same: bool) -> Result<Painted, String> {
+    let Some(part) = parts.get(i) else { return Err(format!("There is no part {} (the job has {}).", i + 1, parts.len())) };
+    if let Some(e) = paint.refusal() {
+        return Err(e);
+    }
+    let numbers = |v: &[usize]| v.iter().map(|k| (k + 1).to_string()).collect::<Vec<_>>().join(", ");
+    let plural = |v: &[usize]| if v.len() == 1 { "" } else { "s" };
+    let mut p = part.clone();
+    let mut message = format!("Part {} '{}':", i + 1, p.name);
+    let (mut contours, mut skipped) = (vec![], vec![]);
+    let ch = match paint.state {
+        Some(st) => {
+            let ch = set_state(&mut p, picks, st, same)?;
+            message.push_str(&format!(" contour{} {} set to {}.", plural(&ch.contours), numbers(&ch.contours), st.label()));
+            contours = ch.contours.clone();
+            Some(ch)
+        }
+        None => None,
+    };
+    if let Some(q) = paint.quality {
+        let qc = set_quality(&mut p, picks, q, same, &asked(q))?;
+        let what = q.map_or("the part's size ranges and quality and the machine's size bands decide".to_string(), |q| format!("cut at quality {} (by hand)", q.number()));
+        message.push_str(&format!(" Contour{} {}: {what}.", plural(&qc.contours), numbers(&qc.contours)));
+        if !qc.skipped.is_empty() {
+            let left: Vec<String> = qc.skipped.iter().map(|(k, st)| format!("{} ({})", k + 1, st.key())).collect();
+            message.push_str(&format!(" Equal contour{} {} left as {}: only cut contours take a quality.", if left.len() == 1 { "" } else { "s" }, left.join(", "), if left.len() == 1 { "it is" } else { "they are" }));
+        }
+        contours = qc.contours;
+        skipped = qc.skipped;
+    }
+    parts[i] = p;
+    let ch = ch.filter(|ch| ch.cut_changed);
+    if let Some(ch) = &ch {
+        follow_on_sheets(ch, i, sheets, manual);
+        message.push_str(if ch.cuts_fewer() {
+            " It cuts fewer contours now: check its sheets (a part nested in a hole that is no longer cut overlaps it)."
+        } else {
+            " It cuts more contours now."
+        });
+    }
+    Ok(Painted { contours, skipped, nest_changed: ch.is_some(), message })
 }
 
 /// After part `part`'s cut contours changed, the contours picked by hand for

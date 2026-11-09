@@ -63,6 +63,8 @@ pub enum Icon {
     Joint,
     Loop,
     CutTech,
+    /// A brush (paint contours with the cut technology panel).
+    Brush,
     /// An open folder (open a saved job).
     Folder,
     /// An arrow down into a tray (save).
@@ -183,10 +185,6 @@ pub fn paint_part_placed(painter: &egui::Painter, part: &Part, pl: &crate::nest:
     }
 }
 
-/// Bend lines on the sheet and in part pictures (CS3; our own colour, the
-/// same purple as the agents' pictures).
-const BEND: Color32 = Color32::from_rgb(147, 51, 234);
-
 fn paint_part_ex(painter: &egui::Painter, part: &Part, map: impl Fn(P) -> Pos2, fill: Color32, edge: Stroke, hole: Color32, with_texts: bool) {
     let g = part.geometry();
     // Imported drawings are filled from triangles; paint them as one seamless mesh
@@ -209,21 +207,19 @@ fn paint_part_ex(painter: &egui::Painter, part: &Part, map: impl Fn(P) -> Pos2, 
             painter.add(EShape::closed_line(h.iter().map(|&p| map(p)).collect(), edge));
         }
         painter.add(EShape::closed_line(g.outline.iter().map(|&p| map(p)).collect(), edge));
-        // CS3: No cut contours dotted in the part's colour, Bend lines dashed
-        // in the bend colour; neither is machined.
+        // CS7: No cut contours thin, Bend lines dashed, marks solid, each in
+        // its state's colour, as the cut technology panel shows them; neither
+        // No cut nor Bend line is machined.
         for shown in c.shown_only() {
             let pts: Vec<Pos2> = shown.path().into_iter().map(&map).collect();
             if shown.state == crate::dxf::ContourState::BendLine {
-                painter.extend(EShape::dashed_line(&pts, Stroke::new(1.3, BEND), 7.0, 3.0));
+                painter.extend(EShape::dashed_line(&pts, Stroke::new(1.3, crate::cutpanel::BEND), 7.0, 3.0));
             } else {
-                painter.extend(EShape::dotted_line(&pts, darker(fill, 0.45), 3.0, 0.7));
+                painter.add(EShape::line(pts, Stroke::new(1.0, crate::cutpanel::NO_CUT)));
             }
         }
-        // Marking lines (drawing layers set to "Mark"): thin dashed lines.
-        let mark = Stroke::new(1.2, darker(fill, 0.3));
         for m in &c.marks {
-            let pts: Vec<Pos2> = m.iter().map(|&p| map(p)).collect();
-            painter.extend(EShape::dashed_line(&pts, mark, 4.0, 2.5));
+            painter.add(EShape::line(m.iter().map(|&p| map(p)).collect(), Stroke::new(1.2, crate::cutpanel::MARK)));
         }
         if with_texts {
             paint_texts(painter, part, &map, fill);
@@ -244,6 +240,21 @@ fn paint_part_ex(painter: &egui::Painter, part: &Part, map: impl Fn(P) -> Pos2, 
     if with_texts {
         paint_texts(painter, part, &map, fill);
     }
+}
+
+/// `name` shortened from its end, with "…", until `fits` it (a part tile's
+/// label); never below three characters.
+pub fn fit_label(name: &str, fits: impl Fn(&str) -> bool) -> String {
+    let mut label = name.to_string();
+    while label.chars().count() > 3 && !fits(&label) {
+        // Take the ellipsis off first, so each step drops a real character.
+        while label.ends_with('…') {
+            label.pop();
+        }
+        label.pop();
+        label.push('…');
+    }
+    label
 }
 
 /// Texts on a part: marking and special texts as solid strokes (what the laser
@@ -494,6 +505,13 @@ pub fn draw_icon_with(p: &egui::Painter, r: Rect, icon: Icon, ink: Color32, acce
             poly(vec![v(-6.0, -10.0), v(6.0, -10.0), v(3.0, -2.0), v(-3.0, -2.0), v(-6.0, -10.0)], s);
             p.line_segment([v(0.0, -2.0), v(0.0, 7.0)], a);
             p.line_segment([v(-8.0, 9.0), v(8.0, 9.0)], s);
+        }
+        Icon::Brush => {
+            // A brush stroke on a contour: handle, ferrule and tip.
+            p.line_segment([v(9.0, -10.0), v(2.0, -3.0)], s);
+            poly(vec![v(2.0, -6.0), v(5.0, -3.0), v(1.0, 1.0), v(-2.0, -2.0), v(2.0, -6.0)], s);
+            poly(vec![v(-2.0, -2.0), v(1.0, 1.0), v(-3.0, 5.0), v(-7.0, 6.0), v(-6.0, 2.0), v(-2.0, -2.0)], a);
+            p.line_segment([v(-11.0, 10.0), v(11.0, 10.0)], a);
         }
         Icon::Import => {
             // A drawing sheet with "DXF" and an arrow coming in.
@@ -2415,15 +2433,8 @@ impl App {
                         p.text(b.center(), Align2::CENTER_CENTER, "T", FontId::proportional(11.0), Color32::WHITE);
                     }
                     // The part's reference at the foot of the tile, shortened to fit.
-                    let mut label = part.name.clone();
                     let font = FontId::proportional(10.5);
-                    while label.chars().count() > 3 && p.layout_no_wrap(label.clone(), font.clone(), th().text).size().x > r.width() - 10.0 {
-                        label.pop();
-                        while label.ends_with('…') {
-                            label.pop();
-                        }
-                        label.push('…');
-                    }
+                    let label = fit_label(&part.name, |l| p.layout_no_wrap(l.to_string(), font.clone(), th().text).size().x <= r.width() - 10.0);
                     p.text(Pos2::new(r.center().x, r.bottom() - 8.0), Align2::CENTER_CENTER, label, font, th().text_dim);
                     let body = Rect::from_min_max(head.left_bottom() + Vec2::new(8.0, 5.0), r.max - Vec2::new(8.0, 18.0));
                     let (w, h) = part.bbox();
@@ -2772,5 +2783,18 @@ mod ribbon_fit_tests {
         assert!(ribbon_fit_plan(&[], &[], &[], 100.0).is_empty());
         // Too narrow for anything: all fold.
         assert_eq!(ribbon_fit_plan(&full, &[], &same, 50.0), vec![true; 4]);
+    }
+}
+
+#[cfg(test)]
+mod tile_label_tests {
+    #[test]
+    fn a_long_reference_is_shortened_with_one_ellipsis_and_never_hangs() {
+        // At most 8 characters fit: a long made-up reference loses its end.
+        let fits = |s: &str| s.chars().count() <= 8;
+        assert_eq!(super::fit_label("DEMO-BEND-PLATE", fits), "DEMO-BE…");
+        assert_eq!(super::fit_label("DEMO-1", fits), "DEMO-1");
+        // Nothing fits: it stops at three characters.
+        assert_eq!(super::fit_label("DEMO-BEND-PLATE", |_| false), "DE…");
     }
 }

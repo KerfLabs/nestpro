@@ -264,6 +264,21 @@ impl App {
             {
                 self.show_cut_ranges = !self.show_cut_ranges;
             }
+            // The cut technology panel (CS6): on an opened part only.
+            if in_part {
+                let custom = self.shown_part().is_some_and(|i| self.parts[i].shape == crate::nest::Shape::Custom);
+                let tip = if custom {
+                    "Open the cut technology panel: choose Cut (or one of the machine's qualities), Mark, No cut, Bend line or Leave out, then click, box or sweep over contours"
+                } else {
+                    "A built-in shape's contours are always cut: open an imported drawing to paint its contours"
+                };
+                if ribbon_button(ui, Icon::Brush, "Paint\ncontours", self.cut_panel.open, custom).on_hover_text(tip).clicked() {
+                    self.cut_panel.open = !self.cut_panel.open;
+                    if !self.cut_panel.open {
+                        self.cut_panel.row = None;
+                    }
+                }
+            }
         });
         // Texts: in the original a text is an element with a type (marking,
         // special or plain note) and gets the marking technology; see MECHANICS.md.

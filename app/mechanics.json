@@ -334,6 +334,34 @@
    "estimated": true
   },
   {
+   "name": "cut technology panel rows",
+   "group": "part technology",
+   "value": ["Cut · quality by size", "each quality the machine offers", "Mark", "No cut", "Bend line", "Leave out"],
+   "source": "CS6",
+   "estimated": true
+  },
+  {
+   "name": "cut technology panel: All the same contours at start",
+   "group": "part technology",
+   "value": false,
+   "source": "CS6",
+   "estimated": true
+  },
+  {
+   "name": "cut technology panel: a drag with a row chosen",
+   "group": "part technology",
+   "value": "from a contour: sweep (every contour passed over); from open space: box (the contours wholly inside)",
+   "source": "CS6",
+   "estimated": true
+  },
+  {
+   "name": "contour colours on the part, the sheet and the panel's swatches",
+   "group": "part technology",
+   "value": {"cut": "its cut quality's colour (CQ5)", "mark": "#00ff00", "no cut": "#969696", "bend line": "#9333ea, dashed", "leave out": "#606068, dashed, only while the panel is open"},
+   "source": "CS7",
+   "estimated": true
+  },
+  {
    "name": "default micro-joints",
    "group": "part technology",
    "value": 0,

@@ -12,6 +12,7 @@ mod engine;
 mod filewatch;
 mod mcp;
 mod ct1;
+mod cutpanel;
 mod joints;
 mod kerf;
 mod leads;
@@ -326,6 +327,8 @@ pub struct App {
     pub job_lib_id: Option<u64>,
     /// The Drawing module's view state (axes, colours, simulation, measuring…).
     pub dv: drawing::DrawView,
+    /// The cut technology panel on the part's drawing screen (CS6).
+    pub cut_panel: cutpanel::CutPanel,
     /// Simulation of the current sheet's program (Nesting → Simulation tab).
     pub ssim: Option<sheetsim::SheetSim>,
     /// Saved settings (connections, machines, materials, folders), what was
@@ -603,6 +606,7 @@ impl App {
             stockui: Default::default(),
             job_lib_id: None,
             dv: drawing::DrawView::default(),
+            cut_panel: Default::default(),
             ssim: None,
             cfg: settings::AppSettings::load(),
             cfg_saved: settings::AppSettings::default(),
@@ -2125,6 +2129,7 @@ impl App {
         if has_sheet {
             let hover_w = resp.hover_pos().map(to_w);
             let sheet = &self.result.sheets[sheet_idx];
+            let mt = crate::ct1::for_spec(&self.spec);
             let n = sheet.len().max(1) as f64;
             let stagger = (0.7 / n).min(0.03);
             let mut animating = false;
@@ -2171,6 +2176,8 @@ impl App {
                     painter.rect_filled(r, CornerRadius::same(4), Color32::from_rgba_unmultiplied(255, 255, 255, 40));
                 }
                 paint_part_placed(&painter, part, pl, |q| to_s(q) - Vec2::new(0.0, drop), fill, edge, th().sheet);
+                // Every contour in its cut quality's or state's colour (CS7).
+                crate::cutpanel::paint_contour_colours(&painter, part, &mt, &|q| to_s(pl.map(q)) - Vec2::new(0.0, drop), 1.2, false);
                 // Micro-joints as the cut plan places them (automatic ones too, holes
                 // included): small uncut bridges on the contours.
                 let planned: Vec<(&[P], (f64, f64))> = if self.drag.is_none() {
@@ -3260,6 +3267,40 @@ fn main() -> eframe::Result {
                             t.cut_ranges[k] = crate::nest::CutRange { on: true, min_r: from, max_r: to, quality: q };
                         }
                     }
+                }
+            }
+            // --paint-panel / --paint-contours (screenshots): the cut technology
+            // panel on the first imported part with Slow (1) chosen and All the
+            // same contours on; --paint-contours also paints, through the same
+            // engine function as contour-tech, its bend lines Mark, its first
+            // hole Leave out and every hole equal to its second Slow (1) (CS6,
+            // CS7). Without --part the sheet shows the result. --paint-card=<row>
+            // (cut, slow, mark, no-cut, bend-line, leave-out) shows a row's hover card.
+            let paint_panel = std::env::args().any(|a| a == "--paint-panel" || a == "--paint-contours");
+            if let Some(i) = (0..app.parts.len()).find(|&i| app.parts[i].shape == Shape::Custom).filter(|_| paint_panel) {
+                use crate::cutpanel::Row;
+                let slow = Row::Cut(nest::CutQuality::new(1));
+                if std::env::args().any(|a| a == "--paint-contours") {
+                    let list = engine::contours::list(&app.parts[i]);
+                    let bends: Vec<usize> = (0..list.len()).filter(|&k| list[k].state == dxf::ContourState::BendLine).collect();
+                    app.paint_contours(i, &bends, Row::Mark, false);
+                    app.paint_contours(i, &[0], Row::LeaveOut, false);
+                    app.paint_contours(i, &[1], slow, true);
+                }
+                app.cut_panel.open = true;
+                app.cut_panel.same = true;
+                app.cut_panel.row = Some(slow);
+                app.cut_panel.card = std::env::args().find_map(|a| a.strip_prefix("--paint-card=").map(str::to_string)).and_then(|r| match r.as_str() {
+                    "cut" => Some(Row::Cut(None)),
+                    "slow" => Some(slow),
+                    "mark" => Some(Row::Mark),
+                    "no-cut" => Some(Row::NoCut),
+                    "bend-line" => Some(Row::BendLine),
+                    "leave-out" => Some(Row::LeaveOut),
+                    _ => None,
+                });
+                if app.workspace == Workspace::Part {
+                    app.tab = Tab::Technology;
                 }
             }
             // --sheet-tab (screenshots): the Sheet tab, e.g. its machine-table line.

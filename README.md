@@ -19,7 +19,7 @@ can move its work over, and aims to match that program's features and behaviour.
 | `app/` | The app. `ROADMAP.md` = done and missing features, `MECHANICS.md` / `mechanics.json` = the behaviour rules the app follows |
 | `tools/` | `check.sh` (public check + Linux tests + Windows type-check), `shot.sh out.png` (build + screenshot on a virtual display), `public-check.sh`, `install-hooks.sh` |
 | `FEATURES.md` | The list of what isn't built yet (IDs, status, priority) |
-| `examples/drawings/` | Made-up part drawings (DXF) to try Import drawings and nesting; `DEMO-OPEN-SKETCH` can't make a part, to show what the import window says then |
+| `examples/drawings/` | Made-up part drawings (DXF) to try Import drawings and nesting; `DEMO-OPEN-SKETCH` can't make a part, to show what the import window says then; `DEMO-BEND-PLATE` has a bend line, a stray open line and four equal holes, to try the cut technology panel |
 | `research/` | Not in this repo: a private checkout of the research notes (see `AGENTS.md`) |
 
 ## Build
