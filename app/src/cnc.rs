@@ -705,9 +705,11 @@ fn pull_in(parts: &[Part], placed: &[Placed], manual: &[ManualCut], i: usize, h:
     }
 }
 
-/// Where a cut contour's quality comes from (CQ1).
+/// Where a cut contour's quality comes from (CQ1, CQ6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QualityFrom {
+    /// Set on the contour by hand (CQ6).
+    Hand,
     /// The part's own size-range row that holds the contour (CT1).
     SizeRange,
     /// The part's own quality.
@@ -722,6 +724,7 @@ impl QualityFrom {
     /// For people and agents (part-info, Cut technology by size).
     pub fn label(self) -> &'static str {
         match self {
+            QualityFrom::Hand => "by hand",
             QualityFrom::SizeRange => "part size range",
             QualityFrom::Part => "part",
             QualityFrom::SizeBand => "machine size band",
@@ -737,11 +740,14 @@ pub fn contour_radius(pts: &[P]) -> f64 {
 }
 
 /// The cut quality of a closed contour `pts` of a part with technology
-/// `tech` on the machine's tables `mt` (CQ1): the part's own size-range row
-/// for the contour's equivalent radius; else the part's own quality; else,
-/// when the part has no size ranges of its own, the machine's size band;
-/// else quality 3.
-pub fn contour_quality(tech: &PartTech, mt: &crate::ct1::MachineTech, pts: &[P]) -> (CutQuality, QualityFrom) {
+/// `tech` on the machine's tables `mt` (CQ1): the quality set on the contour
+/// by hand, `hand` (CQ6); else the part's own size-range row for the
+/// contour's equivalent radius; else the part's own quality; else, when the
+/// part has no size ranges of its own, the machine's size band; else quality 3.
+pub fn contour_quality(tech: &PartTech, mt: &crate::ct1::MachineTech, pts: &[P], hand: Option<CutQuality>) -> (CutQuality, QualityFrom) {
+    if let Some(q) = hand {
+        return (q, QualityFrom::Hand);
+    }
     let r_eq = contour_radius(pts);
     if let Some(q) = crate::nest::quality_for_radius(&tech.cut_ranges, r_eq, 0.0) {
         return (q, QualityFrom::SizeRange);
@@ -817,6 +823,8 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
     let mut kerf_issues: Vec<(usize, bool, String)> = vec![];
     // Every placed part's contours (holes first, outline last), for the leads' collision test.
     let obst: Vec<([f64; 4], Vec<(Vec<P>, bool)>)> = placed.iter().map(|pl| (pl.bbox4(), sheet_contours(&parts[pl.part], pl))).collect();
+    // Each part's qualities set by hand, by cut contour (CQ6).
+    let hand: Vec<Vec<Option<CutQuality>>> = parts.iter().map(Part::cut_qualities).collect();
     for (i, ci, man) in jobs {
         let pl = &placed[i];
         let part = &parts[pl.part];
@@ -824,9 +832,9 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
         // (tables by contour class) and no joints.
         let tech = part.tech.unwrap_or(auto_tech);
         let (mut pts, inner) = obst[i].1[ci].clone();
-        // The contour's cut quality (CQ1), which picks its leads (AL1), kerf
-        // row (KC5), joint distance, speed (CTM8) and LC5 codes (BL22).
-        let (cq, _) = contour_quality(&tech, &mt, &pts);
+        // The contour's cut quality (CQ1, CQ6), which picks its leads (AL1),
+        // kerf row (KC5), joint distance, speed (CTM8) and LC5 codes (BL22).
+        let (cq, _) = contour_quality(&tech, &mt, &pts, hand[pl.part].get(ci).copied().flatten());
         let qn = cq.number();
         let feed = timing.feed(cq);
         let lq = mt.leads.quality(qn);

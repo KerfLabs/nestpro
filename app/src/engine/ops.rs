@@ -177,10 +177,11 @@ pub static OPS: &[Op] = &[
         a("rotate", Ty::Bool, "May turn 90°"), a("mirror", Ty::Bool, "May be mirrored"), a("group", Ty::Str, "Group"), c("tech", &["copy", "drop"], "Size change on a part with technology"),
     ] },
     Op { name: "remove-part", group: "Parts", kind: Kind::Write, help: "Take a part out of the job (its placed copies go too).", args: &[PART] },
-    Op { name: "part-info", group: "Parts", kind: Kind::Read, help: "A part's geometry and technology: size, area, cut length, every contour (numbered: holes first, the outline, then open lines; open or closed; its state: cut, mark, no-cut, bend-line or leave-out, set with contour-tech; cut contours with their cut quality by the machine's name, e.g. Slow (1), or Quality n when the machine names none), every element (numbered, for lead-at / joint-at), texts, and Verify Part / Verify Machining results.", args: &[PART] },
-    Op { name: "contour-tech", group: "Technology", kind: Kind::Write, help: "Set contours of an imported part (numbers from part-info: holes first, the outline, then open lines) to cut, mark (marked on the surface, open or closed), no-cut (kept on the part and shown, never machined), bend-line (a no-cut line in its own colour) or leave-out (not on the part). same=true also sets every contour equal to one of them (same shape, moved). The outline is always cut, and open lines can't be cut yet.", args: &[
+    Op { name: "part-info", group: "Parts", kind: Kind::Read, help: "A part's geometry and technology: size, area, cut length, every contour (numbered: holes first, the outline, then open lines; open or closed; its state: cut, mark, no-cut, bend-line or leave-out, set with contour-tech; cut contours with their cut quality by the machine's name, e.g. Slow (1), or Quality n when the machine names none, and where it comes from: by hand (contour-tech quality=), part size range, part, machine size band or default), every element (numbered, for lead-at / joint-at), texts, and Verify Part / Verify Machining results.", args: &[PART] },
+    Op { name: "contour-tech", group: "Technology", kind: Kind::Write, help: "Set contours of an imported part (numbers from part-info: holes first, the outline, then open lines) to cut, mark (marked on the surface, open or closed), no-cut (kept on the part and shown, never machined), bend-line (a no-cut line in its own colour) or leave-out (not on the part), and/or give cut contours a cut quality by hand (1-12, which wins over the part's size ranges and quality and the machine's size bands; auto gives the choice back to them). same=true also sets every contour equal to one of them (same shape, moved; with only a quality, the equal contours that are cut). The outline is always cut, open lines can't be cut yet, and a mark always uses the machine's marking quality.", args: &[
         PART, r("contours", Ty::Str, "Contour numbers from part-info, e.g. \"5\", \"1,3\" or \"2-4\""),
-        Arg { name: "state", ty: Ty::Str, required: true, help: "What the contours become", choices: CONTOUR_STATES },
+        c("state", CONTOUR_STATES, "What the contours become (state, quality or both)"),
+        c("quality", QUALITIES, "Cut quality set by hand on cut contours: the machine's quality 1-12, or auto = the part's size ranges and quality and the machine's size bands decide (state, quality or both)"),
         a("same", Ty::Bool, "Also every contour equal to one of them (default false)"),
     ] },
     Op { name: "export-part-dxf", group: "Parts", kind: Kind::Read, help: "Save a part as DXF (outline and holes on CUT, marking on MARK).", args: &[PART, r("out", Ty::Path, "DXF file to write")] },
@@ -466,6 +467,17 @@ fn layer_role_from(s: &str) -> Result<dxf::LayerRole, String> {
     pick(s, "layer role", &[("cut", dxf::LayerRole::Cut), ("mark", dxf::LayerRole::Mark), ("ignore", dxf::LayerRole::Ignore)])
 }
 
+/// A contour's quality set by hand: 1–12, or auto (None) to give it back to
+/// the part's size ranges and quality and the machine's size bands (CQ6).
+fn contour_quality_from(s: &str) -> Result<Option<CutQuality>, String> {
+    if s.trim().eq_ignore_ascii_case("auto") {
+        return Ok(None);
+    }
+    numbered_quality(s).map(Some).ok_or_else(|| {
+        format!("quality '{}': the machine has cut qualities 1 to 12 (part-info shows the one each contour gets). Give one of them, or auto to let the part's size ranges and quality and the machine's size bands decide.", s.trim())
+    })
+}
+
 fn contour_state_from(s: &str) -> Result<dxf::ContourState, String> {
     use dxf::ContourState::*;
     let words: Vec<(&str, dxf::ContourState)> = dxf::ContourState::ALL.iter().map(|st| (st.key(), *st)).chain([("nocut", NoCut), ("bend", BendLine), ("ignore", LeaveOut)]).collect();
@@ -712,9 +724,10 @@ fn part_info(job: &JobFile, i: usize) -> Value {
         .map(|(k, c)| {
             let shape = if c.closed { crate::machine::recognise(&c.pts).map(|s| s.label()) } else { None };
             let mut v = json!({"contour": k + 1, "kind": contours::kind(&list, k), "closed": c.closed, "state": c.state.key(), "length_mm": r1(c.length()), "standard_shape": shape});
-            // CQ1: the cut quality each cut contour gets on this job's machine, and why.
+            // CQ1, CQ6: the cut quality each cut contour gets on this job's
+            // machine, and why ("by hand" when set on the contour).
             if c.closed && c.state == dxf::ContourState::Cut {
-                let (q, from) = cnc::contour_quality(&tech, &mt, &c.pts);
+                let (q, from) = cnc::contour_quality(&tech, &mt, &c.pts, c.quality);
                 v["quality"] = json!(q.number());
                 v["quality_name"] = json!(mt.qualities.label(q));
                 v["quality_from"] = json!(from.label());
@@ -1528,18 +1541,54 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
         }
         "contour-tech" => {
             let i = one_part(job, &a)?;
-            let state = contour_state_from(&a.need_str("state")?)?;
+            let state = a.str("state").map(|s| contour_state_from(&s)).transpose()?;
+            let asked = a.str("quality");
+            let quality = asked.as_deref().map(contour_quality_from).transpose()?;
+            if state.is_none() && quality.is_none() {
+                return Err("Give a state (cut, mark, no-cut, bend-line or leave-out), a quality (1-12 or auto) for cut contours, or both.".into());
+            }
+            // CQ6: only a cut contour takes a quality; a mark always uses the
+            // machine's marking quality.
+            if let (Some(st), Some(_)) = (state, quality) {
+                if st != dxf::ContourState::Cut {
+                    let why = if st == dxf::ContourState::Mark {
+                        "marks are always made with the machine's marking quality and no pierce, so a mark can't be given a cutting quality"
+                    } else {
+                        "only cut contours take a cut quality"
+                    };
+                    return Err(format!("state={} with a quality: {why}. Leave out the quality, or use state=cut with it.", st.key()));
+                }
+            }
             let picks = contours::parse_numbers(&a.need_str("contours")?, contours::list(&job.parts[i]).len())?;
-            let ch = contours::set_state(&mut job.parts[i], &picks, state, a.bool("same")?.unwrap_or(false))?;
-            let mut msg = format!(
-                "Part {} '{}': contour{} {} set to {}.",
-                i + 1,
-                job.parts[i].name,
-                if ch.contours.len() == 1 { "" } else { "s" },
-                ch.contours.iter().map(|k| (k + 1).to_string()).collect::<Vec<_>>().join(", "),
-                state.label()
-            );
-            if ch.cut_changed {
+            let same = a.bool("same")?.unwrap_or(false);
+            let numbers = |v: &[usize]| v.iter().map(|k| (k + 1).to_string()).collect::<Vec<_>>().join(", ");
+            let plural = |v: &[usize]| if v.len() == 1 { "" } else { "s" };
+            let name = job.parts[i].name.clone();
+            let mut data = json!({});
+            let mut msg = format!("Part {} '{name}':", i + 1);
+            let ch = match state {
+                Some(st) => {
+                    let ch = contours::set_state(&mut job.parts[i], &picks, st, same)?;
+                    msg.push_str(&format!(" contour{} {} set to {}.", plural(&ch.contours), numbers(&ch.contours), st.label()));
+                    data["contours"] = json!(ch.contours.iter().map(|k| k + 1).collect::<Vec<_>>());
+                    data["state"] = json!(st.key());
+                    Some(ch)
+                }
+                None => None,
+            };
+            if let Some(q) = quality {
+                let qc = contours::set_quality(&mut job.parts[i], &picks, q, same, asked.as_deref().unwrap_or_default())?;
+                let what = q.map_or("the part's size ranges and quality and the machine's size bands decide".to_string(), |q| format!("cut at quality {} (by hand)", q.number()));
+                msg.push_str(&format!(" Contour{} {}: {what}.", plural(&qc.contours), numbers(&qc.contours)));
+                if !qc.skipped.is_empty() {
+                    let left: Vec<String> = qc.skipped.iter().map(|(k, st)| format!("{} ({})", k + 1, st.key())).collect();
+                    msg.push_str(&format!(" Equal contour{} {} left as {}: only cut contours take a quality.", if left.len() == 1 { "" } else { "s" }, left.join(", "), if left.len() == 1 { "it is" } else { "they are" }));
+                }
+                data["contours"] = json!(qc.contours.iter().map(|k| k + 1).collect::<Vec<_>>());
+                data["quality"] = q.map_or(json!("auto"), |q| json!(q.number()));
+                data["skipped"] = json!(qc.skipped.iter().map(|(k, _)| k + 1).collect::<Vec<_>>());
+            }
+            if let Some(ch) = ch.filter(|ch| ch.cut_changed) {
                 contours::follow_on_sheets(&ch, i, &job.sheets, &mut job.manual_cuts);
                 job.stale = true;
                 msg.push_str(if ch.cuts_fewer() {
@@ -1549,7 +1598,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                 });
             }
             let mut o = Outcome::msg(msg);
-            o.data = json!({"contours": ch.contours.iter().map(|k| k + 1).collect::<Vec<_>>(), "state": state.key()});
+            o.data = data;
             Ok(o)
         }
         "export-part-dxf" => {

@@ -1552,6 +1552,163 @@ fn a_job_saved_with_rough_normal_fine_opens_and_exports_with_numbered_qualities(
 }
 
 // ---------------------------------------------------------------------------
+// A cut quality set by hand on one contour (TEC-4, CQ6).
+// ---------------------------------------------------------------------------
+
+/// A made-up 300 × 200 plate with two equal Ø40 holes (the thick-plate
+/// laser's size bands cut them at quality 3) and a line on layer MARK.
+/// Contours: 1 and 2 the holes, 3 the outline, 4 the mark.
+fn plate_with_equal_holes(d: &Path) -> PathBuf {
+    let sq = "0\nLWPOLYLINE\n8\n0\n90\n4\n70\n1\n10\n0\n20\n0\n10\n300\n20\n0\n10\n300\n20\n200\n10\n0\n20\n200\n";
+    let hole = |x: f64| format!("0\nCIRCLE\n8\n0\n10\n{x}\n20\n100\n30\n0\n40\n20\n");
+    let mark = "0\nLWPOLYLINE\n8\nMARK\n90\n2\n70\n0\n10\n200\n20\n40\n10\n260\n20\n40\n";
+    let dxf = d.join("DEMO-002.dxf");
+    std::fs::write(&dxf, format!("0\nSECTION\n2\nENTITIES\n{sq}{}{}{mark}0\nENDSEC\n0\nEOF\n", hole(80.0), hole(200.0))).unwrap();
+    dxf
+}
+
+/// Each contour's (number, quality, where it came from) as part-info lists
+/// them; contours without a quality show 0 and "".
+fn contour_qualities(s: &mut Session, part: usize) -> Vec<(u64, u64, String)> {
+    let pi = call(s, "part-info", None, json!({"part": part}));
+    pi["data"]["contours"].as_array().unwrap_or_else(|| panic!("{pi}")).iter().map(|c| (c["contour"].as_u64().unwrap(), c["quality"].as_u64().unwrap_or(0), c["quality_from"].as_str().unwrap_or("").to_string())).collect()
+}
+
+#[test]
+fn a_hole_given_a_quality_by_hand_goes_to_the_lc5_at_it_and_same_sets_its_twin() {
+    thick_plate_laser();
+    let d = dir("hand_quality");
+    let job = d.join("plate.snjob");
+    let mut ctx = Ctx::builtin();
+    ctx.blm.on = true;
+    let mut s = Session::new(ctx);
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1500, "h": 1000, "material": "mild steel", "thickness": 15}));
+    call(&mut s, "import-drawing", None, json!({"path": plate_with_equal_holes(&d).to_str().unwrap(), "qty": 1, "layers": "MARK=mark"}));
+    call(&mut s, "nest", None, json!({"stock": "off"}));
+    let program = |s: &mut Session| next_l_codes(call(s, "program", None, json!({"sheet": 1}))["data"].as_str().unwrap());
+    let band = |n: u64| (n, 3, "machine size band".to_string());
+    // Both Ø40 holes and the outline at their size band's quality 3 (pierce 2).
+    assert_eq!(program(&mut s), vec![(0, 9), (2, 3), (2, 3), (2, 3)]);
+
+    // CQ6: hole 1 set to quality 1 by hand is written at quality 1 with its
+    // pierce code (1); its twin, left alone, keeps its band's quality.
+    let r = call(&mut s, "contour-tech", None, json!({"part": 1, "contours": "1", "quality": 1}));
+    assert!(r["message"].as_str().unwrap().contains("quality 1"), "{r}");
+    assert_eq!(contour_qualities(&mut s, 1), vec![(1, 1, "by hand".to_string()), band(2), band(3), (4, 0, String::new())]);
+    assert_eq!(program(&mut s), vec![(0, 9), (1, 1), (2, 3), (2, 3)]);
+
+    // same=true sets every equal hole: both holes now at quality 1.
+    call(&mut s, "contour-tech", None, json!({"part": 1, "contours": "2", "quality": 1, "same": true}));
+    assert_eq!(contour_qualities(&mut s, 1), vec![(1, 1, "by hand".to_string()), (2, 1, "by hand".to_string()), band(3), (4, 0, String::new())]);
+    assert_eq!(program(&mut s), vec![(0, 9), (1, 1), (1, 1), (2, 3)]);
+    // CQ4: part-info names a quality set by hand as the machine file does.
+    crate::ct1::set_thread_active(Some(laser_install(&d.join("Named"), "A922 \"Slow\"\n")));
+    let pi = call(&mut s, "part-info", None, json!({"part": 1}));
+    let first = &pi["data"]["contours"][0];
+    assert_eq!((first["quality_name"].as_str(), first["quality_from"].as_str()), (Some("Slow (1)"), Some("by hand")), "{pi}");
+    crate::ct1::set_thread_active(None);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_mark_or_a_quality_the_machine_doesnt_have_is_refused_with_what_to_do_instead() {
+    thick_plate_laser();
+    let d = dir("hand_quality_refused");
+    let job = d.join("plate.snjob");
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1500, "h": 1000, "material": "mild steel", "thickness": 15}));
+    call(&mut s, "import-drawing", None, json!({"path": plate_with_equal_holes(&d).to_str().unwrap(), "qty": 1, "layers": "MARK=mark"}));
+    call(&mut s, "contour-tech", None, json!({"part": 1, "contours": "1", "state": "mark"}));
+    call(&mut s, "contour-tech", None, json!({"part": 1, "contours": "2", "state": "no-cut"}));
+    let before = contour_qualities(&mut s, 1);
+
+    // A mark always uses the machine's marking quality: refused, closed or open.
+    let e = err(&mut s, "contour-tech", json!({"part": 1, "contours": "1", "quality": 2}));
+    assert!(e.contains("Contour 1 is a mark") && e.contains("marking quality") && e.contains("state=cut quality=2"), "{e}");
+    let e = err(&mut s, "contour-tech", json!({"part": 1, "contours": "4", "quality": 2}));
+    assert!(e.contains("Contour 4 is a mark") && e.contains("marking quality") && e.contains("open lines can't be cut yet"), "{e}");
+    let e = err(&mut s, "contour-tech", json!({"part": 1, "contours": "3", "state": "mark", "quality": 1}));
+    assert!(e.contains("marking quality") && e.contains("state=cut"), "{e}");
+    // A contour that isn't cut takes no quality; cutting it with one is the way.
+    let e = err(&mut s, "contour-tech", json!({"part": 1, "contours": "2", "quality": 2}));
+    assert!(e.contains("No cut") && e.contains("state=cut quality=2"), "{e}");
+    // The machine has qualities 1 to 12.
+    for q in [json!(0), json!(13), json!("slow")] {
+        let e = err(&mut s, "contour-tech", json!({"part": 1, "contours": "3", "quality": q}));
+        assert!(e.contains("1 to 12") && e.contains("auto"), "{q}: {e}");
+    }
+    let e = err(&mut s, "contour-tech", json!({"part": 1, "contours": "3"}));
+    assert!(e.contains("state") && e.contains("quality"), "{e}");
+    // A built-in shape's contours are always cut at the part's qualities.
+    call(&mut s, "add-shape", None, json!({"shape": "disc", "w": 200, "qty": 1}));
+    let e = err(&mut s, "contour-tech", json!({"part": 2, "contours": "1", "quality": 1}));
+    assert!(e.contains("built-in") && e.contains("import"), "{e}");
+    assert_eq!(contour_qualities(&mut s, 1), before, "nothing changed");
+
+    // state=cut with a quality is what to do instead: the mark is cut at 2.
+    call(&mut s, "contour-tech", None, json!({"part": 1, "contours": "1", "state": "cut", "quality": 2}));
+    assert_eq!(contour_qualities(&mut s, 1)[0], (1, 2, "by hand".to_string()));
+    // With same=true and only a quality, the equal hole that isn't cut (No
+    // cut) is left as it is, and named.
+    let r = call(&mut s, "contour-tech", None, json!({"part": 1, "contours": "1", "quality": 3, "same": true}));
+    assert!(r["message"].as_str().unwrap().contains("2 (no-cut) left as it is"), "{r}");
+    assert_eq!((r["data"]["contours"].clone(), r["data"]["skipped"].clone()), (json!([1]), json!([2])));
+    assert_eq!(contour_rows(&mut s, 1)[1].2, "no-cut");
+    assert_eq!(contour_qualities(&mut s, 1)[..2], [(1, 3, "by hand".to_string()), (2, 0, String::new())]);
+    crate::ct1::set_thread_active(None);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn hand_set_qualities_beat_the_parts_own_and_are_kept_in_jobs_and_products() {
+    thick_plate_laser();
+    let d = dir("hand_quality_keep");
+    let job = d.join("plate.snjob");
+    let jp = job.to_str().unwrap();
+    let ctx = || {
+        let mut c = Ctx::builtin();
+        c.blm.on = true;
+        c.cfg.library_dir = d.join("library").to_string_lossy().into_owned();
+        c
+    };
+    let mut s = Session::new(ctx());
+    call(&mut s, "new", Some(jp), json!({"w": 1500, "h": 1000, "material": "mild steel", "thickness": 15}));
+    call(&mut s, "import-drawing", None, json!({"path": plate_with_equal_holes(&d).to_str().unwrap(), "qty": 1, "layers": "MARK=mark", "name": "DEMO-002"}));
+    // The part's own size range (up to r 50 mm at quality 2) and quality 4.
+    call(&mut s, "cut-tech", None, json!({"mode": "ranges", "parts": "1", "ranges": "0-50:2"}));
+    call(&mut s, "tech-set", None, json!({"parts": "1", "quality": 4}));
+    call(&mut s, "contour-tech", None, json!({"part": 1, "contours": "1", "quality": 1}));
+    let row = |n: u64, q: u64, from: &str| (n, q, from.to_string());
+    let set = vec![row(1, 1, "by hand"), row(2, 2, "part size range"), row(3, 4, "part"), row(4, 0, "")];
+    assert_eq!(contour_qualities(&mut s, 1), set, "CQ6: by hand first");
+    call(&mut s, "nest", None, json!({"stock": "off"}));
+    let program = |s: &mut Session| call(s, "program", None, json!({"sheet": 1}))["data"].as_str().unwrap().to_string();
+    let code = program(&mut s);
+    assert_eq!(next_l_codes(&code), vec![(0, 9), (1, 1), (2, 4), (4, 2)], "{code}");
+
+    // The job reopened from its file keeps the quality set by hand, and its program.
+    let mut s = Session::new(ctx());
+    call(&mut s, "info", Some(jp), json!({}));
+    assert_eq!(contour_qualities(&mut s, 1), set);
+    assert_eq!(program(&mut s), code);
+    // So does a product saved to the library and added to a job again.
+    call(&mut s, "library", None, json!({"mode": "save-part", "parts": "1"}));
+    call(&mut s, "library", None, json!({"mode": "add", "name": "DEMO-002", "qty": 1}));
+    assert_eq!(contour_qualities(&mut s, 2), set);
+
+    // auto gives the hole back to the part's size range.
+    call(&mut s, "contour-tech", None, json!({"part": 2, "contours": "1", "quality": "auto"}));
+    assert_eq!(contour_qualities(&mut s, 2)[0], row(1, 2, "part size range"));
+    // A hole that stops being cut loses its quality set by hand: cut again,
+    // the part's size range decides.
+    call(&mut s, "contour-tech", None, json!({"part": 1, "contours": "1", "state": "mark"}));
+    call(&mut s, "contour-tech", None, json!({"part": 1, "contours": "1", "state": "cut"}));
+    assert_eq!(contour_qualities(&mut s, 1)[0], row(1, 2, "part size range"));
+    crate::ct1::set_thread_active(None);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// ---------------------------------------------------------------------------
 // The cut qualities by the machine's names and colours (CQ4, CQ5).
 // ---------------------------------------------------------------------------
 

@@ -3247,10 +3247,11 @@ fn main() -> eframe::Result {
             }
             // --cut-ranges (screenshots): Quality by size on the plate with holes,
             // its rows and each contour's quality (CQ1) by the machine's names
-            // and colours (CQ4, CQ5): rows at qualities 1, 2 and 3.
+            // and colours (CQ4, CQ5): rows at qualities 1, 2 and 3; on a job
+            // opened with --open-job, its first part.
             if std::env::args().any(|a| a == "--cut-ranges") {
                 app.tab = Tab::Technology;
-                app.sel_part = app.parts.iter().position(|p| p.name == "Square hole");
+                app.sel_part = app.parts.iter().position(|p| p.name == "Square hole").or((!app.parts.is_empty()).then_some(0));
                 app.tech_nest_all = Some(false);
                 app.show_cut_ranges = true;
                 if let Some(t) = app.sel_part.and_then(|i| app.parts[i].tech.as_mut()) {

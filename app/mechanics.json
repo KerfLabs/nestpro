@@ -264,7 +264,7 @@
   {
    "name": "cut contour quality order",
    "group": "part technology",
-   "value": "part's size-range row, else part's quality, else machine size band (parts without size ranges), else 3",
+   "value": "contour's quality set by hand (CQ6), else part's size-range row, else part's quality, else machine size band (parts without size ranges), else 3",
    "source": "CQ1"
   },
   {
@@ -311,6 +311,27 @@
    "group": "part technology",
    "value": ["#ff8040", "#0080c0", "#ff00ff", "#008000", "#800080", "#804040", "#0080ff", "#008080", "#004080", "#8080ff", "#80ffff", "#ff80ff"],
    "source": "CQ5"
+  },
+  {
+   "name": "a cut quality set by hand on a contour wins over the part's size ranges, the part's quality and the machine's size bands",
+   "group": "part technology",
+   "value": true,
+   "source": "CQ6",
+   "estimated": true
+  },
+  {
+   "name": "contour states that take a cut quality set by hand (a mark always uses the marking quality)",
+   "group": "part technology",
+   "value": ["cut"],
+   "source": "CQ6",
+   "estimated": true
+  },
+  {
+   "name": "cut qualities a contour can be given by hand",
+   "group": "part technology",
+   "value": "1-12, or auto",
+   "source": "CQ6",
+   "estimated": true
   },
   {
    "name": "default micro-joints",

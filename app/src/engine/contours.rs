@@ -6,7 +6,7 @@
 
 use crate::cnc::ManualCut;
 use crate::dxf::{self, Contour, ContourState};
-use crate::nest::{Part, Placed, Shape, P};
+use crate::nest::{CutQuality, Part, Placed, Shape, P};
 
 /// A part's contours in number order (CS1): holes first, the outline, then
 /// the open lines. A built-in shape's are its holes and outline, all Cut.
@@ -15,7 +15,7 @@ pub fn list(part: &Part) -> Vec<Contour> {
         return c.contour_list();
     }
     let g = part.geometry();
-    let cut = |pts: &Vec<P>| Contour { pts: pts.clone(), closed: true, state: ContourState::Cut };
+    let cut = |pts: &Vec<P>| Contour::new(pts.clone(), true, ContourState::Cut);
     g.holes.iter().map(cut).chain(std::iter::once(cut(&g.outline))).collect()
 }
 
@@ -105,25 +105,27 @@ impl StateChange {
     }
 }
 
-/// Set contours (numbers from 0) of an imported part to a state; with `same`,
-/// every contour of the same shape as one of them too (CS4, CS5). The outline
-/// is always Cut and an open line can't be cut yet: those are refused, with
-/// the reason, and the part is left as it was. Leads and joints placed on a
-/// contour stay on it, or go when it is no longer cut.
-pub fn set_state(part: &mut Part, picks: &[usize], state: ContourState, same: bool) -> Result<StateChange, String> {
-    let Some(geo) = part.custom.as_mut().filter(|_| part.shape == Shape::Custom) else {
-        return Err(format!(
+/// An imported part's contours, or the refusal for a built-in shape, whose
+/// contours are always cut at the part's qualities.
+fn custom_contours(part: &Part) -> Result<Vec<Contour>, String> {
+    match (&part.custom, part.shape) {
+        (Some(geo), Shape::Custom) => Ok(geo.contour_list()),
+        _ => Err(format!(
             "'{}' is a built-in {} — its contours are always cut. Save it as a drawing (export-part-dxf) and import that to set its contours.",
             part.name,
             part.shape.label().to_lowercase()
-        ));
-    };
-    let mut list = geo.contour_list();
+        )),
+    }
+}
+
+/// The picked contours (numbers from 0) and, with `same`, every contour of
+/// the same shape as one of them (CS5; never the outline), in number order.
+fn with_same(list: &[Contour], picks: &[usize], same: bool) -> Result<Vec<usize>, String> {
     let n = list.len();
     if let Some(k) = picks.iter().find(|&&k| k >= n) {
         return Err(no_contour(n, k + 1));
     }
-    let outline = dxf::outline_index(&list);
+    let outline = dxf::outline_index(list);
     let mut chosen: Vec<usize> = picks.to_vec();
     if same {
         // The outline is never the same shape as a contour inside it.
@@ -131,6 +133,29 @@ pub fn set_state(part: &mut Part, picks: &[usize], state: ContourState, same: bo
     }
     chosen.sort_unstable();
     chosen.dedup();
+    Ok(chosen)
+}
+
+/// Save a changed contour list on the part and remake its outline, holes and
+/// marks from it.
+fn store(part: &mut Part, list: Vec<Contour>) {
+    if let Some(geo) = part.custom.as_mut() {
+        let geo = std::sync::Arc::make_mut(geo);
+        geo.contours = list;
+        geo.apply_states();
+    }
+}
+
+/// Set contours (numbers from 0) of an imported part to a state; with `same`,
+/// every contour of the same shape as one of them too (CS4, CS5). The outline
+/// is always Cut and an open line can't be cut yet: those are refused, with
+/// the reason, and the part is left as it was. Leads and joints placed on a
+/// contour stay on it, or go when it is no longer cut. A contour no longer
+/// cut loses a quality set on it by hand (CQ6).
+pub fn set_state(part: &mut Part, picks: &[usize], state: ContourState, same: bool) -> Result<StateChange, String> {
+    let mut list = custom_contours(part)?;
+    let outline = dxf::outline_index(&list);
+    let chosen = with_same(&list, picks, same)?;
     for &k in &chosen {
         if Some(k) == outline && state != ContourState::Cut {
             return Err(format!(
@@ -149,11 +174,12 @@ pub fn set_state(part: &mut Part, picks: &[usize], state: ContourState, same: bo
     let before = dxf::cut_order(&list);
     for &k in &chosen {
         list[k].state = state;
+        if state != ContourState::Cut {
+            list[k].quality = None;
+        }
     }
     let after = dxf::cut_order(&list);
-    let geo = std::sync::Arc::make_mut(geo);
-    geo.contours = list;
-    geo.apply_states();
+    store(part, list);
     let cut_moved: Vec<Option<usize>> = before.iter().map(|c| after.iter().position(|a| a == c)).collect();
     // A lead or joint picked on a contour follows it to its new place in the
     // cut order, or goes with it.
@@ -165,6 +191,48 @@ pub fn set_state(part: &mut Part, picks: &[usize], state: ContourState, same: bo
         t.joint_picks.iter_mut().for_each(follow);
     }
     Ok(StateChange { contours: chosen, cut_changed: before != after, cut_moved })
+}
+
+/// What setting a quality by hand changed (CQ6): the contours set (numbers
+/// from 0), and the contours equal to a picked one that were left as they
+/// are because they aren't cut, with their state.
+pub struct QualityChange {
+    pub contours: Vec<usize>,
+    pub skipped: Vec<(usize, ContourState)>,
+}
+
+/// Why contour `k` (from 0) can't take a cut quality: it is a mark, or isn't
+/// cut at all (CQ6). `q` is the quality asked for, for what to do instead.
+fn not_cut(c: &Contour, k: usize, q: &str) -> String {
+    let open = "it is an open line, and open lines can't be cut yet (FEATURES TEC-22)";
+    match (c.state, c.closed) {
+        (ContourState::Mark, true) => format!("Contour {} is a mark: marks are always made with the machine's marking quality and no pierce, so it can't be given a cutting quality. Leave it a mark, or to cut it instead set state=cut quality={q}.", k + 1),
+        (ContourState::Mark, false) => format!("Contour {} is a mark: marks are always made with the machine's marking quality and no pierce, so it can't be given a cutting quality. Leave it a mark: {open}.", k + 1),
+        (st, true) => format!("Contour {} is set to {}: it isn't cut, so it takes no cut quality. To cut it at that quality, set state=cut quality={q}.", k + 1, st.label()),
+        (st, false) => format!("Contour {} is set to {}: it isn't cut, so it takes no cut quality, and {open}.", k + 1, st.label()),
+    }
+}
+
+/// Set a cut quality by hand on contours (numbers from 0) of an imported
+/// part, or with `None` give them back to the part's size ranges and quality
+/// and the machine's size bands (CQ6); with `same`, on every contour of the
+/// same shape as one of them too (CS5). A picked contour that isn't cut (a
+/// mark always uses the marking quality) is refused, with what to do instead,
+/// and the part is left as it was; an equal contour that isn't cut is left
+/// as it is. `asked` is the quality as the agent wrote it, for the refusal.
+pub fn set_quality(part: &mut Part, picks: &[usize], quality: Option<CutQuality>, same: bool, asked: &str) -> Result<QualityChange, String> {
+    let mut list = custom_contours(part)?;
+    let chosen = with_same(&list, picks, same)?;
+    if let Some(&k) = picks.iter().find(|&&k| list[k].state != ContourState::Cut) {
+        return Err(not_cut(&list[k], k, asked));
+    }
+    let (set, skipped): (Vec<usize>, Vec<usize>) = chosen.into_iter().partition(|&k| list[k].state == ContourState::Cut);
+    for &k in &set {
+        list[k].quality = quality;
+    }
+    let skipped = skipped.into_iter().map(|k| (k, list[k].state)).collect();
+    store(part, list);
+    Ok(QualityChange { contours: set, skipped })
 }
 
 /// After part `part`'s cut contours changed, the contours picked by hand for
