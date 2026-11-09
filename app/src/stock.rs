@@ -658,25 +658,28 @@ impl Stock {
         s
     }
 
-    /// Write atomically (temp file, then rename) so a shared folder never sees
-    /// half a file.
+    /// Store this whole stock over what's there (a new or replaced stock).
+    /// A change goes through `update`, which re-reads it first.
     pub fn save(&self, library_dir: &Path) -> Result<(), String> {
-        let f = Self::file(library_dir);
-        if let Some(d) = f.parent() {
-            std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
-        }
-        let tmp = f.with_extension("json.tmp");
-        let text = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
-        std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
-        std::fs::rename(&tmp, &f).map_err(|e| e.to_string())
+        let lock = crate::shared::WriteLock::take(library_dir)?;
+        self.store(library_dir, &lock)
     }
 
-    /// Re-read the stock, change it and save it, so two users on a shared
-    /// folder don't overwrite each other's changes.
+    /// Written through a temporary file of this writer's own and renamed into
+    /// place, so a shared folder never shows half a file (LB3).
+    fn store(&self, library_dir: &Path, lock: &crate::shared::WriteLock) -> Result<(), String> {
+        let text = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
+        crate::shared::write_file(&Self::file(library_dir), text.as_bytes(), Some(lock))
+    }
+
+    /// Re-read the stock, change it and save it, all under the Library's
+    /// write lock (LB1), so two PCs (or the window and an agent) changing it
+    /// at once both count (STK-9). Nothing is stored when `f` refuses.
     pub fn update<T>(library_dir: &Path, f: impl FnOnce(&mut Stock) -> Result<T, String>) -> Result<T, String> {
+        let lock = crate::shared::WriteLock::take(library_dir)?;
         let mut s = Stock::load(library_dir)?;
         let out = f(&mut s)?;
-        s.save(library_dir)?;
+        s.store(library_dir, &lock)?;
         Ok(out)
     }
 
@@ -1104,6 +1107,32 @@ mod tests {
         assert_eq!(Stock::load(&dir).unwrap(), s);
         let r = Stock::update(&dir, |s| Ok(s.add_sheet(Item::sheet("", 0, 10.0, 1.0, 1.0, 1), true)?)).unwrap();
         assert!(Stock::load(&dir).unwrap().get(&r).is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn two_pcs_changing_the_stock_at_once_both_count() {
+        let dir = std::env::temp_dir().join(format!("nestpro-stock-two-pcs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut s = Stock::default();
+        s.add_sheet(Item::sheet("S1", 0, 3.0, 2000.0, 1000.0, 1), true).unwrap();
+        s.save(&dir).unwrap();
+        let (pcs, changes) = (2, 60);
+        let start = std::sync::Arc::new(std::sync::Barrier::new(pcs));
+        let runs: Vec<_> = (0..pcs)
+            .map(|_| {
+                let (dir, start) = (dir.clone(), start.clone());
+                std::thread::spawn(move || {
+                    start.wait();
+                    (0..changes).map(|_| Stock::update(&dir, |s| s.change_qty("S1", 1))).collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        for r in runs.into_iter().flat_map(|r| r.join().unwrap()) {
+            r.unwrap_or_else(|e| panic!("a stock change reported an error: {e}"));
+        }
+        // One on the rack to start with, plus every change from both PCs.
+        assert_eq!(Stock::load(&dir).unwrap().get("S1").unwrap().qty, 121);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

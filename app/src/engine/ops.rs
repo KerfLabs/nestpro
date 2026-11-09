@@ -81,9 +81,10 @@ pub struct Op {
 }
 
 impl Op {
-    /// Changes a file: the job, or (the stock operation) the sheet stock.
+    /// Changes a file: the job, the sheet stock (`stock`) or a test Library
+    /// folder (`library-check`).
     pub fn writes(&self) -> bool {
-        matches!(self.kind, Kind::Write | Kind::Create) || self.name == "stock"
+        matches!(self.kind, Kind::Write | Kind::Create) || matches!(self.name, "stock" | "library-check")
     }
 
     /// MCP tool name (underscores).
@@ -296,6 +297,12 @@ pub static OPS: &[Op] = &[
     Op { name: "stock-book", group: "Stock", kind: Kind::Write, help: "Book the job against the stock, as the window does when it saves a job: take the sheets its nestings use out of stock and store the remnants its remnant lines leave (named <sheet>-<n>, or by refs=; below the minimum area they are scrap). A sheet whose remnant lines changed since gets its remnants made again, unless one of them has been used. Once booked, every later change keeps the stock in step. release gives the sheets back and takes its unused remnants out again.", args: &[
         Arg { name: "mode", ty: Ty::Str, required: true, help: "book, release or status", choices: &["book", "release", "status"] },
         a("refs", Ty::Str, "book: references for the new remnants, comma-separated, in the order status lists them (default: numbered <sheet>-<n>)"),
+    ] },
+    // --- the shared Library ---
+    Op { name: "library-check", group: "Library", kind: Kind::Global, help: "The two-PC Library check (run it on two or more programming PCs at once before sharing one Library folder): saves made-up DEMO-CHECK jobs and library parts, saves over them again and changes the sheet stock in a loop in a test folder, tagged with this PC's name, then checks that everything this run and every other run saved there is present and whole, and reports PASS or FAIL in plain words. Only an empty folder (made if missing) or one it made itself; a real Library is refused. `nestpro library-check <folder> --minutes 10 --text`.", args: &[
+        r("folder", Ty::Path, "The test folder: empty or missing, or one the check made before (e.g. a folder next to the Library on the share). Never the Library itself"),
+        a("minutes", Ty::Num, "How long to keep saving, minutes (default 1)"), a("rounds", Ty::Int, "Stop after this many rounds instead (each round: 2 job saves, 2 library part saves, 1 stock change)"),
+        a("pc", Ty::Str, "Name to tag this run with (default: this PC's name)"),
     ] },
     // --- looking at it ---
     Op { name: "render", group: "View", kind: Kind::Read, help: "Draw a sheet (parts, numbers, cut path, leads, joints, cut lines) or one part (numbered elements, leads, joints) to PNG or SVG.", args: &[
@@ -1009,6 +1016,20 @@ pub fn run_global(ctx: &Ctx, name: &str, args: &Value) -> Result<Outcome, String
         "stock" => stock_op(ctx, &a),
         "machines" => Ok(Outcome::read(format!("Active machine: {}.", ctx.cfg.machine().name), machines(ctx))),
         "import-xml" => import_xml(ctx, &a),
+        "library-check" => {
+            let rounds = match a.int("rounds")? {
+                Some(n) if n < 1 => return Err(format!("rounds {n}: at least 1")),
+                n => n.map(|n| n as u64),
+            };
+            let minutes = a.num("minutes")?.unwrap_or(1.0);
+            if !(minutes > 0.0) {
+                return Err(format!("minutes {minutes}: above 0"));
+            }
+            let opt = super::librarycheck::Options { minutes, rounds, pc: a.str("pc").unwrap_or_default() };
+            let rep = super::librarycheck::run(Path::new(&a.need_str("folder")?), &ctx.library_dir, &opt)?;
+            // The report is the plain text (`--text` prints just it); FAIL is a refusal (exit code 1).
+            if rep.passed { Ok(Outcome::read(rep.text, Value::Null)) } else { Err(rep.text) }
+        }
         "drawing-layers" => {
             let path = a.need_str("path")?;
             let parts = read_drawing(ctx, Path::new(&path), &a)?;
@@ -1068,8 +1089,7 @@ fn read_drawing(ctx: &Ctx, path: &Path, a: &Args) -> Result<Vec<crate::formats::
 }
 
 fn library(ctx: &Ctx) -> Result<crate::library::Library, String> {
-    let dir = if ctx.cfg.library_dir.is_empty() { crate::library::default_dir() } else { PathBuf::from(&ctx.cfg.library_dir) };
-    crate::library::Library::open(&dir)
+    crate::library::Library::open(&ctx.library_dir)
 }
 
 fn who(job: &JobFile, t: &[usize]) -> String {
@@ -1164,7 +1184,6 @@ fn rules_json(st: &crate::stock::StockSettings) -> Value {
 fn stock_op(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
     let dir = ctx.library_dir.clone();
     let file = Stock::file(&dir);
-    let mut st = ctx.stock()?;
     let mat = match a.str("material") {
         Some(m) => Some(material_from(&m, &ctx.cfg)?),
         None => None,
@@ -1181,14 +1200,10 @@ fn stock_op(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
     let need_ref = || a.str("ref").ok_or_else(|| "give the sheet's ref".to_string());
     let matches = |it: &crate::stock::Item| mat.is_none_or(|m| it.material == m) && thk.is_none_or(|t| (it.thickness - t).abs() <= crate::stock::TOL);
     let describe = |it: &crate::stock::Item| format!("{} {} ({:.0} × {:.0} mm)", it.kind.label().to_lowercase(), it.reference, it.length, it.width);
-    let out = |st: &Stock, m: String| -> Result<Outcome, String> {
-        st.save(&dir)?;
-        let mut o = Outcome::read(m, Value::Null);
-        o.files.push(file.clone());
-        Ok(o)
-    };
-    match a.need_str("mode")?.as_str() {
+    let mode = a.need_str("mode")?;
+    match mode.as_str() {
         "list" => {
+            let st = ctx.stock()?;
             let mut crit = crate::stock::Criteria {
                 min_length: a.num("min_w")?.unwrap_or(0.0),
                 max_length: a.num("max_w")?.unwrap_or(0.0),
@@ -1210,8 +1225,19 @@ fn stock_op(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
             }
             let list: Vec<Value> = st.items.iter().filter(|it| matches(it) && crit.admits(it)).map(stock_json).collect();
             let n: i64 = st.items.iter().map(|s| s.qty.max(0) as i64).sum();
-            Ok(Outcome::read(format!("{} stock item(s) listed ({} sheet(s) and remnant(s) in stock in all). Stock file: {}", list.len(), n, file.display()), json!({ "sheets": list, "rules": rules_json(&ctx.cfg.stock) })))
+            return Ok(Outcome::read(format!("{} stock item(s) listed ({} sheet(s) and remnant(s) in stock in all). Stock file: {}", list.len(), n, file.display()), json!({ "sheets": list, "rules": rules_json(&ctx.cfg.stock) })));
         }
+        "rules" => {
+            return Ok(Outcome::read(
+                "The Do All and Sheet Remnants options nesting and saving follow. They are the window's settings (Sheet stock → Options) and aren't changed from here.",
+                rules_json(&ctx.cfg.stock),
+            ))
+        }
+        _ => {}
+    }
+    // Every change re-reads the stock, changes it and saves it under the
+    // Library's write lock, as the window does (LB1, STK-9).
+    let m = Stock::update(&dir, |st| match mode.as_str() {
         "create" => {
             let (Some(w), Some(h)) = (a.num("w")?, a.num("h")?) else { return Err("create needs w and h (mm)".into()) };
             if w <= 0.0 || h <= 0.0 {
@@ -1228,7 +1254,7 @@ fn stock_op(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
             let r = st.add_sheet(it, ctx.cfg.stock.with_references)?;
             let it = st.get(&r).ok_or("the new sheet went missing")?;
             let msg = format!("Stock: {} {} {} mm — {} on the rack.", describe(it), cnc::MATERIALS.get(m).copied().unwrap_or("?"), t, it.qty);
-            out(&st, msg)
+            Ok(msg)
         }
         "add" | "remove" => {
             let r = need_ref()?;
@@ -1238,7 +1264,7 @@ fn stock_op(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
                 None => format!("'{r}' is used up and removed from stock."),
                 Some(it) => format!("'{r}': {} in stock.", it.qty),
             };
-            out(&st, msg)
+            Ok(msg)
         }
         "block" | "unblock" => {
             let on = a.need_str("mode")? == "block";
@@ -1257,7 +1283,7 @@ fn stock_op(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
                     n
                 }
             };
-            out(&st, format!("{} {n} stock item(s) — {}", if on { "Locked" } else { "Unlocked" }, if on { "Do All won't use them." } else { "Do All may use them." }))
+            Ok(format!("{} {n} stock item(s) — {}", if on { "Locked" } else { "Unlocked" }, if on { "Do All won't use them." } else { "Do All may use them." }))
         }
         "edit" => {
             let r = need_ref()?;
@@ -1282,20 +1308,19 @@ fn stock_op(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
                 }
             }
             let msg = format!("Stock: {} updated.", describe(it));
-            out(&st, msg)
+            Ok(msg)
         }
         "delete" => {
             let r = need_ref()?;
             let it = st.get(&r).cloned().ok_or_else(|| format!("No sheet '{r}' in stock."))?;
             st.delete(&r);
-            out(&st, format!("{} removed from stock ({} on the rack).", describe(&it), it.qty))
+            Ok(format!("{} removed from stock ({} on the rack).", describe(&it), it.qty))
         }
-        "rules" => Ok(Outcome::read(
-            "The Do All and Sheet Remnants options nesting and saving follow. They are the window's settings (Sheet stock → Options) and aren't changed from here.",
-            rules_json(&ctx.cfg.stock),
-        )),
         m => Err(format!("stock mode '{m}'?")),
-    }
+    })?;
+    let mut o = Outcome::read(m, Value::Null);
+    o.files.push(file);
+    Ok(o)
 }
 
 

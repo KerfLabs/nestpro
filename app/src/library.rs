@@ -9,6 +9,7 @@
 
 use crate::jobfile::JobFile;
 use crate::nest::Part;
+use crate::shared::{self, WriteLock};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -105,24 +106,24 @@ fn now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
-fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
-    if let Some(d) = path.parent() {
-        std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
-    }
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, path).map_err(|e| e.to_string())
-}
-
 impl Library {
     /// Open (and set up, the first time) a library folder.
     pub fn open(dir: &Path) -> Result<Self, String> {
         std::fs::create_dir_all(dir).map_err(|e| format!("can't use {}: {e}", dir.display()))?;
         let lib = Library { dir: dir.to_path_buf() };
         if !dir.join(INDEX).exists() {
-            lib.write_index(&lib.rescan())?;
+            let lock = lib.lock()?;
+            if !dir.join(INDEX).exists() {
+                lib.write_index(&lib.rescan(), &lock)?;
+            }
         }
         Ok(lib)
+    }
+
+    /// The Library's write lock: every change to its files is made under it
+    /// (LB1).
+    pub fn lock(&self) -> Result<WriteLock, String> {
+        WriteLock::take(&self.dir)
     }
 
     /// Where a record's file is: <dir>\<Kind>\<id / 1000>\<id>.<ext>.
@@ -138,9 +139,15 @@ impl Library {
             .unwrap_or_else(|| self.rescan())
     }
 
-    fn write_index(&self, entries: &[Entry]) -> Result<(), String> {
+    /// The list as stored, or why it can't be read (the Library check).
+    pub fn read_index(&self) -> Result<Vec<Entry>, String> {
+        let t = std::fs::read_to_string(self.dir.join(INDEX)).map_err(|e| e.to_string())?;
+        serde_json::from_str::<Index>(&t).map(|i| i.entries).map_err(|e| e.to_string())
+    }
+
+    fn write_index(&self, entries: &[Entry], lock: &WriteLock) -> Result<(), String> {
         let i = Index { format: FORMAT.into(), version: VERSION, entries: entries.to_vec() };
-        write_atomic(&self.dir.join(INDEX), &serde_json::to_string_pretty(&i).map_err(|e| e.to_string())?)
+        shared::write_file(&self.dir.join(INDEX), serde_json::to_string_pretty(&i).map_err(|e| e.to_string())?.as_bytes(), Some(lock))
     }
 
     /// Rebuild the index from the record files (after copying folders in,
@@ -170,15 +177,17 @@ impl Library {
 
     /// Re-read the index from the record files and save it.
     pub fn rebuild_index(&self) -> Result<usize, String> {
+        let lock = self.lock()?;
         let e = self.rescan();
-        self.write_index(&e)?;
+        self.write_index(&e, &lock)?;
         Ok(e.len())
     }
 
     /// A new record number: one more than the highest, taken by creating
     /// its file so two people saving at once on a shared folder can't get
-    /// the same number (Lantek takes the next number under a lock:
-    /// "SELECT TOP 1 RecID … WITH (UPDLOCK) ORDER BY RecID DESC").
+    /// the same number (RF1: the original takes the next number under a
+    /// database lock). Called under the write lock (LB1); the exclusive
+    /// create still keeps a number from being taken twice.
     fn new_id(&self, kind: Kind) -> Result<u64, String> {
         // Highest number + 1, or 1 for the first (RF1).
         let mut id = self.entries().iter().filter(|e| e.kind == kind).map(|e| e.id).max().unwrap_or(0) + 1;
@@ -198,23 +207,52 @@ impl Library {
         }
     }
 
-    fn upsert(&self, e: Entry) -> Result<(), String> {
+    fn upsert(&self, e: Entry, lock: &WriteLock) -> Result<(), String> {
         let mut all = self.entries();
         all.retain(|x| !(x.kind == e.kind && x.id == e.id));
         all.push(e);
         all.sort_by_key(|e| (e.kind as u8, e.id));
-        self.write_index(&all)
+        self.write_index(&all, lock)
+    }
+
+    /// Store a record and its line in the list, under the write lock, all or
+    /// nothing (LB3): a new record takes the next number; when the record or
+    /// the list can't be written, the number is given back (or the record
+    /// it replaced put back) and the error says nothing was saved, so saving
+    /// again never makes a duplicate.
+    fn store(&self, kind: Kind, id: Option<u64>, text: &str, entry: impl FnOnce(u64) -> Entry) -> Result<u64, String> {
+        let lock = self.lock()?;
+        let (id, new) = match id {
+            Some(i) => (i, false),
+            None => (self.new_id(kind)?, true),
+        };
+        let path = self.path(kind, id);
+        // The record being saved over, to put back if this save fails.
+        let before = match std::fs::read(&path) {
+            _ if new => None,
+            Ok(b) => Some(b),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(format!("can't read record {id} before saving over it ({e}). Nothing was saved")),
+        };
+        let saved = shared::write_file(&path, text.as_bytes(), Some(&lock)).and_then(|_| self.upsert(entry(id), &lock));
+        let Err(e) = saved else { return Ok(id) };
+        let undone = match before {
+            Some(b) => shared::write_file(&path, &b, None),
+            None => std::fs::remove_file(&path).or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) }).map_err(|e| e.to_string()),
+        };
+        match undone {
+            Ok(()) => Err(format!("{e}. Nothing was saved")),
+            // Couldn't be undone either (the share went away): the record is
+            // stored, so the save counts (an error would make the next save a
+            // duplicate); its line in the list comes with its next save or Rescan.
+            Err(_) => Ok(id),
+        }
     }
 
     /// Save a job (a new record, or over `id`). Returns its number.
     pub fn save_job(&self, job: &JobFile, id: Option<u64>) -> Result<u64, String> {
-        let id = match id {
-            Some(i) => i,
-            None => self.new_id(Kind::Job)?,
-        };
-        crate::jobfile::save(&self.path(Kind::Job, id), job)?;
-        self.upsert(job_entry(id, job, now()))?;
-        Ok(id)
+        let text = serde_json::to_string_pretty(job).map_err(|e| e.to_string())?;
+        self.store(Kind::Job, id, &text, |id| job_entry(id, job, now()))
     }
 
     pub fn load_job(&self, id: u64) -> Result<JobFile, String> {
@@ -223,17 +261,12 @@ impl Library {
 
     /// Save a product. Returns its number.
     pub fn save_product(&self, part: &Part, folder: &str, material: usize, thickness: f64, id: Option<u64>) -> Result<u64, String> {
-        let id = match id {
-            Some(i) => i,
-            None => self.new_id(Kind::Product)?,
-        };
         // A library product is reusable stock, not one order's part: its ERP orders stay with the job.
         let mut part = part.clone();
         part.erp.clear();
         let pf = ProductFile { format: FORMAT.into(), version: VERSION, part, folder: folder.into(), material, thickness };
-        write_atomic(&self.path(Kind::Product, id), &serde_json::to_string_pretty(&pf).map_err(|e| e.to_string())?)?;
-        self.upsert(product_entry(id, &pf, now()))?;
-        Ok(id)
+        let text = serde_json::to_string_pretty(&pf).map_err(|e| e.to_string())?;
+        self.store(Kind::Product, id, &text, |id| product_entry(id, &pf, now()))
     }
 
     pub fn load_product(&self, id: u64) -> Result<ProductFile, String> {
@@ -249,10 +282,11 @@ impl Library {
     }
 
     pub fn delete(&self, kind: Kind, id: u64) -> Result<(), String> {
+        let lock = self.lock()?;
         let _ = std::fs::remove_file(self.path(kind, id));
         let mut all = self.entries();
         all.retain(|x| !(x.kind == kind && x.id == id));
-        self.write_index(&all)
+        self.write_index(&all, &lock)
     }
 }
 
@@ -343,6 +377,96 @@ mod library_tests {
         assert_eq!(lib.rebuild_index().unwrap(), 3);
         lib.delete(Kind::Product, p1).unwrap();
         assert_eq!(lib.entries().iter().filter(|x| x.kind == Kind::Product).count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("nestpro_shared_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    fn job(name: &str) -> JobFile {
+        let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
+        JobFile::new_job(name, spec)
+    }
+
+    #[test]
+    fn two_pcs_saving_at_once_keep_every_job_in_the_list() {
+        let dir = scratch("two_pcs");
+        let (pcs, saves) = (2, 40);
+        let start = std::sync::Arc::new(std::sync::Barrier::new(pcs));
+        let runs: Vec<_> = (0..pcs)
+            .map(|pc| {
+                let (dir, start) = (dir.clone(), start.clone());
+                std::thread::spawn(move || {
+                    let lib = Library::open(&dir).unwrap();
+                    start.wait();
+                    (0..saves).map(|n| (format!("PROG-{pc} job {n}"), lib.save_job(&job(&format!("PROG-{pc} job {n}")), None))).collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        let saved: Vec<(String, Result<u64, String>)> = runs.into_iter().flat_map(|r| r.join().unwrap()).collect();
+        let lib = Library::open(&dir).unwrap();
+        let list = lib.entries();
+        for (name, r) in &saved {
+            let id = *r.as_ref().unwrap_or_else(|e| panic!("saving {name} reported an error: {e}"));
+            assert_eq!(lib.load_job(id).unwrap().name, *name, "record {id} holds another job");
+            assert!(list.iter().any(|e| e.kind == Kind::Job && e.id == id && e.name == *name), "{name} (record {id}) is missing from the Library's list");
+        }
+        assert_eq!(list.iter().filter(|e| e.kind == Kind::Job).count(), pcs * saves);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Every file under `dir`, as paths relative to it.
+    fn files(dir: &Path) -> Vec<String> {
+        let mut out = vec![];
+        let mut todo = vec![dir.to_path_buf()];
+        while let Some(d) = todo.pop() {
+            for f in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+                if f.path().is_dir() {
+                    todo.push(f.path());
+                } else {
+                    out.push(f.path().strip_prefix(dir).unwrap().to_string_lossy().replace('\\', "/"));
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn a_save_that_fails_leaves_nothing_behind_and_saving_again_makes_no_duplicate() {
+        let dir = scratch("failed_save");
+        let lib = Library::open(&dir).unwrap();
+        let mut frames = job("Frames");
+        frames.week = "W12".into();
+        let first = lib.save_job(&frames, None).unwrap();
+        let before = files(&dir);
+        // The Library's list can't be written (here: something else sits
+        // where it goes), as when the share drops in the middle of a save.
+        std::fs::remove_file(dir.join(INDEX)).unwrap();
+        std::fs::create_dir_all(dir.join(INDEX).join("in the way")).unwrap();
+        let blocked = files(&dir);
+        // A new job: refused, and neither its record nor its number is left.
+        assert!(lib.save_job(&job("Brackets"), None).is_err());
+        assert_eq!(files(&dir), blocked, "a failed new save left files behind");
+        assert!(lib.rescan().iter().all(|e| e.name != "Brackets"), "a failed save left a record");
+        // Saving over a stored job: refused, and the stored job is as it was.
+        let mut changed = frames.clone();
+        changed.week = "W13".into();
+        assert!(lib.save_job(&changed, Some(first)).is_err());
+        assert_eq!(lib.load_job(first).unwrap().week, "W12");
+        assert_eq!(files(&dir), blocked, "a failed save over a record left files behind");
+        // Once the list can be written again, saving again stores the job once.
+        std::fs::remove_dir_all(dir.join(INDEX)).unwrap();
+        lib.rebuild_index().unwrap();
+        assert_eq!(files(&dir), before);
+        let again = lib.save_job(&job("Brackets"), None).unwrap();
+        assert_eq!(again, first + 1, "the failed save kept a record number");
+        let list = lib.entries();
+        assert_eq!(list.iter().filter(|e| e.name == "Brackets").count(), 1);
+        assert_eq!(list.iter().filter(|e| e.kind == Kind::Job).count(), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

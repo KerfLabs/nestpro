@@ -8,6 +8,7 @@
 
 pub mod arrange;
 pub mod imports;
+pub mod librarycheck;
 pub mod ops;
 pub mod readback;
 pub mod render;
