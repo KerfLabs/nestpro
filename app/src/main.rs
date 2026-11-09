@@ -54,6 +54,7 @@ mod machine;
 mod nest;
 mod post;
 mod progimport;
+mod qualities;
 mod partview;
 mod techui;
 mod theme;
@@ -3231,12 +3232,20 @@ fn main() -> eframe::Result {
                 app.zoom = 3.0;
             }
             // --cut-ranges (screenshots): Quality by size on the plate with holes,
-            // its rows and each contour's quality (CQ1).
+            // its rows and each contour's quality (CQ1) by the machine's names
+            // and colours (CQ4, CQ5): rows at qualities 1, 2 and 3.
             if std::env::args().any(|a| a == "--cut-ranges") {
                 app.tab = Tab::Technology;
                 app.sel_part = app.parts.iter().position(|p| p.name == "Square hole");
                 app.tech_nest_all = Some(false);
                 app.show_cut_ranges = true;
+                if let Some(t) = app.sel_part.and_then(|i| app.parts[i].tech.as_mut()) {
+                    for (k, (from, to)) in [(0.0, 5.0), (5.0, 50.0), (50.0, 150.0)].into_iter().enumerate() {
+                        if let Some(q) = crate::nest::CutQuality::new(k + 1) {
+                            t.cut_ranges[k] = crate::nest::CutRange { on: true, min_r: from, max_r: to, quality: q };
+                        }
+                    }
+                }
             }
             // --sheet-tab (screenshots): the Sheet tab, e.g. its machine-table line.
             if std::env::args().any(|a| a == "--sheet-tab") {

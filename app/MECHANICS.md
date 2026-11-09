@@ -1598,13 +1598,15 @@ Still estimated: the rows' values (they come from the material/thickness table, 
 A cut quality is one of the machine's 12 numbered sets of cutting settings (its technology table
 holds speed, pierce and the rest per quality, TT3). The app uses those numbers everywhere: a part's
 own quality, the rows of Cut technology by size, the times, leads, kerf table and the LC5 program.
-Screens show "Quality n" until the machine's names and colours are read (FEATURES TEC-21).
+Screens and agents show each quality by the machine's name and in its colour (CQ4, CQ5).
 
 | # | Rule | Source |
 |---|------|--------|
 | CQ1 | **Each cut contour's quality**: the part's own size-range row that holds the contour (CT1); else the part's own quality, when it has one; else, for a part with no size ranges of its own, the machine section's size band for the contour (MTL10); else **quality 3**. Part-info lists each contour's quality and where it came from. | Order observed (CT1, MTL10); quality 3 as the last fallback is estimated: real LC5 programs cut outlines at 3, the fastest of the usual laser table's Slow 1 / Medium 2 / Fast 3 |
 | CQ2 | **Jobs and products saved with the old three qualities** open with numbers: a part's own *Normal* becomes "no quality of its own" (Normal was what let the size bands decide), *Fine* becomes 1 and *Rough* 3; a size-range row's *Fine* is 1, *Normal* 2 and *Rough* 3. | Estimated (FEATURES MAC-54) |
 | CQ3 | When the machine gives no speed at all, a contour is cut at our typical laser speed × 0.7 at quality 1, × 0.85 at quality 2 and × 1.0 at the others. | Estimated |
+| CQ4 | **Quality names** come from the machine's technology file: A922 names quality 1 … A933 quality 12, in quotes (at most 40 characters). A named quality shows as its name and number, e.g. **Slow (1)**; an empty one as **Quality 1**. A quality named `<HIDE>` is left out of the pickers (the machine still has it, so size bands and agents can still give it). Most machine files the original ships name none; its BLM laser template names 1 Slow, 3 Fast, 9 Marking, 10 Center. `part-info` gives each contour's `quality_name`; `machine-tech` and `machines` list the 12. | Observed; "Quality 1" where the original shows the bare number "1", and trimming spaces round a name, are ours |
+| CQ5 | **Quality colours** are the program's display colours, the same for every machine: line C041 of the colour settings in the Lantek folder (`LANTEKIN.CNI`, `Cnnn R G B style width`) is quality 1's … C052 quality 12's. Without that file or line a quality takes the colour the original ships with: 1 255 128 64, 2 0 128 192, 3 255 0 255, 4 0 128 0, 5 128 0 128, 6 128 64 64, 7 0 128 255, 8 0 128 128, 9 0 64 128, 10 128 128 255, 11 128 255 255, 12 255 128 255. The pickers show a dot in the quality's colour before its name. | Observed (lines, shipped colours); a missing line taking the shipped colour instead of black is ours |
 
 
 ## Machine technology file (MchFiles\PstAdi06.CT1, the BLM laser)

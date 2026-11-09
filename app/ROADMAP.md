@@ -58,7 +58,7 @@ is **`FEATURES.md`** at the top of the repo; keep both in step.
 | Loops (2 types), Round angles | Part — loops | ★ |
 | **Bridges** (join parts so they cut as one) | Missing | ★★ |
 | Standard bevel, 3D bevel | Missing (bevel heads) | ★ |
-| Cut technology: Marking, No cut, Clean cut, Cutting, Micro-joint, Dynamic, Hatch, Bending lines | Part — the machine's numbered cut qualities per part and by size, each contour's own quality to the LC5, marking texts | ★★ |
+| Cut technology: Marking, No cut, Clean cut, Cutting, Micro-joint, Dynamic, Hatch, Bending lines | Part — the machine's numbered cut qualities per part and by size, shown by the machine's names and colours, each contour's own quality to the LC5, marking texts | ★★ |
 | Texts: Marked, Written, **QR codes**, Templates, Vectorize | Part — marked/note/special texts, curved | ★★ |
 
 ## Machining tab

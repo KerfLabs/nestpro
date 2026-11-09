@@ -234,7 +234,8 @@ impl CutQuality {
     pub fn all() -> impl Iterator<Item = CutQuality> {
         (1..=Self::COUNT as u8).map(CutQuality)
     }
-    /// "Quality 3" (the machine's names and colours aren't read yet, FEATURES TEC-21).
+    /// "Quality 3": the quality when the machine gives it no name (screens show
+    /// the machine's names through `qualities::CutQualities::label`, CQ4).
     pub fn label(self) -> String {
         format!("Quality {}", self.0)
     }
