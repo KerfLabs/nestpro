@@ -538,9 +538,7 @@ impl Timing {
             if let Some(e) = last {
                 t.rapid += self.rapid(e, run[0]);
             }
-            t.pierce += self.speeds.pierce_for(c.quality) * s.factors[crate::cuttime::F_PIERCE];
-            t.cut += crate::cuttime::path_secs(run, c.feed, s.v90, &self.line_acc) * s.factors[crate::cuttime::F_CUT];
-            t.head += s.cut_off;
+            t += self.run(c, run);
             last = run.last().copied();
         }
         if !runs.is_empty() {
@@ -548,6 +546,26 @@ impl Timing {
         }
         (t, runs.len())
     }
+
+    /// One beam run of a contour (CTM10, CTM11): its pierce, the cut along
+    /// it, and the beam going off at its end. Head down / up and the jumps
+    /// between runs are the contour's (`contour`).
+    pub fn run(&self, c: &Contour, run: &[P]) -> TimeSplit {
+        let s = &self.settings;
+        TimeSplit {
+            pierce: self.speeds.pierce_for(c.quality) * s.factors[crate::cuttime::F_PIERCE],
+            cut: crate::cuttime::path_secs(run, c.feed, s.v90, &self.line_acc) * s.factors[crate::cuttime::F_CUT],
+            head: s.cut_off,
+            ..Default::default()
+        }
+    }
+}
+
+/// Where the beam stops on a contour: the end of its last run (after the
+/// lead-out, the overlap or the closing joint's lead-out). The next rapid
+/// starts here.
+pub fn beam_end(c: &Contour) -> P {
+    beam_runs(c).last().and_then(|r| r.last().copied()).unwrap_or(c.lead_in)
 }
 
 fn dist(a: P, b: P) -> f64 {
@@ -1136,8 +1154,9 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
             cut_len += len;
             (con.time, con.pierces) = timing.contour(&con);
             times += con.time;
-            let start = con.points[0];
-            pos = if con.closing { con.joint_leads.last().map_or(start, |l| *l.0.last().unwrap()) } else { con.lead_out.unwrap_or(start) };
+            // The next rapid starts where the beam stopped (after the
+            // lead-out, the overlap, or the closing joint's lead-out).
+            pos = beam_end(&con);
             contours.push(con);
         }
     }
