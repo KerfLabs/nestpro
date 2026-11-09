@@ -4,3 +4,5 @@ This folder exists only on the `rehearsal/main` branch, as a test fixture for th
 loop. Nothing here is ever merged into `main`.
 
 Check: `bash -c '! grep -rq FAIL rehearsal/ && grep -q "^| R-" rehearsal/list.md'`
+
+Drill note: rehearsal/main moved while tickets were running.
