@@ -554,14 +554,9 @@ impl App {
         });
         ui.add_space(10.0);
         card(ui, "Compared with the original", "", |ui| {
-            ui.horizontal(|ui| {
-                if ui.button("Drawing commands coming soon…").clicked() {
-                    self.dv.show_missing = true;
-                }
-                if ui.button("Lantek v44 new features — what they'd take…").clicked() {
-                    self.show_v44 = true;
-                }
-            });
+            if ui.button("Drawing commands coming soon…").clicked() {
+                self.dv.show_missing = true;
+            }
         });
     }
 

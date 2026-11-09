@@ -90,6 +90,7 @@ original (or a real job).
 | TEC-13 | A second technology file read after the machine's (its sections win over the first's) | Missing | ★ | MECHANICS MTL6 |
 | TEC-14 | Per-class micro-joint records of a section (V lines) and the conditional value groups (Z308/Z313/Z337, X124–X128 switches) | Missing | ★ | MECHANICS MTL11, MTL12 |
 | TEC-15 | Material keys for the machine file: one per app material (aluminium defaults to 0210 aluminium-magnesium, a guess); galvanised, copper and brass sections can't be reached until the app has those materials (JOB-2) | Estimate | ★★ | MECHANICS MTL2; Settings → Materials → Machine table |
+| TEC-17 | Special pre-cutting cycles on lead-ins and bevels: pick a figure, pick the lead-ins, preview the cycle at each point, then apply | Missing | ★ | MECHANICS "Lantek Expert v44 new features" (3.1.5) |
 
 ## Machining and output (MAC)
 
@@ -138,6 +139,8 @@ original (or a real job).
 | MAC-41 | LC5 cut-off lines: a cut-off that should stop where it meets another (an L-shaped remnant) is written across the whole sheet, which splits the remnant | Partial | ★★ | `blm` trim writer, `progimport.rs` |
 | MAC-48 | Automatic cut order with parts in holes: every part in every hole on the sheet is cut before any outer part, even across cutting zones, so the head crosses the sheet twice. Cutting each frame's contents just before that frame would save rapids. A part counts as "inside" by its box, so a part in an L-shaped part's notch is cut early too (harmless) | Estimate | ★ | `cnc::plan_manual`, MECHANICS CO1 |
 | OUT-7 | Open program (LC5 set): open cuts without a lead-in are lost, with no warning, so a re-exported program misses them; a stepped cut-off comes back as one slanted line, which the read-back then refuses (MAC-44) | Missing | ★★ | `progimport::parse_sub`, `progimport::parse_set` |
+| MAC-51 | Multi-head cut order: groups cut in ascending order of their number of heads — needs multi-torch (NST-9) | Missing | ★ | MECHANICS "Lantek Expert v44 new features" (3.2.1) |
+| MAC-52 | Punch options: punching direction (horizontal / vertical) of the remnant line, a square or rectangle punch standing in for any width and length, offsetting a cycle at a segment end | Missing | ★ | MECHANICS "Lantek Expert v44 new features" (3.3.1, 3.3.2, 2.3.1); punch machines |
 
 ## Jobs, parts and data (JOB)
 
@@ -177,6 +180,9 @@ original (or a real job).
 | JOB-37 | The original's DXF reading settings for ellipse discretisation and spline mode (D3) aren't offered; ellipses and splines are always split within 0.1 mm | Missing | ★ | MECHANICS D3, DW9, DW10 |
 | JOB-43 | Import window: file dates are shown as the day only (UTC), with no time, as the app has no local time zone yet; the original's window shows local date and time | Missing | ★ | `importui.rs` |
 | JOB-44 | Import window: Configure… holds only part data from the file name and the reference prefix/suffix. The original opens each converter's whole import configuration (tolerances, units, layer roles kept per converter…), see JOB-18 | Partial | ★★ | MECHANICS IM10, IM1–IM9 |
+| JOB-46 | Editing drawings before import: many files at once, pick by element, contour or window (dragged right = touching, left = wholly inside), invert, delete, undo / redo, dimensions and texts shown, Zoom All | Partial | ★★ | MECHANICS "Lantek Expert v44 new features" (4.4); the import window previews each drawing and sets each layer to Cut or Leave out (JOB-42, JOB-38) |
+| JOB-47 | Part tiles: each tile shows the part's reference and size (on by default); Ctrl + mouse wheel resizes the tiles | Missing | ★ | MECHANICS "Lantek Expert v44 new features" (3.1.2, 3.1.3) |
+| JOB-48 | Editing several parts or sheets at once: fields that differ show `<Different values>` and are left as they are unless changed | Missing | ★ | MECHANICS "Lantek Expert v44 new features" (1.1) |
 
 ## Part drawing (DRW)
 
@@ -187,6 +193,7 @@ original (or a real job).
 | DRW-3 | Move / edit one text | Missing | ★ | add / delete work |
 | DRW-4 | Utilities: contours, compare parts, lifting | Missing | ★ | |
 | DRW-5 | Zoom window / previous / scale, full screen | Partial | ★ | zoom, fit |
+| DRW-6 | Selection: every contour equal to the picked one; all outside or all inside contours | Missing | ★ | MECHANICS "Lantek Expert v44 new features" (2.1.1, 2.1.2) |
 
 ## Simulation, reports, machine link (OUT)
 
@@ -213,6 +220,7 @@ original (or a real job).
 |---|---|---|---|---|
 | APP-1 | Start-up: `/hide`, single-copy check, splash, help files | Missing | ★ | MECHANICS SU1–SU7 |
 | APP-2 | Quick ring set up per screen in Settings: choose the tool in each of the 8 slots of the Part view, on-a-part and empty-sheet rings (any ribbon command), keeping the shared tools anchored | Missing | ★★ | MECHANICS QR1, QR2; the built-in rings come first, so operators find out what they miss |
+| APP-3 | Active / inactive machines: an inactive machine shows grey and in italics and can't take new jobs or nestings | Missing | ★ | MECHANICS "Lantek Expert v44 new features" (2.1.3) |
 
 ## Done
 

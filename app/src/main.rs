@@ -339,8 +339,7 @@ pub struct App {
     pub dbb: dbbrowse::DbBrowser,
     /// BLM LC5 output (Siemens 840D SPF set + XML + zip, like Lantek's BLM post).
     pub blm: blm::BlmSettings,
-    /// v44 New Features window and the nesting Verify Machining panel.
-    pub show_v44: bool,
+    /// The nesting Verify Machining panel.
     pub nverify: v44::NestVerify,
     /// Part view: selected elements (by index), the part they belong to, the
     /// start of a box selection, and details of the selection for the ribbon.
@@ -611,7 +610,6 @@ impl App {
             post: post::PostConfig::default(),
             dbb: Default::default(),
             blm: blm::BlmSettings::for_machine(""),
-            show_v44: false,
             nverify: v44::NestVerify { check_safe: true, value: 5.0, ..Default::default() },
             sel_elems: vec![],
             elem_part: None,
@@ -2592,7 +2590,6 @@ impl eframe::App for App {
         self.erp_window(&ctx);
         self.naming_window(&ctx);
         self.db_browser(&ctx);
-        self.v44_window(&ctx);
         self.nest_verify_window(&ctx);
         if self.follow_system {
             if let Some(t) = ctx.system_theme() {
@@ -2851,7 +2848,6 @@ fn main() -> eframe::Result {
     // Another program hands parts over the way it would to Expert: a Lantek
     // import XML (DXF Import / Parts Import schema).
     let import_xml = args.iter().find_map(|a| a.strip_prefix("--import-xml=").map(PathBuf::from));
-    let want_v44 = args.iter().any(|a| a == "--v44");
     let want_verify = args.iter().any(|a| a == "--verify");
     let machine_arg = args.iter().find_map(|a| a.strip_prefix("--machine=").map(|s| s.to_lowercase()));
     // --part-tab=machining|view|simulation|notes|utilities|technology (screenshots).
@@ -2997,9 +2993,6 @@ fn main() -> eframe::Result {
             // --export: write the programs at start (checks the BLM set).
             if std::env::args().any(|a| a == "--export") {
                 app.export();
-            }
-            if want_v44 {
-                app.show_v44 = true;
             }
             if want_verify {
                 app.tab = Tab::Machining;

@@ -1,7 +1,5 @@
-//! What Lantek Expert v44 added (Help\Docs\NewFeatures.pdf), sized by what it
-//! would take to rebuild here, and the one that's built: the Nesting module's
-//! "Verify Machining" command for the current sheet or all sheets, with the new
-//! "Check safe distance" test (NewFeatures.pdf 3.1.4, 3.1.4.1).
+//! The Nesting module's "Verify Machining" command for the current sheet or
+//! all sheets, with the "Check safe distance" test (MECHANICS V1–V3, VM1–VM6).
 
 use crate::nest::{self, Part, Placed, P};
 use crate::theme::th;
@@ -9,52 +7,6 @@ use crate::ui_parts::*;
 use crate::App;
 use eframe::egui;
 use egui::{Pos2, RichText, Stroke};
-
-/// Rebuild size of a v44 feature.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Size {
-    Huge,
-    Big,
-    Medium,
-    Small,
-}
-
-impl Size {
-    pub fn label(self) -> &'static str {
-        match self {
-            Size::Huge => "HUGE",
-            Size::Big => "Big",
-            Size::Medium => "Medium",
-            Size::Small => "Small",
-        }
-    }
-}
-
-/// Where the rebuild stands on a v44 feature.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Have {
-    Built,
-    Partly,
-    No,
-}
-
-/// (PDF section, feature, size, have, what it means for the rebuild).
-pub const FEATURES: &[(&str, &str, Size, Have, &str)] = &[
-    ("4.4", "New Import Assistant", Size::Huge, Have::No, "A full editor before import: many files at once, layers with Cut / Mark / Do not import and colours, select by element, contour or window (right = touching, left = inside), invert, delete, undo/redo, dimensions and texts shown, Zoom All (A). Our DXF import only reads the file."),
-    ("3.4.2", "Component extraction (stops, traps, lifts, magnetic cups)", Size::Huge, Have::No, "Automatic, manual and semi-automatic Stop / Trap / Lift instructions in the program, magnetic-cup activation with a 10 s timeout (LANTEKPR.CFG V145), movable lift strips with live collision display. Mostly for punch and combined machines; a laser only needs Manual Stop."),
-    ("3.1.1", "Nesting parts grouped by attributes", Size::Huge, Have::Partly, "Groups parts by customer, order, delivery date, priority, reference, user data… into separate zones of the sheet with a gap between zones, a start corner and direction, and optional straight or irregular remnant lines between zones. Changes the nesting engine itself. Built: a Group attribute per part (Part Properties) and Home → Group by attribute: each group nested in its own zone after the last one, with the machine's zone gap. Not built: several attributes at once, start corner/direction, remnant lines between zones."),
-    ("2.2.1", "Nano-joints", Size::Big, Have::Partly, "A micro-joint where the laser lowers its power and cuts part of the thickness; point or length, several qualities (cut tables), own colours (green), automatic at contour ends per material/thickness. We have micro-joints; nano-joints also need the machine's post to support them."),
-    ("3.1.4", "Verify Machining command (current / all sheets)", Size::Big, Have::Built, "Side panel with progress and result, all sheets of the subjob with correct / incorrect counts, sheet status icons in the Nesting explorer, and the new safe-distance test between parts. Built: Machining -> Verify Machining."),
-    ("4.1 / 4.3", "Part properties from the file name", Size::Medium, Have::Partly, "A file-name format such as [Reference]_[Quantity]_[Material] with separators and ignored text (*), stored in D018, re-read automatically when the format changes (DXF, DWG, PDF, DSTV, ESSI). Built: Settings → General → Part data from the file name; DXF imports take the reference and quantity from the name and warn when its material or thickness differs from the job's. Not built: re-reading when the format changes, other file types."),
-    ("3.1.6", "Text / QR / template command with preview", Size::Medium, Have::Partly, "Marking and written texts, QR codes and templates in a side panel with an exact or quick preview on the sheet. We have marking texts (straight and curved); QR codes and templates are missing."),
-    ("3.1.5", "Special pre-cutting cycles on lead-ins and bevels", Size::Medium, Have::No, "Pick a figure, pick the lead-ins, preview the cycle at each point, then apply."),
-    ("3.2.1", "Multi-head: ascending order by number of heads", Size::Medium, Have::No, "Needs multi-torch groups first; then groups with fewer parts are cut first."),
-    ("3.3.1 / 3.3.2 / 2.3.1", "Punch: remnant line direction, replacement punches, cycle offset", Size::Medium, Have::No, "Punch machines only: horizontal or vertical punching direction for the remnant line, swap a square/rectangle punch for any width and length, offset a cycle at a segment end."),
-    ("2.1.1 / 2.1.2", "Select equal contours, inside / outside contours", Size::Small, Have::No, "Selection buttons: every contour equal to the picked one; all outside or all inside contours."),
-    ("3.1.2 / 3.1.3", "Part Viewer: reference and size on tiles, Ctrl + scroll", Size::Small, Have::No, "Show each tile's reference and dimensions (on by default) and resize tiles with Ctrl + mouse wheel."),
-    ("2.1.3", "Active / inactive machines", Size::Small, Have::No, "Inactive machines are grey italics and can't receive new orders or nestings."),
-    ("1.1 / 1.2", "Edit several items, shortcut-key list", Size::Small, Have::No, "\"<Different values>\" when editing several parts or sheets at once; a list of shortcut keys with Copy."),
-];
 
 /// How far below the required distance still counts as respected (mm).
 pub const SAFE_DIST_TOL: f64 = 0.01;
@@ -380,42 +332,6 @@ impl App {
             painter.circle_stroke(c, 9.0, Stroke::new(2.0, red));
         }
     }
-
-    /// The v44 New Features window: what each feature would take.
-    pub fn v44_window(&mut self, ctx: &egui::Context) {
-        if !self.show_v44 {
-            return;
-        }
-        let mut open = true;
-        egui::Window::new("Lantek Expert v44 — new features and what they'd take").open(&mut open).default_size([640.0, 600.0]).collapsible(false).show(ctx, |ui| {
-            ui.label(RichText::new("From the original's Help\\Docs\\NewFeatures.pdf, largest first.").size(11.5).color(th().text_dim));
-            ui.add_space(4.0);
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for (sec, name, size, have, note) in FEATURES {
-                    ui.horizontal(|ui| {
-                        let (bg, fg) = match size {
-                            Size::Huge => (th().warn_bg, th().warn_fg),
-                            Size::Big => (th().accent_soft, th().accent_fg),
-                            _ => (th().hover, th().text_dim),
-                        };
-                        chip(ui, size.label(), bg, fg);
-                        ui.label(RichText::new(*name).strong().color(th().text_strong));
-                        ui.label(RichText::new(*sec).size(11.0).color(th().text_dim));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| match have {
-                            Have::Built => chip(ui, "built", th().ok_bg, th().ok_fg),
-                            Have::Partly => chip(ui, "partly", th().accent_soft, th().accent_fg),
-                            Have::No => chip(ui, "not yet", th().hover, th().text_dim),
-                        });
-                    });
-                    ui.label(RichText::new(*note).size(11.5));
-                    ui.add_space(6.0);
-                }
-            });
-        });
-        if !open {
-            self.show_v44 = false;
-        }
-    }
 }
 
 #[cfg(test)]
@@ -447,11 +363,5 @@ mod v44_tests {
         assert!((dist(a, b) - 3.0).abs() < 1e-6);
         // Far apart: never checked in detail.
         assert!(safe_distance_issues(&parts, &[pl(0.0), pl(500.0)], 5.0).is_empty());
-    }
-
-    #[test]
-    fn the_list_puts_huge_features_first_and_marks_verify_built() {
-        assert_eq!(FEATURES[0].2, Size::Huge);
-        assert!(FEATURES.iter().any(|f| f.1.starts_with("Verify Machining") && f.3 == Have::Built));
     }
 }

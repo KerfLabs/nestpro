@@ -678,9 +678,6 @@ impl App {
             .show(ctx, |ui| {
                 ui.label(RichText::new(format!("{total} commands of the original aren't built yet.")).color(th().text_dim));
                 ui.checkbox(&mut self.dv.show_unbuilt, "Show them greyed out in the ribbon (the original leaves out commands that aren't available)");
-                if ui.button("What Lantek v44 added, and what it would take…").clicked() {
-                    self.show_v44 = true;
-                }
                 ui.add_space(6.0);
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     let mut last_tab = "";
