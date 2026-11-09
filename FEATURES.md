@@ -34,6 +34,7 @@ original (or a real job).
 | STK-16 | The stock file's record of replaced remnants (used by undo, RN6) is never pruned; it grows by one entry per replaced remnant. A clean-up (e.g. drop entries no open job can still undo to) is not built | Missing | ★ | MECHANICS RN6, `Stock::replaced` |
 | STK-17 | Changing the Library folder while open jobs hold stock: their holdings (and remnant links) are from the old folder's stock, so later saves give back to or skip taking from the new folder's stock. Record numbers are already dropped (MECHANICS SV3) | Missing | ★ | audit 2026-11-05; rare (switching libraries with booked jobs open) |
 | STK-13 | Remnants stored from a sheet stay in stock when that sheet is re-nested or deleted (only `stock-book release` takes them out) | Estimate | ★ | MECHANICS SA3; the original's behaviour not traced |
+| STK-18 | Booking a sheet the moment it's put on a nesting, as the original does (its stock goes down when a sheet is assigned, under a lock). The rebuild books a job's sheets when the job is saved, so two PCs can both plan on the last sheet until one saves | Missing | ★★ | MECHANICS SV7; shared Library plan 2026-11-09 |
 
 ## Remnants (REM)
 
@@ -188,6 +189,10 @@ original (or a real job).
 | JOB-47 | Part tiles: each tile shows the part's reference and size (on by default); Ctrl + mouse wheel resizes the tiles | Missing | ★ | MECHANICS "Lantek Expert v44 new features" (3.1.2, 3.1.3) |
 | JOB-48 | Editing several parts or sheets at once: fields that differ show `<Different values>` and are left as they are unless changed | Missing | ★ | MECHANICS "Lantek Expert v44 new features" (1.1) |
 | JOB-49 | Remember a customer's contour choices (say, their red lines are marks) for their next drawing | Missing | ★ | planning 2026-11-09 (`GLOSSARY.md`, `docs/adr/`) |
+| JOB-50 | Add product's library list searches name and folder only. The original's product picker also filters by machine, order reference, customer name and customer reference | Partial | ★★ | MECHANICS PK3; `library::product_matches` |
+| JOB-51 | Library shared by several PCs: the job and product lists are read once and again after your own saves or Refresh, so jobs and products another PC saved don't show until you refresh | Missing | ★★ | `App::lib_refresh`; shop setup plan |
+| JOB-52 | The same Library job open on two PCs: each save writes over the other's with no warning. Job files opened from disk are watched and ask which to keep (`filewatch.rs`); Library jobs aren't. What the original does with a job open twice isn't traced | Missing | ★★★ | `Library::save_job`, `App::open_library_job` |
+| JOB-53 | Two PCs saving to the Library at the same moment both rewrite the shared list through one temporary file: one entry can drop out of the list, or a save can report an error though its record was stored. Rescan repairs the list | Missing | ★★ | `Library::upsert`, `library::write_atomic` |
 
 ## Part drawing (DRW)
 
@@ -227,6 +232,9 @@ original (or a real job).
 | APP-2 | Quick ring set up per screen in Settings: choose the tool in each of the 8 slots of the Part view, on-a-part and empty-sheet rings (any ribbon command), keeping the shared tools anchored | Missing | ★★ | MECHANICS QR1, QR2; the built-in rings come first, so operators find out what they miss |
 | APP-3 | Active / inactive machines: an inactive machine shows grey and in italics and can't take new jobs or nestings | Missing | ★ | MECHANICS "Lantek Expert v44 new features" (2.1.3) |
 | APP-4 | Hover cards on every ribbon button: a bold title, the button's icon and one plain sentence of what it does; the ribbon shows plain text tooltips | Missing | ★★ | planning 2026-11-09 (`GLOSSARY.md`, `docs/adr/`) |
+| APP-5 | The same machine, material and technology settings on every programming PC. Each PC keeps its own today, so a job opened on another PC can give a different program. The original can keep its machine settings files on the network | Missing | ★★★ | shared Library plan 2026-11-09 |
+| APP-6 | Shop set-up: a first-run choice of a local or shared Library, a shop name, joining a shop from another PC, backups and version upgrades, the installer | Missing | ★★ | shared Library plan 2026-11-09; ADR 0003 |
+| APP-7 | Users and logins: a users list (reference, employee, user name, password) and settings only an administrator may change. The rebuild names people by their Windows user and PC name, with no login | Missing | ★ | shared Library plan 2026-11-09 |
 
 ## Done
 

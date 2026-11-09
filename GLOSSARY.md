@@ -73,3 +73,17 @@ _Avoid_: technology, quality level
 **Cut order**:
 The order the machine cuts things in: a part's cut order is the order of its contours, a sheet's cut order the order of its parts.
 _Avoid_: machining order, cut sequence, cut pattern
+
+## Sharing the Library
+
+**Library**:
+The shop's one store of saved jobs, job folders, products and sheet stock, which every programming PC opens.
+_Avoid_: database (that word is kept for the original program's database)
+
+**Folder**:
+A named place in the Library's tree that holds jobs, or products, and other folders. Every PC sees the same tree.
+_Avoid_: week, group, directory
+
+**In use**:
+Said of a job a programmer has open on their PC; others are warned or kept out, as the shop's setting says.
+_Avoid_: locked, blocked (a locked sheet is a different thing: one nesting won't use)
