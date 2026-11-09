@@ -1019,12 +1019,23 @@ pub fn run_global(ctx: &Ctx, name: &str, args: &Value) -> Result<Outcome, String
                 }
             }
             let roles = crate::formats::default_roles(&parts);
+            // What each part comes in as with those roles, as the import window's
+            // preview shows it (IM10): its size and holes, or why it can't be made.
+            let sizes: Vec<Value> = parts
+                .iter()
+                .map(|p| match crate::dxf::build(&p.drawing, &roles) {
+                    Ok((g, rep)) => json!({"w": r1(g.w), "h": r1(g.h), "holes": g.holes.len(), "notes": crate::engine::import_notes(&path, &rep)}),
+                    Err(e) => json!({"error": e}),
+                })
+                .collect();
+            let first = sizes.first().and_then(|v| Some((v["w"].as_f64()?, v["h"].as_f64()?))).map_or(String::new(), |(w, h)| format!(", {w} × {h} mm"));
             let data = json!({
                 "layers": layers,
                 "default_roles": roles.iter().map(|(k, v)| (k.clone(), v.label())).collect::<BTreeMap<_, _>>(),
                 "parts": parts.len(),
+                "sizes": sizes,
             });
-            Ok(Outcome::read(format!("{} layer(s) in {path}{}.", layers.len(), if parts.len() > 1 { format!(" ({} parts)", parts.len()) } else { String::new() }), data))
+            Ok(Outcome::read(format!("{} layer(s) in {path}{}{first}.", layers.len(), if parts.len() > 1 { format!(" ({} parts)", parts.len()) } else { String::new() }), data))
         }
         n => Err(format!("{n} needs a job")),
     }

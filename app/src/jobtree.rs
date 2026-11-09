@@ -365,6 +365,12 @@ pub fn cam_date_label(t: Option<u64>) -> String {
     if day + 1 == today {
         return format!("yesterday {hm} UTC");
     }
+    civil_date(t)
+}
+
+/// "2026-11-01" for a time in seconds since 1970 (UTC).
+pub fn civil_date(t: u64) -> String {
+    let day = t / 86400;
     // Civil date from days since 1970 (Howard Hinnant's algorithm).
     let z = day as i64 + 719468;
     let era = z.div_euclid(146097);

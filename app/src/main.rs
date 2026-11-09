@@ -39,6 +39,7 @@ mod sheetsim;
 mod textedit;
 mod dxf;
 mod formats;
+mod importui;
 mod jobfile;
 mod jobs;
 mod libui;
@@ -319,6 +320,7 @@ pub struct App {
     pub disk_poll: f64,
     /// The Library window, and the open job's record number in the library.
     pub libui: libui::LibUi,
+    pub importui: importui::ImportUi,
     pub stockui: stockui::StockUi,
     pub job_lib_id: Option<u64>,
     /// The Drawing module's view state (axes, colours, simulation, measuring…).
@@ -597,6 +599,7 @@ impl App {
             job_link: None,
             disk_poll: -10.0,
             libui: Default::default(),
+            importui: Default::default(),
             stockui: Default::default(),
             job_lib_id: None,
             dv: drawing::DrawView::default(),
@@ -1190,20 +1193,6 @@ impl App {
             Ok(f) => format!("Saved {} as DXF: {}", p.name, f.display()),
             Err(e) => format!("Couldn't save the DXF: {e}"),
         };
-    }
-
-    /// Ask for part drawings with the system file picker.
-    pub fn import_dialog(&mut self) {
-        let mut all = formats::picker_extensions();
-        all.extend(["xml".to_string(), "XML".to_string()]);
-        let mut dlg = rfd::FileDialog::new().set_title("Import part drawings").add_filter("Part drawings or Lantek import XML", &all);
-        for f in formats::Format::ALL {
-            let ext: Vec<String> = f.extensions().iter().flat_map(|e| [e.to_string(), e.to_uppercase()]).collect();
-            dlg = dlg.add_filter(f.label(), &ext);
-        }
-        if let Some(files) = dlg.add_filter("Lantek import XML (DXF Import / Parts Import)", &["xml", "XML"]).pick_files() {
-            self.import_drawings(files);
-        }
     }
 
     /// Carry out the answer to "this part has technology".
@@ -2579,6 +2568,7 @@ impl eframe::App for App {
         }
         self.settings_window(&ctx);
         self.library_window(&ctx);
+        self.import_window(&ctx);
         self.stock_window(&ctx);
         if self.demo_open_menu {
             egui::Area::new(egui::Id::unique("demo_open_menu")).order(egui::Order::Foreground).fixed_pos(Pos2::new(8.0, 138.0)).show(&ctx, |ui| {
@@ -3033,6 +3023,16 @@ fn main() -> eframe::Result {
             if want_lib {
                 app.workspace = Workspace::Jobs;
                 app.libui.open = true;
+            }
+            // --import=<folder> [--import-pick=<file name>]: the Import drawings
+            // window there, with that file picked and previewed (screenshots).
+            if let Some(d) = std::env::args().find_map(|a| a.strip_prefix("--import=").map(PathBuf::from)) {
+                app.importui.sync = true;
+                app.importui.show(std::slice::from_ref(&d));
+                if let Some(f) = std::env::args().find_map(|a| a.strip_prefix("--import-pick=").map(|n| d.join(n))) {
+                    app.importui.focus = Some(f.clone());
+                    app.importui.picked.insert(f);
+                }
             }
             // --nest-stock: nest again from the library's sheet stock;
             // --stock: show the Sheet stock window (screenshots).

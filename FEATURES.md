@@ -175,6 +175,8 @@ original (or a real job).
 | JOB-39 | Objects marked invisible in a DXF are cut by default (`skip_invisible` is off and the window can't change it) | Estimate | ★★ | `dxfread::Options`, MECHANICS DW13 |
 | JOB-40 | Exact duplicate objects aren't removed: the same circle drawn twice becomes two holes, cut and pierced twice. Verify Part reports an overlap, the import notes say nothing | Missing | ★★ | `dxf::build` |
 | JOB-41 | Export doesn't stop or warn on Verify Part problems (holes that overlap or cross the outside contour, an outside contour that crosses itself), and Verify Machining passes them | Missing | ★★★ | `engine::export`, `verify` operation |
+| JOB-43 | Import window: file dates are shown as the day only (UTC), with no time, as the app has no local time zone yet; the original's window shows local date and time | Missing | ★ | `importui.rs` |
+| JOB-44 | Import window: Configure… holds only part data from the file name and the reference prefix/suffix. The original opens each converter's whole import configuration (tolerances, units, layer roles kept per converter…), see JOB-18 | Partial | ★★ | MECHANICS IM10, IM1–IM9 |
 
 ## Part drawing (DRW)
 
@@ -216,6 +218,7 @@ original (or a real job).
 
 | ID | What | Built |
 |---|---|---|
+| JOB-42 | **Import window with a preview**: Import drawings opens a file browser in the app (places, recent folders, drives, sorting, search, multi-pick, keyboard) that draws the picked drawing as it will come in, with its size, holes, layers and the import's notes; Configure… for name format and prefix/suffix; the system dialog is one click away. Agents' `drawing-layers` reports each part's size and holes | 2026-11-09 (`importui.rs`, `engine::imports::drawing_preview`, MECHANICS IM10) |
 | MAC-38 | **LC5 straight edges stay straight**: a run of moves becomes an arc only if every move stays within 0.105 mm of it; big discs, slots and reopened programs are split finely enough to still fit; every set is read back before export and refused if it wouldn't cut the plan | 2026-11-06 (`blm::arc_fit`, `engine/readback.rs`, MECHANICS BL38, BL39) |
 | JOB-35 | **Small holes are round**: at least 16 pieces to a circle, so holes of any size are recognised as round and reach the LC5 as arcs | 2026-11-06 (`dxf::arc_segments`, MECHANICS DX2) |
 | MAC-43 | **LC5 sheet header**: free margins come from what's written, not fixed values | 2026-11-06 (`blm::sheet_margins`, MECHANICS BL17) |

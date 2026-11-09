@@ -165,8 +165,9 @@ that share one set of options. The rebuild reads each format itself (`src/format
 into the same drawing the DXF reader makes, so joining, outline and holes, layer roles (Cut / Mark /
 Leave out) and part data from the file name follow the DXF rules above. The file's format is
 picked by its extension and checked against its content (a DWG named `.dxf` is still read as DWG).
-Window: Import drawings (Jobs and Nesting ribbons) or drop files on the window; agents:
-`import-drawing` / `drawing-layers` (`import-dxf` / `dxf-layers` still work).
+Window: Import drawings (Jobs and Nesting ribbons; a file browser with a preview, IM10) or drop files on the
+window; agents: `import-drawing` / `drawing-layers` (`import-dxf` / `dxf-layers` still work; `drawing-layers` also
+gives each part's size and holes, as the preview shows them).
 
 What the file itself says about the part is used: its quantity (before the file name's), and its
 material and thickness are compared with the job's and reported when they differ. A file holding
@@ -190,6 +191,7 @@ nesting, huge declared sizes) is refused whole — no part comes in quietly miss
 | IM7 | Linear tolerance 0.01 mm (ESSI 0.1, which is also its program unit); angular tolerance 0.1°. | observed (values), estimated (ESSI) |
 | IM8 | Open contours are closed within 0.5 mm; largest radius 99 999.999; discretisation 10 mm; verify and smoothing off. | observed |
 | IM9 | Detect equal parts off; order contours off (when on: outer clockwise, inner counter-clockwise). | observed |
+| IM10 | The open window for part drawings shows the picked drawing on its right before it is imported, with a check box that turns the preview off (on by default, IM5) and a Configure… button for the import settings. The rebuild draws the part as the import will make it (same reading, part name and starting layer roles), with its width and height, holes, format, layers, quantity and the notes the import will give; a file no part can be made from shows its lines and the reason; a file of several parts shows them one at a time. The window opens in the folder last imported from and lists the six last ones. The check box only turns the picture on and off; it is not animated, and off leaves the preview blank. | observed (window, check box, Configure), Rebuild (what the preview shows) |
 
 Every format joins at 0.01 mm and then closes gaps up to 0.5 mm (IM8, as for DXF above; how the
 original closes a gap — a new straight piece or moving an end — isn't traced). Asking for a name,

@@ -261,3 +261,60 @@ pub fn job_sig(j: &JobFile) -> u64 {
     serde_json::to_string(&c).unwrap_or_default().hash(&mut h);
     h.finish()
 }
+
+/// One part of a drawing file as the import window shows it before it's
+/// imported (IM10).
+pub struct PreviewPart {
+    /// The part's name: the file's, or numbered for a file of several parts.
+    pub name: String,
+    /// Everything the file draws for this part, each piece with the role its
+    /// layer starts with (every layer cut, a format's marking layers marked).
+    pub pieces: Vec<(dxf::LayerRole, Vec<P>)>,
+    /// Lower-left and upper-right corners of everything drawn.
+    pub min: P,
+    pub max: P,
+    pub layers: usize,
+    /// The part those roles make with its notes (what's left out, part data
+    /// that doesn't match the job), or why no part can be made.
+    pub part: Result<(Part, Vec<String>), String>,
+}
+
+/// A drawing file read for the preview: its format and each part in it.
+pub struct DrawingPreview {
+    pub format: crate::formats::Format,
+    pub parts: Vec<PreviewPart>,
+}
+
+/// Read a drawing file for the import window's preview (IM10): the same
+/// reading, part names and starting layer roles as Import drawings, without
+/// adding anything to the job.
+pub fn drawing_preview(cfg: &AppSettings, spec: &SheetSpec, path: &Path) -> Result<DrawingPreview, String> {
+    let (format, parts) = crate::formats::read_path(path, None, cfg, Default::default())?;
+    let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Drawing".into());
+    let parts = crate::formats::incoming(&stem, parts)
+        .into_iter()
+        .map(|inc| {
+            let roles = crate::formats::default_roles([&inc.part]);
+            let (mut min, mut max) = ([f64::MAX; 2], [f64::MIN; 2]);
+            let pieces = inc
+                .part
+                .drawing
+                .pieces
+                .iter()
+                .map(|p| {
+                    for q in &p.pts {
+                        min = [min[0].min(q[0]), min[1].min(q[1])];
+                        max = [max[0].max(q[0]), max[1].max(q[1])];
+                    }
+                    (roles.get(&p.layer).copied().unwrap_or(dxf::LayerRole::Cut), p.pts.clone())
+                })
+                .collect();
+            if min[0] > max[0] {
+                (min, max) = ([0.0; 2], [0.0; 2]);
+            }
+            let part = part_from_read(cfg, spec, &inc.file, &inc.name, &inc.part.drawing, &inc.part.meta, &roles, 0);
+            PreviewPart { name: inc.name, pieces, min, max, layers: inc.part.drawing.layers().len(), part }
+        })
+        .collect();
+    Ok(DrawingPreview { format, parts })
+}
