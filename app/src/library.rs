@@ -270,9 +270,13 @@ impl Library {
     /// newer save is never undone (LB2). Either way the error says nothing
     /// was saved, so saving again never makes a duplicate. A save reports
     /// success only when its record was written.
-    fn store(&self, kind: Kind, id: Option<u64>, text: &str, entry: impl FnOnce(u64) -> Entry) -> Result<u64, String> {
+    /// `record` makes the record's text and list line once the lock is held,
+    /// so it is signed with when it is written (LB5), not when it began
+    /// waiting for the lock.
+    fn store<E: FnOnce(u64) -> Entry>(&self, kind: Kind, id: Option<u64>, record: impl FnOnce(Saved) -> Result<(String, E), String>) -> Result<u64, String> {
         let nothing = |e: String| if e.contains("Nothing was saved") { e } else { format!("{e}. Nothing was saved") };
         let lock = self.lock()?;
+        let (text, entry) = record(self.saved()).map_err(nothing)?;
         let (id, new) = match id {
             Some(i) => (i, false),
             None => (self.new_id(kind)?, true),
@@ -321,9 +325,11 @@ impl Library {
     /// Save a job (a new record, or over `id`), recording who saved it and
     /// when (LB5). Returns its number.
     pub fn save_job(&self, job: &JobFile, id: Option<u64>) -> Result<u64, String> {
-        let job = JobFile { saved: Some(self.saved()), ..job.clone() };
-        let text = serde_json::to_string_pretty(&job).map_err(|e| e.to_string())?;
-        self.store(Kind::Job, id, &text, |id| job_entry(id, &job, 0))
+        self.store(Kind::Job, id, |saved| {
+            let job = JobFile { saved: Some(saved), ..job.clone() };
+            let text = serde_json::to_string_pretty(&job).map_err(|e| e.to_string())?;
+            Ok((text, move |id| job_entry(id, &job, 0)))
+        })
     }
 
     pub fn load_job(&self, id: u64) -> Result<JobFile, String> {
@@ -336,9 +342,11 @@ impl Library {
         // A library product is reusable stock, not one order's part: its ERP orders stay with the job.
         let mut part = part.clone();
         part.erp.clear();
-        let pf = ProductFile { format: FORMAT.into(), version: VERSION, part, folder: folder.into(), material, thickness, saved: Some(self.saved()) };
-        let text = serde_json::to_string_pretty(&pf).map_err(|e| e.to_string())?;
-        self.store(Kind::Product, id, &text, |id| product_entry(id, &pf, 0))
+        self.store(Kind::Product, id, |saved| {
+            let pf = ProductFile { format: FORMAT.into(), version: VERSION, part, folder: folder.into(), material, thickness, saved: Some(saved) };
+            let text = serde_json::to_string_pretty(&pf).map_err(|e| e.to_string())?;
+            Ok((text, move |id| product_entry(id, &pf, 0)))
+        })
     }
 
     pub fn load_product(&self, id: u64) -> Result<ProductFile, String> {
@@ -678,6 +686,34 @@ mod library_tests {
         let before = prog1.entries();
         prog1.rebuild_index().unwrap();
         assert_eq!(prog1.entries(), before);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// LB5: a save that waits for another PC's write lock is signed with
+    /// when it was written, not when it started waiting, so a save made
+    /// after another one never reads as older.
+    #[test]
+    fn a_save_that_waits_for_the_lock_is_signed_when_it_is_written() {
+        let dir = scratch("saved_after_wait");
+        let clock = Clock::at(NOV_9_0920);
+        let prog1 = Library::open(&dir, &Who::new("sam", "PROG-1"), &clock).unwrap();
+        let part = Part { name: "DEMO-P1".into(), shape: Shape::LBracket, w: 120.0, h: 80.0, qty: 5, rotate: true, color: 1, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
+        // PROG-1 holds the lock; PROG-2's saves wait while the clock moves on 10 minutes.
+        let held = prog1.lock().unwrap();
+        let (d, c) = (dir.clone(), clock.clone());
+        let prog2 = std::thread::spawn(move || {
+            let lib = Library::open(&d, &Who::new("kim", "PROG-2"), &c).unwrap();
+            (lib.save_job(&job("DEMO-002 brackets"), None), lib.save_product(&part, "Acme", 0, 3.0, None))
+        });
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        clock.advance(std::time::Duration::from_secs(10 * 60));
+        drop(held);
+        let (j, p) = prog2.join().unwrap();
+        let (j, p) = (j.unwrap(), p.unwrap());
+        let at = NOV_9_0920 + 10 * 60;
+        assert_eq!(prog1.load_job(j).unwrap().saved.map(|s| s.at), Some(at));
+        assert_eq!(prog1.load_product(p).unwrap().saved.map(|s| s.at), Some(at));
+        assert!(prog1.entries().iter().all(|e| e.updated == at), "{:?}", prog1.entries());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

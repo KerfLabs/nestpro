@@ -4982,7 +4982,7 @@
  {
   "name": "a Library save records",
   "group": "shared library",
-  "value": "who saved it (Windows user and PC name; an agent's save marked (agent)) and when (the saving PC's clock), in the record and its line in the list",
+  "value": "who saved it (Windows user and PC name; an agent's save marked (agent)) and when (the saving PC's clock once the save holds the write lock), in the record and its line in the list",
   "source": "MECHANICS LB5; estimated"
  },
  {
