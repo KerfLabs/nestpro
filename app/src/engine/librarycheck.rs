@@ -80,7 +80,8 @@ fn same_folder(a: &Path, b: &Path) -> bool {
 
 /// Refuse a folder that could be a real Library (LB4): this PC's own
 /// Library, a folder with files the check didn't make, or one where real
-/// jobs, library parts or stock sheets have been saved since.
+/// jobs, library parts or stock sheets have been saved since. Anything it
+/// can't read or doesn't recognise counts as possibly real.
 pub fn refuse_real_library(folder: &Path, this_library: &Path) -> Result<(), String> {
     let shown = folder.display();
     let empty = "Give it an empty test folder (it is made if missing), or one it made before";
@@ -90,21 +91,92 @@ pub fn refuse_real_library(folder: &Path, this_library: &Path) -> Result<(), Str
     if !folder.exists() {
         return Ok(());
     }
-    let mut files = std::fs::read_dir(folder).map_err(|e| format!("can't read {shown}: {e}"))?.peekable();
-    if files.peek().is_none() {
+    let names = |d: &Path| -> Result<Vec<String>, String> {
+        let mut n = vec![];
+        for f in std::fs::read_dir(d).map_err(|e| format!("can't read {}: {e}", d.display()))? {
+            n.push(f.map_err(|e| format!("can't read {}: {e}", d.display()))?.file_name().to_string_lossy().into_owned());
+        }
+        Ok(n)
+    };
+    let top = names(folder)?;
+    if top.is_empty() {
         return Ok(());
     }
-    if !folder.join(MARKER).exists() {
+    if !folder.join(MARKER).is_file() {
         return Err(format!("{shown} isn't empty and wasn't made by the Library check — it may be a real Library. {empty}."));
     }
-    let lib = Library { dir: folder.to_path_buf() };
-    if let Some(e) = lib.read_index().unwrap_or_default().iter().find(|e| !e.name.starts_with(TAG)) {
-        return Err(format!("{shown} holds '{}', which the Library check didn't make: it is a real Library now. {empty}.", e.name));
+    let real = |what: String| format!("{shown} holds {what}, which the Library check didn't make: it may be a real Library. {empty}.");
+    let unsure = |what: String| format!("{shown}: {what}, so it may be a real Library. {empty}.");
+    // Only what the check and the Library under it make: temporary files and
+    // the write lock's files come and go while another run is saving.
+    let passing = |n: &str| n.ends_with(".tmp") || n.starts_with(shared::LOCK_FILE);
+    if let Some(n) = top.iter().find(|n| ![MARKER, LOGS, crate::library::INDEX, "Jobs", "Products", "Sheets"].contains(&n.as_str()) && !passing(n)) {
+        return Err(real(format!("'{n}'")));
     }
-    if let Some(it) = Stock::load(folder).unwrap_or_default().items.iter().find(|i| !i.reference.starts_with(TAG)) {
-        return Err(format!("{shown} holds stock sheet '{}', which the Library check didn't make: it is a real Library now. {empty}.", it.reference));
+    if let Some(n) = folder.join("Sheets").is_dir().then(|| names(&folder.join("Sheets"))).transpose()?.unwrap_or_default().iter().find(|n| *n != "stock.json" && !passing(n)) {
+        return Err(real(format!("'Sheets/{n}'")));
+    }
+    // The list: readable, and only the check's own records.
+    let lib = Library { dir: folder.to_path_buf() };
+    if folder.join(crate::library::INDEX).exists() {
+        let listed = lib.read_index().map_err(|e| unsure(format!("its list of records ({}) can't be read ({e})", crate::library::INDEX)))?;
+        if let Some(e) = listed.iter().find(|e| !e.name.starts_with(TAG)) {
+            return Err(real(format!("'{}'", e.name)));
+        }
+    }
+    // Every record file, listed or not: one of the check's own; or one a run
+    // of the check saved and logged (if it's damaged now, that is the check's
+    // to report); or empty, a save cut off before it wrote anything.
+    let logged = logged_records(folder);
+    for (kind, sub) in [(Kind::Job, "Jobs"), (Kind::Product, "Products")] {
+        let root = folder.join(sub);
+        if !root.is_dir() {
+            continue;
+        }
+        for d in names(&root)? {
+            let dir = root.join(&d);
+            if !dir.is_dir() || d.parse::<u64>().is_err() {
+                return Err(real(format!("'{sub}/{d}'")));
+            }
+            for n in names(&dir)? {
+                if n.ends_with(".tmp") {
+                    continue;
+                }
+                let p = dir.join(&n);
+                let id = match n.rsplit_once('.') {
+                    Some((stem, _)) if lib.path(kind, stem.parse().unwrap_or(0)) == p => stem.parse::<u64>().unwrap_or(0),
+                    _ => return Err(real(format!("'{sub}/{d}/{n}'"))),
+                };
+                let name = match kind {
+                    Kind::Job => jobfile::load(&p).map(|j| j.name),
+                    Kind::Product => lib.load_product(id).map(|pf| pf.part.name),
+                };
+                match name {
+                    Ok(name) if name.starts_with(TAG) => {}
+                    Ok(name) => return Err(real(format!("'{name}' (record {id})"))),
+                    Err(_) if logged.contains(&(kind == Kind::Job, id)) || std::fs::metadata(&p).is_ok_and(|m| m.len() == 0) => {}
+                    Err(e) => return Err(unsure(format!("record {id} ({sub}/{d}/{n}) can't be read ({e}) and no run of the check saved it"))),
+                }
+            }
+        }
+    }
+    // The stock: readable, and only the check's own sheets.
+    let stock = Stock::load(folder).map_err(|e| unsure(format!("its sheet stock can't be read ({e})")))?;
+    if let Some(it) = stock.items.iter().find(|i| !i.reference.starts_with(TAG)) {
+        return Err(real(format!("stock sheet '{}'", it.reference)));
     }
     Ok(())
+}
+
+/// The records the runs' logs say they saved.
+fn logged_records(folder: &Path) -> std::collections::HashSet<(bool, u64)> {
+    let mut out = std::collections::HashSet::new();
+    for f in std::fs::read_dir(folder.join(LOGS)).into_iter().flatten().flatten() {
+        let Some(l) = std::fs::read_to_string(f.path()).ok().and_then(|t| serde_json::from_str::<Log>(&t).ok()) else { continue };
+        out.extend(l.jobs.iter().map(|s| (true, s.id)));
+        out.extend(l.parts.iter().map(|s| (false, s.id)));
+    }
+    out
 }
 
 fn demo_spec() -> SheetSpec {

@@ -1237,3 +1237,53 @@ fn the_library_check_passes_on_a_test_folder_and_fails_on_a_half_written_record(
     let e = err(&mut s, "library-check", json!({"folder": folder.to_str().unwrap(), "rounds": 1, "pc": "PROG-1"}));
     assert!(e.contains("FAIL") && e.contains("Job record 2") && e.contains("half-written"), "{e}");
 }
+
+/// A test folder the Library check made itself (one round, so it holds the
+/// check's own records, list, stock and log).
+fn check_folder(s: &mut Session, d: &Path, name: &str) -> PathBuf {
+    let f = d.join(name);
+    call(s, "library-check", None, json!({"folder": f.to_str().unwrap(), "rounds": 1}));
+    f
+}
+
+#[test]
+fn the_library_check_refuses_a_folder_it_cant_read_or_recognise() {
+    let d = dir("check_unsure");
+    let mut s = Session::new(Ctx::builtin());
+    let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
+    let refused = |s: &mut Session, f: &Path, why: &str| {
+        let before = listing(f);
+        let e = err(s, "library-check", json!({"folder": f.to_str().unwrap(), "rounds": 1}));
+        assert!(e.contains(why), "{e}");
+        assert_eq!(listing(f), before, "the check touched a folder it refused");
+    };
+    // A real job was saved into a folder the check made, and the list was
+    // lost since: the record itself gives it away.
+    let f = check_folder(&mut s, &d, "lost list");
+    crate::library::Library::open(&f).unwrap().save_job(&JobFile::new_job("Frames", spec.clone()), None).unwrap();
+    std::fs::remove_file(f.join(crate::library::INDEX)).unwrap();
+    refused(&mut s, &f, "'Frames'");
+    // A real job's record is there but missing from the list.
+    let f = check_folder(&mut s, &d, "unlisted");
+    let lib = crate::library::Library::open(&f).unwrap();
+    let list = std::fs::read(f.join(crate::library::INDEX)).unwrap();
+    lib.save_job(&JobFile::new_job("Frames", spec.clone()), None).unwrap();
+    std::fs::write(f.join(crate::library::INDEX), list).unwrap();
+    refused(&mut s, &f, "'Frames'");
+    // The list can't be read.
+    let f = check_folder(&mut s, &d, "damaged list");
+    std::fs::write(f.join(crate::library::INDEX), "{ half a list").unwrap();
+    refused(&mut s, &f, "can't be read");
+    // The stock can't be read.
+    let f = check_folder(&mut s, &d, "damaged stock");
+    std::fs::write(crate::stock::Stock::file(&f), "{ half a stock").unwrap();
+    refused(&mut s, &f, "can't be read");
+    // A record no run of the check saved, and that can't be read.
+    let f = check_folder(&mut s, &d, "unknown record");
+    std::fs::write(f.join("Jobs").join("0").join("99.snjob"), "{ \"name\": \"Fra").unwrap();
+    refused(&mut s, &f, "record 99");
+    // Something else the check doesn't make.
+    let f = check_folder(&mut s, &d, "other files");
+    std::fs::create_dir_all(f.join("Drawings")).unwrap();
+    refused(&mut s, &f, "'Drawings'");
+}

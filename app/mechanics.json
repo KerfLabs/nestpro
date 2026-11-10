@@ -4705,20 +4705,38 @@
  {
   "name": "longest wait for the write lock",
   "group": "shared library",
-  "value": "30 s, then nothing is stored",
+  "value": "120 s, then nothing is stored; the window's save waits in place",
   "source": "MECHANICS LB1; own design"
  },
  {
   "name": "write lock abandoned after",
   "group": "shared library",
-  "value": "10 s unchanged, timed by the waiting PC's own clock",
+  "value": "90 s unchanged, timed by the waiting PC's own clock",
   "source": "MECHANICS LB2; own design"
  },
  {
   "name": "lock checked just before a file is replaced",
   "group": "shared library",
-  "value": true,
+  "value": "still this writer's lock, no takeover of it begun, and inside the writer's 30 s (checked again before each retry of the rename)",
   "source": "MECHANICS LB2; own design"
+ },
+ {
+  "name": "a writer replaces files for",
+  "group": "shared library",
+  "value": "30 s after taking the lock (a third of the 90 s), by its own clocks; after that it replaces nothing and leaves the lock to be taken over",
+  "source": "MECHANICS LB2; own design"
+ },
+ {
+  "name": "taking over an abandoned lock",
+  "group": "shared library",
+  "value": "one PC only: create-new of library.lock.<token>.taken, check the lock is unchanged, rename its own lock over it; only the holder deletes library.lock",
+  "source": "MECHANICS LB2; own design"
+ },
+ {
+  "name": "a change sent in time can still land after a takeover",
+  "group": "shared library",
+  "value": "only if the share holds it back for more than 60 s (files on a share can't rule it out)",
+  "source": "MECHANICS LB2; estimated"
  },
  {
   "name": "temporary file per writer",
@@ -4729,7 +4747,7 @@
  {
   "name": "a Library save that fails stores",
   "group": "shared library",
-  "value": "nothing: the record number is given back, a record saved over is put back",
+  "value": "nothing: only while the lock is still this PC's, the record number is given back or the record saved over put back; a save whose record was written counts as done",
   "source": "MECHANICS LB3; own design"
  },
  {
@@ -4741,7 +4759,7 @@
  {
   "name": "Library check folder",
   "group": "shared library",
-  "value": "empty or missing, or marked library-check.json with only its own records; refuses this PC's Library",
+  "value": "empty or missing, or marked library-check.json holding only its own readable list, stock and records (listed or not; a damaged one only if a run logged it) and nothing else; refuses this PC's Library",
   "source": "MECHANICS LB4; own design"
  },
  {

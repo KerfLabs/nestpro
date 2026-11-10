@@ -112,9 +112,10 @@ impl Library {
         std::fs::create_dir_all(dir).map_err(|e| format!("can't use {}: {e}", dir.display()))?;
         let lib = Library { dir: dir.to_path_buf() };
         if !dir.join(INDEX).exists() {
+            let first = lib.scan(&Scanned::new());
             let lock = lib.lock()?;
             if !dir.join(INDEX).exists() {
-                lib.write_index(&lib.rescan(), &lock)?;
+                lib.write_index(&entries_of(lib.scan(&first)), &lock)?;
             }
         }
         Ok(lib)
@@ -153,7 +154,14 @@ impl Library {
     /// Rebuild the index from the record files (after copying folders in,
     /// or if the index is lost).
     pub fn rescan(&self) -> Vec<Entry> {
-        let mut out = vec![];
+        entries_of(self.scan(&Scanned::new()))
+    }
+
+    /// Every record file's line in the list, with the file's stamp (when it
+    /// was last written, and its size). A file whose stamp is in `known` is
+    /// not read again.
+    fn scan(&self, known: &Scanned) -> Scanned {
+        let mut out = Scanned::new();
         for kind in [Kind::Product, Kind::Job] {
             let root = self.dir.join(kind.folder());
             let Ok(subs) = std::fs::read_dir(&root) else { continue };
@@ -162,23 +170,35 @@ impl Library {
                 for f in files.flatten() {
                     let p = f.path();
                     let Some(id) = p.file_stem().and_then(|s| s.to_str()).and_then(|s| s.parse::<u64>().ok()) else { continue };
-                    let updated = f.metadata().ok().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
+                    let meta = f.metadata().ok();
+                    let stamp = (meta.as_ref().and_then(|m| m.modified().ok()), meta.as_ref().map_or(0, |m| m.len()));
+                    if let Some((st, e)) = known.get(&(kind as u8, id)).filter(|(st, _)| st.0.is_some() && *st == stamp) {
+                        out.insert((kind as u8, id), (*st, e.clone()));
+                        continue;
+                    }
+                    let updated = stamp.0.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
                     let e = match kind {
                         Kind::Job => crate::jobfile::load(&p).ok().map(|j| job_entry(id, &j, updated)),
                         Kind::Product => std::fs::read_to_string(&p).ok().and_then(|t| serde_json::from_str::<ProductFile>(&t).ok()).map(|pf| product_entry(id, &pf, updated)),
                     };
-                    out.extend(e);
+                    if let Some(e) = e {
+                        out.insert((kind as u8, id), (stamp, e));
+                    }
                 }
             }
         }
-        out.sort_by_key(|e| (e.kind as u8, e.id));
         out
     }
 
-    /// Re-read the index from the record files and save it.
+    /// Re-read the index from the record files and save it. The files are
+    /// read first without the write lock (that can take a while on a big
+    /// Library on the share), then only those written since are read again
+    /// under it, so the lock stays short (LB1, LB2).
     pub fn rebuild_index(&self) -> Result<usize, String> {
+        let first = self.scan(&Scanned::new());
+        shared::pause("scanned");
         let lock = self.lock()?;
-        let e = self.rescan();
+        let e = entries_of(self.scan(&first));
         self.write_index(&e, &lock)?;
         Ok(e.len())
     }
@@ -216,11 +236,16 @@ impl Library {
     }
 
     /// Store a record and its line in the list, under the write lock, all or
-    /// nothing (LB3): a new record takes the next number; when the record or
-    /// the list can't be written, the number is given back (or the record
-    /// it replaced put back) and the error says nothing was saved, so saving
-    /// again never makes a duplicate.
+    /// nothing (LB3): a new record takes the next number. When the record
+    /// can't be written, nothing was replaced and a new record's number is
+    /// given back. When the list can't be written, this save's own write is
+    /// undone (the record it replaced put back, or the new one's number
+    /// given back), only while the lock is still this PC's, so another PC's
+    /// newer save is never undone (LB2). Either way the error says nothing
+    /// was saved, so saving again never makes a duplicate. A save reports
+    /// success only when its record was written.
     fn store(&self, kind: Kind, id: Option<u64>, text: &str, entry: impl FnOnce(u64) -> Entry) -> Result<u64, String> {
+        let nothing = |e: String| if e.contains("Nothing was saved") { e } else { format!("{e}. Nothing was saved") };
         let lock = self.lock()?;
         let (id, new) = match id {
             Some(i) => (i, false),
@@ -234,17 +259,30 @@ impl Library {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
             Err(e) => return Err(format!("can't read record {id} before saving over it ({e}). Nothing was saved")),
         };
-        let saved = shared::write_file(&path, text.as_bytes(), Some(&lock)).and_then(|_| self.upsert(entry(id), &lock));
-        let Err(e) = saved else { return Ok(id) };
+        if let Err(e) = shared::write_file(&path, text.as_bytes(), Some(&lock)) {
+            // Nothing was replaced. A new record's number is given back: its
+            // empty file is this save's own, as no other PC writes to a
+            // number that isn't in the list (RF1).
+            if new {
+                let _ = std::fs::remove_file(&path);
+            }
+            return Err(nothing(e));
+        }
+        shared::pause("record written");
+        let Err(e) = self.upsert(entry(id), &lock) else { return Ok(id) };
+        // The record is stored but its line isn't: undo this save's own
+        // write, only while the lock is still this PC's (checked again just
+        // before the record is put back).
         let undone = match before {
-            Some(b) => shared::write_file(&path, &b, None),
-            None => std::fs::remove_file(&path).or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) }).map_err(|e| e.to_string()),
+            Some(b) => shared::write_file(&path, &b, Some(&lock)),
+            None => lock.still_held().and_then(|_| std::fs::remove_file(&path).or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) }).map_err(|e| e.to_string())),
         };
         match undone {
-            Ok(()) => Err(format!("{e}. Nothing was saved")),
-            // Couldn't be undone either (the share went away): the record is
-            // stored, so the save counts (an error would make the next save a
-            // duplicate); its line in the list comes with its next save or Rescan.
+            Ok(()) => Err(nothing(e)),
+            // Couldn't be undone (the lock was taken over, or the share went
+            // away): the record is stored, so the save counts (an error would
+            // make the next save a duplicate); its line in the list comes
+            // with its next save or Rescan.
             Err(_) => Ok(id),
         }
     }
@@ -283,11 +321,22 @@ impl Library {
 
     pub fn delete(&self, kind: Kind, id: u64) -> Result<(), String> {
         let lock = self.lock()?;
+        lock.still_held()?;
         let _ = std::fs::remove_file(self.path(kind, id));
         let mut all = self.entries();
         all.retain(|x| !(x.kind == kind && x.id == id));
         self.write_index(&all, &lock)
     }
+}
+
+/// Record files read: (kind, number) → (stamp, line in the list).
+type Scanned = std::collections::HashMap<(u8, u64), ((Option<std::time::SystemTime>, u64), Entry)>;
+
+/// The lines of a scan, in the list's order.
+fn entries_of(s: Scanned) -> Vec<Entry> {
+    let mut out: Vec<Entry> = s.into_values().map(|(_, e)| e).collect();
+    out.sort_by_key(|e| (e.kind as u8, e.id));
+    out
 }
 
 fn job_entry(id: u64, j: &JobFile, updated: u64) -> Entry {
@@ -467,6 +516,122 @@ mod library_tests {
         let list = lib.entries();
         assert_eq!(list.iter().filter(|e| e.name == "Brackets").count(), 1);
         assert_eq!(list.iter().filter(|e| e.kind == Kind::Job).count(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// LB3: when the record itself can't be written, the save says so, even
+    /// if nothing could be tidied up either; it never reports a save that
+    /// didn't happen.
+    #[cfg(unix)]
+    #[test]
+    fn a_save_whose_record_cant_be_written_is_never_reported_as_saved() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = scratch("record_unwritable");
+        let lib = Library::open(&dir).unwrap();
+        let mut frames = job("Frames");
+        frames.week = "W12".into();
+        let first = lib.save_job(&frames, None).unwrap();
+        // The record's folder takes no new files (a read-only share folder).
+        let folder = lib.path(Kind::Job, first).parent().unwrap().to_path_buf();
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o555)).unwrap();
+        if std::fs::write(folder.join("probe"), b"x").is_ok() {
+            // Running as root: permissions don't stop writes, nothing to test.
+            let _ = std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755));
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+        let mut changed = frames.clone();
+        changed.week = "W13".into();
+        let r = lib.save_job(&changed, Some(first));
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(r.is_err(), "a save that wrote nothing was reported as saved: {r:?}");
+        assert_eq!(lib.load_job(first).unwrap().week, "W12");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// PROG-2 takes the write lock over (as abandoned) and saves `name` into
+    /// `record`, as happens while this PC is stalled in the middle of a save.
+    fn prog2_takes_over_and_saves(dir: &Path, record: &Path, name: &str, week: &str) {
+        std::fs::write(dir.join(shared::LOCK_FILE), r#"{"user":"kim","pc":"PROG-2","process":9,"since":0,"token":"PROG-2-9-1"}"#).unwrap();
+        let mut j = job(name);
+        j.week = week.into();
+        std::fs::write(record, serde_json::to_string_pretty(&j).unwrap()).unwrap();
+    }
+
+    /// LB3: a save that fails after its record was written puts nothing back
+    /// once another PC has taken the write lock over, so the other PC's newer
+    /// save of that record is never undone, whether this PC was saving over a
+    /// record or making a new one.
+    #[test]
+    fn a_failed_save_never_undoes_another_pcs_newer_save() {
+        let dir = scratch("undo_after_takeover");
+        let lib = Library::open(&dir).unwrap();
+        let mut frames = job("Frames");
+        frames.week = "W12".into();
+        let first = lib.save_job(&frames, None).unwrap();
+        // Saving over the job: just after this PC wrote the record, PROG-2
+        // takes over and saves the job as W14.
+        let rec = lib.path(Kind::Job, first);
+        {
+            let (dir, rec) = (dir.clone(), rec.clone());
+            shared::hooks::set(move |s| {
+                if s == "record written" {
+                    prog2_takes_over_and_saves(&dir, &rec, "Frames", "W14");
+                }
+            });
+        }
+        let mut changed = frames.clone();
+        changed.week = "W13".into();
+        let r = lib.save_job(&changed, Some(first));
+        shared::hooks::clear();
+        assert_eq!(lib.load_job(first).unwrap().week, "W14", "this PC's failed save put its old copy back over PROG-2's newer save ({r:?})");
+        // Its record was written before PROG-2 saved over it: the save counts.
+        assert_eq!(r, Ok(first));
+        // PROG-2 is done. A new job: PROG-2 takes over just after this PC
+        // wrote the new record, and saves over that record.
+        std::fs::remove_file(dir.join(shared::LOCK_FILE)).unwrap();
+        let next = lib.path(Kind::Job, first + 1);
+        {
+            let (dir, next) = (dir.clone(), next.clone());
+            shared::hooks::set(move |s| {
+                if s == "record written" {
+                    prog2_takes_over_and_saves(&dir, &next, "Brackets", "W15");
+                }
+            });
+        }
+        let r = lib.save_job(&job("Brackets"), None);
+        shared::hooks::clear();
+        assert_eq!(lib.load_job(first + 1).map(|j| j.week), Ok("W15".to_string()), "this PC's failed save removed PROG-2's newer save ({r:?})");
+        assert_eq!(r, Ok(first + 1));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// LB1: Rescan reads the records without the write lock, then takes it
+    /// and reads again only what changed meanwhile, so a save another PC
+    /// made while it was reading is in the list it writes.
+    #[test]
+    fn a_rescan_takes_in_what_another_pc_saved_while_it_was_reading() {
+        let dir = scratch("rescan");
+        let lib = Library::open(&dir).unwrap();
+        let frames = lib.save_job(&job("Frames"), None).unwrap();
+        lib.save_job(&job("Brackets"), None).unwrap();
+        {
+            let dir = dir.clone();
+            shared::hooks::set(move |s| {
+                if s == "scanned" {
+                    // PROG-2 renames one job and saves a new one.
+                    let other = Library { dir: dir.clone() };
+                    other.save_job(&job("Frames, second batch"), Some(frames)).unwrap();
+                    other.save_job(&job("Gussets"), None).unwrap();
+                }
+            });
+        }
+        let n = lib.rebuild_index();
+        shared::hooks::clear();
+        assert_eq!(n, Ok(3));
+        let mut names: Vec<String> = lib.entries().into_iter().map(|e| e.name).collect();
+        names.sort();
+        assert_eq!(names, ["Brackets", "Frames, second batch", "Gussets"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
