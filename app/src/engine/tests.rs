@@ -1793,3 +1793,68 @@ fn each_quality_takes_the_colour_of_the_originals_colour_settings_else_its_shipp
     assert_eq!(colours(&mut s)[..3], ["#ff8040", "#0080c0", "#ff00ff"]);
     crate::ct1::set_thread_active(None);
 }
+
+/// The made-up layered plate of `examples/drawings`, copied into `d`: a
+/// 300 × 160 plate on layer 0 with a 40 mm hole (contour 1), two equal 12 mm
+/// holes (2, 3), an etched frame on layer ETCH (4), the outline (5), a bend
+/// line from edge to edge (6) and a stray open line (7); centre lines drawn
+/// dashed (row `0 [CENTER]`) and an old hole on the frozen layer OLD-REV.
+fn layered_plate(d: &Path) -> PathBuf {
+    let p = d.join("DEMO-LAYERED-PLATE.dxf");
+    std::fs::write(&p, include_str!("../../../examples/drawings/DEMO-LAYERED-PLATE.dxf")).unwrap();
+    p
+}
+
+/// Each contour's state, and its quality where it is set by hand.
+fn painted(s: &mut Session, part: usize) -> Vec<String> {
+    let pi = call(s, "part-info", None, json!({"part": part}));
+    pi["data"]["contours"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| match (c["state"].as_str().unwrap(), c["quality_from"].as_str()) {
+            ("cut", Some("by hand")) => format!("cut {}", c["quality"]),
+            (st, _) => st.to_string(),
+        })
+        .collect()
+}
+
+#[test]
+fn import_drawing_sets_layers_and_contours_in_one_call() {
+    let d = dir("import_choices");
+    let job = d.join("plate.snjob");
+    let plate = layered_plate(&d);
+    let p = plate.to_str().unwrap();
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "steel", "thickness": 3}));
+
+    // IM12: drawing-layers numbers the contours the part will have, with the
+    // layer roles given, so an agent can choose them before importing.
+    let r = call(&mut s, "drawing-layers", None, json!({"path": p}));
+    assert_eq!(r["data"]["default_roles"]["0 [CENTER]"], "Leave out", "{r}");
+    assert_eq!(r["data"]["default_roles"]["OLD-REV [frozen]"], "Leave out", "{r}");
+    let states = |r: &Value| r["data"]["sizes"][0]["contours"].as_array().unwrap_or_else(|| panic!("{r}")).iter().map(|c| c["state"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    assert_eq!(states(&r), ["cut", "cut", "cut", "cut", "cut", "bend-line", "no-cut"]);
+    let r = call(&mut s, "drawing-layers", None, json!({"path": p, "layers": "ETCH=mark"}));
+    assert_eq!(states(&r), ["cut", "cut", "cut", "mark", "cut", "bend-line", "no-cut"]);
+
+    // One call: the etch layer marked, then the stray line marked, the big
+    // hole left out and every hole equal to the first small one cut Slow (1).
+    let r = call(&mut s, "import-drawing", None, json!({"path": p, "qty": 1, "layers": "ETCH=mark", "contours": "7=mark; 1=leave-out; 2=quality 1 same"}));
+    assert_eq!(painted(&mut s, 1), ["leave-out", "cut 1", "cut 1", "mark", "cut", "bend-line", "mark"], "{r}");
+
+    // A choice the part can't take is refused as contour-tech refuses it, and
+    // nothing is imported.
+    let e = err(&mut s, "import-drawing", json!({"path": p, "contours": "5=mark"}));
+    assert!(e.contains("outline") && e.contains("always cut"), "{e}");
+    let e = err(&mut s, "import-drawing", json!({"path": p, "contours": "8=mark"}));
+    assert!(e.contains("7 contours"), "{e}");
+    let e = err(&mut s, "import-drawing", json!({"path": p, "contours": "1=purple"}));
+    assert!(e.contains("cut, mark, no-cut, bend-line"), "{e}");
+    // Contour numbers belong to one part: two drawings at once are refused.
+    let e = err(&mut s, "import-drawing", json!({"path": format!("{p};{p}"), "contours": "1=mark"}));
+    assert!(e.contains("one drawing"), "{e}");
+    let info = call(&mut s, "info", None, json!({}));
+    assert!(info["message"].as_str().unwrap().contains("1 part type(s)"), "{info}");
+    let _ = std::fs::remove_dir_all(&d);
+}

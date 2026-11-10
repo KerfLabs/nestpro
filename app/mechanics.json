@@ -362,6 +362,41 @@
    "estimated": true
   },
   {
+   "name": "import preview: cut technology panel",
+   "group": "drawing import",
+   "value": "the part's cut technology panel (CS6, CS7) on the part about to be imported, with the drawing's layer rows above its rows",
+   "source": "IM11",
+   "estimated": true
+  },
+  {
+   "name": "import preview: what a layer row can be set to",
+   "group": "drawing import",
+   "value": ["Cut", "Mark", "Leave out"],
+   "source": "IM11",
+   "estimated": true
+  },
+  {
+   "name": "import preview: a contour painted by hand when a layer row changes",
+   "group": "drawing import",
+   "value": "keeps its paint when the change leaves it in place, starting as before; one on that layer takes the layer's",
+   "source": "IM11",
+   "estimated": true
+  },
+  {
+   "name": "import-drawing contour choices",
+   "group": "drawing import",
+   "value": "CONTOURS=WHAT; … painted in order after the layer roles, on one drawing of one part",
+   "source": "IM12",
+   "estimated": true
+  },
+  {
+   "name": "a dropped drawing with several layer rows, or rows that start as Leave out",
+   "group": "drawing import",
+   "value": "opens the Import drawings window with it picked and the cut technology panel open",
+   "source": "IM12",
+   "estimated": true
+  },
+  {
    "name": "default micro-joints",
    "group": "part technology",
    "value": 0,

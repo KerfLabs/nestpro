@@ -158,18 +158,20 @@ pub static OPS: &[Op] = &[
     Op { name: "import-program", group: "Job", kind: Kind::Create, help: "Open a BLM LC5 machine program set (<NEST>.zip, its .XML, or a Lantek .nxp) as a new editable job: its parts, where they sit, the sheet, material and thickness, and the cut-off as a remnant line.", args: &[
         r("path", Ty::Path, "The program set (.zip / .XML / .nxp)"), a("force", Ty::Bool, "Overwrite the job file if it exists"),
     ] },
-    Op { name: "drawing-layers", group: "Parts", kind: Kind::Global, help: "List a part drawing's layers (DXF/DWG layers, IGES levels, DSTV blocks, ESSI cut/mark…) and how many objects each holds, before importing it. Objects the drawing hides (frozen or off layers, invisible) or draws in a centre / hidden / dashed line type get their own row, such as `0 [CENTER]`, that starts as left out. Also answers to dxf-layers.", args: &[
+    Op { name: "drawing-layers", group: "Parts", kind: Kind::Global, help: "List a part drawing's layers (DXF/DWG layers, IGES levels, DSTV blocks, ESSI cut/mark…) and how many objects each holds, before importing it. Objects the drawing hides (frozen or off layers, invisible) or draws in a centre / hidden / dashed line type get their own row, such as `0 [CENTER]`, that starts as left out. Each part's size, holes and contours (numbered as part-info numbers them, with the state each starts in) are given as the part comes in with `layers`, so import-drawing's `contours` can be chosen before importing. Also answers to dxf-layers.", args: &[
         r("path", Ty::Path, "The drawing file"), c("format", FORMATS, "Read the file as this format (default: by its extension and content)"),
         c("dialect", &["ESSI", "BURNY", "ESAB", "MESSER", "VULCAN"], "ESSI programs: the cutting control's dialect (default: by extension)"),
         c("pdf_layers", &["colour", "pdf", "one"], "PDF drawings: layers by line colour (default), by the PDF's own layers, or all on one layer"),
+        a("layers", Ty::Str, "Layer roles for the sizes and contours: \"LAYER=cut|mark|ignore,…\", as import-drawing takes them"),
     ] },
-    Op { name: "import-drawing", group: "Parts", kind: Kind::Write, help: "Import part drawings as parts: DXF, DWG, Lantek MEC, IGES, PDF, ESSI, DSTV (NC1) or GEO, picked by extension and content. Every layer is cut unless `layers` says otherwise (a format's marking layers start as mark; rows like `0 [CENTER]` or `HOLES [frozen]` — what the drawing hides or draws as centre / dashed lines — start as left out, `layers=0 [CENTER]=cut` cuts them). An object drawn twice in the same place is cut once. Open lines on the part are kept but never cut: a straight one from edge to edge, a dashed one or one on a BEND layer as a bend line, any other as no-cut (contour-tech changes them; see part-info). Quantity comes from `qty`, else the file's own part data, else the file name (Settings → name format); a file holding several parts gives several parts. Also answers to import-dxf.", args: &[
+    Op { name: "import-drawing", group: "Parts", kind: Kind::Write, help: "Import part drawings as parts: DXF, DWG, Lantek MEC, IGES, PDF, ESSI, DSTV (NC1) or GEO, picked by extension and content. Every layer is cut unless `layers` says otherwise (a format's marking layers start as mark; rows like `0 [CENTER]` or `HOLES [frozen]` — what the drawing hides or draws as centre / dashed lines — start as left out, `layers=0 [CENTER]=cut` cuts them). An object drawn twice in the same place is cut once. Open lines on the part are kept but never cut: a straight one from edge to edge, a dashed one or one on a BEND layer as a bend line, any other as no-cut (contour-tech changes them; see part-info). `contours` then sets contours as contour-tech does, before the part is made (one drawing of one part; numbers as drawing-layers gives them with the same `layers`), the same as painting them in the import window's preview. Quantity comes from `qty`, else the file's own part data, else the file name (Settings → name format); a file holding several parts gives several parts. Also answers to import-dxf.", args: &[
         r("path", Ty::Path, "Drawing file, or several separated by ';'"), c("format", FORMATS, "Read every file as this format (default: by extension and content)"),
         c("dialect", &["ESSI", "BURNY", "ESAB", "MESSER", "VULCAN"], "ESSI programs: the cutting control's dialect (default: by extension — .MPG ESAB, .LOS MESSER, .DAT VULCAN, else ESSI)"),
         a("scale", Ty::Num, "PDF drawings: the drawing's scale, real size = drawing size × scale (4 for a 1:4 drawing; default 1)"),
         c("pages", &["together", "separate"], "PDF drawings: all pages side by side in one drawing (default), or one part per page"),
         c("pdf_layers", &["colour", "pdf", "one"], "PDF drawings: layers by line colour (default), by the PDF's own layers, or all on one layer"),
         a("layers", Ty::Str, "Layer roles: \"LAYER=cut|mark|ignore,…\" (others: cut, or mark for a format's marking layers)"),
+        a("contours", Ty::Str, "Contour choices, in order, as contour-tech makes them: \"CONTOURS=WHAT; …\" with WHAT a state (cut, mark, no-cut, bend-line, leave-out), quality 1-12 or auto, and/or same, e.g. \"7=mark; 1=leave-out; 2=quality 1 same\""),
         a("qty", Ty::Int, "Quantity for every imported part (default: the file's, else from the file name, else 1)"), a("name", Ty::Str, "Reference (one part only)"), a("group", Ty::Str, "Group for the imported parts"),
     ] },
     Op { name: "edit-part", group: "Parts", kind: Kind::Write, help: "Change a part's reference, quantity, size (built-in shapes), rotations or group. Changing the size of a part with technology needs tech=copy (keep it, change a copy) or tech=drop (remove its technology).", args: &[
@@ -465,6 +467,48 @@ fn text_kind_from(s: &str) -> Result<TextKind, String> {
 }
 fn layer_role_from(s: &str) -> Result<dxf::LayerRole, String> {
     pick(s, "layer role", &[("cut", dxf::LayerRole::Cut), ("mark", dxf::LayerRole::Mark), ("ignore", dxf::LayerRole::Ignore)])
+}
+
+/// Layer roles as an agent writes them ("LAYER=cut|mark|ignore,…") over
+/// `roles`, the drawing's layers with the roles they start with.
+fn set_layer_roles(roles: &mut BTreeMap<String, dxf::LayerRole>, spec: &str) -> Result<(), String> {
+    for kv in spec.split(',').filter(|s| !s.trim().is_empty()) {
+        let (l, role) = kv.split_once('=').ok_or_else(|| format!("layers: '{kv}' is not LAYER=role"))?;
+        let l = l.trim();
+        let k = roles.keys().find(|x| x.eq_ignore_ascii_case(l)).cloned().ok_or_else(|| format!("layers: no layer '{l}' in the drawing(s) ({})", roles.keys().cloned().collect::<Vec<_>>().join(", ")))?;
+        roles.insert(k, layer_role_from(role.trim())?);
+    }
+    Ok(())
+}
+
+/// Contour choices as an agent writes them (IM12), for a part of `n`
+/// contours: "7=mark; 1=leave-out; 2=quality 1 same", each the contours
+/// (as contour-tech takes them) and what they become.
+fn contour_choices_from(s: &str, n: usize) -> Result<Vec<imports::ContourChoice>, String> {
+    let how = "give a state (cut, mark, no-cut, bend-line, leave-out), quality 1-12 or auto, and/or same, e.g. contours=\"7=mark; 1=leave-out; 2=quality 1 same\"";
+    let mut out = vec![];
+    for entry in s.split([';', '\n']).map(str::trim).filter(|e| !e.is_empty()) {
+        let (nums, what) = entry.split_once('=').ok_or_else(|| format!("contours: '{entry}' is not CONTOURS=WHAT: {how}."))?;
+        let picks = contours::parse_numbers(nums, n)?;
+        let (mut state, mut quality, mut same) = (None, None, false);
+        let words: Vec<String> = what.replace('=', " ").split_whitespace().map(str::to_lowercase).collect();
+        let mut w = words.iter();
+        while let Some(word) = w.next() {
+            match word.as_str() {
+                "same" => same = true,
+                "quality" => {
+                    let q = w.next().ok_or_else(|| format!("contours: '{entry}': quality needs 1-12 or auto."))?;
+                    quality = Some(contour_quality_from(q)?);
+                }
+                word => state = Some(contour_state_from(word).map_err(|_| format!("contours: '{word}' in '{entry}': {how}."))?),
+            }
+        }
+        if state.is_none() && quality.is_none() {
+            return Err(format!("contours: '{entry}' says nothing to do: {how}."));
+        }
+        out.push(imports::ContourChoice { contours: picks, paint: contours::Paint { state, quality }, same });
+    }
+    Ok(out)
 }
 
 /// A contour's quality set by hand: 1–12, or auto (None) to give it back to
@@ -1084,22 +1128,32 @@ pub fn run_global(ctx: &Ctx, name: &str, args: &Value) -> Result<Outcome, String
                     *layers.entry(l).or_insert(0) += n;
                 }
             }
-            let roles = crate::formats::default_roles(&parts);
+            let mut roles = crate::formats::default_roles(&parts);
+            // DX3: rows that start as "Leave out", with why.
+            let hidden: BTreeMap<String, String> = parts.iter().flat_map(|p| p.drawing.hidden.clone()).collect();
+            let start = roles.clone();
+            if let Some(spec) = a.str("layers") {
+                set_layer_roles(&mut roles, &spec)?;
+            }
             // What each part comes in as with those roles, as the import window's
-            // preview shows it (IM10): its size and holes, or why it can't be made.
+            // preview shows it (IM10): its size, holes and contours (IM12), or
+            // why it can't be made.
             let sizes: Vec<Value> = parts
                 .iter()
                 .map(|p| match crate::dxf::build(&p.drawing, &roles) {
-                    Ok((g, rep)) => json!({"w": r1(g.w), "h": r1(g.h), "holes": g.holes.len(), "notes": crate::engine::import_notes(&path, &rep)}),
+                    Ok((g, rep)) => {
+                        let list = g.contour_list();
+                        let rows: Vec<Value> = list.iter().enumerate().map(|(k, c)| json!({"contour": k + 1, "kind": contours::kind(&list, k), "state": c.state.key(), "length_mm": r1(c.length())})).collect();
+                        json!({"w": r1(g.w), "h": r1(g.h), "holes": g.holes.len(), "contours": rows, "notes": crate::engine::import_notes(&path, &rep)})
+                    }
                     Err(e) => json!({"error": e}),
                 })
                 .collect();
             let first = sizes.first().and_then(|v| Some((v["w"].as_f64()?, v["h"].as_f64()?))).map_or(String::new(), |(w, h)| format!(", {w} × {h} mm"));
-            // DX3: rows that start as "Leave out", with why.
-            let hidden: BTreeMap<String, String> = parts.iter().flat_map(|p| p.drawing.hidden.clone()).collect();
             let data = json!({
                 "layers": layers,
-                "default_roles": roles.iter().map(|(k, v)| (k.clone(), v.label())).collect::<BTreeMap<_, _>>(),
+                "default_roles": start.iter().map(|(k, v)| (k.clone(), v.label())).collect::<BTreeMap<_, _>>(),
+                "roles": roles.iter().map(|(k, v)| (k.clone(), v.label())).collect::<BTreeMap<_, _>>(),
                 "left_out_by_default": hidden,
                 "parts": parts.len(),
                 "sizes": sizes,
@@ -1439,18 +1493,27 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             }
             let mut roles = crate::formats::default_roles(drawings.iter().map(|d| &d.part));
             if let Some(spec) = a.str("layers") {
-                for kv in spec.split(',').filter(|s| !s.trim().is_empty()) {
-                    let (l, role) = kv.split_once('=').ok_or_else(|| format!("layers: '{kv}' is not LAYER=role"))?;
-                    let l = l.trim();
-                    let k = roles.keys().find(|x| x.eq_ignore_ascii_case(l)).cloned().ok_or_else(|| format!("layers: no layer '{l}' in the drawing(s) ({})", roles.keys().cloned().collect::<Vec<_>>().join(", ")))?;
-                    roles.insert(k, layer_role_from(role.trim())?);
-                }
+                set_layer_roles(&mut roles, &spec)?;
+            }
+            let wanted = a.str("contours").filter(|c| !c.trim().is_empty());
+            if wanted.is_some() && drawings.len() != 1 {
+                return Err(format!(
+                    "contours: contour numbers belong to one part, and this import makes {} parts. Import one drawing of one part with contours=, and the others without; or set their contours afterwards with contour-tech.",
+                    drawings.len()
+                ));
             }
             let mut notes = vec![];
             let mut added = vec![];
             for inc in &drawings {
-                let rp = &inc.part;
-                let (mut p, n) = part_from_read(&ctx.cfg, &job.spec, &inc.file, &inc.name, &rp.drawing, &rp.meta, &roles, next_color(&job.parts))?;
+                // IM12: the contours chosen, numbered on the part these roles make.
+                let choices = match &wanted {
+                    Some(c) => {
+                        let (bare, _) = part_from_read(&ctx.cfg, &job.spec, &inc.file, &inc.name, &inc.part.drawing, &inc.part.meta, &roles, 0)?;
+                        contour_choices_from(c, contours::list(&bare).len())?
+                    }
+                    None => vec![],
+                };
+                let (mut p, n) = imports::chosen_part(&ctx.cfg, &job.spec, inc, &roles, &choices, next_color(&job.parts))?;
                 notes.extend(n);
                 if let Some(q) = a.int("qty")? {
                     p.qty = q.max(0) as u32;
