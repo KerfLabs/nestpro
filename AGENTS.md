@@ -30,7 +30,8 @@ The evidence for that ID (addresses, internal names, screenshots) stays in
 
 Everything committed here will be published. `tools/public-check.sh` enforces this; it runs
 in `tools/check.sh`, in the pre-commit hook (`tools/install-hooks.sh` once per clone) and in
-CI. Never bypass it with `--no-verify`.
+CI. Never bypass it with `--no-verify`. GitHub text (PR and issue bodies, comments) is public too
+and no hook sees it: write it to a file and run `tools/public-check.sh --text <file>` before posting.
 
 Never commit, anywhere in the public repo (code comments and test names included):
 - code addresses, decompiler names (`FUN_…`, `local_…`), analysis evidence IDs, or the
@@ -68,7 +69,7 @@ database, customers) are in `research/public-denylist.txt`; the check reads it w
 
 ```bash
 tools/check.sh            # after every change: public check + Linux tests + Windows type-check
-tools/shot.sh out.png     # build + screenshot (headless Xvfb :97); add app flags e.g. --jobs, --part-tab=machining
+tools/shot.sh out.png     # build + screenshot (its own headless Xvfb display); add app flags e.g. --jobs, --part-tab=machining
 tools/install-hooks.sh    # once per clone: pre-commit public check
 cd app && cargo run       # run it (needs a display)
 ```

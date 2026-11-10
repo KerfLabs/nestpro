@@ -4,12 +4,16 @@
 #
 #   tools/public-check.sh            check every tracked file (and new, not ignored ones)
 #   tools/public-check.sh --staged   check what is staged (the pre-commit hook)
+#   tools/public-check.sh --text F…  check text about to be published elsewhere
+#                                    (a PR or issue body, a comment): run it on
+#                                    the file before posting; `-` reads stdin
 #
 # What it blocks (see AGENTS.md "Keeping the public repo clean"):
 #   - code addresses (0x14xxxxxxx / 0x18xxxxxxx), decompiler names (FUN_…,
 #     local_…, param_…), analysis evidence and unknown ids (ev_…, unk_…)
 #   - names of the original's binaries used as evidence (ExpertPr.exe, Mecaniza.dll, …)   public-check: allow
-#   - personal paths (C:\Users\<name>, /home/<name>) and e-mail addresses
+#   - personal paths (C:\Users\<name>, /home/<name>, agents' scratch folders
+#     under /tmp/claude-*) and e-mail addresses
 #   - paths that must never be committed: research/, vendor/, history/
 #   - images not listed (with their sha256) in tools/public-images.txt
 #   - anything in research/public-denylist.txt (private: shop names, servers,
@@ -23,8 +27,16 @@ cd "$(dirname "$0")/.."
 
 staged=0
 [ "${1:-}" = "--staged" ] && staged=1
+text=0
+if [ "${1:-}" = "--text" ]; then
+  text=1; shift
+  [ $# -gt 0 ] || { echo "usage: tools/public-check.sh --text FILE… (or - for stdin)" >&2; exit 2; }
+fi
 
-if [ $staged = 1 ]; then
+if [ $text = 1 ]; then
+  files=("$@")
+  show() { if [ "$1" = - ]; then cat; else cat -- "$1"; fi; }
+elif [ $staged = 1 ]; then
   mapfile -t files < <(git diff --cached --name-only --diff-filter=ACMR)
   show() { git show ":$1"; }
 else
@@ -42,7 +54,7 @@ patterns=(
   'decompiler variable|\b(local|param|in_stack|extraout|unaff)_[0-9a-fA-F]{1,4}\b'
   'evidence id|\b(ev|unk)_[0-9a-f]{8,}'
   "original's binary|\b(ExpertPr|DrawNest|Mecaniza|Mecaniz1|GeometrV|DIALOGWD|UsExpert|DATABASE|Lantek\.[A-Za-z0-9.]+)\.(exe|dll)\b"
-  'personal path|[A-Za-z]:\\\\Users\\\\[^\\%$<{ ]+|/home/[a-z][a-z0-9_-]*/'
+  'personal path|[A-Za-z]:\\{1,2}Users\\{1,2}[^\\%$<{ ]+|/home/[a-z][a-z0-9_-]*/|/tmp/claude-[0-9]+/'
   'e-mail|[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.[A-Za-z.]{2,}'
 )
 # E-mails that are fine to publish.
@@ -58,10 +70,12 @@ fi
 images_list=tools/public-images.txt
 for f in "${files[@]}"; do
   [ -n "$f" ] || continue
-  case "$f" in
-    research/*|vendor/*|history/*) report "$f: this folder is never published"; continue ;;
-  esac
-  if [ $staged = 0 ] && [ ! -e "$f" ]; then continue; fi   # deleted, not yet staged
+  if [ $text = 0 ]; then
+    case "$f" in
+      research/*|vendor/*|history/*) report "$f: this folder is never published"; continue ;;
+    esac
+    if [ $staged = 0 ] && [ ! -e "$f" ]; then continue; fi   # deleted, not yet staged
+  fi
   case "${f,,}" in
     *.png|*.jpg|*.jpeg|*.gif|*.webp|*.bmp|*.ico)
       sum="$(show "$f" | sha256sum | cut -d' ' -f1)"
