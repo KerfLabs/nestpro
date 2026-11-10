@@ -4792,6 +4792,36 @@
   "unit": "min",
   "estimated": true,
   "source": "MECHANICS JX9"
+ },
+ {
+  "name": "warn when a job is in use (new install, rebuild)",
+  "group": "jobs in use",
+  "value": true,
+  "source": "MECHANICS CU1"
+ },
+ {
+  "name": "allow opening a job in use (new install, rebuild)",
+  "group": "jobs in use",
+  "value": true,
+  "source": "MECHANICS CU1"
+ },
+ {
+  "name": "auto-refresh on (new install, rebuild)",
+  "group": "job explorer",
+  "value": false,
+  "source": "MECHANICS JX8"
+ },
+ {
+  "name": "quick change check while auto-refresh is on (rebuild)",
+  "group": "job explorer",
+  "value": "every few seconds",
+  "source": "MECHANICS JX8"
+ },
+ {
+  "name": "auto-refresh period sets the full reload (rebuild)",
+  "group": "job explorer",
+  "value": true,
+  "source": "MECHANICS JX8, JX9"
  }
 ]
 }
