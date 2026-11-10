@@ -662,7 +662,9 @@ impl ImportUi {
                 let chosen = match self.edited.get(f) {
                     Some(e) if same_file(e) => Chosen::Read(e.read.clone(), e.choices.clone()),
                     Some(_) => Chosen::Changed,
-                    None => self.read_of(f, cfg, spec).map_or(Chosen::Unread, |(_, d)| Chosen::Read(d, DrawingChoices::default())),
+                    // Nothing set: the preview's reading only while the bytes are the
+                    // same, else read it again as it is now (IM11).
+                    None => self.read_of(f, cfg, spec).filter(|(_, d)| file_fingerprint(f) == Some(d.fingerprint)).map_or(Chosen::Unread, |(_, d)| Chosen::Read(d, DrawingChoices::default())),
                 };
                 (f.clone(), chosen)
             })
