@@ -241,15 +241,159 @@
    "estimated": true
   },
   {
-   "name": "quality speed factor rough",
+   "name": "quality speed factor, quality 1",
    "group": "part technology",
-   "value": 1.2,
+   "value": 0.7,
+   "source": "CQ3",
    "estimated": true
   },
   {
-   "name": "quality speed factor fine",
+   "name": "quality speed factor, quality 2",
    "group": "part technology",
-   "value": 0.7,
+   "value": 0.85,
+   "source": "CQ3",
+   "estimated": true
+  },
+  {
+   "name": "quality speed factor, other qualities",
+   "group": "part technology",
+   "value": 1.0,
+   "source": "CQ3",
+   "estimated": true
+  },
+  {
+   "name": "cut contour quality order",
+   "group": "part technology",
+   "value": "contour's quality set by hand (CQ6), else part's size-range row, else part's quality, else machine size band (parts without size ranges), else 3",
+   "source": "CQ1"
+  },
+  {
+   "name": "cut quality when nothing sets one",
+   "group": "part technology",
+   "value": 3,
+   "source": "CQ1",
+   "estimated": true
+  },
+  {
+   "name": "old cut qualities in saved files",
+   "group": "part technology",
+   "value": "part: Normal = none (size bands), Fine = 1, Rough = 3; size-range row: Fine = 1, Normal = 2, Rough = 3",
+   "source": "CQ2",
+   "estimated": true
+  },
+  {
+   "name": "cut quality names",
+   "group": "part technology",
+   "value": "machine file A922 (quality 1) … A933 (quality 12), shown 'Name (n)'",
+   "source": "CQ4"
+  },
+  {
+   "name": "cut quality without a name",
+   "group": "part technology",
+   "value": "Quality n",
+   "source": "CQ4",
+   "estimated": true
+  },
+  {
+   "name": "cut quality hidden from the pickers",
+   "group": "part technology",
+   "value": "<HIDE>",
+   "source": "CQ4"
+  },
+  {
+   "name": "cut quality colours",
+   "group": "part technology",
+   "value": "colour settings LANTEKIN.CNI C041 (quality 1) … C052 (quality 12)",
+   "source": "CQ5"
+  },
+  {
+   "name": "cut quality shipped colours",
+   "group": "part technology",
+   "value": ["#ff8040", "#0080c0", "#ff00ff", "#008000", "#800080", "#804040", "#0080ff", "#008080", "#004080", "#8080ff", "#80ffff", "#ff80ff"],
+   "source": "CQ5"
+  },
+  {
+   "name": "a cut quality set by hand on a contour wins over the part's size ranges, the part's quality and the machine's size bands",
+   "group": "part technology",
+   "value": true,
+   "source": "CQ6",
+   "estimated": true
+  },
+  {
+   "name": "contour states that take a cut quality set by hand (a mark always uses the marking quality)",
+   "group": "part technology",
+   "value": ["cut"],
+   "source": "CQ6",
+   "estimated": true
+  },
+  {
+   "name": "cut qualities a contour can be given by hand",
+   "group": "part technology",
+   "value": "1-12, or auto",
+   "source": "CQ6",
+   "estimated": true
+  },
+  {
+   "name": "cut technology panel rows",
+   "group": "part technology",
+   "value": ["Cut · quality by size", "each quality the machine offers", "Mark", "No cut", "Bend line", "Leave out"],
+   "source": "CS6",
+   "estimated": true
+  },
+  {
+   "name": "cut technology panel: All the same contours at start",
+   "group": "part technology",
+   "value": false,
+   "source": "CS6",
+   "estimated": true
+  },
+  {
+   "name": "cut technology panel: a drag with a row chosen",
+   "group": "part technology",
+   "value": "from a contour: sweep (every contour passed over); from open space: box (the contours wholly inside)",
+   "source": "CS6",
+   "estimated": true
+  },
+  {
+   "name": "contour colours on the part, the sheet and the panel's swatches",
+   "group": "part technology",
+   "value": {"cut": "its cut quality's colour (CQ5)", "mark": "#00ff00", "no cut": "#969696", "bend line": "#9333ea, dashed", "leave out": "#606068, dashed, only while the panel is open"},
+   "source": "CS7",
+   "estimated": true
+  },
+  {
+   "name": "import preview: cut technology panel",
+   "group": "drawing import",
+   "value": "the part's cut technology panel (CS6, CS7) on the part about to be imported, with the drawing's layer rows above its rows",
+   "source": "IM11",
+   "estimated": true
+  },
+  {
+   "name": "import preview: what a layer row can be set to",
+   "group": "drawing import",
+   "value": ["Cut", "Mark", "Leave out"],
+   "source": "IM11",
+   "estimated": true
+  },
+  {
+   "name": "import preview: a contour painted by hand when a layer row changes",
+   "group": "drawing import",
+   "value": "keeps its paint when the change leaves it in place, starting as before; one on that layer takes the layer's",
+   "source": "IM11",
+   "estimated": true
+  },
+  {
+   "name": "import-drawing contour choices",
+   "group": "drawing import",
+   "value": "CONTOURS=WHAT; … painted in order after the layer roles, on one drawing of one part",
+   "source": "IM12",
+   "estimated": true
+  },
+  {
+   "name": "a dropped drawing with several layer rows, or rows that start as Leave out",
+   "group": "drawing import",
+   "value": "opens the Import drawings window with it picked and the cut technology panel open",
+   "source": "IM12",
    "estimated": true
   },
   {
@@ -1548,20 +1692,39 @@
   {
    "name": "NEXT_L cut quality code",
    "group": "blm",
-   "value": 3,
-   "source": "MECHANICS BL5; observed: BLM program output"
+   "value": "the contour's own cut quality 1-12 (CQ1)",
+   "source": "BL22"
   },
   {
    "name": "NEXT_L marking quality code",
    "group": "blm",
    "value": 9,
-   "source": "MECHANICS BL5; observed: BLM program output"
+   "source": "BL22"
   },
   {
    "name": "NEXT_L pierce code for cutting",
    "group": "blm",
+   "value": "the technology table's pierce mode for the contour's quality (field 26 of its block)",
+   "source": "BL22"
+  },
+  {
+   "name": "NEXT_L pierce code without a table record or pierce mode",
+   "group": "blm",
    "value": 2,
-   "source": "MECHANICS BL5, BL2; observed: BLM program output"
+   "source": "BL22",
+   "estimated": true
+  },
+  {
+   "name": "NEXT_L marking pierce code",
+   "group": "blm",
+   "value": 0,
+   "source": "BL22"
+  },
+  {
+   "name": "XML tool flags",
+   "group": "blm",
+   "value": "Foratura Id<p> / Taglio Id<q> = 1 for every pierce code / quality the sheet's NEXT_L lines use; a cut-off line adds 2 / 3",
+   "source": "BL23"
   },
   {
    "name": "generate XML file",
@@ -3318,7 +3481,7 @@
  {
   "name": "hole-size bands",
   "group": "machine file sections",
-  "value": "Z010/Z011/Z012 triples pick a contour quality by equivalent radius (index → quality by TT8), for parts that leave the quality to the machine",
+  "value": "Z010/Z011/Z012 triples pick a contour quality by equivalent radius (index → quality by TT8), for parts with no size ranges and no quality of their own",
   "source": "MECHANICS MTL10",
   "estimated": true
  },
@@ -4671,6 +4834,54 @@
   "group": "dxf",
   "value": 0.001,
   "source": "MECHANICS DX4"
+ },
+ {
+  "name": "contour states",
+  "group": "contours",
+  "value": ["cut", "mark", "no-cut", "bend-line", "leave-out"],
+  "source": "MECHANICS CS1"
+ },
+ {
+  "name": "open line from edge to edge starts as a bend line: end to outline (mm)",
+  "group": "contours",
+  "value": 0.5,
+  "source": "MECHANICS CS2"
+ },
+ {
+  "name": "open line counts as straight within (mm)",
+  "group": "contours",
+  "value": 0.01,
+  "source": "MECHANICS CS2"
+ },
+ {
+  "name": "where three or more line ends meet, the outside boundary closes and the lines inside stay open",
+  "group": "contours",
+  "value": true,
+  "source": "MECHANICS CS2"
+ },
+ {
+  "name": "layer name that makes open lines bend lines",
+  "group": "contours",
+  "value": "BEND",
+  "source": "MECHANICS CS2"
+ },
+ {
+  "name": "no cut and bend line contours are never machined",
+  "group": "contours",
+  "value": true,
+  "source": "MECHANICS CS3"
+ },
+ {
+  "name": "the outline is always cut",
+  "group": "contours",
+  "value": true,
+  "source": "MECHANICS CS4"
+ },
+ {
+  "name": "equal contours: same shape moved, point tolerance (mm)",
+  "group": "contours",
+  "value": 0.01,
+  "source": "MECHANICS CS5"
  },
  {
   "name": "export stops on a part drawn wrong (outline crosses itself, hole outside, holes overlap)",

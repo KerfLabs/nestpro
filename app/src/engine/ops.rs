@@ -129,8 +129,9 @@ const SHAPES: &[&str] = &["rectangle", "plate-hole", "strip", "l-bracket", "disc
 const MACHINES: &[&str] = &["laser", "plasma", "oxyfuel", "waterjet", "laserpunch", "punch"];
 const LEADS: &[&str] = &["machine", "perpendicular", "line", "arc", "line-arc", "corner"];
 const JOINTS: &[&str] = &["gap", "leads", "leads-inclined", "corner"];
-const QUALITIES: &[&str] = &["rough", "normal", "fine"];
+const QUALITIES: &[&str] = &["auto", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"];
 const TEXTS: &[&str] = &["mark", "special", "note"];
+const CONTOUR_STATES: &[&str] = &["cut", "mark", "no-cut", "bend-line", "leave-out"];
 
 pub static OPS: &[Op] = &[
     // --- job ---
@@ -157,18 +158,20 @@ pub static OPS: &[Op] = &[
     Op { name: "import-program", group: "Job", kind: Kind::Create, help: "Open a BLM LC5 machine program set (<NEST>.zip, its .XML, or a Lantek .nxp) as a new editable job: its parts, where they sit, the sheet, material and thickness, and the cut-off as a remnant line.", args: &[
         r("path", Ty::Path, "The program set (.zip / .XML / .nxp)"), a("force", Ty::Bool, "Overwrite the job file if it exists"),
     ] },
-    Op { name: "drawing-layers", group: "Parts", kind: Kind::Global, help: "List a part drawing's layers (DXF/DWG layers, IGES levels, DSTV blocks, ESSI cut/mark…) and how many objects each holds, before importing it. Objects the drawing hides (frozen or off layers, invisible) or draws in a centre / hidden / dashed line type get their own row, such as `0 [CENTER]`, that starts as left out. Also answers to dxf-layers.", args: &[
+    Op { name: "drawing-layers", group: "Parts", kind: Kind::Global, help: "List a part drawing's layers (DXF/DWG layers, IGES levels, DSTV blocks, ESSI cut/mark…) and how many objects each holds, before importing it. Objects the drawing hides (frozen or off layers, invisible) or draws in a centre / hidden / dashed line type get their own row, such as `0 [CENTER]`, that starts as left out. Each part's size, holes and contours (numbered as part-info numbers them, with the state each starts in) are given as the part comes in with `layers`, so import-drawing's `contours` can be chosen before importing. Also answers to dxf-layers.", args: &[
         r("path", Ty::Path, "The drawing file"), c("format", FORMATS, "Read the file as this format (default: by its extension and content)"),
         c("dialect", &["ESSI", "BURNY", "ESAB", "MESSER", "VULCAN"], "ESSI programs: the cutting control's dialect (default: by extension)"),
         c("pdf_layers", &["colour", "pdf", "one"], "PDF drawings: layers by line colour (default), by the PDF's own layers, or all on one layer"),
+        a("layers", Ty::Str, "Layer roles for the sizes and contours: \"LAYER=cut|mark|ignore,…\", as import-drawing takes them"),
     ] },
-    Op { name: "import-drawing", group: "Parts", kind: Kind::Write, help: "Import part drawings as parts: DXF, DWG, Lantek MEC, IGES, PDF, ESSI, DSTV (NC1) or GEO, picked by extension and content. Every layer is cut unless `layers` says otherwise (a format's marking layers start as mark; rows like `0 [CENTER]` or `HOLES [frozen]` — what the drawing hides or draws as centre / dashed lines — start as left out, `layers=0 [CENTER]=cut` cuts them). An object drawn twice in the same place is cut once. Quantity comes from `qty`, else the file's own part data, else the file name (Settings → name format); a file holding several parts gives several parts. Also answers to import-dxf.", args: &[
+    Op { name: "import-drawing", group: "Parts", kind: Kind::Write, help: "Import part drawings as parts: DXF, DWG, Lantek MEC, IGES, PDF, ESSI, DSTV (NC1) or GEO, picked by extension and content. Every layer is cut unless `layers` says otherwise (a format's marking layers start as mark; rows like `0 [CENTER]` or `HOLES [frozen]` — what the drawing hides or draws as centre / dashed lines — start as left out, `layers=0 [CENTER]=cut` cuts them). An object drawn twice in the same place is cut once. Open lines on the part are kept but never cut: a straight one from edge to edge, a dashed one or one on a BEND layer as a bend line, any other as no-cut (contour-tech changes them; see part-info). `contours` then sets contours as contour-tech does, before the part is made (one drawing of one part; numbers as drawing-layers gives them with the same `layers`), the same as painting them in the import window's preview. Quantity comes from `qty`, else the file's own part data, else the file name (Settings → name format); a file holding several parts gives several parts. Also answers to import-dxf.", args: &[
         r("path", Ty::Path, "Drawing file, or several separated by ';'"), c("format", FORMATS, "Read every file as this format (default: by extension and content)"),
         c("dialect", &["ESSI", "BURNY", "ESAB", "MESSER", "VULCAN"], "ESSI programs: the cutting control's dialect (default: by extension — .MPG ESAB, .LOS MESSER, .DAT VULCAN, else ESSI)"),
         a("scale", Ty::Num, "PDF drawings: the drawing's scale, real size = drawing size × scale (4 for a 1:4 drawing; default 1)"),
         c("pages", &["together", "separate"], "PDF drawings: all pages side by side in one drawing (default), or one part per page"),
         c("pdf_layers", &["colour", "pdf", "one"], "PDF drawings: layers by line colour (default), by the PDF's own layers, or all on one layer"),
         a("layers", Ty::Str, "Layer roles: \"LAYER=cut|mark|ignore,…\" (others: cut, or mark for a format's marking layers)"),
+        a("contours", Ty::Str, "Contour choices, in order, as contour-tech makes them: \"CONTOURS=WHAT; …\" with WHAT a state (cut, mark, no-cut, bend-line, leave-out), quality 1-12 or auto, and/or same, e.g. \"7=mark; 1=leave-out; 2=quality 1 same\""),
         a("qty", Ty::Int, "Quantity for every imported part (default: the file's, else from the file name, else 1)"), a("name", Ty::Str, "Reference (one part only)"), a("group", Ty::Str, "Group for the imported parts"),
     ] },
     Op { name: "edit-part", group: "Parts", kind: Kind::Write, help: "Change a part's reference, quantity, size (built-in shapes), rotations or group. Changing the size of a part with technology needs tech=copy (keep it, change a copy) or tech=drop (remove its technology).", args: &[
@@ -176,7 +179,13 @@ pub static OPS: &[Op] = &[
         a("rotate", Ty::Bool, "May turn 90°"), a("mirror", Ty::Bool, "May be mirrored"), a("group", Ty::Str, "Group"), c("tech", &["copy", "drop"], "Size change on a part with technology"),
     ] },
     Op { name: "remove-part", group: "Parts", kind: Kind::Write, help: "Take a part out of the job (its placed copies go too).", args: &[PART] },
-    Op { name: "part-info", group: "Parts", kind: Kind::Read, help: "A part's geometry and technology: size, area, cut length, contours, every element (numbered, for lead-at / joint-at), texts, and Verify Part / Verify Machining results.", args: &[PART] },
+    Op { name: "part-info", group: "Parts", kind: Kind::Read, help: "A part's geometry and technology: size, area, cut length, every contour (numbered: holes first, the outline, then open lines; open or closed; its state: cut, mark, no-cut, bend-line or leave-out, set with contour-tech; cut contours with their cut quality by the machine's name, e.g. Slow (1), or Quality n when the machine names none, and where it comes from: by hand (contour-tech quality=), part size range, part, machine size band or default), every element (numbered, for lead-at / joint-at), texts, and Verify Part / Verify Machining results.", args: &[PART] },
+    Op { name: "contour-tech", group: "Technology", kind: Kind::Write, help: "Set contours of an imported part (numbers from part-info: holes first, the outline, then open lines) to cut, mark (marked on the surface, open or closed), no-cut (kept on the part and shown, never machined), bend-line (a no-cut line in its own colour) or leave-out (not on the part), and/or give cut contours a cut quality by hand (1-12, which wins over the part's size ranges and quality and the machine's size bands; auto gives the choice back to them). same=true also sets every contour equal to one of them (same shape, moved; with only a quality, the equal contours that are cut). The outline is always cut, open lines can't be cut yet, and a mark always uses the machine's marking quality.", args: &[
+        PART, r("contours", Ty::Str, "Contour numbers from part-info, e.g. \"5\", \"1,3\" or \"2-4\""),
+        c("state", CONTOUR_STATES, "What the contours become (state, quality or both)"),
+        c("quality", QUALITIES, "Cut quality set by hand on cut contours: the machine's quality 1-12, or auto = the part's size ranges and quality and the machine's size bands decide (state, quality or both)"),
+        a("same", Ty::Bool, "Also every contour equal to one of them (default false)"),
+    ] },
     Op { name: "export-part-dxf", group: "Parts", kind: Kind::Read, help: "Save a part as DXF (outline and holes on CUT, marking on MARK).", args: &[PART, r("out", Ty::Path, "DXF file to write")] },
     Op { name: "library", group: "Parts", kind: Kind::Write, help: "The product/job library: list it, add a library product to the job, or save parts / the job into it.", args: &[
         Arg { name: "mode", ty: Ty::Str, required: true, help: "What to do", choices: &["list", "add", "save-part", "save-job"] },
@@ -239,7 +248,7 @@ pub static OPS: &[Op] = &[
         Arg { name: "mode", ty: Ty::Str, required: true, help: "auto or delete", choices: &["auto", "delete"] }, PARTS,
         a("every", Ty::Num, "auto: one joint per this many mm of each contour (default: the machine's maximum distance for the part's quality)"),
     ] },
-    Op { name: "machine-tech", group: "Technology", kind: Kind::Read, help: "Which material × thickness section of the machine's technology file applies to the job (or to another material/thickness), and the values it gives: lead and joint tables, joint gap, pierce and loop radius, kerf, part gap and margins (compare with the sheet's; take them with set-sheet machine_spacing=true), and the cutting speeds, pierce times and time settings that time the job (from the machine's technology table and time file).", args: &[
+    Op { name: "machine-tech", group: "Technology", kind: Kind::Read, help: "Which material × thickness section of the machine's technology file applies to the job (or to another material/thickness), and the values it gives: lead and joint tables, joint gap, pierce and loop radius, kerf, part gap and margins (compare with the sheet's; take them with set-sheet machine_spacing=true), the cutting speeds, pierce times and time settings that time the job (from the machine's technology table and time file), and the machine's 12 cut qualities by name and colour (offered = listed in the window's pickers).", args: &[
         a("material", Ty::Str, "Look at this material instead of the job's (name or number)"), a("thickness", Ty::Num, "Look at this thickness instead of the job's, mm"),
     ] },
     Op { name: "compensation", group: "Machining", kind: Kind::Write, help: "Kerf compensation: how the beam is kept half a kerf on the scrap side of each cut — control (the program writes G41/G42 and the corrector number, the CNC offsets) and/or system (the program carries the already-offset path). Shows the machine's settings, the job's choice and, per contour of a sheet, its side, corrector and radius, plus the contours system compensation can't cut (holes no bigger than the kerf, slots narrower than it). control/system set the job's choice (on, off, or machine = the machine file's).", args: &[
@@ -251,7 +260,7 @@ pub static OPS: &[Op] = &[
     Op { name: "loops", group: "Technology", kind: Kind::Write, help: "Loops at sharp outer corners on or off.", args: &[r("on", Ty::Bool, "true = add loops, false = remove"), PARTS, a("size", Ty::Num, "Loop size, mm")] },
     Op { name: "cut-tech", group: "Technology", kind: Kind::Write, help: "Own technology with the defaults (own), back to the sheet's automatic technology (delete), or cut quality by contour size (ranges).", args: &[
         Arg { name: "mode", ty: Ty::Str, required: true, help: "own, delete or ranges", choices: &["own", "delete", "ranges"] }, PARTS,
-        a("ranges", Ty::Str, "ranges: up to 3 \"from-to:quality\" by equivalent radius in mm, e.g. \"0-5:fine,5-20:normal\" (empty = off)"),
+        a("ranges", Ty::Str, "ranges: up to 3 \"from-to:quality\" by equivalent radius in mm, quality 1-12, e.g. \"0-5:1,5-20:2\" (empty = off)"),
     ] },
     Op { name: "tech-set", group: "Technology", kind: Kind::Write, help: "Set technology values on parts directly (the technology settings windows).", args: &[
         PARTS, a("lead_in", Ty::Num, "Lead-in length, mm"), a("lead_out", Ty::Num, "Lead-out length, mm"), c("lead_type", LEADS, "Lead shape"), a("position", Ty::Int, "Keypad position 1-9"),
@@ -259,7 +268,7 @@ pub static OPS: &[Op] = &[
         a("micro_joints", Ty::Int, "Joints per outside contour"), a("joint_width", Ty::Num, "Joint gap, mm"), c("joint_type", JOINTS, "Joint type"),
         a("joint_lead", Ty::Num, "Joint lead length, mm"), a("joint_angle", Ty::Num, "Joint lead angle, degrees"), a("joint_every", Ty::Num, "Automatic joints: one per this many mm of each contour, holes too (0 = use micro_joints)"),
         a("joint_lead_out", Ty::Num, "Joint lead-out distance, mm (default: the same as joint_lead)"),
-        a("loops", Ty::Bool, "Loops at sharp corners"), a("loop_size", Ty::Num, "Loop size, mm"), c("quality", QUALITIES, "Cut quality"),
+        a("loops", Ty::Bool, "Loops at sharp corners"), a("loop_size", Ty::Num, "Loop size, mm"), c("quality", QUALITIES, "Cut quality: the machine's quality 1-12 for every contour the part's size ranges don't set, or auto = the machine's size bands decide"),
     ] },
     Op { name: "text", group: "Technology", kind: Kind::Write, help: "Add a text along the bottom of parts (mark = engraved, special = filled in: #REF #QTY #MAT #THK #NUM, note = not machined), or delete all their texts.", args: &[
         Arg { name: "mode", ty: Ty::Str, required: true, help: "add or delete", choices: &["add", "delete"] }, PARTS,
@@ -433,14 +442,90 @@ fn lead_key(t: LeadType) -> &'static str {
 fn joint_from(s: &str) -> Result<JointType, String> {
     pick(s, "joint type", &[("gap", JointType::Gap), ("leads", JointType::Leads), ("leads-inclined", JointType::LeadsInclined), ("corner", JointType::Corner)])
 }
-fn quality_from(s: &str) -> Result<CutQuality, String> {
-    pick(s, "quality", &[("rough", CutQuality::Rough), ("normal", CutQuality::Normal), ("fine", CutQuality::Fine)])
+/// One of the machine's cut qualities, 1–12.
+fn numbered_quality(s: &str) -> Option<CutQuality> {
+    s.trim().parse::<usize>().ok().and_then(CutQuality::new)
+}
+fn old_name(s: &str) -> bool {
+    matches!(s.trim().to_lowercase().as_str(), "rough" | "normal" | "fine")
+}
+/// A part's quality: auto (None, the machine's size bands decide) or 1–12 (CQ1, CQ2).
+fn quality_from(s: &str) -> Result<Option<CutQuality>, String> {
+    if s.trim().eq_ignore_ascii_case("auto") {
+        return Ok(None);
+    }
+    let old = if old_name(s) { "; the old rough / normal / fine are 3 / auto / 1" } else { "" };
+    numbered_quality(s).map(Some).ok_or_else(|| format!("quality '{s}': give one of the machine's cut qualities, 1 to 12 (machine-tech lists their names), or auto to let its size bands decide{old}"))
+}
+/// A size-range row's quality: 1–12 (CQ2).
+fn range_quality_from(s: &str) -> Result<CutQuality, String> {
+    let old = if old_name(s) { "; the old rough / normal / fine are 3 / 2 / 1" } else { "" };
+    numbered_quality(s).ok_or_else(|| format!("ranges: quality '{}': a row takes one of the machine's cut qualities, 1 to 12 (machine-tech lists their names){old}", s.trim()))
 }
 fn text_kind_from(s: &str) -> Result<TextKind, String> {
     pick(s, "text kind", &[("mark", TextKind::Mark), ("special", TextKind::Special), ("note", TextKind::Note)])
 }
 fn layer_role_from(s: &str) -> Result<dxf::LayerRole, String> {
     pick(s, "layer role", &[("cut", dxf::LayerRole::Cut), ("mark", dxf::LayerRole::Mark), ("ignore", dxf::LayerRole::Ignore)])
+}
+
+/// Layer roles as an agent writes them ("LAYER=cut|mark|ignore,…") over
+/// `roles`, the drawing's layers with the roles they start with.
+fn set_layer_roles(roles: &mut BTreeMap<String, dxf::LayerRole>, spec: &str) -> Result<(), String> {
+    for kv in spec.split(',').filter(|s| !s.trim().is_empty()) {
+        let (l, role) = kv.split_once('=').ok_or_else(|| format!("layers: '{kv}' is not LAYER=role"))?;
+        let l = l.trim();
+        let k = roles.keys().find(|x| x.eq_ignore_ascii_case(l)).cloned().ok_or_else(|| format!("layers: no layer '{l}' in the drawing(s) ({})", roles.keys().cloned().collect::<Vec<_>>().join(", ")))?;
+        roles.insert(k, layer_role_from(role.trim())?);
+    }
+    Ok(())
+}
+
+/// Contour choices as an agent writes them (IM12), for a part of `n`
+/// contours: "7=mark; 1=leave-out; 2=quality 1 same", each the contours
+/// (as contour-tech takes them) and what they become.
+fn contour_choices_from(s: &str, n: usize) -> Result<Vec<imports::ContourChoice>, String> {
+    let how = "give a state (cut, mark, no-cut, bend-line, leave-out), quality 1-12 or auto, and/or same, e.g. contours=\"7=mark; 1=leave-out; 2=quality 1 same\"";
+    let mut out = vec![];
+    for entry in s.split([';', '\n']).map(str::trim).filter(|e| !e.is_empty()) {
+        let (nums, what) = entry.split_once('=').ok_or_else(|| format!("contours: '{entry}' is not CONTOURS=WHAT: {how}."))?;
+        let picks = contours::parse_numbers(nums, n)?;
+        let (mut state, mut quality, mut same) = (None, None, false);
+        let words: Vec<String> = what.replace('=', " ").split_whitespace().map(str::to_lowercase).collect();
+        let mut w = words.iter();
+        while let Some(word) = w.next() {
+            match word.as_str() {
+                "same" => same = true,
+                "quality" => {
+                    let q = w.next().ok_or_else(|| format!("contours: '{entry}': quality needs 1-12 or auto."))?;
+                    quality = Some(contour_quality_from(q)?);
+                }
+                word => state = Some(contour_state_from(word).map_err(|_| format!("contours: '{word}' in '{entry}': {how}."))?),
+            }
+        }
+        if state.is_none() && quality.is_none() {
+            return Err(format!("contours: '{entry}' says nothing to do: {how}."));
+        }
+        out.push(imports::ContourChoice { contours: picks, paint: contours::Paint { state, quality }, same });
+    }
+    Ok(out)
+}
+
+/// A contour's quality set by hand: 1–12, or auto (None) to give it back to
+/// the part's size ranges and quality and the machine's size bands (CQ6).
+fn contour_quality_from(s: &str) -> Result<Option<CutQuality>, String> {
+    if s.trim().eq_ignore_ascii_case("auto") {
+        return Ok(None);
+    }
+    numbered_quality(s).map(Some).ok_or_else(|| {
+        format!("quality '{}': the machine has cut qualities 1 to 12 (part-info shows the one each contour gets). Give one of them, or auto to let the part's size ranges and quality and the machine's size bands decide.", s.trim())
+    })
+}
+
+fn contour_state_from(s: &str) -> Result<dxf::ContourState, String> {
+    use dxf::ContourState::*;
+    let words: Vec<(&str, dxf::ContourState)> = dxf::ContourState::ALL.iter().map(|st| (st.key(), *st)).chain([("nocut", NoCut), ("bend", BendLine), ("ignore", LeaveOut)]).collect();
+    pick(s, "contour state", &words)
 }
 
 /// Material by number (from 0 as in catalog), name, or a Settings alias.
@@ -572,9 +657,9 @@ pub fn tech_json(t: &Option<PartTech>) -> Value {
             "lead_in": t.lead_in, "lead_out": t.lead_out, "lead_type": lead_key(t.lead_type), "position": t.position,
             "corner_start": t.corner_start, "overlap": t.overlap, "micro_joints": t.micro_joints, "joint_width": t.joint_width,
             "joint_type": format!("{:?}", t.joint_type).to_lowercase(), "joint_every": t.joint_every, "joint_lead": t.joint_lead, "joint_lead_out": t.joint_lead_out.unwrap_or(t.joint_lead), "joint_angle": t.joint_angle,
-            "loops": t.loops, "loop_size": t.loop_size, "quality": t.quality.label().to_lowercase(),
+            "loops": t.loops, "loop_size": t.loop_size, "quality": t.quality.map_or(json!("auto"), |q| json!(q.number())),
             "leads_on_elements": t.starts.iter().flatten().count(), "joints_on_elements": t.joint_picks.iter().flatten().count(),
-            "cut_ranges": t.cut_ranges.iter().filter(|c| c.on).map(|c| format!("{}-{}:{}", c.min_r, c.max_r, c.quality.label().to_lowercase())).collect::<Vec<_>>(),
+            "cut_ranges": t.cut_ranges.iter().filter(|c| c.on).map(|c| format!("{}-{}:{}", c.min_r, c.max_r, c.quality.number())).collect::<Vec<_>>(),
         }),
     }
 }
@@ -672,12 +757,27 @@ fn part_info(job: &JobFile, i: usize) -> Value {
     let elems = nest::elements_of(&g);
     let (w, h) = p.bbox();
     let plan = cnc::plan(&job.parts, &[Placed { part: i, x: 0.0, y: 0.0, w, h, turns: 0, mirror: false }], &job.spec);
-    let contours: Vec<Value> = g
-        .holes
+    // Every contour with its state (CS1); elements name the contour they're on
+    // by the same numbers.
+    let list = contours::list(p);
+    let numbers = dxf::cut_order(&list);
+    let (tech, mt) = (p.tech.unwrap_or_default(), crate::ct1::for_spec(&job.spec));
+    let contours: Vec<Value> = list
         .iter()
         .enumerate()
-        .map(|(k, hh)| json!({"contour": k + 1, "kind": "hole", "length_mm": r1(nest::perimeter(hh)), "standard_shape": crate::machine::recognise(hh).map(|s| s.label())}))
-        .chain(std::iter::once(json!({"contour": g.holes.len() + 1, "kind": "outside", "length_mm": r1(nest::perimeter(&g.outline)), "standard_shape": crate::machine::recognise(&g.outline).map(|s| s.label())})))
+        .map(|(k, c)| {
+            let shape = if c.closed { crate::machine::recognise(&c.pts).map(|s| s.label()) } else { None };
+            let mut v = json!({"contour": k + 1, "kind": contours::kind(&list, k), "closed": c.closed, "state": c.state.key(), "length_mm": r1(c.length()), "standard_shape": shape});
+            // CQ1, CQ6: the cut quality each cut contour gets on this job's
+            // machine, and why ("by hand" when set on the contour).
+            if c.closed && c.state == dxf::ContourState::Cut {
+                let (q, from) = cnc::contour_quality(&tech, &mt, &c.pts, c.quality);
+                v["quality"] = json!(q.number());
+                v["quality_name"] = json!(mt.qualities.label(q));
+                v["quality_from"] = json!(from.label());
+            }
+            v
+        })
         .collect();
     json!({
         "part": i + 1, "name": p.name, "shape": p.shape.label(), "w": r1(w), "h": r1(h), "qty": p.qty, "group": p.group,
@@ -685,7 +785,7 @@ fn part_info(job: &JobFile, i: usize) -> Value {
         "rotations": { "turn_90": p.rotate, "plain": p.rots.plain, "mirrored": p.rots.mirrored },
         "contours": contours,
         "elements": elems.iter().enumerate().map(|(k, e)| json!({
-            "element": k + 1, "contour": e.contour + 1, "kind": e.kind.label().to_lowercase(), "length_mm": r1(e.length), "mid": [r1(e.midpoint()[0]), r1(e.midpoint()[1])],
+            "element": k + 1, "contour": numbers.get(e.contour).map_or(e.contour, |n| *n) + 1, "kind": e.kind.label().to_lowercase(), "length_mm": r1(e.length), "mid": [r1(e.midpoint()[0]), r1(e.midpoint()[1])],
         })).collect::<Vec<_>>(),
         "texts": p.texts.iter().map(|t| json!({"text": t.text, "kind": format!("{:?}", t.kind).to_lowercase(), "height": r1(t.height), "at": [r1(t.at[0]), r1(t.at[1])]})).collect::<Vec<_>>(),
         "technology": tech_json(&p.tech),
@@ -710,6 +810,7 @@ fn catalog() -> Value {
         "lead_types": LEADS, "joint_types": JOINTS, "qualities": QUALITIES, "text_kinds": TEXTS,
         "text_fields": nest::TEXT_PARAMS.iter().map(|(k, v)| json!({"field": k, "is": v})).collect::<Vec<_>>(),
         "layer_roles": ["cut", "mark", "ignore"],
+        "contour_states": CONTOUR_STATES,
         "keypad_positions": "1 bottom-left, 2 bottom, 3 bottom-right, 4 left, 5 centre, 6 right, 7 top-left, 8 top, 9 top-right",
         "numbering": "parts, sheets, placed items (#) and elements are numbered from 1; materials from 0",
     })
@@ -753,6 +854,7 @@ fn machine_tech_report(spec: &SheetSpec, job: &SheetSpec) -> (String, Value) {
         "loop_radius": t.loop_radius, "pierce_radius": opt(t.pierce_radius),
         "cutter_radius": opt(t.cutter_radius), "kerf": opt(t.cutter_radius.map(|r| 2.0 * r)), "cut_speed": opt(t.cut_speed),
         "speeds": speeds_json(spec, &t),
+        "qualities": qualities_json(&t.qualities),
         "compensation": crate::kerf::status_line(spec),
         "spacing": {
             "machine_gap": opt(t.part_gap), "machine_margins": t.margins.map(|m| json!({"bottom": m[0], "top": m[1], "left": m[2], "right": m[3]})),
@@ -761,6 +863,12 @@ fn machine_tech_report(spec: &SheetSpec, job: &SheetSpec) -> (String, Value) {
         },
     });
     (msg, data)
+}
+
+/// The machine's 12 cut qualities as screens show them: number, name and
+/// whether the pickers offer it (CQ4), colour (CQ5).
+fn qualities_json(q: &crate::qualities::CutQualities) -> Value {
+    json!(nest::CutQuality::all().map(|c| json!({"quality": c.number(), "name": q.label(c), "colour": q.colour_hex(c), "offered": q.offered(c)})).collect::<Vec<_>>())
 }
 
 /// Where a sheet's speeds and times come from (TT1–TT10, CTM8–CTM16): the
@@ -775,6 +883,7 @@ fn speeds_json(spec: &crate::nest::SheetSpec, t: &crate::ct1::MachineTech) -> Va
         "table_file": f.table.as_ref().and_then(|t| name(&t.source)), "time_file": name(&f.time.source), "gas": f.gas,
         "cut_mm_min_by_quality": (1..=12).map(|q| r1(sp.cut_for(q))).collect::<Vec<_>>(),
         "pierce_s_by_quality": (1..=12).map(|q| (sp.pierce_for(q) * 1000.0).round() / 1000.0).collect::<Vec<_>>(),
+        "pierce_mode_by_quality": (1..=12).map(|q| sp.pierce_mode(q)).collect::<Vec<_>>(),
         "mark_mm_min": r1(sp.mark), "rapid_mm_min": r1(sp.rapid),
     })
 }
@@ -834,6 +943,7 @@ fn machines(ctx: &Ctx) -> Value {
             "lead_in": t.lead_in, "lead_out": t.lead_out, "overlap": t.overlap, "position": t.zone, "hole_lead_in": t.hole_lead_in,
             "joint_gap": t.joint_gap, "joint_every": t.joint_every, "group_parts": t.group_parts, "zones": [t.zones_x, t.zones_y],
             "material_sections": t.file.sections.len(),
+            "qualities": qualities_json(&t.qualities),
             "note": "These are the machine's own values; a job's material and thickness may pick a section of the file instead (machine-tech).",
         },
         "post": { "extension": ctx.post.file_name("JOB", 1) },
@@ -1018,22 +1128,32 @@ pub fn run_global(ctx: &Ctx, name: &str, args: &Value) -> Result<Outcome, String
                     *layers.entry(l).or_insert(0) += n;
                 }
             }
-            let roles = crate::formats::default_roles(&parts);
+            let mut roles = crate::formats::default_roles(&parts);
+            // DX3: rows that start as "Leave out", with why.
+            let hidden: BTreeMap<String, String> = parts.iter().flat_map(|p| p.drawing.hidden.clone()).collect();
+            let start = roles.clone();
+            if let Some(spec) = a.str("layers") {
+                set_layer_roles(&mut roles, &spec)?;
+            }
             // What each part comes in as with those roles, as the import window's
-            // preview shows it (IM10): its size and holes, or why it can't be made.
+            // preview shows it (IM10): its size, holes and contours (IM12), or
+            // why it can't be made.
             let sizes: Vec<Value> = parts
                 .iter()
                 .map(|p| match crate::dxf::build(&p.drawing, &roles) {
-                    Ok((g, rep)) => json!({"w": r1(g.w), "h": r1(g.h), "holes": g.holes.len(), "notes": crate::engine::import_notes(&path, &rep)}),
+                    Ok((g, rep)) => {
+                        let list = g.contour_list();
+                        let rows: Vec<Value> = list.iter().enumerate().map(|(k, c)| json!({"contour": k + 1, "kind": contours::kind(&list, k), "state": c.state.key(), "length_mm": r1(c.length())})).collect();
+                        json!({"w": r1(g.w), "h": r1(g.h), "holes": g.holes.len(), "contours": rows, "notes": crate::engine::import_notes(&path, &rep)})
+                    }
                     Err(e) => json!({"error": e}),
                 })
                 .collect();
             let first = sizes.first().and_then(|v| Some((v["w"].as_f64()?, v["h"].as_f64()?))).map_or(String::new(), |(w, h)| format!(", {w} × {h} mm"));
-            // DX3: rows that start as "Leave out", with why.
-            let hidden: BTreeMap<String, String> = parts.iter().flat_map(|p| p.drawing.hidden.clone()).collect();
             let data = json!({
                 "layers": layers,
-                "default_roles": roles.iter().map(|(k, v)| (k.clone(), v.label())).collect::<BTreeMap<_, _>>(),
+                "default_roles": start.iter().map(|(k, v)| (k.clone(), v.label())).collect::<BTreeMap<_, _>>(),
+                "roles": roles.iter().map(|(k, v)| (k.clone(), v.label())).collect::<BTreeMap<_, _>>(),
                 "left_out_by_default": hidden,
                 "parts": parts.len(),
                 "sizes": sizes,
@@ -1373,18 +1493,27 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             }
             let mut roles = crate::formats::default_roles(drawings.iter().map(|d| &d.part));
             if let Some(spec) = a.str("layers") {
-                for kv in spec.split(',').filter(|s| !s.trim().is_empty()) {
-                    let (l, role) = kv.split_once('=').ok_or_else(|| format!("layers: '{kv}' is not LAYER=role"))?;
-                    let l = l.trim();
-                    let k = roles.keys().find(|x| x.eq_ignore_ascii_case(l)).cloned().ok_or_else(|| format!("layers: no layer '{l}' in the drawing(s) ({})", roles.keys().cloned().collect::<Vec<_>>().join(", ")))?;
-                    roles.insert(k, layer_role_from(role.trim())?);
-                }
+                set_layer_roles(&mut roles, &spec)?;
+            }
+            let wanted = a.str("contours").filter(|c| !c.trim().is_empty());
+            if wanted.is_some() && drawings.len() != 1 {
+                return Err(format!(
+                    "contours: contour numbers belong to one part, and this import makes {} parts. Import one drawing of one part with contours=, and the others without; or set their contours afterwards with contour-tech.",
+                    drawings.len()
+                ));
             }
             let mut notes = vec![];
             let mut added = vec![];
             for inc in &drawings {
-                let rp = &inc.part;
-                let (mut p, n) = part_from_read(&ctx.cfg, &job.spec, &inc.file, &inc.name, &rp.drawing, &rp.meta, &roles, next_color(&job.parts))?;
+                // IM12: the contours chosen, numbered on the part these roles make.
+                let choices = match &wanted {
+                    Some(c) => {
+                        let (bare, _) = part_from_read(&ctx.cfg, &job.spec, &inc.file, &inc.name, &inc.part.drawing, &inc.part.meta, &roles, 0)?;
+                        contour_choices_from(c, contours::list(&bare).len())?
+                    }
+                    None => vec![],
+                };
+                let (mut p, n) = imports::chosen_part(&ctx.cfg, &job.spec, inc, &roles, &choices, next_color(&job.parts))?;
                 notes.extend(n);
                 if let Some(q) = a.int("qty")? {
                     p.qty = q.max(0) as u32;
@@ -1472,6 +1601,30 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
         "part-info" => {
             let i = one_part(job, &a)?;
             Ok(Outcome::read(format!("Part {} '{}'.", i + 1, job.parts[i].name), part_info(job, i)))
+        }
+        "contour-tech" => {
+            let i = one_part(job, &a)?;
+            let state = a.str("state").map(|s| contour_state_from(&s)).transpose()?;
+            let quality = a.str("quality").as_deref().map(contour_quality_from).transpose()?;
+            let picks = contours::parse_numbers(&a.need_str("contours")?, contours::list(&job.parts[i]).len())?;
+            let same = a.bool("same")?.unwrap_or(false);
+            // The same engine function as the window's cut technology panel (CS6).
+            let paint = contours::Paint { state, quality };
+            let done = contours::paint(&mut job.parts, &job.sheets, &mut job.manual_cuts, i, &picks, paint, same)?;
+            if done.nest_changed {
+                job.stale = true;
+            }
+            let mut data = json!({"contours": done.contours.iter().map(|k| k + 1).collect::<Vec<_>>()});
+            if let Some(st) = state {
+                data["state"] = json!(st.key());
+            }
+            if let Some(q) = quality {
+                data["quality"] = q.map_or(json!("auto"), |q| json!(q.number()));
+                data["skipped"] = json!(done.skipped.iter().map(|(k, _)| k + 1).collect::<Vec<_>>());
+            }
+            let mut o = Outcome::msg(done.message);
+            o.data = data;
+            Ok(o)
         }
         "export-part-dxf" => {
             let i = one_part(job, &a)?;
@@ -2039,7 +2192,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                     let (span, q) = t.split_once(':').ok_or_else(|| format!("ranges: '{t}' is not from-to:quality"))?;
                     let (lo, hi) = span.split_once('-').ok_or_else(|| format!("ranges: '{span}' is not from-to"))?;
                     let num = |s: &str| s.trim().parse::<f64>().map_err(|_| format!("ranges: '{s}' is not a number"));
-                    ranges[k] = nest::CutRange { on: true, min_r: num(lo)?, max_r: num(hi)?, quality: quality_from(q.trim())? };
+                    ranges[k] = nest::CutRange { on: true, min_r: num(lo)?, max_r: num(hi)?, quality: range_quality_from(q)? };
                 }
                 let t = parts_sel(&job.parts, a.get("parts"), true)?;
                 for &i in &t {
@@ -2347,6 +2500,7 @@ pub const GUI_MAP: &[(&str, &str)] = &[
     ("Cut technology/Own\ntechnology", "cut-tech"),
     ("Cut technology/Remove own\ntechnology", "cut-tech"),
     ("Cut technology/Quality\nby size", "cut-tech"),
+    ("Cut technology/Paint\ncontours", "contour-tech"),
     ("Text/Delete\ntexts", "text"),
     // --- Nesting screen: Machining, CNC, Simulation ---
     ("Manual cutting/Pick\ncontours", "cut-order"),

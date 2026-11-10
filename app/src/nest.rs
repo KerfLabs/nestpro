@@ -211,29 +211,87 @@ impl PartText {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
-pub enum CutQuality {
-    Rough,
-    Normal,
-    Fine,
-}
+/// One of the machine's 12 numbered cut qualities: the sets of cutting
+/// settings its technology table holds per quality (TT3). Saved as its number.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct CutQuality(u8);
 
 impl CutQuality {
-    pub const ALL: [CutQuality; 3] = [CutQuality::Rough, CutQuality::Normal, CutQuality::Fine];
-    pub fn label(self) -> &'static str {
-        match self {
-            CutQuality::Rough => "Rough",
-            CutQuality::Normal => "Normal",
-            CutQuality::Fine => "Fine",
+    /// How many qualities a machine has.
+    pub const COUNT: usize = 12;
+    /// The quality of a cut contour that nothing else sets (CQ1, estimate:
+    /// real LC5 programs cut outlines at 3, Fast on the usual laser table).
+    pub const FALLBACK: CutQuality = CutQuality(3);
+
+    /// Quality `n`, when the machine has one (1–12).
+    pub fn new(n: usize) -> Option<CutQuality> {
+        (1..=Self::COUNT).contains(&n).then_some(CutQuality(n as u8))
+    }
+    pub fn number(self) -> usize {
+        self.0 as usize
+    }
+    /// Every quality, 1 to 12.
+    pub fn all() -> impl Iterator<Item = CutQuality> {
+        (1..=Self::COUNT as u8).map(CutQuality)
+    }
+    /// "Quality 3": the quality when the machine gives it no name (screens show
+    /// the machine's names through `qualities::CutQualities::label`, CQ4).
+    pub fn label(self) -> String {
+        format!("Quality {}", self.0)
+    }
+    /// Cutting speed multiplier when the machine gives no speed at all (CQ3, estimate).
+    pub fn speed_factor(self) -> f64 {
+        match self.0 {
+            1 => 0.7,
+            2 => 0.85,
+            _ => 1.0,
         }
     }
-    /// Cutting speed multiplier (estimate).
-    pub fn speed_factor(self) -> f64 {
+}
+
+/// A saved cut quality: a number, or one of the app's old three names (CQ2).
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum SavedQuality {
+    Number(u64),
+    Name(String),
+}
+
+impl SavedQuality {
+    /// A size-range row's quality: Fine 1, Normal 2, Rough 3 (CQ2, estimate).
+    fn quality(self) -> Result<CutQuality, String> {
         match self {
-            CutQuality::Rough => 1.2,
-            CutQuality::Normal => 1.0,
-            CutQuality::Fine => 0.7,
+            SavedQuality::Number(n) => CutQuality::new(n as usize).ok_or_else(|| format!("cut quality {n} is not 1 to 12")),
+            SavedQuality::Name(n) => match n.as_str() {
+                "Fine" => Ok(CutQuality(1)),
+                "Normal" => Ok(CutQuality(2)),
+                "Rough" => Ok(CutQuality(3)),
+                _ => Err(format!("unknown cut quality '{n}'")),
+            },
         }
+    }
+}
+
+impl serde::Serialize for CutQuality {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_u8(self.0)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for CutQuality {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        <SavedQuality as serde::Deserialize>::deserialize(d)?.quality().map_err(serde::de::Error::custom)
+    }
+}
+
+/// A part's own quality as saved: none (the size bands decide), a number, or
+/// an old name, where Normal is none (it let the size bands decide), Fine 1
+/// and Rough 3 (CQ2, estimate).
+fn part_quality<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<CutQuality>, D::Error> {
+    match <Option<SavedQuality> as serde::Deserialize>::deserialize(d)? {
+        None => Ok(None),
+        Some(SavedQuality::Name(n)) if n == "Normal" => Ok(None),
+        Some(q) => q.quality().map(Some).map_err(serde::de::Error::custom),
     }
 }
 
@@ -245,7 +303,10 @@ pub struct PartTech {
     pub lead_out: f64,
     pub micro_joints: u32,
     pub joint_width: f64,
-    pub quality: CutQuality,
+    /// The part's own cut quality for every cut contour its size ranges don't
+    /// set; None = the machine's size bands decide (CQ1).
+    #[serde(default, deserialize_with = "part_quality")]
+    pub quality: Option<CutQuality>,
     /// Shape of the lead-in (the original's lead-in/lead-out types).
     pub lead_type: LeadType,
     /// Start each contour at the valid corner nearest the chosen position
@@ -303,7 +364,7 @@ pub struct CutRange {
 impl Default for CutRange {
     /// Off: the original's list is empty until the material table fills it.
     fn default() -> Self {
-        CutRange { on: false, min_r: 0.0, max_r: SMALL_HOLE_RADIUS_EXAMPLE, quality: CutQuality::Fine }
+        CutRange { on: false, min_r: 0.0, max_r: SMALL_HOLE_RADIUS_EXAMPLE, quality: CutQuality(1) }
     }
 }
 
@@ -396,7 +457,7 @@ impl Default for PartTech {
             lead_out: 2.0,
             micro_joints: 0,
             joint_width: 0.5,
-            quality: CutQuality::Normal,
+            quality: None,
             lead_type: LeadType::Line,
             corner_start: false,
             position: 1,
@@ -678,7 +739,7 @@ impl PartTech {
     pub fn items(&self) -> u32 {
         1 + u32::from(self.lead_out > 0.0)
             + self.micro_joints
-            + u32::from(self.quality != CutQuality::Normal)
+            + u32::from(self.quality.is_some())
             + self.starts.iter().flatten().count() as u32
             + self.joint_picks.iter().flatten().count() as u32
     }
@@ -826,6 +887,16 @@ impl Part {
     pub fn pierces(&self) -> usize {
         1 + self.geometry().holes.len()
     }
+
+    /// The quality set by hand on each contour the part cuts, in the order of
+    /// `geometry()` (holes, then the outline); empty or `None` where nothing
+    /// is set by hand (CQ6). A built-in shape has none.
+    pub fn cut_qualities(&self) -> Vec<Option<CutQuality>> {
+        match (self.shape, &self.custom) {
+            (Shape::Custom, Some(c)) => c.cut_qualities(),
+            _ => vec![],
+        }
+    }
 }
 
 pub fn area(poly: &[P]) -> f64 {
@@ -965,7 +1036,7 @@ pub fn placed_shape(parts: &[Part], pl: &Placed) -> (Vec<P>, Vec<Vec<P>>) {
     (g.outline.iter().map(|&q| pl.map(q)).collect(), g.holes.iter().map(|h| h.iter().map(|&q| pl.map(q)).collect()).collect())
 }
 
-fn seg_point_dist(p: P, a: P, b: P) -> f64 {
+pub(crate) fn seg_point_dist(p: P, a: P, b: P) -> f64 {
     let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
     let l2 = dx * dx + dy * dy;
     let t = if l2 < 1e-18 { 0.0 } else { (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2).clamp(0.0, 1.0) };

@@ -19,7 +19,7 @@ can move its work over, and aims to match that program's features and behaviour.
 | `app/` | The app. `ROADMAP.md` = done and missing features, `MECHANICS.md` / `mechanics.json` = the behaviour rules the app follows |
 | `tools/` | `check.sh` (public check + Linux tests + Windows type-check), `shot.sh out.png` (build + screenshot on a virtual display), `public-check.sh`, `install-hooks.sh` |
 | `FEATURES.md` | The list of what isn't built yet (IDs, status, priority) |
-| `examples/drawings/` | Made-up part drawings (DXF) to try Import drawings and nesting; `DEMO-OPEN-SKETCH` can't make a part, to show what the import window says then |
+| `examples/drawings/` | Made-up part drawings (DXF) to try Import drawings and nesting; `DEMO-OPEN-SKETCH` can't make a part, to show what the import window says then; `DEMO-BEND-PLATE` has a bend line, a stray open line and four equal holes, to try the cut technology panel |
 | `research/` | Not in this repo: a private checkout of the research notes (see `AGENTS.md`) |
 
 ## Build
@@ -41,6 +41,8 @@ job file) opens the app as before; a known operation name runs it headless:
 nestpro new  jobs/frames.snjob --w=3000 --h=1500 --material=steel --thickness=5
 nestpro import-dxf jobs/frames.snjob --path="C:\Drawings\BR-100.dxf" --qty=20
 nestpro stock --mode=create --w=3000 --h=1500 --thickness=5 --material=steel --qty=10
+nestpro contour-tech jobs/frames.snjob --part=1 --contours=5 --state=mark   # numbers from part-info
+nestpro contour-tech jobs/frames.snjob --part=1 --contours=2 --quality=1 --same=true   # every equal hole cut at quality 1
 nestpro nest jobs/frames.snjob                      # takes sheets from stock (remnants first)
 nestpro leads jobs/frames.snjob --mode=machine
 nestpro machine-tech jobs/frames.snjob               # which material/thickness table of the machine file applies
