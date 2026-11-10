@@ -1161,6 +1161,13 @@ fn contour_plate(d: &Path) -> PathBuf {
     p
 }
 
+/// A part's cut contours as part-info lists them: the closed contours set to
+/// Cut, the only ones with a cut quality. A mark line, a No cut or a Bend line
+/// is a contour too (CS1), so tests about qualities read these, not all.
+fn cut_contours(pi: &Value) -> Vec<Value> {
+    pi["data"]["contours"].as_array().unwrap_or_else(|| panic!("{pi}")).iter().filter(|c| c["state"] == "cut" && c["closed"] == true).cloned().collect()
+}
+
 /// A part's contours as part-info lists them: (number, kind, state, length mm).
 fn contour_rows(s: &mut Session, part: usize) -> Vec<(u64, String, String, f64)> {
     let pi = call(s, "part-info", None, json!({"part": part}));
@@ -1463,8 +1470,7 @@ fn an_lc5_program_cuts_each_contour_at_its_own_quality_and_pierce() {
 
     // part-info: each contour's quality from the machine's size bands.
     let info = call(&mut s, "part-info", None, json!({"part": 1}));
-    // Only cut contours carry a quality (the mark line is a contour too, CS1).
-    let mut q: Vec<(f64, u64)> = info["data"]["contours"].as_array().unwrap().iter().filter(|c| c.get("quality").is_some()).map(|c| (c["length_mm"].as_f64().unwrap(), c["quality"].as_u64().unwrap_or(0))).collect();
+    let mut q: Vec<(f64, u64)> = cut_contours(&info).iter().map(|c| (c["length_mm"].as_f64().unwrap(), c["quality"].as_u64().unwrap_or(0))).collect();
     q.sort_by(|a, b| a.0.total_cmp(&b.0));
     assert_eq!(q.iter().map(|c| c.1).collect::<Vec<_>>(), vec![1, 2, 3], "{info}");
 
@@ -1524,7 +1530,7 @@ fn a_job_saved_with_rough_normal_fine_opens_and_exports_with_numbered_qualities(
     });
     let quality = |s: &mut Session, part: usize| {
         let info = call(s, "part-info", Some(jp), json!({"part": part}));
-        let mut q: Vec<(f64, u64, String)> = info["data"]["contours"].as_array().unwrap().iter().filter(|c| c.get("quality").is_some()).map(|c| (c["length_mm"].as_f64().unwrap(), c["quality"].as_u64().unwrap_or(0), c["quality_from"].as_str().unwrap_or("").to_string())).collect();
+        let mut q: Vec<(f64, u64, String)> = cut_contours(&info).iter().map(|c| (c["length_mm"].as_f64().unwrap(), c["quality"].as_u64().unwrap_or(0), c["quality_from"].as_str().unwrap_or("").to_string())).collect();
         q.sort_by(|a, b| a.0.total_cmp(&b.0));
         (info["data"]["technology"]["quality"].clone(), q.into_iter().map(|c| (c.1, c.2)).collect::<Vec<_>>())
     };
@@ -1726,8 +1732,7 @@ fn laser_install(root: &Path, names: &str) -> crate::ct1::MachineTech {
 /// Each contour's quality as part-info shows it, smallest contour first.
 fn contour_quality_names(s: &mut Session) -> Vec<String> {
     let info = call(s, "part-info", None, json!({"part": 1}));
-    // Only cut contours carry a quality (the mark line is a contour too, CS1).
-    let mut q: Vec<(f64, String)> = info["data"]["contours"].as_array().unwrap().iter().filter(|c| c.get("quality_name").is_some()).map(|c| (c["length_mm"].as_f64().unwrap(), c["quality_name"].as_str().unwrap_or("").to_string())).collect();
+    let mut q: Vec<(f64, String)> = cut_contours(&info).iter().map(|c| (c["length_mm"].as_f64().unwrap(), c["quality_name"].as_str().unwrap_or("").to_string())).collect();
     q.sort_by(|a, b| a.0.total_cmp(&b.0));
     q.into_iter().map(|c| c.1).collect()
 }
