@@ -1829,6 +1829,14 @@ and notes where it adds its own.
 | JX9 | **The timer's limits.** Off by default (0). Ticking the box starts the period at **1 minute**; 1 minute is the shortest, and anything below 1 means off. No upper limit was found. **Rebuild (estimated):** 1 to 1440 minutes (a day): a longer period is no use in a shop, and it keeps the timer far from overflowing. | Observed; upper limit estimated (JOB-54) |
 
 
+## Job names in the Library
+
+| # | Rule | Source |
+|---|------|--------|
+| JX16 | **Job names are unique across the Library.** No two jobs in the Library have the same name, whether they are in one folder or in different ones. Saving a new job into the Library, saving a job as a new one (Save as), or renaming a job to a name another job already has is refused, naming that job, its reference and its folder ("the job 'DEMO-001 frames' (JOB000001) in folder Acme already has that name … pick another name"), and nothing is saved: no record is written and no sheet is taken from stock. The window checks the name, takes the job's sheets from stock and stores the job as one change under the Library's write lock (LB1), so when two PCs save a new job under one name at the same moment, one is stored and the other refused. Renaming a Library job in the Job Explorer is checked at once, and again when it's saved. Agents get the same refusal from `library save-job`, telling them to rename the job first. The open jobs keep their own rule: no two open jobs with exactly the same name, and a second copy of a job opens as "… (1)". | The original's rule as spec #44 gives it (not traced here); the lock, the order and the wording are the rebuild's own |
+| JX17 | **Names are compared ignoring capitals**, and spaces before or after them, as folder names are (JX6): "DEMO-001 Frames" and "demo-001 FRAMES" are one name. **Libraries saved before JX16** may hold jobs that share a name. Each keeps saving under its own name, exactly as it is, and the Library window marks every such job "same name", naming the other jobs on hover (agents: `same_name_as` in `library list`), so someone can rename one. Renaming one to another job's name, in any capitals, is refused as in JX16. | Estimated: the comparison; the handling of older Libraries is the rebuild's own |
+
+
 ## The active job (ORDENACT.SYS)
 
 | # | Rule |

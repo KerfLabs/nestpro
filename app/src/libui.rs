@@ -91,9 +91,25 @@ impl App {
         if !self.ready_to_save(crate::stockui::SaveTarget::Library) {
             return;
         }
+        // A name another job holds is refused before any sheet is taken from
+        // stock (JX16), and the check, the stock and the save are one change
+        // under the Library's write lock (LB1), so no other PC can save the
+        // name in between.
+        let checked = self.library().and_then(|l| {
+            let lock = l.lock()?;
+            l.check_job_name(&self.job_name, self.job_lib_id).map_err(|e| format!("{e}. Nothing was saved"))?;
+            Ok((l, lock))
+        });
+        let (lib, _lock) = match checked {
+            Ok(c) => c,
+            Err(e) => {
+                self.status = format!("Couldn't save to the library: {e}.");
+                return;
+            }
+        };
         let stock_note = self.stock_on_save();
         let j = self.current_jobfile();
-        let r = self.library().and_then(|l| l.save_job(&j, self.job_lib_id));
+        let r = lib.save_job(&j, self.job_lib_id);
         self.status = match r {
             Ok(id) => {
                 self.job_lib_id = Some(id);
@@ -288,6 +304,9 @@ impl App {
             let needle = self.libui.search.to_lowercase();
             let mut rows: Vec<&Entry> = self.libui.entries.iter().filter(|e| e.kind == kind && (needle.is_empty() || e.name.to_lowercase().contains(&needle) || e.folder.to_lowercase().contains(&needle))).collect();
             rows.sort_by(|a, b| b.updated.cmp(&a.updated));
+            // Jobs that share their name with another job: Libraries saved
+            // before names were unique (JX17). Marked so one can be renamed.
+            let twins = crate::library::shared_job_names(&self.libui.entries);
             if rows.is_empty() {
                 // Empty: say what the library is for and offer the next step.
                 ui.vertical_centered(|ui| {
@@ -325,6 +344,13 @@ impl App {
                         ui.label(RichText::new(&e.name).strong());
                         if e.tech {
                             chip(ui, "technology", th().accent_soft, th().accent_fg);
+                        }
+                        if let Some(others) = twins.get(&e.id) {
+                            let which: Vec<String> = others.iter().map(|o| format!("{} '{}' ({})", crate::library::auto_ref(o.kind, o.id), o.name, if o.folder.trim().is_empty() { "no folder".to_string() } else { format!("folder {}", o.folder) })).collect();
+                            chip(ui, "same name", th().warn_bg, th().warn_fg).on_hover_text(format!(
+                                "Another job in the Library has this name: {}.\nJob names are unique across the Library, whatever their capitals. These jobs were saved before that, so each still saves under its own name: open one, change its name and save it to the library.",
+                                which.join(", ")
+                            ));
                         }
                         ui.label(RichText::new(&e.folder).size(11.5).color(th().accent_fg));
                         let mat = mats.get(e.material).copied().unwrap_or("");
@@ -448,5 +474,152 @@ impl App {
         if let Some(id) = open {
             self.open_library_job(id);
         }
+    }
+}
+
+#[cfg(test)]
+mod libui_tests {
+    use crate::jobfile::JobFile;
+    use crate::library::Library;
+    use crate::nest::{Part, Shape};
+    use crate::stock::{Item, Stock};
+    use crate::App;
+    use std::path::{Path, PathBuf};
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("nestpro_libui_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    /// A programmer's window on the Library in `dir`, with the open job
+    /// named `name`: one kind of part, 10 mm, nested from a stock of two
+    /// 3000 × 1500 sheets ("S-1").
+    fn app_on(dir: &Path, name: &str) -> App {
+        let mut a = App::new(None);
+        a.cfg.library_dir = dir.display().to_string();
+        a.cfg.stock = crate::stock::StockSettings::default();
+        a.job_name = name.into();
+        a.spec.material = 0;
+        a.spec.thickness = 10.0;
+        a.spec.w = 3000.0;
+        a.spec.h = 1500.0;
+        a.parts = vec![Part { name: "DEMO-P1".into(), shape: Shape::Rectangle, w: 300.0, h: 200.0, qty: 4, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
+        a.group_nest = false;
+        a.held.clear();
+        a
+    }
+
+    fn stock_of_two(dir: &Path) {
+        let mut s = Stock::default();
+        s.add_sheet(Item::sheet("S-1", 0, 10.0, 3000.0, 1500.0, 2), true).unwrap();
+        s.save(dir).unwrap();
+    }
+
+    /// Another PC's job, saved into the Library in `folder`.
+    fn saved_elsewhere(dir: &Path, name: &str, folder: &str) -> u64 {
+        let mut j = JobFile::new_job(name, crate::nest::SheetSpec { w: 3000.0, h: 1500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 10.0, level: 3, machine: Default::default(), kerf: Default::default() });
+        j.week = folder.into();
+        Library::open(dir).unwrap().save_job(&j, None).unwrap()
+    }
+
+    /// JX16: saving the open job into the Library under a name another job
+    /// holds is refused before the job's sheets are taken from stock, so the
+    /// refused save takes nothing.
+    #[test]
+    fn a_save_refused_for_its_name_takes_nothing_from_stock() {
+        let dir = scratch("refused_stock");
+        stock_of_two(&dir);
+        saved_elsewhere(&dir, "DEMO-001 frames", "Acme");
+        let mut a = app_on(&dir, "DEMO-001 FRAMES");
+        a.run_nesting();
+        assert_eq!(a.result.formats.first().map(|f| f.stock_ref.as_str()), Some("S-1"), "{}", a.status);
+        let before = std::fs::read_to_string(Stock::file(&dir)).unwrap();
+        a.save_job_to_library();
+        assert!(a.status.contains("folder Acme") && a.status.contains("Nothing was saved"), "{}", a.status);
+        assert_eq!(a.job_lib_id, None);
+        assert_eq!(std::fs::read_to_string(Stock::file(&dir)).unwrap(), before, "the refused save took sheets from stock");
+        assert!(a.held.is_empty(), "the job counts sheets as taken: {:?}", a.held);
+        // Under a name of its own it's saved, and takes its sheet.
+        assert!(a.rename_job(a.cur_job, "DEMO-002 frames"), "{}", a.status);
+        a.save_job_to_library();
+        assert!(a.job_lib_id.is_some(), "{}", a.status);
+        assert_eq!(Stock::load(&dir).unwrap().get("S-1").map(|s| s.qty), Some(1));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// JX16 with two PCs: both save a new job under one name (in other
+    /// capitals) at the same moment. PROG-1 checks the name first and is
+    /// held up just after; PROG-2 saves meanwhile. One job is stored, the
+    /// other save is refused naming the first one's folder, and only the
+    /// stored one took a sheet from stock.
+    #[test]
+    fn two_pcs_saving_one_new_name_at_the_same_moment_store_one_and_refuse_the_other() {
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+        let dir = scratch("same_moment");
+        stock_of_two(&dir);
+        let (checked, checked_rx) = channel::<()>();
+        let prog1 = {
+            let dir = dir.clone();
+            std::thread::spawn(move || {
+                let mut a = app_on(&dir, "DEMO-001 frames");
+                a.jobs[a.cur_job].week = "Acme".into();
+                a.run_nesting();
+                let mut first = true;
+                crate::shared::hooks::set(move |s| {
+                    if s == "job name checked" && std::mem::take(&mut first) {
+                        let _ = checked.send(());
+                        std::thread::sleep(Duration::from_millis(500));
+                    }
+                });
+                a.save_job_to_library();
+                crate::shared::hooks::clear();
+                (a.job_lib_id, a.status)
+            })
+        };
+        let prog2 = {
+            let dir = dir.clone();
+            std::thread::spawn(move || {
+                let mut a = app_on(&dir, "demo-001 FRAMES");
+                a.jobs[a.cur_job].week = "W12".into();
+                a.run_nesting();
+                checked_rx.recv_timeout(Duration::from_secs(60)).expect("PROG-1 checked the name");
+                a.save_job_to_library();
+                (a.job_lib_id, a.status)
+            })
+        };
+        let (one, two) = (prog1.join().unwrap(), prog2.join().unwrap());
+        assert!(one.0.is_some(), "PROG-1: {}", one.1);
+        assert!(two.0.is_none() && two.1.contains("DEMO-001 frames") && two.1.contains("folder Acme"), "PROG-2: {}", two.1);
+        let lib = Library::open(&dir).unwrap();
+        let jobs: Vec<String> = lib.entries().into_iter().filter(|e| e.kind == crate::library::Kind::Job).map(|e| e.name).collect();
+        assert_eq!(jobs, ["DEMO-001 frames"]);
+        assert_eq!(Stock::load(&dir).unwrap().get("S-1").map(|s| s.qty), Some(1), "the refused save took a sheet too");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// JX16: renaming a Library job in the Job Explorer to a name another
+    /// job in the Library holds is refused at once, naming that job's
+    /// folder. A free name is taken, and the record takes it on the next
+    /// save.
+    #[test]
+    fn renaming_a_library_job_to_a_name_another_job_holds_is_refused() {
+        let dir = scratch("rename");
+        saved_elsewhere(&dir, "DEMO-001 frames", "Acme");
+        let mut a = app_on(&dir, "DEMO-002 brackets");
+        a.save_job_to_library();
+        let id = a.job_lib_id.expect("saved");
+        let i = a.cur_job;
+        assert!(!a.rename_job(i, "Demo-001 Frames"));
+        assert!(a.status.contains("DEMO-001 frames") && a.status.contains("folder Acme") && !a.status.contains("Nothing was saved"), "{}", a.status);
+        assert_eq!(a.job_name, "DEMO-002 brackets");
+        assert!(a.rename_job(i, "DEMO-003 brackets"), "{}", a.status);
+        a.save_job_to_library();
+        assert_eq!(a.job_lib_id, Some(id), "{}", a.status);
+        let mut names: Vec<String> = Library::open(&dir).unwrap().entries().into_iter().map(|e| e.name).collect();
+        names.sort();
+        assert_eq!(names, ["DEMO-001 frames", "DEMO-003 brackets"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
