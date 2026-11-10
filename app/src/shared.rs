@@ -323,11 +323,13 @@ impl WriteLock {
         let now = std::fs::read(&l.file).ok();
         let ours = now.as_deref().and_then(|t| serde_json::from_slice::<Holder>(t).ok()).is_some_and(|h| h.token == l.token);
         let taking_over = now.as_deref().is_some_and(|t| mark_path(&l.file, t).exists());
-        if ours && !taking_over {
-            Ok(())
-        } else {
-            Err("another PC took over the Library's write lock while this PC was writing. Nothing was saved — save again".into())
+        pause("lock read");
+        if !ours || taking_over {
+            return Err("another PC took over the Library's write lock while this PC was writing. Nothing was saved — save again".into());
         }
+        // Reading the lock can be slow on a share: still inside the time
+        // after it, so only the change itself is left to send (LB2).
+        within(l.since, l.wall, l.hold_for)
     }
 }
 
@@ -620,6 +622,32 @@ mod shared_tests {
         assert!(got >= abandoned, "PROG-2 took the lock over after {got:?}, before it had stayed unchanged for {abandoned:?}");
         // PROG-1's held-up rename landed first; PROG-2's save is the one kept.
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "PROG-2");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// LB2: the time is checked again after reading the lock, not only
+    /// before. A writer inside its time whose read of the lock is held up
+    /// past it replaces nothing, so a slow read can't push its rename past
+    /// another PC's takeover.
+    #[test]
+    fn a_writer_held_up_while_checking_its_lock_replaces_nothing() {
+        let abandoned = Duration::from_millis(1800);
+        let dir = scratch("slow_check");
+        let file = dir.join("index.json");
+        std::fs::write(&file, "before").unwrap();
+        let lock = WriteLock::take_with(&dir, abandoned, Duration::from_secs(10)).unwrap();
+        hooks::set(|s| {
+            if s == "lock read" {
+                std::thread::sleep(Duration::from_millis(700));
+            }
+        });
+        let r = write_file(&file, b"PROG-1, late", Some(&lock));
+        hooks::clear();
+        let e = r.unwrap_err();
+        assert!(e.contains("took longer than 600 ms") && e.contains("Nothing was saved"), "{e}");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "before");
+        drop(lock);
+        let _ = std::fs::remove_file(dir.join(LOCK_FILE));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
