@@ -54,10 +54,9 @@ pub struct JobFile {
 pub fn save(path: &std::path::Path, job: &JobFile) -> Result<(), String> {
     let text = serde_json::to_string_pretty(job).map_err(|e| e.to_string())?;
     // Write next to it, then rename, so a crash never leaves half a file
-    // (as Expert rewrites LANTEKIN.CNI through a temporary file, LK3).
-    let tmp = path.with_extension(format!("{EXT}.tmp"));
-    std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+    // (as Expert rewrites LANTEKIN.CNI through a temporary file, LK3); the
+    // temporary file is this writer's own (LB3).
+    crate::shared::write_file(path, text.as_bytes(), None)
 }
 
 pub fn load(path: &std::path::Path) -> Result<JobFile, String> {

@@ -44,6 +44,7 @@ mod jobfile;
 mod jobs;
 mod libui;
 mod library;
+mod shared;
 mod region;
 mod remline;
 mod remmark;

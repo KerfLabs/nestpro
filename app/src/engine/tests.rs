@@ -1143,3 +1143,147 @@ fn export_stops_on_a_part_drawn_wrong_or_a_pierce_off_the_sheet() {
     let e = err(&mut s, "export", json!({"dir": out.to_str().unwrap()}));
     assert!(e.contains("part 'HOLES': holes 1 and 2 overlap") && e.contains("No program of this job is left"), "{e}");
 }
+
+#[test]
+fn an_agents_stock_change_waits_for_another_pcs_change_and_both_count() {
+    let d = dir("stock_locked");
+    let ctx = stock_ctx(&d);
+    let lib = ctx.library_dir.clone();
+    let mut s = Session::new(ctx);
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "S1", "w": 2000, "h": 1000, "thickness": 3, "qty": 1}));
+    // The window on another PC is in the middle of a stock change: it has
+    // read the stock (1 on the rack) and is about to store 6.
+    let (read, go) = std::sync::mpsc::channel();
+    let other = std::thread::spawn(move || {
+        crate::stock::Stock::update(&lib, |st| {
+            read.send(()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            st.change_qty("S1", 5)
+        })
+    });
+    go.recv().unwrap();
+    let r = call(&mut s, "stock", None, json!({"mode": "add", "ref": "S1", "qty": 1}));
+    other.join().unwrap().unwrap();
+    // The agent's change waited for the other one and counted on top of it.
+    assert_eq!(r["message"], "'S1': 7 in stock.", "{r}");
+    let l = call(&mut s, "stock", None, json!({"mode": "list"}));
+    assert_eq!(l["data"]["sheets"][0]["qty"], 7, "{l}");
+}
+
+/// Every file under `dir` with its size, to see that nothing was touched.
+fn listing(dir: &Path) -> Vec<(String, u64)> {
+    let mut out = vec![];
+    let mut todo = vec![dir.to_path_buf()];
+    while let Some(d) = todo.pop() {
+        for f in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let m = f.metadata().unwrap();
+            if m.is_dir() {
+                todo.push(f.path());
+            } else {
+                out.push((f.path().strip_prefix(dir).unwrap().to_string_lossy().into_owned(), m.len()));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+#[test]
+fn the_library_check_refuses_a_real_library() {
+    let d = dir("check_refuses");
+    let mut s = Session::new(Ctx::builtin());
+    // A Library with a real job in it.
+    let real = d.join("Library");
+    let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
+    crate::library::Library::open(&real).unwrap().save_job(&JobFile::new_job("Frames", spec), None).unwrap();
+    let before = listing(&real);
+    let e = err(&mut s, "library-check", json!({"folder": real.to_str().unwrap(), "rounds": 2}));
+    assert!(e.contains("real Library") && e.contains("empty"), "{e}");
+    assert_eq!(listing(&real), before, "the check touched a real Library");
+    // A folder with other files in it is refused the same way.
+    let other = d.join("Drawings");
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(other.join("bracket.dxf"), "0\nEOF\n").unwrap();
+    let e = err(&mut s, "library-check", json!({"folder": other.to_str().unwrap(), "rounds": 2}));
+    assert!(e.contains("real Library"), "{e}");
+    assert_eq!(listing(&other).len(), 1);
+    // So is this PC's own Library, even while it's still empty.
+    let own = s.ctx.library_dir.clone();
+    let _ = std::fs::remove_dir_all(&own);
+    std::fs::create_dir_all(&own).unwrap();
+    let e = err(&mut s, "library-check", json!({"folder": own.to_str().unwrap(), "rounds": 2}));
+    assert!(e.contains("this PC's Library"), "{e}");
+    assert!(listing(&own).is_empty());
+    let _ = std::fs::remove_dir_all(&own);
+}
+
+#[test]
+fn the_library_check_passes_on_a_test_folder_and_fails_on_a_half_written_record() {
+    let d = dir("check_runs");
+    let mut s = Session::new(Ctx::builtin());
+    let folder = d.join("check");
+    let r = call(&mut s, "library-check", None, json!({"folder": folder.to_str().unwrap(), "rounds": 6, "pc": "PROG-1"}));
+    let report = r["message"].as_str().unwrap();
+    assert!(report.contains("PASS") && report.contains("PROG-1") && report.contains("Checked: 6 job(s), 6 library part(s)"), "{report}");
+    // Run again on the folder it made: it checks the first run's records too.
+    let r = call(&mut s, "library-check", None, json!({"folder": folder.to_str().unwrap(), "rounds": 3, "pc": "PROG-2"}));
+    let report = r["message"].as_str().unwrap();
+    assert!(report.contains("PASS") && report.contains("Checked: 9 job(s), 9 library part(s) and 2 stock sheet(s) from 2 run(s) (PROG-1, PROG-2)"), "{report}");
+    // A job record cut off halfway through, as a dropped connection would leave it.
+    let lib = crate::library::Library::open(&folder).unwrap();
+    let rec = lib.path(crate::library::Kind::Job, 2);
+    let text = std::fs::read_to_string(&rec).unwrap();
+    std::fs::write(&rec, &text[..text.len() / 2]).unwrap();
+    let e = err(&mut s, "library-check", json!({"folder": folder.to_str().unwrap(), "rounds": 1, "pc": "PROG-1"}));
+    assert!(e.contains("FAIL") && e.contains("Job record 2") && e.contains("half-written"), "{e}");
+}
+
+/// A test folder the Library check made itself (one round, so it holds the
+/// check's own records, list, stock and log).
+fn check_folder(s: &mut Session, d: &Path, name: &str) -> PathBuf {
+    let f = d.join(name);
+    call(s, "library-check", None, json!({"folder": f.to_str().unwrap(), "rounds": 1}));
+    f
+}
+
+#[test]
+fn the_library_check_refuses_a_folder_it_cant_read_or_recognise() {
+    let d = dir("check_unsure");
+    let mut s = Session::new(Ctx::builtin());
+    let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
+    let refused = |s: &mut Session, f: &Path, why: &str| {
+        let before = listing(f);
+        let e = err(s, "library-check", json!({"folder": f.to_str().unwrap(), "rounds": 1}));
+        assert!(e.contains(why), "{e}");
+        assert_eq!(listing(f), before, "the check touched a folder it refused");
+    };
+    // A real job was saved into a folder the check made, and the list was
+    // lost since: the record itself gives it away.
+    let f = check_folder(&mut s, &d, "lost list");
+    crate::library::Library::open(&f).unwrap().save_job(&JobFile::new_job("Frames", spec.clone()), None).unwrap();
+    std::fs::remove_file(f.join(crate::library::INDEX)).unwrap();
+    refused(&mut s, &f, "'Frames'");
+    // A real job's record is there but missing from the list.
+    let f = check_folder(&mut s, &d, "unlisted");
+    let lib = crate::library::Library::open(&f).unwrap();
+    let list = std::fs::read(f.join(crate::library::INDEX)).unwrap();
+    lib.save_job(&JobFile::new_job("Frames", spec.clone()), None).unwrap();
+    std::fs::write(f.join(crate::library::INDEX), list).unwrap();
+    refused(&mut s, &f, "'Frames'");
+    // The list can't be read.
+    let f = check_folder(&mut s, &d, "damaged list");
+    std::fs::write(f.join(crate::library::INDEX), "{ half a list").unwrap();
+    refused(&mut s, &f, "can't be read");
+    // The stock can't be read.
+    let f = check_folder(&mut s, &d, "damaged stock");
+    std::fs::write(crate::stock::Stock::file(&f), "{ half a stock").unwrap();
+    refused(&mut s, &f, "can't be read");
+    // A record no run of the check saved, and that can't be read.
+    let f = check_folder(&mut s, &d, "unknown record");
+    std::fs::write(f.join("Jobs").join("0").join("99.snjob"), "{ \"name\": \"Fra").unwrap();
+    refused(&mut s, &f, "record 99");
+    // Something else the check doesn't make.
+    let f = check_folder(&mut s, &d, "other files");
+    std::fs::create_dir_all(f.join("Drawings")).unwrap();
+    refused(&mut s, &f, "'Drawings'");
+}
