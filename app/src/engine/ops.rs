@@ -188,7 +188,7 @@ pub static OPS: &[Op] = &[
         a("same", Ty::Bool, "Also every contour equal to one of them (default false)"),
     ] },
     Op { name: "export-part-dxf", group: "Parts", kind: Kind::Read, help: "Save a part as DXF (outline and holes on CUT, marking on MARK).", args: &[PART, r("out", Ty::Path, "DXF file to write")] },
-    Op { name: "library", group: "Parts", kind: Kind::Write, help: "The product/job library: list it, add a library product to the job, or save parts / the job into it.", args: &[
+    Op { name: "library", group: "Parts", kind: Kind::Write, help: "The product/job library: list it (each record with who last saved it and when: saved_by, e.g. \"sam on PROG-2 (agent)\", and saved_at in this PC's local time), add a library product to the job, or save parts / the job into it (recorded as saved by this PC's user, marked (agent)).", args: &[
         Arg { name: "mode", ty: Ty::Str, required: true, help: "What to do", choices: &["list", "add", "save-part", "save-job"] },
         a("find", Ty::Str, "list: text to look for"), a("id", Ty::Int, "add: the product's record number"), a("name", Ty::Str, "add: the product's name"),
         a("qty", Ty::Int, "add: quantity"), a("parts", Ty::Parts, "save-part: which parts"), a("folder", Ty::Str, "save-part: product folder/group"),
@@ -1208,8 +1208,9 @@ fn read_drawing(ctx: &Ctx, path: &Path, a: &Args) -> Result<Vec<crate::formats::
     crate::formats::read_file_with(path, fmt, &ctx.cfg, opts)
 }
 
+/// The Library, as the agent's user (LB5).
 fn library(ctx: &Ctx) -> Result<crate::library::Library, String> {
-    crate::library::Library::open(&ctx.library_dir)
+    crate::library::Library::open(&ctx.library_dir, &ctx.who, &ctx.clock)
 }
 
 fn who(job: &JobFile, t: &[usize]) -> String {
@@ -1674,7 +1675,9 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                         .entries()
                         .into_iter()
                         .filter(|e| find.is_empty() || e.name.to_lowercase().contains(&find) || e.folder.to_lowercase().contains(&find))
-                        .map(|e| json!({"id": e.id, "kind": format!("{:?}", e.kind).to_lowercase(), "name": e.name, "folder": e.folder, "material": cnc::MATERIALS.get(e.material).copied().unwrap_or("?"), "thickness": e.thickness, "w": r1(e.w), "h": r1(e.h), "preprogrammed": e.tech}))
+                        // Who last saved it and when, in this PC's local time (LB6);
+                        // no one for a record saved before saves recorded it.
+                        .map(|e| json!({"id": e.id, "kind": format!("{:?}", e.kind).to_lowercase(), "name": e.name, "folder": e.folder, "material": cnc::MATERIALS.get(e.material).copied().unwrap_or("?"), "thickness": e.thickness, "w": r1(e.w), "h": r1(e.h), "preprogrammed": e.tech, "saved_by": e.saved_by.as_ref().map(|w| w.label()), "saved_at": (e.updated > 0).then(|| ctx.clock.stamp(e.updated))}))
                         .collect();
                     Ok(Outcome::read(format!("{} library record(s).", list.len()), json!(list)))
                 }

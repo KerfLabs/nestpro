@@ -276,6 +276,7 @@ impl App {
             stale: j.stale,
             booked: true,
             erp: j.erp.clone(),
+            saved: None,
         }
     }
 

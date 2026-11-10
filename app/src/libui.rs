@@ -37,8 +37,9 @@ impl App {
         self.library_dir().file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Library".into())
     }
 
+    /// The Library, as whoever works at this window (LB5).
     pub fn library(&self) -> Result<Library, String> {
-        Library::open(&self.library_dir())
+        Library::open(&self.library_dir(), &self.who, &self.clock)
     }
 
     pub fn lib_refresh(&mut self) {
@@ -72,6 +73,7 @@ impl App {
             // The window books the stock on every save (stock_on_save).
             booked: true,
             erp: self.erp_job.clone(),
+            saved: None,
         }
     }
 
@@ -247,7 +249,7 @@ impl App {
         let mut rescan = false;
         let mut settings = false;
         let dir = self.library_dir();
-        egui::Window::new(RichText::new("Library").size(16.0).strong()).id(egui::Id::unique("library_window")).pivot(egui::Align2::CENTER_TOP).default_pos(dialog_pos(ctx)).open(&mut open).default_size([760.0, 460.0]).collapsible(false).show(ctx, |ui| {
+        egui::Window::new(RichText::new("Library").size(16.0).strong()).id(egui::Id::unique("library_window")).pivot(egui::Align2::CENTER_TOP).default_pos(dialog_pos(ctx)).open(&mut open).default_size([980.0, 460.0]).collapsible(false).show(ctx, |ui| {
             ui.horizontal(|ui| {
                 // The folder's own name (the full path on hover): where saved jobs go.
                 let short = dir.file_name().map_or_else(|| dir.display().to_string(), |n| n.to_string_lossy().to_string());
@@ -341,6 +343,9 @@ impl App {
                             } else if ui.button("Add to job").clicked() {
                                 add_part = Some(e.id);
                             }
+                            // Who last saved it, and when (LB6).
+                            ui.add_space(6.0);
+                            ui.add(egui::Label::new(RichText::new(e.saved_note(&self.clock)).size(11.5).color(th().text_dim)).truncate());
                         });
                     });
                 }
@@ -438,7 +443,10 @@ impl App {
                         let sel = self.job_lib_id == Some(e.id);
                         let open_now = self.jobs.iter().any(|j| j.lib_id == Some(e.id)) || self.job_lib_id == Some(e.id);
                         let label = format!("{}  ·  {} sh{}", e.name, e.count_b, if open_now { "  · open" } else { "" });
-                        if ui.selectable_label(sel, label).on_hover_text(format!("{} — {lib_tip}", crate::library::auto_ref(e.kind, e.id))).clicked() {
+                        // Who last saved it, and when (LB6).
+                        let saved = e.saved_note(&self.clock);
+                        let saved = if saved.is_empty() { String::new() } else { format!("\n{saved}") };
+                        if ui.selectable_label(sel, label).on_hover_text(format!("{} — {lib_tip}{saved}", crate::library::auto_ref(e.kind, e.id))).clicked() {
                             open = Some(e.id);
                         }
                     }
@@ -448,5 +456,101 @@ impl App {
         if let Some(id) = open {
             self.open_library_job(id);
         }
+    }
+}
+
+#[cfg(test)]
+mod libui_tests {
+    use crate::library::Kind;
+    use crate::shared::{Clock, Who};
+    use crate::App;
+    use std::time::Duration;
+
+    /// 2026-11-09 09:20 UTC: a test clock shows UTC.
+    const NOV_9_0920: u64 = 1_794_216_000;
+
+    /// A window on PC `pc`, working on the Library in `dir`.
+    fn window(dir: &std::path::Path, user: &str, pc: &str, clock: &Clock) -> App {
+        let mut a = App::new(None);
+        a.cfg.library_dir = dir.display().to_string();
+        a.who = Who::new(user, pc);
+        a.clock = clock.clone();
+        a
+    }
+
+    /// What the Library window shows of each record of `kind`: its name and
+    /// who saved it, and when.
+    fn shown(a: &App, kind: Kind) -> Vec<(String, String)> {
+        let mut v: Vec<(String, String)> = a.libui.entries.iter().filter(|e| e.kind == kind).map(|e| (e.name.clone(), e.saved_note(&a.clock))).collect();
+        v.sort();
+        v
+    }
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("nestpro_libui_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    /// LB5, LB6: two windows on two PCs, one Library: each saves a job, and
+    /// both Library lists show each job with who saved it and when.
+    #[test]
+    fn two_pcs_saving_jobs_see_who_saved_each_and_when() {
+        let dir = scratch("jobs");
+        let clock = Clock::at(NOV_9_0920);
+        let mut prog1 = window(&dir, "sam", "PROG-1", &clock);
+        let mut prog2 = window(&dir, "kim", "PROG-2", &clock);
+        prog1.open_job(0);
+        prog1.save_job_to_library();
+        let first = prog1.job_name.clone();
+        clock.advance(Duration::from_secs(25 * 60));
+        prog2.open_job(1);
+        prog2.save_job_to_library();
+        let second = prog2.job_name.clone();
+        assert_ne!(first, second);
+        for a in [&mut prog1, &mut prog2] {
+            a.lib_refresh();
+            assert_eq!(
+                shown(a, Kind::Job),
+                {
+                    let mut v = vec![(first.clone(), "Saved by sam on PROG-1, 9 Nov 09:20".to_string()), (second.clone(), "Saved by kim on PROG-2, 9 Nov 09:45".to_string())];
+                    v.sort();
+                    v
+                }
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// LB5, LB6: the same for library parts, in the Library window and in
+    /// Add product's library list.
+    #[test]
+    fn two_pcs_saving_library_parts_see_who_saved_each_and_when() {
+        let dir = scratch("parts");
+        let clock = Clock::at(NOV_9_0920);
+        let mut prog1 = window(&dir, "sam", "PROG-1", &clock);
+        let mut prog2 = window(&dir, "kim", "PROG-2", &clock);
+        prog1.open_job(0);
+        prog1.save_part_to_library(0);
+        let first = prog1.parts[0].name.clone();
+        clock.advance(Duration::from_secs(10 * 60));
+        prog2.open_job(0);
+        prog2.parts[1].name = "DEMO-P2".into();
+        prog2.save_part_to_library(1);
+        let mut want = vec![(first.clone(), "Saved by sam on PROG-1, 9 Nov 09:20".to_string()), ("DEMO-P2".to_string(), "Saved by kim on PROG-2, 9 Nov 09:30".to_string())];
+        want.sort();
+        for a in [&mut prog1, &mut prog2] {
+            a.lib_refresh();
+            assert_eq!(shown(a, Kind::Product), want);
+            let mut menu: Vec<(String, String)> = a.libui.products.iter().map(|(e, p)| (p.name.clone(), e.saved_note(&a.clock))).collect();
+            menu.sort();
+            assert_eq!(menu, want, "Add product's library list");
+        }
+        // PROG-2 saves PROG-1's part again: it's PROG-2's now.
+        clock.advance(Duration::from_secs(60));
+        prog2.save_part_to_library(0);
+        prog1.lib_refresh();
+        assert!(shown(&prog1, Kind::Product).contains(&(first, "Saved by kim on PROG-2, 9 Nov 09:31".to_string())), "{:?}", shown(&prog1, Kind::Product));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

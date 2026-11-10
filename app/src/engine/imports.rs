@@ -251,12 +251,14 @@ impl ProgramJob {
 }
 
 /// A signature of a job's content, to tell whether a job file on disk is the
-/// one the window last read or wrote. The stock booking is left out (saving
-/// books the stock, which doesn't make the job different).
+/// one the window last read or wrote. The stock booking and who saved it are
+/// left out (saving books the stock and records who saved, which doesn't make
+/// the job different).
 pub fn job_sig(j: &JobFile) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut c = j.clone();
     c.held = Default::default();
+    c.saved = None;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     serde_json::to_string(&c).unwrap_or_default().hash(&mut h);
     h.finish()
