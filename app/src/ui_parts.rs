@@ -63,6 +63,8 @@ pub enum Icon {
     Joint,
     Loop,
     CutTech,
+    /// A brush (paint contours with the cut technology panel).
+    Brush,
     /// An open folder (open a saved job).
     Folder,
     /// An arrow down into a tray (save).
@@ -205,11 +207,19 @@ fn paint_part_ex(painter: &egui::Painter, part: &Part, map: impl Fn(P) -> Pos2, 
             painter.add(EShape::closed_line(h.iter().map(|&p| map(p)).collect(), edge));
         }
         painter.add(EShape::closed_line(g.outline.iter().map(|&p| map(p)).collect(), edge));
-        // Marking lines (drawing layers set to "Mark"): thin dashed lines.
-        let mark = Stroke::new(1.2, darker(fill, 0.3));
+        // CS7: No cut contours thin, Bend lines dashed, marks solid, each in
+        // its state's colour, as the cut technology panel shows them; neither
+        // No cut nor Bend line is machined.
+        for shown in c.shown_only() {
+            let pts: Vec<Pos2> = shown.path().into_iter().map(&map).collect();
+            if shown.state == crate::dxf::ContourState::BendLine {
+                painter.extend(EShape::dashed_line(&pts, Stroke::new(1.3, crate::cutpanel::BEND), 7.0, 3.0));
+            } else {
+                painter.add(EShape::line(pts, Stroke::new(1.0, crate::cutpanel::NO_CUT)));
+            }
+        }
         for m in &c.marks {
-            let pts: Vec<Pos2> = m.iter().map(|&p| map(p)).collect();
-            painter.extend(EShape::dashed_line(&pts, mark, 4.0, 2.5));
+            painter.add(EShape::line(m.iter().map(|&p| map(p)).collect(), Stroke::new(1.2, crate::cutpanel::MARK)));
         }
         if with_texts {
             paint_texts(painter, part, &map, fill);
@@ -230,6 +240,21 @@ fn paint_part_ex(painter: &egui::Painter, part: &Part, map: impl Fn(P) -> Pos2, 
     if with_texts {
         paint_texts(painter, part, &map, fill);
     }
+}
+
+/// `name` shortened from its end, with "…", until `fits` it (a part tile's
+/// label); never below three characters.
+pub fn fit_label(name: &str, fits: impl Fn(&str) -> bool) -> String {
+    let mut label = name.to_string();
+    while label.chars().count() > 3 && !fits(&label) {
+        // Take the ellipsis off first, so each step drops a real character.
+        while label.ends_with('…') {
+            label.pop();
+        }
+        label.pop();
+        label.push('…');
+    }
+    label
 }
 
 /// Texts on a part: marking and special texts as solid strokes (what the laser
@@ -480,6 +505,13 @@ pub fn draw_icon_with(p: &egui::Painter, r: Rect, icon: Icon, ink: Color32, acce
             poly(vec![v(-6.0, -10.0), v(6.0, -10.0), v(3.0, -2.0), v(-3.0, -2.0), v(-6.0, -10.0)], s);
             p.line_segment([v(0.0, -2.0), v(0.0, 7.0)], a);
             p.line_segment([v(-8.0, 9.0), v(8.0, 9.0)], s);
+        }
+        Icon::Brush => {
+            // A brush stroke on a contour: handle, ferrule and tip.
+            p.line_segment([v(9.0, -10.0), v(2.0, -3.0)], s);
+            poly(vec![v(2.0, -6.0), v(5.0, -3.0), v(1.0, 1.0), v(-2.0, -2.0), v(2.0, -6.0)], s);
+            poly(vec![v(-2.0, -2.0), v(1.0, 1.0), v(-3.0, 5.0), v(-7.0, 6.0), v(-6.0, 2.0), v(-2.0, -2.0)], a);
+            p.line_segment([v(-11.0, 10.0), v(11.0, 10.0)], a);
         }
         Icon::Import => {
             // A drawing sheet with "DXF" and an arrow coming in.
@@ -2176,6 +2208,8 @@ impl App {
             }
         });
         if let Some(t) = draft.tech.as_mut() {
+            // The machine's names and colours for its cut qualities (CQ4, CQ5).
+            let names = crate::ct1::for_spec(&self.spec).qualities;
             egui::Grid::new("tech_edit").num_columns(2).spacing([10.0, 5.0]).show(ui, |ui| {
                 ui.label("Lead-in");
                 changed |= ui.add(egui::DragValue::new(&mut t.lead_in).range(0.0..=30.0).clamp_existing_to_range(false).speed(0.1).suffix(" mm")).changed();
@@ -2192,10 +2226,15 @@ impl App {
                 ui.label("Joint width");
                 changed |= ui.add(egui::DragValue::new(&mut t.joint_width).range(0.1..=5.0).clamp_existing_to_range(false).speed(0.05).suffix(" mm")).changed();
                 ui.end_row();
-                ui.label("Cut quality");
-                egui::ComboBox::from_id_salt("quality").width(110.0).selected_text(t.quality.label()).show_ui(ui, |ui| {
-                    for q in crate::nest::CutQuality::ALL {
-                        changed |= ui.selectable_value(&mut t.quality, q, q.label()).changed();
+                ui.label("Cut quality").on_hover_text("The machine's quality for every contour the size ranges don't set; Auto lets the machine's size bands decide, so small holes are cut slower");
+                let shown: egui::WidgetText = match t.quality {
+                    Some(q) => crate::techui::quality_text(ui, &names, q).into(),
+                    None => crate::techui::part_quality_label(None, &names).into(),
+                };
+                egui::ComboBox::from_id_salt("quality").width(130.0).selected_text(shown).show_ui(ui, |ui| {
+                    changed |= ui.selectable_value(&mut t.quality, None, crate::techui::part_quality_label(None, &names)).changed();
+                    for q in crate::techui::offered_qualities(&names) {
+                        changed |= ui.selectable_value(&mut t.quality, Some(q), crate::techui::quality_text(ui, &names, q)).changed();
                     }
                 });
                 ui.end_row();
@@ -2394,15 +2433,8 @@ impl App {
                         p.text(b.center(), Align2::CENTER_CENTER, "T", FontId::proportional(11.0), Color32::WHITE);
                     }
                     // The part's reference at the foot of the tile, shortened to fit.
-                    let mut label = part.name.clone();
                     let font = FontId::proportional(10.5);
-                    while label.chars().count() > 3 && p.layout_no_wrap(label.clone(), font.clone(), th().text).size().x > r.width() - 10.0 {
-                        label.pop();
-                        while label.ends_with('…') {
-                            label.pop();
-                        }
-                        label.push('…');
-                    }
+                    let label = fit_label(&part.name, |l| p.layout_no_wrap(l.to_string(), font.clone(), th().text).size().x <= r.width() - 10.0);
                     p.text(Pos2::new(r.center().x, r.bottom() - 8.0), Align2::CENTER_CENTER, label, font, th().text_dim);
                     let body = Rect::from_min_max(head.left_bottom() + Vec2::new(8.0, 5.0), r.max - Vec2::new(8.0, 18.0));
                     let (w, h) = part.bbox();
@@ -2751,5 +2783,18 @@ mod ribbon_fit_tests {
         assert!(ribbon_fit_plan(&[], &[], &[], 100.0).is_empty());
         // Too narrow for anything: all fold.
         assert_eq!(ribbon_fit_plan(&full, &[], &same, 50.0), vec![true; 4]);
+    }
+}
+
+#[cfg(test)]
+mod tile_label_tests {
+    #[test]
+    fn a_long_reference_is_shortened_with_one_ellipsis_and_never_hangs() {
+        // At most 8 characters fit: a long made-up reference loses its end.
+        let fits = |s: &str| s.chars().count() <= 8;
+        assert_eq!(super::fit_label("DEMO-BEND-PLATE", fits), "DEMO-BE…");
+        assert_eq!(super::fit_label("DEMO-1", fits), "DEMO-1");
+        // Nothing fits: it stops at three characters.
+        assert_eq!(super::fit_label("DEMO-BEND-PLATE", |_| false), "DE…");
     }
 }

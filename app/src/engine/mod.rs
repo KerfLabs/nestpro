@@ -7,6 +7,7 @@
 //! `render.rs` draws a sheet or a part to PNG/SVG so an agent can look at it.
 
 pub mod arrange;
+pub mod contours;
 pub mod imports;
 pub mod librarycheck;
 pub mod ops;
@@ -211,7 +212,10 @@ pub fn import_notes(name: &str, rep: &dxf::ImportReport) -> Vec<String> {
         notes.push(format!("{name}: ignored {}", rep.skipped.join(", ")));
     }
     if rep.open_pieces > 0 {
-        notes.push(format!("{name}: {} open piece(s) left out", rep.open_pieces));
+        notes.push(format!("{name}: {} open piece(s) off the part left out", rep.open_pieces));
+    }
+    if rep.open_kept > 0 {
+        notes.push(format!("{name}: {} open line(s) kept on the part as Bend line or No cut, never cut; set them in Cut technology", rep.open_kept));
     }
     if rep.gaps_closed > 0 {
         notes.push(format!("{name}: {} gap(s) up to 0.5 mm closed", rep.gaps_closed));
@@ -579,8 +583,9 @@ impl TechEdit {
                 if let Some(e) = every {
                     x.joint_every = e.max(0.0);
                 } else if x.joint_every <= 0.0 {
-                    let q = crate::leads::quality_number(x.quality);
-                    x.joint_every = dist[q.clamp(1, 12) - 1][0];
+                    // The part's own quality, else the outline's usual one (CQ1).
+                    let q = x.quality.unwrap_or(crate::nest::CutQuality::FALLBACK).number();
+                    x.joint_every = dist[q - 1][0];
                 }
                 x.micro_joints = 0;
                 if x.joint_width <= 0.0 || (*gap_wins && *gap > 0.0) {

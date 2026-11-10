@@ -1,9 +1,18 @@
 //! The Import drawings window: a file browser inside the app that shows the
 //! picked drawing before it's imported (IM10), as the original's Open dialog
 //! does. The system file picker can't draw that preview, so this takes its
-//! place; "System dialog…" still opens the system one.
+//! place; "System dialog…" still opens the system one. Its cut technology
+//! panel sets the drawing's layers and paints its contours before the part
+//! is made (IM11), through the same engine functions as `import-drawing`
+//! (`engine::imports::chosen_part`, `set_layer`); this module only draws and
+//! passes clicks along.
 
-use crate::engine::imports::{drawing_preview, DrawingPreview, PreviewPart};
+use crate::cutpanel::{self, CutPanel, PaintTarget, Row};
+use crate::dxf::LayerRole;
+use crate::engine::contours;
+use crate::engine::imports::{self, drawing_preview, ContourChoice, DrawingChoices, DrawingPreview, PreviewPart};
+use crate::nest::{Part, SheetSpec, P};
+use crate::qualities::CutQualities;
 use crate::formats::Format;
 use crate::settings::AppSettings;
 use crate::theme::th;
@@ -250,6 +259,120 @@ enum Shown {
 
 type Loaded = (PathBuf, Option<u64>, String, Shown);
 
+/// The fingerprint of file `path` as it is now (`imports::fingerprint`):
+/// Import compares it with the bytes the preview read, so a drawing changed
+/// since is never brought in as it was set, whatever its size and time say
+/// (IM11).
+fn file_fingerprint(path: &Path) -> Option<u64> {
+    std::fs::read(path).ok().map(|b| imports::fingerprint(&b))
+}
+
+/// A file's last change and the settings it was read with (`preview_key`):
+/// choices made on one reading don't carry to another.
+type Stamp = (Option<u64>, String);
+
+/// One layer row of the shown drawing in the cut technology panel (IM11).
+#[derive(Clone, Debug, PartialEq)]
+pub struct LayerRow {
+    pub name: String,
+    /// Objects on it.
+    pub objects: usize,
+    pub role: LayerRole,
+    /// Why it starts as Leave out (DX3), for its hover text.
+    pub why: Option<String>,
+}
+
+/// A drawing whose layers or contours were set in the preview (IM11): the
+/// reading they were set on, kept apart from the preview's cache (which
+/// forgets old previews), and what was set.
+#[derive(Clone)]
+struct Edited {
+    stamp: Stamp,
+    read: Arc<DrawingPreview>,
+    choices: DrawingChoices,
+}
+
+/// A picked drawing at Import (IM11).
+pub enum Chosen {
+    /// As the preview read it, with what was set for it there.
+    Read(Arc<DrawingPreview>, DrawingChoices),
+    /// Not read yet: read it with the roles it starts with.
+    Unread,
+    /// Set in the preview, but the file (or the import settings) changed
+    /// since: read it again as it starts, and say so.
+    Changed,
+}
+
+/// The shown drawing's layer rows with the roles `choices` give them.
+fn layer_rows(d: &DrawingPreview, choices: &DrawingChoices) -> Vec<LayerRow> {
+    let roles = choices.roles(&d.reads);
+    let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut why: std::collections::BTreeMap<String, String> = Default::default();
+    for r in &d.reads {
+        for (l, n) in r.part.drawing.layers() {
+            *counts.entry(l).or_insert(0) += n;
+        }
+        for (l, w) in &r.part.drawing.hidden {
+            why.entry(l.clone()).or_insert_with(|| w.clone());
+        }
+    }
+    counts.into_iter().map(|(name, objects)| LayerRow { role: roles.get(&name).copied().unwrap_or(LayerRole::Cut), why: why.get(&name).cloned(), name, objects }).collect()
+}
+
+/// The focused drawing with what was set for it (IM11).
+struct Current {
+    path: PathBuf,
+    stamp: Stamp,
+    /// The part of the file shown.
+    ix: usize,
+    d: Arc<DrawingPreview>,
+    choices: DrawingChoices,
+    /// The part it makes with them, or why none can be made.
+    made: Result<(Part, Vec<String>), String>,
+}
+
+/// The part about to be imported, painted in the preview's cut technology
+/// panel (IM11): each paint is the engine's `contours::paint` and is kept as
+/// a contour choice, so Import makes the same part (`imports::chosen_part`).
+struct PreviewPaint<'a> {
+    cur: &'a mut Current,
+    names: &'a CutQualities,
+    undo: &'a mut Vec<(PathBuf, Edited)>,
+    note: &'a mut String,
+}
+
+impl PaintTarget for PreviewPaint<'_> {
+    type Before = DrawingChoices;
+
+    fn part(&self) -> Option<&Part> {
+        self.cur.made.as_ref().ok().map(|m| &m.0)
+    }
+
+    fn paint_now(&mut self, picks: &[usize], row: Row, same: bool) -> Result<String, String> {
+        let part = self.part().cloned().filter(|_| !picks.is_empty()).ok_or("No contour picked.")?;
+        let mut parts = vec![part];
+        let done = contours::paint(&mut parts, &[], &mut [], 0, picks, row.paint(), same)?;
+        self.cur.choices.contours.entry(self.cur.ix).or_default().push(ContourChoice { contours: picks.to_vec(), paint: row.paint(), same });
+        if let Ok(m) = self.cur.made.as_mut() {
+            m.0 = parts.swap_remove(0);
+        }
+        let n: Vec<String> = done.contours.iter().map(|k| (k + 1).to_string()).collect();
+        Ok(format!("Contour{} {}: {}.", if n.len() == 1 { "" } else { "s" }, n.join(", "), row.label(self.names)))
+    }
+
+    fn before(&self) -> DrawingChoices {
+        self.cur.choices.clone()
+    }
+
+    fn push_undo(&mut self, before: DrawingChoices) {
+        self.undo.push((self.cur.path.clone(), Edited { stamp: self.cur.stamp.clone(), read: self.cur.d.clone(), choices: before }));
+    }
+
+    fn say(&mut self, s: String) {
+        *self.note = s;
+    }
+}
+
 /// The settings a preview depends on: a preview read with other ones is read again.
 fn preview_key(cfg: &AppSettings, spec: &crate::nest::SheetSpec) -> String {
     // Material names and aliases decide whether the file's material matches the job's.
@@ -301,6 +424,18 @@ pub struct ImportUi {
     drives: Vec<Place>,
     /// Read previews on the window's thread (screenshots, so they're ready in time).
     pub sync: bool,
+    /// What was set in the preview for each drawing (IM11), with the reading
+    /// it was set on.
+    edited: HashMap<PathBuf, Edited>,
+    /// The cut technology panel in the preview (IM11).
+    pub panel: CutPanel<DrawingChoices>,
+    /// Ctrl+Z in the preview: a drawing's choices before each paint or layer change.
+    undo: Vec<(PathBuf, Edited)>,
+    /// The part the shown drawing makes with its choices, for (file, reading,
+    /// part, choices).
+    shown: Option<(PathBuf, Stamp, usize, DrawingChoices, Result<(Part, Vec<String>), String>)>,
+    /// What the last paint or layer change did, or why not.
+    pub note: String,
 }
 
 impl Default for ImportUi {
@@ -330,6 +465,11 @@ impl Default for ImportUi {
             places: vec![],
             drives: vec![],
             sync: false,
+            edited: HashMap::new(),
+            panel: CutPanel::default(),
+            undo: vec![],
+            shown: None,
+            note: String::new(),
         }
     }
 }
@@ -343,6 +483,11 @@ impl ImportUi {
         self.cache.clear();
         self.name_text.clear();
         self.name_auto.clear();
+        self.edited.clear();
+        self.undo.clear();
+        self.shown = None;
+        self.note.clear();
+        self.panel.row = None;
         for d in dirs {
             if self.go(d.clone()) {
                 return;
@@ -403,16 +548,22 @@ impl ImportUi {
             if self.loading.as_ref() == Some(&p) {
                 self.loading = None;
             }
-            if self.cache.len() >= MAX_CACHED {
-                self.cache.clear();
-            }
-            self.cache.insert(p, (m, k, s));
+            self.file_preview(p, m, k, s);
         }
+    }
+
+    /// Keep a preview, forgetting the older ones when there are too many
+    /// (what was set for a drawing is kept apart, in `edited`).
+    fn file_preview(&mut self, p: PathBuf, m: Option<u64>, k: String, s: Shown) {
+        if self.cache.len() >= MAX_CACHED {
+            self.cache.clear();
+        }
+        self.cache.insert(p, (m, k, s));
     }
 
     /// Start reading the focused file when it has no preview yet (one at a
     /// time: moving quickly down the list reads only where it stops).
-    fn want_preview(&mut self, cfg: &AppSettings, spec: &crate::nest::SheetSpec, ctx: &egui::Context) {
+    pub(crate) fn want_preview(&mut self, cfg: &AppSettings, spec: &crate::nest::SheetSpec, ctx: &egui::Context) {
         if !cfg.import_preview || self.loading.is_some() {
             return;
         }
@@ -424,7 +575,7 @@ impl ImportUi {
         let (path, m) = (e.path.clone(), e.modified);
         if self.sync {
             let s = read_preview(cfg, spec, &path);
-            self.cache.insert(path, (m, key, s));
+            self.file_preview(path, m, key, s);
             return;
         }
         self.loading = Some(path.clone());
@@ -470,6 +621,144 @@ impl ImportUi {
         }
     }
 
+    /// The stamp file `path` has now: its last change and these settings.
+    fn stamp_now(&self, path: &Path, cfg: &AppSettings, spec: &SheetSpec) -> Option<Stamp> {
+        let modified = match self.entries.iter().find(|e| e.path == path) {
+            Some(e) => e.modified,
+            None => std::fs::metadata(path).ok()?.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()),
+        };
+        Some((modified, preview_key(cfg, spec)))
+    }
+
+    /// File `path` as the preview read it, when it has been read with these
+    /// settings since its last change, and the stamp of that reading: the
+    /// reading something was set on, else the preview's.
+    fn read_of(&self, path: &Path, cfg: &AppSettings, spec: &SheetSpec) -> Option<(Stamp, Arc<DrawingPreview>)> {
+        let stamp = self.stamp_now(path, cfg, spec)?;
+        if let Some(e) = self.edited.get(path).filter(|e| e.stamp == stamp) {
+            return Some((stamp, e.read.clone()));
+        }
+        match self.cache.get(path) {
+            Some((m, k, Shown::Drawing(d))) if (m, k) == (&stamp.0, &stamp.1) => Some((stamp, d.clone())),
+            _ => None,
+        }
+    }
+
+    /// What was set for `path` on the reading `stamp` (IM11).
+    fn choices_for(&self, path: &Path, stamp: &Stamp) -> DrawingChoices {
+        self.edited.get(path).filter(|e| &e.stamp == stamp).map(|e| e.choices.clone()).unwrap_or_default()
+    }
+
+    /// Each picked file at Import (IM11): as the preview read it with what
+    /// was set for it, not read yet, or set on a reading the file no longer
+    /// has.
+    pub fn chosen(&self, files: &[PathBuf], cfg: &AppSettings, spec: &SheetSpec) -> Vec<(PathBuf, Chosen)> {
+        files
+            .iter()
+            .map(|f| {
+                // The file's bytes now, not the folder listing or the file's
+                // size and time, which may not show a change.
+                let same_file = |e: &Edited| file_fingerprint(f) == Some(e.read.fingerprint) && Some(&e.stamp) == self.stamp_now(f, cfg, spec).as_ref();
+                let chosen = match self.edited.get(f) {
+                    Some(e) if same_file(e) => Chosen::Read(e.read.clone(), e.choices.clone()),
+                    Some(_) => Chosen::Changed,
+                    // Nothing set: the preview's reading only while the bytes are the
+                    // same, else read it again as it is now (IM11).
+                    None => self.read_of(f, cfg, spec).filter(|(_, d)| file_fingerprint(f) == Some(d.fingerprint)).map_or(Chosen::Unread, |(_, d)| Chosen::Read(d, DrawingChoices::default())),
+                };
+                (f.clone(), chosen)
+            })
+            .collect()
+    }
+
+    /// The focused drawing, its part shown and the part it makes with what
+    /// was set for it (made again only when that changed).
+    fn current(&mut self, cfg: &AppSettings, spec: &SheetSpec) -> Option<Current> {
+        let path = self.focus.clone()?;
+        let (stamp, d) = self.read_of(&path, cfg, spec)?;
+        let ix = self.part_ix.min(d.parts.len().checked_sub(1)?);
+        let choices = self.choices_for(&path, &stamp);
+        if self.edited.get(&path).is_some_and(|e| e.stamp != stamp) {
+            self.note = "The file or the import settings changed after its layers and contours were set here: they are shown as they start. Set them again.".into();
+        }
+        let fresh = matches!(&self.shown, Some((p, st, i, c, _)) if *p == path && *st == stamp && *i == ix && *c == choices);
+        if !fresh {
+            let made = if choices == DrawingChoices::default() { d.parts[ix].part.clone() } else { imports::chosen_part(cfg, spec, &d.reads[ix], &choices.roles(&d.reads), choices.of(ix), 0) };
+            self.shown = Some((path.clone(), stamp.clone(), ix, choices.clone(), made));
+        }
+        let made = self.shown.as_ref().map(|s| s.4.clone())?;
+        Some(Current { path, stamp, ix, d, choices, made })
+    }
+
+    /// Keep the part the drawing `cur` shows, and what was set for it when
+    /// `edits` changed it. Otherwise what was set stays as it was, so a
+    /// drawing set on an earlier reading of its file is still reported at
+    /// Import.
+    fn keep(&mut self, cur: Current, edits: bool) {
+        if edits && cur.choices == DrawingChoices::default() {
+            self.edited.remove(&cur.path);
+        } else if edits {
+            self.edited.insert(cur.path.clone(), Edited { stamp: cur.stamp.clone(), read: cur.d.clone(), choices: cur.choices.clone() });
+        }
+        self.shown = Some((cur.path, cur.stamp, cur.ix, cur.choices, cur.made));
+    }
+
+    /// Run `f` with the shown part as the panel's paint target (IM11); `None`
+    /// when no drawing is shown.
+    fn with_paint<R>(&mut self, cfg: &AppSettings, spec: &SheetSpec, names: &CutQualities, f: impl FnOnce(&mut PreviewPaint, &mut CutPanel<DrawingChoices>) -> R) -> Option<R> {
+        let mut cur = self.current(cfg, spec)?;
+        let mut panel = std::mem::take(&mut self.panel);
+        let before = cur.choices.clone();
+        let r = f(&mut PreviewPaint { cur: &mut cur, names, undo: &mut self.undo, note: &mut self.note }, &mut panel);
+        self.panel = panel;
+        let edits = cur.choices != before;
+        self.keep(cur, edits);
+        Some(r)
+    }
+
+    /// Set layer row `layer` of the shown drawing to `role` (IM11): its parts
+    /// are made again with it (`imports::set_layer`), one undo step.
+    fn set_layer(&mut self, cfg: &AppSettings, spec: &SheetSpec, layer: &str, role: LayerRole) {
+        let Some(mut cur) = self.current(cfg, spec) else { return };
+        if cur.choices.roles(&cur.d.reads).get(layer) == Some(&role) {
+            return;
+        }
+        let (next, gave_way) = imports::set_layer(cfg, spec, &cur.d.reads, &cur.choices, layer, role);
+        let before = std::mem::replace(&mut cur.choices, next);
+        self.undo.push((cur.path.clone(), Edited { stamp: cur.stamp.clone(), read: cur.d.clone(), choices: before }));
+        let what = match role {
+            LayerRole::Cut => "its lines are cut (open ones stay Bend line or No cut)",
+            LayerRole::Mark => "its lines are marked",
+            LayerRole::Ignore => "its lines are left out",
+        };
+        let gave = match gave_way {
+            0 => String::new(),
+            1 => " 1 contour painted by hand took the layer's choice.".into(),
+            n => format!(" {n} contours painted by hand took the layer's choice."),
+        };
+        self.note = format!("Layer {layer}: {}, {what}.{gave}", role.label());
+        cur.made = Err(String::new());
+        self.keep(cur, true);
+        // Made again with the new roles when next shown.
+        self.shown = None;
+    }
+
+    /// Ctrl+Z in the preview: take back the last paint or layer change on
+    /// the shown drawing. False when there is none.
+    fn undo_last(&mut self) -> bool {
+        let Some(path) = self.focus.clone() else { return false };
+        let Some(at) = self.undo.iter().rposition(|u| u.0 == path) else { return false };
+        let (path, before) = self.undo.remove(at);
+        if before.choices == DrawingChoices::default() {
+            self.edited.remove(&path);
+        } else {
+            self.edited.insert(path, before);
+        }
+        self.shown = None;
+        self.note = "Undone.".into();
+        true
+    }
+
     /// The file name box text for the picked files, as Windows writes it.
     fn picked_names(&self) -> String {
         let names: Vec<String> = self.picked.iter().filter_map(|p| p.file_name()).map(|n| n.to_string_lossy().to_string()).collect();
@@ -512,18 +801,56 @@ impl App {
             dlg = dlg.set_directory(d);
         }
         if let Some(files) = dlg.add_filter("Lantek import XML (DXF Import / Parts Import)", &["xml", "XML"]).pick_files() {
-            self.import_from_window(files);
+            if let Some(d) = files.first().and_then(|f| f.parent()) {
+                remember_dir(&mut self.cfg.import_dirs, &d.display().to_string());
+            }
+            // As if dropped: a drawing with several layer rows comes back to
+            // the window to set them (IM12).
+            self.import_drawings(files);
+            self.apply_settings(false);
         }
     }
 
-    /// Import the files picked in either window, remembering their folder.
+    /// Import the files picked in the window, remembering their folder: each
+    /// drawing with the layers and contours set for it in the preview (IM11),
+    /// the same part `import-drawing` makes with them.
     fn import_from_window(&mut self, files: Vec<PathBuf>) {
         if let Some(d) = files.first().and_then(|f| f.parent()) {
             remember_dir(&mut self.cfg.import_dirs, &d.display().to_string());
         }
         self.importui.open = false;
-        self.import_drawings(files);
+        self.importui.panel.row = None;
+        let chosen = self.importui.chosen(&files, &self.cfg, &self.spec);
+        self.import_chosen(chosen);
         self.apply_settings(false);
+    }
+
+    /// The shown drawing's layer rows (IM11).
+    pub fn preview_layers(&mut self) -> Vec<LayerRow> {
+        self.importui.current(&self.cfg, &self.spec).map_or(vec![], |c| layer_rows(&c.d, &c.choices))
+    }
+
+    /// The part the shown drawing will come in as, with what was set for it.
+    pub fn preview_part(&mut self) -> Option<Part> {
+        self.importui.current(&self.cfg, &self.spec).and_then(|c| c.made.ok()).map(|m| m.0)
+    }
+
+    /// Paint contours `picks` (numbers from 0) of the shown part with `row`, as
+    /// a click in the preview does (IM11, CS6): one undo step; the panel says
+    /// what it did or why not. True when something changed.
+    pub fn preview_paint(&mut self, picks: &[usize], row: Row, same: bool) -> bool {
+        let names = crate::ct1::for_spec(&self.spec).qualities;
+        self.importui.with_paint(&self.cfg, &self.spec, &names, |t, _| cutpanel::paint_contours(t, picks, row, same)).unwrap_or(false)
+    }
+
+    /// Set a layer row of the shown drawing (IM11).
+    pub fn preview_set_layer(&mut self, layer: &str, role: LayerRole) {
+        self.importui.set_layer(&self.cfg, &self.spec, layer, role);
+    }
+
+    /// Ctrl+Z in the preview.
+    pub fn preview_undo(&mut self) -> bool {
+        self.importui.undo_last()
     }
 
     pub fn import_window(&mut self, ctx: &egui::Context) {
@@ -538,7 +865,7 @@ impl App {
         // Keys move in the list unless a text box has them (they don't reach the sheet behind).
         if !ctx.egui_wants_keyboard_input() {
             let at = self.importui.focus.as_ref().and_then(|f| rows.iter().position(|e| &e.path == f));
-            let (mut down, mut up, mut home, mut end, mut enter, mut back, mut all, mut space, mut esc) = (false, false, false, false, false, false, false, false, false);
+            let (mut down, mut up, mut home, mut end, mut enter, mut back, mut all, mut space, mut esc, mut undo) = (false, false, false, false, false, false, false, false, false, false);
             let shift = ctx.input(|i| i.modifiers.shift);
             ctx.input_mut(|i| {
                 for m in [Modifiers::NONE, Modifiers::SHIFT] {
@@ -552,6 +879,8 @@ impl App {
                 all = i.consume_key(Modifiers::COMMAND, Key::A);
                 space = i.consume_key(Modifiers::NONE, Key::Space);
                 esc = i.consume_key(Modifiers::NONE, Key::Escape);
+                // The job behind isn't undone while the window is open.
+                undo = i.consume_key(Modifiers::COMMAND, Key::Z);
             });
             let last = rows.len().saturating_sub(1);
             if down && !rows.is_empty() {
@@ -587,8 +916,18 @@ impl App {
             if back {
                 self.importui.up();
             }
-            if esc {
+            if esc && self.importui.panel.row.is_some() {
+                // Esc ends painting first (CS6), then closes the window.
+                let names = crate::ct1::for_spec(&self.spec).qualities;
+                let ended = self.importui.with_paint(&self.cfg, &self.spec, &names, |t, p| cutpanel::end_painting(t, p, &names));
+                if ended.is_none() {
+                    self.importui.panel.row = None;
+                }
+            } else if esc {
                 act = Act::Close;
+            }
+            if undo && !self.preview_undo() {
+                self.importui.note = "Nothing to undo in the preview.".into();
             }
         }
         self.importui.sync_name();
@@ -596,12 +935,13 @@ impl App {
         let rows = self.importui.visible();
         let mut open = true;
         let unit = self.cfg.nesting.units;
+        let panel = self.importui.panel.open;
         egui::Window::new(RichText::new("Import part drawings").size(16.0).strong())
             .id(egui::Id::unique("import_browser"))
             .pivot(Align2::CENTER_TOP)
             .default_pos(dialog_pos(ctx))
-            .default_size([1040.0, 620.0])
-            .min_size([760.0, 440.0])
+            .default_size([if panel { 1240.0 } else { 1040.0 }, if panel { 680.0 } else { 620.0 }])
+            .min_size([if panel { 980.0 } else { 760.0 }, 440.0])
             .open(&mut open)
             .collapsible(false)
             .show(ctx, |ui| {
@@ -611,12 +951,23 @@ impl App {
                 let body_h = (ui.available_height() - bottom_h).max(200.0);
                 let full_w = ui.available_width();
                 ui.allocate_ui_with_layout(Vec2::new(full_w, body_h), egui::Layout::left_to_right(Align::Min), |ui| {
-                    let side_w = 170.0;
-                    let prev_w = 300.0;
-                    let list_w = (full_w - side_w - prev_w - 2.0 * ui.spacing().item_spacing.x).max(240.0);
-                    ui.allocate_ui_with_layout(Vec2::new(side_w, body_h), egui::Layout::top_down(Align::Min), |ui| self.import_places(ui));
-                    ui.allocate_ui_with_layout(Vec2::new(list_w, body_h), egui::Layout::top_down(Align::Min), |ui| self.import_list(ui, &rows, list_w, body_h, &mut act));
-                    ui.allocate_ui_with_layout(Vec2::new(prev_w, body_h), egui::Layout::top_down(Align::Min), |ui| self.import_preview_pane(ui, prev_w, unit, &mut act));
+                    let gap = ui.spacing().item_spacing.x;
+                    if panel {
+                        // IM11: the preview grows and the cut technology panel sits on
+                        // its right; the places column makes room for them.
+                        let (list_w, panel_w) = (330.0, 270.0);
+                        let prev_w = (full_w - list_w - panel_w - 2.0 * gap).max(300.0);
+                        ui.allocate_ui_with_layout(Vec2::new(list_w, body_h), egui::Layout::top_down(Align::Min), |ui| self.import_list(ui, &rows, list_w, body_h, &mut act));
+                        ui.allocate_ui_with_layout(Vec2::new(prev_w, body_h), egui::Layout::top_down(Align::Min), |ui| self.import_preview_pane(ui, prev_w, unit, &mut act));
+                        ui.allocate_ui_with_layout(Vec2::new(panel_w, body_h), egui::Layout::top_down(Align::Min), |ui| self.import_cut_panel(ui, panel_w, body_h));
+                    } else {
+                        let side_w = 170.0;
+                        let prev_w = 300.0;
+                        let list_w = (full_w - side_w - prev_w - 2.0 * gap).max(240.0);
+                        ui.allocate_ui_with_layout(Vec2::new(side_w, body_h), egui::Layout::top_down(Align::Min), |ui| self.import_places(ui));
+                        ui.allocate_ui_with_layout(Vec2::new(list_w, body_h), egui::Layout::top_down(Align::Min), |ui| self.import_list(ui, &rows, list_w, body_h, &mut act));
+                        ui.allocate_ui_with_layout(Vec2::new(prev_w, body_h), egui::Layout::top_down(Align::Min), |ui| self.import_preview_pane(ui, prev_w, unit, &mut act));
+                    }
                 });
                 ui.separator();
                 self.import_bottom(ui, &mut act);
@@ -860,7 +1211,8 @@ impl App {
     }
 
     /// The right column: the focused drawing as it will come in, its size and
-    /// what the import will say about it; Preview on/off and the import settings.
+    /// what the import will say about it; Preview on/off, the cut technology
+    /// panel (IM11) and the import settings.
     fn import_preview_pane(&mut self, ui: &mut egui::Ui, w: f32, unit: LenUnit, act: &mut Act) {
         ui.horizontal(|ui| {
             ui.label(RichText::new("Preview").strong().color(th().text_strong));
@@ -869,12 +1221,22 @@ impl App {
                 if r.changed() {
                     self.importui.loading = None;
                 }
+                let open = self.importui.panel.open;
+                let tip = "Set the drawing's layers and paint its contours (cut, mark, no cut, bend line, leave out) before it is imported";
+                if ui.selectable_label(open, "Cut technology").on_hover_text(tip).clicked() {
+                    self.importui.panel.open = !open;
+                    self.importui.panel.row = None;
+                }
             });
         });
-        let side = w.min(ui.available_height() - 150.0).max(160.0);
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(w, side), Sense::hover());
+        let panel = self.importui.panel.open;
+        let side = if panel { (ui.available_height() - 130.0).max(160.0) } else { w.min(ui.available_height() - 150.0).max(160.0) };
+        let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, side), if panel { Sense::click_and_drag() } else { Sense::hover() });
         ui.painter().rect_filled(rect, 6.0, th().card);
         ui.painter().rect_stroke(rect, 6.0, Stroke::new(1.0, th().border), StrokeKind::Inside);
+        // The drawing as it will come in, with what was set for it (IM11).
+        let cur = self.importui.current(&self.cfg, &self.spec);
+        let mut drawing: Option<Arc<DrawingPreview>> = None;
         let key = preview_key(&self.cfg, &self.spec);
         let iu = &mut self.importui;
         let focus = iu.focus.as_ref().and_then(|f| iu.entries.iter().find(|e| &e.path == f)).cloned();
@@ -918,18 +1280,26 @@ impl App {
                     }
                 }
                 Some(Shown::Drawing(d)) => {
-                    let n = d.parts.len();
-                    let ix = iu.part_ix.min(n.saturating_sub(1));
-                    if let Some(pp) = d.parts.get(ix) {
-                        paint_preview(ui, pp, unit, rect, self.color_seq);
-                        info.extend(preview_lines(pp, d.format, unit));
-                    }
-                    if n > 1 {
-                        parts_nav = Some(n);
+                    drawing = Some(d.clone());
+                    if d.parts.len() > 1 {
+                        parts_nav = Some(d.parts.len());
                     }
                 }
             },
         }
+        if let Some(d) = drawing {
+            let ix = self.importui.part_ix.min(d.parts.len().saturating_sub(1));
+            if let Some(pp) = d.parts.get(ix) {
+                let made = cur.filter(|c| c.ix == ix).map_or_else(|| pp.part.clone(), |c| c.made);
+                self.paint_preview(ui, &resp, pp, &made, ix, unit, rect);
+                info.extend(preview_lines(pp, &made, d.format, unit, panel));
+                // What the last paint or layer change did, or why not (IM11).
+                if panel && !self.importui.note.is_empty() {
+                    info.insert(info.len().min(2), (self.importui.note.clone(), th().accent_fg));
+                }
+            }
+        }
+        let iu = &mut self.importui;
         if let Some(n) = parts_nav {
             ui.horizontal(|ui| {
                 if ui.add_enabled(iu.part_ix > 0, egui::Button::new("◀").small()).clicked() {
@@ -1068,10 +1438,12 @@ fn ext_tag(p: &egui::Painter, r: Rect, path: &Path) {
     p.text(r.center(), Align2::CENTER_CENTER, ext, FontId::proportional(9.5), fg);
 }
 
-/// Name, size, holes, format, layers, quantity and the import's notes for one part.
-fn preview_lines(pp: &PreviewPart, format: Format, unit: LenUnit) -> Vec<(String, Color32)> {
+/// Name, size, holes, format, layers, quantity and the import's notes for one
+/// part, as `made` with what was set for it (IM11). `panel`: the cut
+/// technology panel is open.
+fn preview_lines(pp: &PreviewPart, made: &Result<(Part, Vec<String>), String>, format: Format, unit: LenUnit, panel: bool) -> Vec<(String, Color32)> {
     let mut v = vec![];
-    match &pp.part {
+    match made {
         Ok((part, notes)) => {
             v.push((part.name.clone(), th().text_strong));
             let holes = part.geometry().holes.len();
@@ -1086,8 +1458,8 @@ fn preview_lines(pp: &PreviewPart, format: Format, unit: LenUnit) -> Vec<(String
                 kind += &format!(" · quantity {}", part.qty);
             }
             v.push((kind, th().text_dim));
-            if pp.layers > 1 {
-                v.push(("Several layers: after Import you choose which are cut, marked or left out.".into(), th().text_dim));
+            if pp.layers > 1 && !panel {
+                v.push(("Several layers: Cut technology sets which are cut, marked or left out before Import.".into(), th().text_dim));
             }
             for n in notes {
                 v.push((format!("⚠ {n}"), th().warn_fg));
@@ -1102,64 +1474,162 @@ fn preview_lines(pp: &PreviewPart, format: Format, unit: LenUnit) -> Vec<(String
     v
 }
 
-/// Draw one part of the drawing in `rect`: the part as it will come in, with
-/// its width and height; or, when no part can be made, the drawing's lines.
-fn paint_preview(ui: &egui::Ui, pp: &PreviewPart, unit: LenUnit, rect: Rect, color: usize) {
-    let p = ui.painter_at(rect);
-    match &pp.part {
-        Ok((part, _)) => {
-            let (w, h) = (part.w.max(1e-6), part.h.max(1e-6));
-            let inner = rect.shrink(30.0);
-            let s = (inner.width() / w as f32).min(inner.height() / h as f32);
-            let o = inner.center() + Vec2::new(-(w as f32) * s / 2.0, h as f32 * s / 2.0);
-            let map = |q: crate::nest::P| Pos2::new(o.x + q[0] as f32 * s, o.y - q[1] as f32 * s);
-            let col = part_color(color);
-            paint_part(&p, part, map, col, Stroke::new(1.2, darker(col, 0.5)), th().card);
-            // Width under the part, height on its right.
-            let dim = Stroke::new(1.0, th().text_dim);
-            let (x0, x1, y0, y1) = (o.x, o.x + w as f32 * s, o.y - h as f32 * s, o.y);
-            let yd = y1 + 12.0;
-            p.line_segment([Pos2::new(x0, yd), Pos2::new(x1, yd)], dim);
-            for x in [x0, x1] {
-                p.line_segment([Pos2::new(x, yd - 4.0), Pos2::new(x, yd + 4.0)], dim);
+/// Where a part `w` × `h` mm sits in `inner`, as large as fits: the screen
+/// point of its lower-left corner and pixels per mm.
+fn fit(inner: Rect, w: f64, h: f64) -> (Pos2, f32) {
+    let (w, h) = (w.max(1e-6), h.max(1e-6));
+    let s = (inner.width() / w as f32).min(inner.height() / h as f32);
+    (inner.center() + Vec2::new(-(w as f32) * s / 2.0, h as f32 * s / 2.0), s)
+}
+
+impl App {
+    /// Draw one part of the drawing in `rect`: the part as it will come in
+    /// (`made`), every contour in its state's or quality's colour (CS7), with
+    /// its width and height; or, when no part can be made, the drawing's
+    /// lines. With a row of the cut technology panel chosen, clicks, boxes
+    /// and sweeps on it paint the part (IM11, CS6); `ix` is its place in the file.
+    #[allow(clippy::too_many_arguments)]
+    fn paint_preview(&mut self, ui: &egui::Ui, resp: &egui::Response, pp: &PreviewPart, made: &Result<(Part, Vec<String>), String>, ix: usize, unit: LenUnit, rect: Rect) {
+        let p = ui.painter_at(rect);
+        match made {
+            Ok((part, _)) => {
+                let (w, h) = (part.w.max(1e-6), part.h.max(1e-6));
+                let (o, s) = fit(rect.shrink(30.0), w, h);
+                let to_s = |q: P| Pos2::new(o.x + q[0] as f32 * s, o.y - q[1] as f32 * s);
+                let to_w = |q: Pos2| [((q.x - o.x) / s) as f64, ((o.y - q.y) / s) as f64];
+                let col = part_color(self.color_seq);
+                paint_part(&p, part, to_s, col, Stroke::new(1.2, darker(col, 0.5)), th().card);
+                let mt = crate::ct1::for_spec(&self.spec);
+                cutpanel::paint_contour_colours(&p, part, &mt, &to_s, 1.4, self.importui.panel.open);
+                // Width under the part, height on its right.
+                let dim = Stroke::new(1.0, th().text_dim);
+                let (x0, x1, y0, y1) = (o.x, o.x + w as f32 * s, o.y - h as f32 * s, o.y);
+                let yd = y1 + 12.0;
+                p.line_segment([Pos2::new(x0, yd), Pos2::new(x1, yd)], dim);
+                for x in [x0, x1] {
+                    p.line_segment([Pos2::new(x, yd - 4.0), Pos2::new(x, yd + 4.0)], dim);
+                }
+                let font = FontId::proportional(11.0);
+                let wt = p.layout_no_wrap(unit.show(part.w), font.clone(), th().text);
+                let wr = Rect::from_center_size(Pos2::new((x0 + x1) / 2.0, yd), wt.size() + Vec2::new(6.0, 0.0));
+                p.rect_filled(wr, 2.0, th().card);
+                p.galley(wr.left_top() + Vec2::new(3.0, 0.0), wt, th().text);
+                let xd = x1 + 12.0;
+                p.line_segment([Pos2::new(xd, y0), Pos2::new(xd, y1)], dim);
+                for y in [y0, y1] {
+                    p.line_segment([Pos2::new(xd - 4.0, y), Pos2::new(xd + 4.0, y)], dim);
+                }
+                let ht = p.layout_no_wrap(unit.show(part.h), font, th().text);
+                let (gw, gh) = (ht.size().x, ht.size().y);
+                let ym = (y0 + y1) / 2.0;
+                p.rect_filled(Rect::from_center_size(Pos2::new(xd, ym), Vec2::new(gh, gw + 6.0)), 2.0, th().card);
+                p.add(egui::epaint::TextShape::new(Pos2::new(xd - gh / 2.0, ym + gw / 2.0), ht, th().text).with_angle(-std::f32::consts::FRAC_PI_2));
+                // Painting with the panel (IM11): the same clicks, boxes and
+                // sweeps as on the part's drawing screen (CS6).
+                if self.importui.panel.painting() {
+                    let half = (crate::partview::APERTURE_PX / s) as f64;
+                    self.importui.with_paint(&self.cfg, &self.spec, &mt.qualities, |t, panel| cutpanel::canvas(t, panel, ui, resp, &p, ix, &to_s, &to_w, half, &mt.qualities));
+                }
             }
-            let font = FontId::proportional(11.0);
-            let wt = p.layout_no_wrap(unit.show(part.w), font.clone(), th().text);
-            let wr = Rect::from_center_size(Pos2::new((x0 + x1) / 2.0, yd), wt.size() + Vec2::new(6.0, 0.0));
-            p.rect_filled(wr, 2.0, th().card);
-            p.galley(wr.left_top() + Vec2::new(3.0, 0.0), wt, th().text);
-            let xd = x1 + 12.0;
-            p.line_segment([Pos2::new(xd, y0), Pos2::new(xd, y1)], dim);
-            for y in [y0, y1] {
-                p.line_segment([Pos2::new(xd - 4.0, y), Pos2::new(xd + 4.0, y)], dim);
+            Err(_) => {
+                let (w, h) = ((pp.max[0] - pp.min[0]).max(1e-6), (pp.max[1] - pp.min[1]).max(1e-6));
+                let (o, s) = fit(rect.shrink(16.0), w, h);
+                let map = |q: &crate::nest::P| Pos2::new(o.x + (q[0] - pp.min[0]) as f32 * s, o.y - (q[1] - pp.min[1]) as f32 * s);
+                for (role, pts) in &pp.pieces {
+                    let c = match role {
+                        crate::dxf::LayerRole::Mark => th().accent_fg,
+                        _ => th().text_strong,
+                    };
+                    // Points closer than half a pixel add nothing on screen.
+                    let mut line: Vec<Pos2> = Vec::with_capacity(pts.len());
+                    for q in pts {
+                        let s = map(q);
+                        if line.last().is_none_or(|l| l.distance(s) > 0.5) {
+                            line.push(s);
+                        }
+                    }
+                    p.add(egui::Shape::line(line, Stroke::new(1.0, c)));
+                }
             }
-            let ht = p.layout_no_wrap(unit.show(part.h), font, th().text);
-            let (gw, gh) = (ht.size().x, ht.size().y);
-            let ym = (y0 + y1) / 2.0;
-            p.rect_filled(Rect::from_center_size(Pos2::new(xd, ym), Vec2::new(gh, gw + 6.0)), 2.0, th().card);
-            p.add(egui::epaint::TextShape::new(Pos2::new(xd - gh / 2.0, ym + gw / 2.0), ht, th().text).with_angle(-std::f32::consts::FRAC_PI_2));
         }
-        Err(_) => {
-            let (w, h) = ((pp.max[0] - pp.min[0]).max(1e-6), (pp.max[1] - pp.min[1]).max(1e-6));
-            let inner = rect.shrink(16.0);
-            let s = (inner.width() / w as f32).min(inner.height() / h as f32);
-            let o = inner.center() + Vec2::new(-(w as f32) * s / 2.0, h as f32 * s / 2.0);
-            let map = |q: &crate::nest::P| Pos2::new(o.x + (q[0] - pp.min[0]) as f32 * s, o.y - (q[1] - pp.min[1]) as f32 * s);
-            for (role, pts) in &pp.pieces {
-                let c = match role {
-                    crate::dxf::LayerRole::Mark => th().accent_fg,
-                    _ => th().text_strong,
+    }
+
+    /// The preview's cut technology panel (IM11): the drawing's layer rows,
+    /// each set to Cut, Mark or Leave out (rows in [ ] start as Leave out,
+    /// DX3), then the rows that paint contours (CS6) and what the last change
+    /// did.
+    fn import_cut_panel(&mut self, ui: &mut egui::Ui, w: f32, h: f32) {
+        let names = crate::ct1::for_spec(&self.spec).qualities;
+        let cur = self.importui.current(&self.cfg, &self.spec);
+        let frame = egui::Frame::new().fill(th().panel).stroke(Stroke::new(1.0, th().border)).corner_radius(4.0);
+        let mut set: Option<(String, LayerRole)> = None;
+        frame.show(ui, |ui| {
+            ui.set_min_size(Vec2::new(w - 2.0, h - 2.0));
+            ui.set_max_width(w - 2.0);
+            ui.spacing_mut().item_spacing.y = 2.0;
+            crate::ui_parts::pane_header(ui, "Cut technology");
+            let head = Rect::from_min_size(ui.min_rect().left_top(), Vec2::new(ui.available_width(), 24.0));
+            let close = ui.put(Rect::from_center_size(head.right_center() - Vec2::new(14.0, 0.0), Vec2::splat(20.0)), egui::Button::new("✖").small().frame(false));
+            if close.on_hover_text("Close the cut technology panel").clicked() {
+                self.importui.panel.open = false;
+                self.importui.panel.row = None;
+            }
+            egui::ScrollArea::vertical().id_salt("import_cut_panel").auto_shrink([false, false]).show(ui, |ui| {
+                ui.add_space(6.0);
+                let section = |ui: &mut egui::Ui, t: &str| {
+                    ui.horizontal(|ui| {
+                        ui.add_space(8.0);
+                        ui.label(RichText::new(t).size(10.5).strong().color(th().text_dim));
+                    });
                 };
-                // Points closer than half a pixel add nothing on screen.
-                let mut line: Vec<Pos2> = Vec::with_capacity(pts.len());
-                for q in pts {
-                    let s = map(q);
-                    if line.last().is_none_or(|l| l.distance(s) > 0.5) {
-                        line.push(s);
+                section(ui, "LAYERS");
+                match &cur {
+                    None => {
+                        ui.horizontal(|ui| {
+                            ui.add_space(8.0);
+                            ui.label(RichText::new("Pick a drawing to set its layers and contours.").size(11.5).color(th().text_dim));
+                        });
+                    }
+                    Some(c) => {
+                        for row in layer_rows(&c.d, &c.choices) {
+                            ui.horizontal(|ui| {
+                                ui.add_space(8.0);
+                                let pick_w = 96.0;
+                                let name_w = (ui.available_width() - pick_w - 14.0).max(40.0);
+                                let (r, resp) = ui.allocate_exact_size(Vec2::new(name_w, 22.0), Sense::hover());
+                                let p = ui.painter_at(r);
+                                p.text(r.left_center(), Align2::LEFT_CENTER, &row.name, FontId::proportional(12.5), th().text_strong);
+                                p.text(r.right_center() - Vec2::new(4.0, 0.0), Align2::RIGHT_CENTER, row.objects.to_string(), FontId::proportional(11.0), th().text_dim);
+                                let why = row.why.as_ref().map_or(String::new(), |w| format!("\nStarts as Leave out: {w}."));
+                                resp.on_hover_text(format!("{}: {} object(s){why}", row.name, row.objects));
+                                egui::ComboBox::from_id_salt(("import_layer_role", &row.name)).width(pick_w).selected_text(row.role.label()).show_ui(ui, |ui| {
+                                    for role in LayerRole::ALL {
+                                        if ui.selectable_label(row.role == role, role.label()).clicked() && row.role != role {
+                                            set = Some((row.name.clone(), role));
+                                        }
+                                    }
+                                });
+                            });
+                        }
+                        ui.horizontal(|ui| {
+                            ui.add_space(8.0);
+                            ui.add(egui::Label::new(RichText::new("Setting a layer sets all its lines. Rows in [ ] hold what the drawing hides or draws as centre / dashed lines; they start as Leave out.").size(11.0).color(th().text_dim)).wrap());
+                        });
                     }
                 }
-                p.add(egui::Shape::line(line, Stroke::new(1.0, c)));
-            }
+                ui.add_space(6.0);
+                ui.separator();
+                section(ui, "CONTOURS");
+                let locked = match &cur {
+                    None => Some("Pick a drawing first."),
+                    Some(c) if c.made.is_err() => Some("No part can be made from this drawing with these layers: set the layers above."),
+                    _ => None,
+                };
+                cutpanel::rows_ui(ui, &mut self.importui.panel, &names, locked);
+            });
+        });
+        if let Some((layer, role)) = set {
+            self.importui.set_layer(&self.cfg, &self.spec, &layer, role);
         }
     }
 }
@@ -1235,6 +1705,242 @@ mod tests {
         cfg.nesting.units = LenUnit::Inch;
         iu.want_preview(&cfg, &spec, &ctx);
         assert!((width(&iu) - 2540.0).abs() < 1e-6);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The window open on a folder holding the made-up layered plate, the
+    /// plate picked and its preview read, with a job of no parts behind it.
+    fn window_on_layered_plate(name: &str) -> (App, PathBuf, PathBuf) {
+        let d = std::env::temp_dir().join(format!("nestpro_importui_{name}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("DEMO-LAYERED-PLATE.dxf");
+        std::fs::write(&f, include_str!("../../examples/drawings/DEMO-LAYERED-PLATE.dxf")).unwrap();
+        let mut a = App::new(None);
+        a.parts.clear();
+        a.result = Default::default();
+        a.manual_cuts.clear();
+        a.refresh();
+        a.undo.clear();
+        a.importui.sync = true;
+        a.importui.show(std::slice::from_ref(&d));
+        a.importui.focus = Some(f.clone());
+        a.importui.picked.insert(f.clone());
+        a.importui.want_preview(&a.cfg, &a.spec, &egui::Context::default());
+        (a, d, f)
+    }
+
+    fn states(part: &crate::nest::Part) -> Vec<&'static str> {
+        crate::engine::contours::list(part).iter().map(|c| c.state.key()).collect()
+    }
+
+    /// The part `import-drawing` makes from `file` with `args`, through the agents' session.
+    fn agents_part(d: &Path, file: &Path, args: serde_json::Value) -> crate::nest::Part {
+        let mut s = crate::engine::session::Session::new(crate::engine::Ctx::builtin());
+        let job = d.join("agents.snjob");
+        let new = serde_json::json!({"w": 3000, "h": 1500, "material": "steel", "thickness": 3, "force": true});
+        s.call("new", Some(job.to_str().unwrap()), &new).unwrap();
+        let mut args = args;
+        args["path"] = serde_json::json!(file.to_str().unwrap());
+        s.call("import-drawing", None, &args).unwrap();
+        s.job.as_ref().unwrap().parts[0].clone()
+    }
+
+    #[test]
+    fn contours_painted_in_the_preview_come_in_as_import_drawing_makes_them() {
+        let (mut a, d, f) = window_on_layered_plate("paint");
+        use crate::cutpanel::Row;
+        // IM11: the drawing's layer rows, the hidden and centre-line ones
+        // starting as Leave out (DX3), with why.
+        let rows = a.preview_layers();
+        let names: Vec<(&str, LayerRole)> = rows.iter().map(|r| (r.name.as_str(), r.role)).collect();
+        assert_eq!(names, [("0", LayerRole::Cut), ("0 [CENTER]", LayerRole::Ignore), ("ETCH", LayerRole::Cut), ("OLD-REV [frozen]", LayerRole::Ignore)]);
+        assert!(rows[3].why.as_deref().is_some_and(|w| w.contains("frozen")), "{:?}", rows[3].why);
+        assert_eq!(states(&a.preview_part().unwrap()), ["cut", "cut", "cut", "cut", "cut", "bend-line", "no-cut"]);
+
+        // A click on the stray open line with Mark, one on the big hole with
+        // Leave out: each paints at once.
+        assert!(a.preview_paint(&[6], Row::Mark, false));
+        assert!(a.preview_paint(&[0], Row::LeaveOut, false));
+        assert_eq!(states(&a.preview_part().unwrap()), ["leave-out", "cut", "cut", "cut", "cut", "bend-line", "mark"]);
+        // The outline can't be marked: refused, saying why, nothing changes.
+        assert!(!a.preview_paint(&[4], Row::Mark, false));
+        assert!(a.importui.note.contains("outline"), "{}", a.importui.note);
+
+        // Import brings in the part as painted ...
+        a.import_from_window(vec![f.clone()]);
+        let got = a.parts.last().expect("a part was imported").clone();
+        assert_eq!(states(&got), ["leave-out", "cut", "cut", "cut", "cut", "bend-line", "mark"]);
+        // ... the same part import-drawing makes with those choices.
+        let agents = agents_part(&d, &f, serde_json::json!({"contours": "7=mark; 1=leave-out"}));
+        assert_eq!(crate::engine::contours::list(&got), crate::engine::contours::list(&agents));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_layer_set_in_the_panel_paints_its_contours_and_single_contours_keep_their_paint() {
+        let (mut a, d, f) = window_on_layered_plate("layers");
+        use crate::cutpanel::Row;
+        let shown = |a: &mut App| states(&a.preview_part().unwrap()).join(" ");
+        // The stray line marked and the etched frame (contour 4) No cut by hand.
+        a.preview_paint(&[6], Row::Mark, false);
+        a.preview_paint(&[3], Row::NoCut, false);
+        // ETCH set to Mark: its frame takes the layer's Mark; the stray line,
+        // on another layer, keeps its paint.
+        a.preview_set_layer("ETCH", LayerRole::Mark);
+        assert_eq!(shown(&mut a), "cut cut cut mark cut bend-line mark");
+        assert!(a.importui.note.contains("1 contour painted by hand"), "{}", a.importui.note);
+        // The frozen row set to Cut: its old hole comes in among the holes
+        // (contour 4), and the stray line, now contour 8, is still marked.
+        a.preview_set_layer("OLD-REV [frozen]", LayerRole::Cut);
+        assert_eq!(shown(&mut a), "cut cut cut cut mark cut bend-line mark");
+        // ETCH left out, then cut: its frame is cut, the layer's choice.
+        a.preview_set_layer("ETCH", LayerRole::Ignore);
+        assert_eq!(shown(&mut a), "cut cut cut cut cut bend-line mark");
+        a.preview_set_layer("ETCH", LayerRole::Cut);
+        assert_eq!(shown(&mut a), "cut cut cut cut cut cut bend-line mark");
+        // Ctrl+Z takes each change back, one at a time.
+        assert!(a.preview_undo());
+        assert_eq!(shown(&mut a), "cut cut cut cut cut bend-line mark");
+        assert!(a.preview_undo());
+        assert_eq!(shown(&mut a), "cut cut cut cut mark cut bend-line mark");
+        let roles: Vec<(String, LayerRole)> = a.preview_layers().into_iter().map(|r| (r.name, r.role)).collect();
+        assert_eq!(roles[2], ("ETCH".to_string(), LayerRole::Mark));
+        assert_eq!(roles[3], ("OLD-REV [frozen]".to_string(), LayerRole::Cut));
+
+        // Import: the part import-drawing makes with those layers and the
+        // stray line marked.
+        a.import_from_window(vec![f.clone()]);
+        let got = a.parts.last().unwrap().clone();
+        let agents = agents_part(&d, &f, serde_json::json!({"layers": "ETCH=mark,OLD-REV [frozen]=cut", "contours": "8=mark"}));
+        assert_eq!(crate::engine::contours::list(&got), crate::engine::contours::list(&agents));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn what_was_set_in_the_preview_survives_the_preview_forgetting_the_drawing() {
+        let (mut a, d, f) = window_on_layered_plate("evict");
+        use crate::cutpanel::Row;
+        // The big hole left out and the etched frame marked by its layer.
+        a.preview_paint(&[0], Row::LeaveOut, false);
+        a.preview_set_layer("ETCH", LayerRole::Mark);
+        let edited = ["leave-out", "cut", "cut", "mark", "cut", "bend-line", "no-cut"];
+        assert_eq!(states(&a.preview_part().unwrap()), edited);
+        // Read the folder again (⟳) and preview more drawings than the window
+        // keeps: the plate's preview is forgotten, the plate stays picked.
+        let square = "0\nSECTION\n2\nENTITIES\n0\nLWPOLYLINE\n8\n0\n90\n4\n70\n1\n10\n0\n20\n0\n10\n50\n20\n0\n10\n50\n20\n50\n10\n0\n20\n50\n0\nENDSEC\n0\nEOF\n";
+        for k in 0..=MAX_CACHED {
+            std::fs::write(d.join(format!("DEMO-SQUARE-{k}.dxf")), square).unwrap();
+        }
+        a.importui.refresh();
+        for k in 0..=MAX_CACHED {
+            a.importui.focus = Some(d.join(format!("DEMO-SQUARE-{k}.dxf")));
+            a.importui.want_preview(&a.cfg, &a.spec, &egui::Context::default());
+        }
+        assert!(!a.importui.cache.contains_key(&f), "the plate's preview should be forgotten");
+        assert!(a.importui.picked.contains(&f));
+        // Import still brings in the plate as it was set.
+        a.import_from_window(vec![f.clone()]);
+        assert_eq!(states(a.parts.last().unwrap()), edited);
+
+        // Set again, then the file changes on disk: it comes in as it starts,
+        // and the import says why, never quietly.
+        a.importui.open = true;
+        a.importui.focus = Some(f.clone());
+        a.importui.want_preview(&a.cfg, &a.spec, &egui::Context::default());
+        assert!(a.preview_paint(&[0], Row::LeaveOut, false));
+        let older = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        std::fs::File::options().write(true).open(&f).unwrap().set_modified(older).unwrap();
+        a.importui.refresh();
+        // Even previewed again as it is now.
+        a.importui.want_preview(&a.cfg, &a.spec, &egui::Context::default());
+        assert_eq!(states(&a.preview_part().unwrap())[0], "cut");
+        assert!(a.importui.note.contains("changed"), "{}", a.importui.note);
+        a.import_from_window(vec![f.clone()]);
+        assert_eq!(states(a.parts.last().unwrap())[0], "cut");
+        let card = a.result_card.as_ref().expect("a result card").lines.join(" ");
+        assert!(card.contains("changed") && card.contains("set them again"), "{card}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_drawing_replaced_on_disk_before_import_is_reported_not_imported_as_set() {
+        let (mut a, d, f) = window_on_layered_plate("replaced");
+        use crate::cutpanel::Row;
+        assert!(a.preview_paint(&[0], Row::LeaveOut, false));
+        // Replaced outside the app (another drawing), the folder not read again:
+        // its listing still has the old time.
+        std::fs::write(&f, include_str!("../../examples/drawings/DEMO-BEND-PLATE.dxf")).unwrap();
+        a.import_from_window(vec![f.clone()]);
+        // The drawing as it is now comes in as it starts, and the import says so.
+        let got = a.parts.last().unwrap();
+        assert_eq!(states(got), ["cut", "cut", "cut", "cut", "cut", "cut", "bend-line", "no-cut"], "the bend plate, as it starts");
+        let card = a.result_card.as_ref().expect("a result card").lines.join(" ");
+        assert!(card.contains("changed") && card.contains("set them again"), "{card}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_drawing_changed_with_the_same_size_and_time_is_reported_not_imported_as_set() {
+        let (mut a, d, f) = window_on_layered_plate("same_size");
+        use crate::cutpanel::Row;
+        assert!(a.preview_paint(&[0], Row::LeaveOut, false));
+        // The plate made 400 long instead of 300: the same number of bytes,
+        // and its last-change time put back, as a coarse clock or a network
+        // share's cached details would show it.
+        let when = std::fs::metadata(&f).unwrap().modified().unwrap();
+        let text = std::fs::read_to_string(&f).unwrap();
+        assert_eq!(text.matches("300.0000").count(), 2);
+        std::fs::write(&f, text.replace("300.0000", "400.0000")).unwrap();
+        std::fs::File::options().write(true).open(&f).unwrap().set_modified(when).unwrap();
+        a.import_from_window(vec![f.clone()]);
+        // The drawing as it is now comes in as it starts, and the import says so.
+        let got = a.parts.last().unwrap();
+        assert!((got.w - 400.0).abs() < 1e-6, "{}", got.w);
+        assert_eq!(states(got)[0], "cut");
+        let card = a.result_card.as_ref().expect("a result card").lines.join(" ");
+        assert!(card.contains("changed") && card.contains("set them again"), "{card}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn showing_a_changed_drawing_while_a_row_is_chosen_keeps_the_change_warning() {
+        let (mut a, d, f) = window_on_layered_plate("passive");
+        use crate::cutpanel::Row;
+        a.importui.panel.open = true;
+        a.importui.panel.row = Some(Row::Mark);
+        assert!(a.preview_paint(&[0], Row::LeaveOut, false));
+        // The file changes, the folder is read again and the new preview shown.
+        let older = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        std::fs::File::options().write(true).open(&f).unwrap().set_modified(older).unwrap();
+        a.importui.refresh();
+        a.importui.want_preview(&a.cfg, &a.spec, &egui::Context::default());
+        // Drawing the preview with the row chosen passes through the panel
+        // without painting.
+        let names = crate::ct1::for_spec(&a.spec).qualities;
+        for _ in 0..3 {
+            a.importui.with_paint(&a.cfg, &a.spec, &names, |_, _| ());
+        }
+        a.import_from_window(vec![f.clone()]);
+        assert_eq!(states(a.parts.last().unwrap())[0], "cut");
+        let card = a.result_card.as_ref().expect("a result card").lines.join(" ");
+        assert!(card.contains("changed") && card.contains("set them again"), "{card}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_dropped_drawing_with_layers_opens_the_window_with_its_panel() {
+        let (mut a, d, f) = window_on_layered_plate("drop");
+        a.importui.open = false;
+        let bend = d.join("DEMO-BEND-PLATE.dxf");
+        std::fs::write(&bend, include_str!("../../examples/drawings/DEMO-BEND-PLATE.dxf")).unwrap();
+        // IM12: the one-layer drawing comes in; the layered one waits in the
+        // window, picked, its panel open.
+        a.import_drawings(vec![bend, f.clone()]);
+        assert_eq!(a.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["DEMO-BEND-PLATE"]);
+        assert!(a.importui.open && a.importui.panel.open);
+        assert_eq!(a.importui.picked.iter().collect::<Vec<_>>(), [&f]);
+        assert_eq!(a.importui.focus.as_ref(), Some(&f));
         let _ = std::fs::remove_dir_all(&d);
     }
 

@@ -16,8 +16,8 @@ use egui::{Color32, CornerRadius, FontId, Pos2, Rect, RichText, Stroke, Vec2};
 // rule DR2).
 /// C002 255 0 0, style 2 (dashed): the axes.
 pub const C_AXES: [u8; 3] = [255, 0, 0];
-/// C008 255 255 0: cut contours.
-pub const C_CONTOUR: [u8; 3] = [255, 255, 0];
+// C008 255 255 0 (yellow) is the original's cut contour colour; here each
+// contour is drawn in its cut quality's or its state's colour (CS7).
 /// C011 255 255 255, style 2: the cross cursor.
 pub const C_CURSOR: [u8; 3] = [255, 255, 255];
 /// C053 0 255 0: marking (machined) texts.
@@ -378,10 +378,13 @@ pub fn cut_problems(part: &Part) -> Vec<String> {
     if crosses_itself(&g.outline) {
         out.push("the outside contour crosses itself".into());
     }
+    // Holes are named by their contour numbers, as part-info lists them (CS1).
+    let order = crate::dxf::cut_order(&crate::engine::contours::list(part));
+    let no = |k: usize| order.get(k).map_or(k, |n| *n) + 1;
     let boxes: Vec<[f64; 4]> = g.holes.iter().map(|h| nest::bbox_of(h)).collect();
     for (k, h) in g.holes.iter().enumerate() {
         if !h.iter().all(|&q| nest::point_in_poly(&g.outline, q)) || nest::contours_within(h, &g.outline, 1e-6) {
-            out.push(format!("hole {} is not inside the outside contour", k + 1));
+            out.push(format!("hole {} is not inside the outside contour", no(k)));
         }
         for (j, h2) in g.holes.iter().enumerate().skip(k + 1) {
             let (a, b) = (boxes[k], boxes[j]);
@@ -389,7 +392,7 @@ pub fn cut_problems(part: &Part) -> Vec<String> {
                 continue;
             }
             if nest::contours_within(h, h2, 1e-6) || nest::point_in_poly(h2, h[0]) || nest::point_in_poly(h, h2[0]) {
-                out.push(format!("holes {} and {} overlap", k + 1, j + 1));
+                out.push(format!("holes {} and {} overlap", no(k), no(j)));
             }
         }
     }
@@ -512,20 +515,11 @@ pub fn measure(a: P, b: P) -> (f64, f64, f64, f64) {
     ((dx * dx + dy * dy).sqrt(), dx, dy, nest::norm_angle(dy.atan2(dx).to_degrees()))
 }
 
-/// The part as the Drawing module shows it: contours as lines in the cut
-/// colour, marking texts in green, notes thin and grey.
-pub fn paint_drawing_part(painter: &egui::Painter, part: &Part, to_s: &dyn Fn(P) -> Pos2, texts: bool) {
-    let g = part.geometry();
-    let st = Stroke::new(1.4, rgb(C_CONTOUR));
-    painter.add(egui::Shape::closed_line(g.outline.iter().map(|&p| to_s(p)).collect(), st));
-    for h in &g.holes {
-        painter.add(egui::Shape::closed_line(h.iter().map(|&p| to_s(p)).collect(), st));
-    }
-    if let Some(c) = &part.custom {
-        for m in &c.marks {
-            painter.add(egui::Shape::line(m.iter().map(|&p| to_s(p)).collect(), Stroke::new(1.2, rgb(C_MARK))));
-        }
-    }
+/// The part as the Drawing module shows it: each contour in its state or
+/// cut quality's colour (CS7; Leave out ones too with `left_out`, while the
+/// cut technology panel is open), marking texts in green, notes thin and grey.
+pub fn paint_drawing_part(painter: &egui::Painter, part: &Part, mt: &crate::ct1::MachineTech, to_s: &dyn Fn(P) -> Pos2, texts: bool, left_out: bool) {
+    crate::cutpanel::paint_contour_colours(painter, part, mt, to_s, 1.4, left_out);
     if !texts {
         return;
     }

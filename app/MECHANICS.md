@@ -84,8 +84,7 @@ How the rebuild uses them:
   the beam switches off (`M08 ( MICRO-JOINT )`), jumps across with `G0`, and switches on again
   (`M07`). The joint widths are subtracted from cut length. The feed is the machine's speed for the
   contour's quality (see "Machining time and speeds"); only when the machine file gives no
-  speed at all is it our typical laser speed × a quality factor (Rough 1.2, Normal 1.0, Fine
-  0.7: estimated).
+  speed at all is it our typical laser speed × a quality factor (CQ3: estimated).
 - **T1–T3**: changing the shape or size of a part with technology opens "Part with
   technology" with **Edit a copy** (T2 answer 0), **Edit this part (remove technology)**
   (answer 1) and **Cancel**, plus "Use this answer for the rest of this session" (answer 2).
@@ -139,11 +138,13 @@ How the rebuild uses them:
   **frozen** or **turned off** (a negative colour in its layer table), **invisible** objects, and
   objects drawn in a **dashed or dotted line type** (CENTER, HIDDEN, PHANTOM…; a line type with dash
   elements in the drawing's table, or any type but CONTINUOUS when it has no table) go on a row of
-  their own in "Drawing layers": `0 [CENTER]`, `HOLES [frozen]`, `0 [CENTER/invisible]`. The line type
+  their own in the drawing's layer list (the import preview's cut technology panel, IM11): `0 [CENTER]`,
+  `HOLES [frozen]`, `0 [CENTER/invisible]`. The line type
   is the object's own, else its layer's (BYLAYER), else the block insert's (BYBLOCK). A block inserted
   on a frozen layer, or an invisible insert, hides all it holds. These rows start as Leave out and say
   why on hover; set one to Cut and it is cut like any layer. The import notes count what was left
-  out. A drawing whose only rows are such rows opens the window too, so nothing vanishes unseen.
+  out. A dropped drawing whose only rows are such rows opens the Import drawings window too (IM12), so
+  nothing vanishes unseen.
   Agents see the rows in `drawing-layers` (`left_out_by_default`) and set them with
   `layers=0 [CENTER]=cut`. A closed centreline (a bolt circle) would otherwise be cut as a hole and drop
   the middle of the plate. Estimated (own design): the original looks objects up by layer **and** line
@@ -156,8 +157,9 @@ How the rebuild uses them:
   once"). Objects that only overlap in part are not merged. Estimated (own design).
 - **At least 16 pieces to the full circle (DX2)**: however small the arc, so small holes stay round,
   are recognised as round and reach the LC5 as arcs. Estimated (own design).
-- **Layers (D5)**: a drawing with more than one layer opens "Drawing layers". Every layer
-  starts as **Cut** (code 13) and can be set to **Mark** or **Leave out**. Marking lines show
+- **Layers (D5)**: a drawing's layers are listed in the import preview's cut technology panel
+  (IM11); a dropped drawing with more than one layer opens the Import drawings window with it (IM12).
+  Every layer starts as **Cut** (code 13) and can be set to **Mark** or **Leave out**. Marking lines show
   dashed on the part, are done before the part is cut (`M10 ( MARK ON )` … `M11`), and count
   toward time at the machine's marking speed (CTM9). The sample plate
   has a MARK layer.
@@ -186,7 +188,8 @@ Leave out) and part data from the file name follow the DXF rules above. The file
 picked by its extension and checked against its content (a DWG named `.dxf` is still read as DWG).
 Window: Import drawings (Jobs and Nesting ribbons; a file browser with a preview, IM10) or drop files on the
 window; agents: `import-drawing` / `drawing-layers` (`import-dxf` / `dxf-layers` still work; `drawing-layers` also
-gives each part's size and holes, as the preview shows them).
+gives each part's size, holes and numbered contours, as the preview shows them; `import-drawing contours=` sets
+contours as the preview's panel does, IM12).
 
 What the file itself says about the part is used: its quantity (before the file name's), and its
 material and thickness are compared with the job's and reported when they differ. A file holding
@@ -211,6 +214,8 @@ nesting, huge declared sizes) is refused whole — no part comes in quietly miss
 | IM8 | Open contours are closed within 0.5 mm; largest radius 99 999.999; discretisation 10 mm; verify and smoothing off. | observed |
 | IM9 | Detect equal parts off; order contours off (when on: outer clockwise, inner counter-clockwise). | observed |
 | IM10 | The open window for part drawings shows the picked drawing on its right before it is imported, with a check box that turns the preview off (on by default, IM5) and a Configure… button for the import settings. The rebuild draws the part as the import will make it (same reading, part name and starting layer roles), with its width and height, holes, format, layers, quantity and the notes the import will give; a file no part can be made from shows its lines and the reason; a file of several parts shows them one at a time. The window opens in the folder last imported from and lists the six last ones. The check box only turns the picture on and off; it is not animated, and off leaves the preview blank. | observed (window, check box, Configure), Rebuild (what the preview shows) |
+| IM11 | **The cut technology panel in the import preview** (*Cut technology* beside Preview; it opens by itself for a dropped drawing, IM12): the part's panel (CS6: rows, swatches, hover cards, All the same contours, click / box / sweep; Esc ends painting, a second Esc closes the window) on the part the shown drawing is about to make, drawn in the contour colours (CS7; Leave out faint and dashed while the panel is open). Each paint goes through the same engine function and rules as `contour-tech` and shows at once; Ctrl+Z takes back the last paint or layer change on the shown drawing, not a change to the job behind. Above the rows are the drawing's **layer rows**, each with its object count, set to **Cut**, **Mark** or **Leave out** (D5); rows holding what the drawing hides or draws as centre / dashed lines start as Leave out and say why on hover (DX3). Setting a layer makes the part again with it, so all its lines take it (a Cut layer's contours start as CS2 says, a Mark layer's as Mark, a left-out layer's aren't on the part). A contour painted by hand that the change leaves in the same place, starting as before, keeps its paint; one on that layer takes the layer's, and the panel says how many did. While the panel is open the places column makes room and the preview grows, and the line under the part's size says what the last paint or layer change did. **Import** brings in each picked drawing with what was set for it: the same part as `import-drawing` with the same `layers` and `contours` (IM12). A picked drawing that was never shown comes in with the roles it starts with. What was set is kept, with the drawing as it was read, while the window stays open, however many other drawings are previewed; if the file or the import settings change after that, the preview and the import notes say so and the drawing comes in as it starts (Import reads the file again and compares its contents with what the preview read, so a change shows even when the file's size and time stay the same). | estimated (own design, ADR 0001: the original imports everything as cut and has the programmer fix contours afterwards) |
+| IM12 | **Choosing contours with the import**: `import-drawing` takes contour choices next to `layers=`: `contours="7=mark; 1=leave-out; 2=quality 1 same"`, each the contour numbers (as `contour-tech` takes them) and a state, `quality 1-12` or `auto`, and/or `same`, painted in order with `contour-tech`'s rules (CS4, CS5, CQ6) on the part the layer roles make. The numbers are those `drawing-layers` lists for each part (`contours`: number, kind, starting state, length) with the same `layers`. Only for one drawing of one part (contour numbers belong to one part); a choice the part can't take refuses the whole import, saying why. The separate Drawing layers window is retired: a drawing dropped on the window or picked in the system's file picker that has several layer rows, or rows that start as Leave out, opens the Import drawings window with it picked and the cut technology panel open, so its layers are set before it comes in; drawings with one layer come in at once. | estimated (own design, ADR 0001) |
 
 Every format joins at 0.01 mm and then closes gaps up to 0.5 mm (IM8, as for DXF above; how the
 original closes a gap — a new straight piece or moving an end — isn't traced). Asking for a name,
@@ -408,6 +413,26 @@ How the rebuild does it:
   summary. The **Technology** tab opens by default and acts on the shown part.
 - The hand-off files (O2/O5) and the separate program (O6) aren't imitated: the rebuild opens
   the part in the same window.
+
+## Contour states: cut, mark, no cut, bend line, leave out
+
+Every contour of a part, closed or open, has a state that says what the machine does with it
+(words in `GLOSSARY.md`; ADR 0001: the programmer sets it per contour). The original keeps the same
+kinds per element (cut, marking, no cut, bending geometry) and imports a drawing with everything
+cut; the rebuild keeps open lines too and gives each contour a starting state. Agents:
+`part-info` lists the contours, `contour-tech` sets them. On the part's drawing screen the cut
+technology panel paints them (CS6, CS7); the same panel in the import preview paints them before
+the part is made, with the drawing's layers (IM11), and `import-drawing contours=` does it for agents (IM12).
+
+| # | Rule | |
+|---|------|---|
+| CS1 | A part's contours are numbered holes first (every closed contour inside the outline, marked ones too), then the outline, then the open lines. Each has a state: **Cut**, **Mark**, **No cut**, **Bend line** or **Leave out**. A left-out contour keeps its number, so it can be set back. The states are saved with the job and with a library product; a job or product saved before contour states opens exactly as it was, its holes and outline Cut and its marking lines Mark. | observed (the kinds); own design (numbering, open lines kept) |
+| CS2 | Starting states, after the layer roles (a layer set to Leave out, including DX3's hidden and dashed rows, puts nothing on the part; a Mark layer's contours start as Mark): a closed contour is **Cut**; an open line is a **Bend line** when it is drawn dashed (a DX3 row set to Cut), lies on a layer whose name has BEND in it, or is straight (within 0.01 mm) and runs from edge to edge of the part (both ends within 0.5 mm of the outline); any other open line is **No cut**. An open line is on the part when the middle of one of its pieces is inside the outline; the others are left out and counted in the import notes, as outlines outside the part are. Dashed and bend-layer pieces are joined only with each other, never with the other cut lines, so a bend line ending on an outline corner can't break the outline, while a hole or outline drawn dashed (its row set to Cut) or on a bend layer still closes and is cut. Where three or more line ends meet at one point (a line across the part ending on the outline's corners, or edges split where a bend line meets them), the lines joined there close along their outside boundary (found by going round the outside, always taking the rightmost turn; gaps up to 0.5 mm in them are closed first, each loose end to the nearest end, as IM8), and the lines inside it stay open lines with the starting states above; drawings where no three ends meet join exactly as before. | estimated (own design, ADR 0002: the original imports everything as cut, and cutting an open line can split the part) |
+| CS3 | Only **Cut** contours are cut: they alone are nested, given leads, joints and kerf, pierced, timed and checked by Verify Part. **Mark** contours, open or closed, are marking paths: marked before the part is cut and timed at the marking speed. **No cut** and **Bend line** contours are drawn on the part and on the sheet and never machined: on screen in their colours (CS7); in the agents' pictures (`render`) No cut is a thin grey line and a Bend line dashed purple. Verify Part names holes by these contour numbers. **Leave out** contours aren't drawn or machined. | observed (what each kind does); estimated (colours, our own) |
+| CS4 | Setting a state: the outline is always Cut (refused, "without it there is no part to cut out"); an open line can't be set to Cut yet (refused: it could split the part, FEATURES TEC-22); a built-in shape's contours are always cut. A lead-in or joint placed on a contour stays on it, and goes when the contour is no longer cut; so do contours picked by hand for the sheet's cut order. When the cut contours change the job is marked as changed since its nest (a part nested in a hole that is no longer cut would overlap it). | estimated (own design) |
+| CS5 | **All the same contours** (`same=true`) also sets every contour equal to a picked one: both open or both closed, the same number of points, and with their boxes' lower-left corners together every point within 0.01 mm, run either way and, closed, from any point. A turned or mirrored copy isn't the same; the outline is never included. | estimated (own design; the original's equal-contour test, DRW-6, isn't studied) |
+| CS6 | **The cut technology panel** on the part's drawing screen (Technology → *Paint contours*; an imported part only, a built-in shape's contours are always cut): rows **Cut · quality by size** (cut, the quality from the part's size ranges and the machine's size bands, CQ1), then each quality the machine offers by its name (CQ4; cut at that quality by hand, CQ6), **Mark**, **No cut**, **Bend line** and **Leave out**, each with its colour swatch (CS7) and a hover card: its title, an icon drawn like the row's contours and one plain sentence (Mark's says *etch*); and **All the same contours** (CS5), off by default. With a row chosen, a **click** paints the contour under the pointer (the nearest line within the pick aperture); a drag that starts on a contour **sweeps**: every contour the pointer passes over is painted as it is passed; a drag that starts off the contours draws a **box** and paints the contours wholly inside it when let go. Each paint goes through the same engine function and rules as `contour-tech` (CS4, CS5, CQ6) and shows at once, with no Accept; a click, a box or a whole sweep is one undo step (Ctrl+Z). A box or a sweep paints the contours that can take the row and leaves the rest as they are, naming them with why (the outline is always cut, an open line can't be cut yet); a click on one says why. Leave out contours are drawn faint and dashed while the panel is open, so they can be painted back. **Esc** ends painting: no row is chosen and the pointer picks elements again. | estimated (own design, ADR 0001; the original's drawing-screen tools for this aren't studied) |
+| CS7 | **Contour colours**, the same on the part's drawing screen (both looks), on the sheet, in part pictures and on the panel's swatches: a Cut contour in its cut quality's colour (CQ5), for the quality it is cut at (CQ1, CQ6); a **Mark** green (0 255 0, the Drawing module's marking colour, DR3); **No cut** grey (150 150 150), thin; a **Bend line** purple (147 51 234), dashed. **Leave out** contours aren't drawn, except faint and dashed (96 96 104) on the part while the cut technology panel is open. Cut at the size bands' quality has no swatch colour of its own: its row shows the qualities as stripes, and each contour the colour of the quality its band gives. | estimated (own colours, FEATURES DRW-8, DRW-9; the original mixes each element's colour with its technology's colour, DR4/DR5) |
 
 ## Selecting lines, arcs and circles, and placing leads on them
 
@@ -818,7 +843,8 @@ How the rebuild uses them:
   switched on, it is one dropdown that lists them greyed out with a "not yet" tag. All groups are the same height, so their
   titles line up.
 - The drawing looks like the original's (View → **Color Display**, on by default): black
-  background, cut contours yellow (C008), marking texts green (C053), notes grey, the **red
+  background, each contour in its cut quality's or state's colour (CS7; the original draws cut
+  contours yellow, C008), marking texts green (C053), notes grey, the **red
   dashed axes** through the origin (DR1, C002 style 2) and a **full-view cross cursor** (C011).
   The status bar shows **X / Y** of the cursor (DR6).
 - Home: **Access to points** (picked / end / mid / centre / near) for the measuring tool,
@@ -851,8 +877,8 @@ How the rebuild uses them:
   "What's still missing in the Drawing module…") listing, tab by tab and group by group, every
   command of the original's Drawing module this rebuild doesn't have yet (152), with what each
   tab already has.
-- Not imitated: the per-technology colours and mixing (DR4/DR5) — every contour uses the cut
-  colour — and the drafting commands.
+- Not imitated: the per-technology colour mixing (DR4/DR5) — each contour is drawn in its cut
+  quality's or state's colour instead (CS7, FEATURES DRW-9) — and the drafting commands.
 
 ## Database connection (and the BLM LC5 post)
 
@@ -1279,7 +1305,7 @@ XML job sheet, and has them zipped. The rules below were checked against an exam
 | BL2 | XML job sheet `<NEST>.XML` (utf-8, tabs): General → NestingName, JobName, Machine, MatName, MatId, MatAlias, Thickness, Length, Width, PartXMax, PartYMax, Quantity, NestingTime (s), GasId, GasName, TechnoTable, UserData1-5, Files/SubPrg(CNCSub, PartRef), Pezzi/Istanza(Name, Length, Width, Quantity, PieceTime, WorkOrder, Order, UserData1-8, Executions/Execution(Quantity, SubProgram/CNCSub)), Utensili/Foratura Id0-6 and Taglio Id0-12 (1 = that pierce type / cut quality is used). Written when CF1 **A049** = 1 or 2 (2 adds times) / PS1 **Z059** = 1 (the standard settings have CF1 A049 2, PS1 Z059 1). |
 | BL3 | Subprogram name = nesting name up to the first "." (cut to 5 characters when 6-8 long) + **700 + part number** (701, 702…). |
 | BL4 | Sheet program: `;ADILAS`, `;MAT,length,width,thickness`, `;IDMAT=`, `;NOMEMAT=`, `;ALIASMAT=`, `;IDGAS=`, `;NOMEGAS=`, `;Postprocessor version 2.0.0`, `;R220=Z16*1000+2*100+0`, `R12=`thickness, `R201..R203=0.0`, `R21=`length, `R22=`width, `R23` / `R24` / `R523` / `R524` = the free margins (BL17), `R500=0`, `INITNEST`, then per part `ORIG(x,y,angle)` (PS1 Z005 = 1; 0 gives `TRANS X.. Y..` + `AROT Z..`) and `N<k> CALL"/_n_wks_dir/_n_sheet_wpd/_n_<SUB>_spf"`, then `ENDNEST`, `RET`. Warns "Numero sottoprogrammi superiore al massimo consentito - **96**" (Z027). |
-| BL5 | Part subprogram: `;M01`, `R16=chk_pret` (Z056), `CICLA:`, `INITPART(1)`, `;<part>`; per path `NEXT_L(x,y,first?0:1,pierce,quality)` (marking: pierce 0, quality 9; cutting: pierce 2, quality 3 in the example), lead-in `G01 G41/G42 X Y`, `PROFILE`, moves `G01/G02/G03` with `CORNER` after a corner whose angle is at most **119.9°** (Z043), last move as `LASTLINE(0,0,0,…,x1,y1,x2,y2,0,0)` (10 parameters, Z061; BL27); then `ENDGEO`, the pre-cut retry `IF R16==1 / STOPRE / R16=0 / GOTOB CICLA / ENDIF`, `ENDPART`, `RET`. Coordinates up to 3 decimals, whole numbers as `12.`. |
+| BL5 | Part subprogram: `;M01`, `R16=chk_pret` (Z056), `CICLA:`, `INITPART(1)`, `;<part>`; per path `NEXT_L(x,y,first?0:1,pierce,quality)` (pierce and quality: BL22), lead-in `G01 G41/G42 X Y`, `PROFILE`, moves `G01/G02/G03` with `CORNER` after a corner whose angle is at most **119.9°** (Z043), last move as `LASTLINE(0,0,0,…,x1,y1,x2,y2,0,0)` (10 parameters, Z061; BL27); then `ENDGEO`, the pre-cut retry `IF R16==1 / STOPRE / R16=0 / GOTOB CICLA / ENDIF`, `ENDPART`, `RET`. Coordinates up to 3 decimals, whole numbers as `12.`. |
 | BL6 | Material codes from PS1 D-lines: X5CrNi 0100, RST 37-2 0010, Al 1050 A 0200 (Z063 = 1 takes alias and id from the system). |
 
 The rebuild (src/blm.rs): **Machining -> Post settings -> "BLM LC5 output"** (on when the active machine
@@ -1310,6 +1336,13 @@ cut-off line (read from the example; `20u, −10u` is inferred from one vertical
 | BL11 | The sheet trim (Z038) classifies each end by sheet edge: 1 = x below the tolerance, 2 = y below it, 3 = x at/after the sheet length, 4 = y at/after the width; later tests win (4 > 3 > 2 > 1). |
 | BL12 | Start: approach point outside by **Z039** on edges 1/2 (x or y − Z039) and by **Z040** on 3/4 (+ Z040); cut start inside by **Z040** on 1/2 (+) and **Z039** on 3/4 (−). With PS1 Z016 = 3 (LT9) the approach isn't a `G0` move but goes into `NEXT_L(start,0,0,3,1,start − approach,approach)`; otherwise `SPYOUT`, `DO $A_OUT[7]=1`, `G0 X.. Y..`. Then `G01 G40 X.. Y..`, `PROFILE`. |
 | BL13 | End: cut to **10 mm** inside the end edge, `HD_DWN_OFF` (Z016 = 3 only), then out past the edge by Z040 (edges 3/4) or Z039 (1/2). |
+
+### BLM LC5 — each contour's quality and pierce
+
+| # | Rule | Source |
+|---|------|--------|
+| BL22 | `NEXT_L(x,y,h,p,q)`: **q** is the contour's own cut quality (CQ1), so small holes go to the LC5 at their size band's slower quality; **p** is the pierce mode the machine's technology table gives that quality (field 26 of the quality's block: 1 smooth, 2 fast, 4 booster) in the record picked for the sheet (TT9). Marks are always **p 0, q 9**. With no table record, or no pierce mode for that quality, p is **2**. Not built: p 3 for a cut starting on a line already cut (common cut, MAC-2), p 1 or 2 for a contour without a lead-in when PS1 Z030 = 0, the post's quality swap (PS1 Z041) and drill marking; real programs also show p 0 at quality 3 on some single outer contours, not traced. | Observed (q, p from the table, marks); real programs cut the smallest holes at 1, then 2, outlines at 3. p 2 without a table is estimated (the example program's code) |
+| BL23 | The XML job sheet's tools: `Foratura/Id<p>` is 1 for every pierce code the sheet's NEXT_L lines use and `Taglio/Id<q>` for every quality (marks: Id0 and Id9). A sheet with a cut-off line also flags pierce 2 and quality 3. | Observed; the cut-off line's flags are estimated |
 
 ### BLM LC5 — compensation without a lead-in, repeated parts, stale programs
 
@@ -1618,7 +1651,24 @@ database (rule 8), replacing the old fixed "Workshop".
 
 Constants used: 0.5, 1.0, 3.0, 5.0, 45.0, 90.0, 100.0, 180.0, 270.0, 360.0, 99999.999; π/180, π, 99999.0, 0.01, 0.1, 1000.0.
 
-Still estimated: the rows' values (they come from the material/thickness table, which couldn't be read; the example row "up to r 5 mm → Fine" is the rebuild's), the offset (0), the size given to a lead point, and how the X and Y joint counts are split between sides.
+Still estimated: the rows' values (they come from the material/thickness table, which couldn't be read; the example row "up to r 5 mm → quality 1" is the rebuild's), the offset (0), the size given to a lead point, and how the X and Y joint counts are split between sides.
+
+### The machine's numbered cut qualities (rebuild)
+
+A cut quality is one of the machine's 12 numbered sets of cutting settings (its technology table
+holds speed, pierce and the rest per quality, TT3). The app uses those numbers everywhere: a part's
+own quality, the rows of Cut technology by size, a contour's own quality set by hand, the times,
+leads, kerf table and the LC5 program.
+Screens and agents show each quality by the machine's name and in its colour (CQ4, CQ5).
+
+| # | Rule | Source |
+|---|------|--------|
+| CQ1 | **Each cut contour's quality**: the quality set on the contour by hand (CQ6); else the part's own size-range row that holds the contour (CT1); else the part's own quality, when it has one; else, for a part with no size ranges of its own, the machine section's size band for the contour (MTL10); else **quality 3**. Part-info lists each contour's quality and where it came from. | Order observed (CT1, MTL10); quality 3 as the last fallback is estimated: real LC5 programs cut outlines at 3, the fastest of the usual laser table's Slow 1 / Medium 2 / Fast 3 |
+| CQ2 | **Jobs and products saved with the old three qualities** open with numbers: a part's own *Normal* becomes "no quality of its own" (Normal was what let the size bands decide), *Fine* becomes 1 and *Rough* 3; a size-range row's *Fine* is 1, *Normal* 2 and *Rough* 3. | Estimated (FEATURES MAC-54) |
+| CQ3 | When the machine gives no speed at all, a contour is cut at our typical laser speed × 0.7 at quality 1, × 0.85 at quality 2 and × 1.0 at the others. | Estimated |
+| CQ4 | **Quality names** come from the machine's technology file: A922 names quality 1 … A933 quality 12, in quotes (at most 40 characters). A named quality shows as its name and number, e.g. **Slow (1)**; an empty one as **Quality 1**. A quality named `<HIDE>` is left out of the pickers (the machine still has it, so size bands and agents can still give it). Most machine files the original ships name none; its BLM laser template names 1 Slow, 3 Fast, 9 Marking, 10 Center. `part-info` gives each contour's `quality_name`; `machine-tech` and `machines` list the 12. | Observed; "Quality 1" where the original shows the bare number "1", and trimming spaces round a name, are ours |
+| CQ5 | **Quality colours** are the program's display colours, the same for every machine: line C041 of the colour settings in the Lantek folder (`LANTEKIN.CNI`, `Cnnn R G B style width`) is quality 1's … C052 quality 12's. Without that file or line a quality takes the colour the original ships with: 1 255 128 64, 2 0 128 192, 3 255 0 255, 4 0 128 0, 5 128 0 128, 6 128 64 64, 7 0 128 255, 8 0 128 128, 9 0 64 128, 10 128 128 255, 11 128 255 255, 12 255 128 255. The pickers show a dot in the quality's colour before its name. | Observed (lines, shipped colours); a missing line taking the shipped colour instead of black is ours |
+| CQ6 | **A cut quality set by hand on a contour** (agents: `contour-tech quality=1…12`) wins over the rest of CQ1: the part's size-range rows, the part's own quality and the machine's size bands. It is that contour's quality everywhere: times, leads, kerf and the LC5's NEXT_L with the pierce code its quality has (BL22). Only a Cut contour takes one. A Mark is refused (marks are always made at the machine's marking quality, with no pierce); so is a No cut, Bend line or Leave out contour (set it to Cut with the quality instead), and a quality outside the machine's 1–12. `auto` gives the contour back to the rest of CQ1. A contour set to anything but Cut loses its hand-set quality, so when it is cut again the rest of CQ1 decides. With *All the same contours* (CS5) every equal contour that is cut takes it; equal contours that aren't cut are left as they are and named. Part-info shows the quality as set "by hand". Kept with the job and the library product; files saved before have none. | Estimated (own design, ADR 0001; the original's per-contour technology isn't studied) |
 
 
 ## Machine technology file (MchFiles\PstAdi06.CT1, the BLM laser)
@@ -2035,7 +2085,7 @@ centred on the line or arc it lands on.
 
 ### Design choices and estimates (ours, not Lantek's)
 
-- **Quality mapping**: Normal = quality 1 (B block), Fine = 2, Rough = 3. A contour's quality comes from the cut ranges by size, or else from the part's quality.
+- **Quality**: the contour's numbered quality (CQ1) picks its lead table: quality 1 the B block, 2–12 the E block (AL1).
 - **Built-in tables** (no CT1): the laser template's B block, which PSTBUR01.CT1 and PSTMAZ03.CT1 share. It agrees with every PstAdi06.CT1 value we have: types 13/1/11/10/12/10/11/5, D 7/5, R 7.5/5.5, zone 1, corner 135°, element 5 mm, B156 0.5. B185 = 3, B186 = 0.1 and B187 = 10 come from PSTadi02.CT1. All 12 qualities use the same table. Joints: F150 = 100, F151–F153 = 0, F121/F122 = 0/32767, gap 5, lead 10 at 45°, lead-out 0, type 3 (the laser files have F000 = 1, a corner type).
 - **Polylines**: classes come from `machine::recognise` and its tolerances. Elements break where the outline turns more than 20°, or where one segment is more than 2× the length of the next (a straight meeting a tangent arc). Round contours use the true circle tangent for their leads.
 - The slot test "arc-centre distance < segment-midpoint distance" is **not applied** [U].
@@ -2162,7 +2212,7 @@ stock and remnants" above.
 | BN1 | Do All on several formats (the stock's order, then the job's sheet when allowed): sheet by sheet, the next format with sheets left is filled by every method of the level and the best fill kept; a format that takes nothing left is skipped for good without being used up. One unlimited format of the job's size = plain Do All. (`nest::nest_plan`, used by `nest::nest` and `engine::stockflow::nest_from_stock`) | design (follows SS rules: the next sheet is taken in stock order) |
 | BN2 | A remnant is filled inside its real shape: its outline is moved in by the margin (less gap ÷ 2 + 0.05 mm when B078 lets parts reach the border, the same as the rectangle's usable area), and every strip keeps only the Y stretches its whole width has inside that shape. Horizontal methods turn the shape with the problem. | design (estimate) |
 | BN3 | A part on a remnant fits when its box lies in the remnant's free rectangles **or** its real outline lies inside the remnant (within 0.01 mm² of overlap), at least the margin from its edge — so the window's checks accept what the strip nester places in a notch. Copy still looks for a spot by box. | design |
-| BN4 | Automatic micro-joints (window and agents): the part's `joint_every` becomes the machine's maximum distance for its quality (F150 per quality; kept when already set; agents may give `every=`), the fixed count goes to 0, and a part without a joint gap takes the machine's. The size-class fewest/most are the machine's (applied in the cut plan). Delete clears `joint_every` too, so automatic joints really go. | AM1–AM2; delete clearing the spacing is a fix found in the merge |
+| BN4 | Automatic micro-joints (window and agents): the part's `joint_every` becomes the machine's maximum distance for its quality (F150 per quality; the part's own quality, else quality 3, CQ1's last fallback, without looking at the size bands: estimate; kept when already set; agents may give `every=`), the fixed count goes to 0, and a part without a joint gap takes the machine's. The size-class fewest/most are the machine's (applied in the cut plan). Delete clears `joint_every` too, so automatic joints really go. | AM1–AM2; delete clearing the spacing is a fix found in the merge |
 | BN5 | Automatic leads (window and agents) default to the machine's tables by contour class; Delete sets the type back to inclined (type 5) with no length, so table leads don't come back. (Agents: `leads type=`, default `machine`.) | AL1–AL7 |
 | BN6 | "Search for the best sheet combination" (ST13) runs on the strip nester: for each sheet, when the next format in stock order would be used less than the minimum efficiency (part area ÷ sheet area), every other format with sheets left is filled too; the first reaching the minimum is taken, else the one placing the most part area when that is more. "Look for the best sheet format" nests the whole job on each stocked size (plus the job's sheet when stock may run out) and keeps the best by ST13's order; both stop at the maximum time. One function for the window and agents' `nest`. | ST13 |
 | BN7 | Remaking changed remnants (ST12) is shared by the window's save and agents' `stock-book` / booked jobs: a fingerprint of the sheet's remnant lines is kept with its remnants (`made_from`); a sheet whose stored remnants carry no fingerprint (jobs saved before it existed) counts as unchanged, so opening and saving an old job doesn't remake its remnants. The note "changed, but already in use — kept" goes into the save's status note. | ST12; the no-fingerprint case is design |
@@ -2190,7 +2240,7 @@ that falls between two ranges keeps the machine's own values. `ct1.rs` (`parse_f
 | MTL7 | A fitting section replaces the **automatic lead tables of every quality** and the **micro-joint table** as a whole. What the section leaves out takes the built-in table values (our laser lead table; joint distance 100 mm), not the machine's. A quality with no lead table of its own copies quality 1. | Observed (replacement); the built-in fallbacks are inferred |
 | MTL8 | Code mapping. **Y n = E n** (lead tables of qualities 2–12 and their extras, same numbers). Quality 1's lead table is in Z: **Z n = B (n + 146)** for n = 54–124 (B200–B270), **Z132 = B271** (hole zone), **Z305 = B294** (pierce radius), **Z306 = B295** (shortest lead). **X n = F n** for 0–118 and 129–197 (joint records, size classes, distances by quality), but **X122 = F121** (fewest joints), **X123 = F122** (most) and **X125–X128 = F123–F126**; X119/X120 are not read. | Observed |
 | MTL9 | Single values a section replaces: Z003 cutting speed (A058), Z004 **cutter radius** = half the kerf (B002), Z005 sheet margin (A256, and it fills the other three first), Z007/Z008/Z009 top/left/right margins (A257–A259), Z130 remnant margin (A260), Z006 **part gap** (B056), Z335/Z336 a different Y gap (B096/B097), Z026–Z053 = B150–B177 (manual leads, overlap, **loop radius** Z033 = B157, joint leads and **joint width** Z034–Z040 = B158–B164, angle tolerances), Z125 corner rounding (B178), Z126–Z129 kill sharp edges (B179–B182), Z131 default **pierce radius** (B352), Z301 loop limit angle (B292). A value the section doesn't give keeps the machine's. | Observed (mapping); keeping the machine's value for a missing line is our estimate |
-| MTL10 | Z010/Z011/Z012 triples (one per size band: from, to, technology index) pick the cut quality of a contour by its size: the contour's equivalent radius (the radius of a circle of the same area) against the bands, the first band with from ≤ r < to, none when the first band starts above r. The index becomes a quality by TT8. The app applies it to contours of parts that leave the quality to the machine (no size ranges of their own, quality Normal); the quality then drives the lead table, the kerf table and the speed. | Observed (bands, index → quality); radius rather than diameter, outsides included, and which parts it applies to are our estimates |
+| MTL10 | Z010/Z011/Z012 triples (one per size band: from, to, technology index) pick the cut quality of a contour by its size: the contour's equivalent radius (the radius of a circle of the same area) against the bands, the first band with from ≤ r < to, none when the first band starts above r. The index becomes a quality by TT8. The app applies it to contours of parts that leave the quality to the machine (no size ranges and no quality of their own, CQ1); the quality then drives the lead table, the kerf table, the speed and the LC5's NEXT_L (BL22). | Observed (bands, index → quality); radius rather than diameter, outsides included, and which parts it applies to are our estimates |
 | MTL11 | Conditional groups (Z308 on → Z309–Z312 and X124; Z313 on → Z314–Z323; Z337 on → Z338; X125–X128 only when ≥ 0) carry values the app doesn't use; they are not carried over. | Observed (rule); not used |
 | MTL12 | V lines fill the per-class micro-joint records inside a section. No known file has them; not carried over (FEATURES TEC-14). | Observed (rule); not used |
 

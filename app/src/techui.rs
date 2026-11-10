@@ -264,6 +264,21 @@ impl App {
             {
                 self.show_cut_ranges = !self.show_cut_ranges;
             }
+            // The cut technology panel (CS6): on an opened part only.
+            if in_part {
+                let custom = self.shown_part().is_some_and(|i| self.parts[i].shape == crate::nest::Shape::Custom);
+                let tip = if custom {
+                    "Open the cut technology panel: choose Cut (or one of the machine's qualities), Mark, No cut, Bend line or Leave out, then click, box or sweep over contours"
+                } else {
+                    "A built-in shape's contours are always cut: open an imported drawing to paint its contours"
+                };
+                if ribbon_button(ui, Icon::Brush, "Paint\ncontours", self.cut_panel.open, custom).on_hover_text(tip).clicked() {
+                    self.cut_panel.open = !self.cut_panel.open;
+                    if !self.cut_panel.open {
+                        self.cut_panel.row = None;
+                    }
+                }
+            }
         });
         // Texts: in the original a text is an element with a type (marking,
         // special or plain note) and gets the marking technology; see MECHANICS.md.
@@ -488,7 +503,7 @@ impl App {
 
 impl App {
     /// Cut quality by contour size (CT1): each contour's equivalent radius √(area / π) picks the first
-    /// matching row; contours outside every row keep the part's quality.
+    /// matching row; contours outside every row take the part's quality or the machine's size band (CQ1).
     pub fn cut_ranges_window(&mut self, ctx: &egui::Context) {
         if !self.show_cut_ranges {
             return;
@@ -497,15 +512,10 @@ impl App {
         let targets = self.tech_targets();
         let cur = targets.first().and_then(|&i| self.parts[i].tech).unwrap_or_default();
         let mut edit = cur;
-        // Contour sizes of the first target, to show which row each one takes.
-        let sizes: Vec<(bool, f64)> = targets
-            .first()
-            .map(|&i| {
-                let g = self.parts[i].geometry();
-                let area = |p: &[crate::nest::P]| (0..p.len()).map(|k| p[k][0] * p[(k + 1) % p.len()][1] - p[(k + 1) % p.len()][0] * p[k][1]).sum::<f64>() / 2.0;
-                g.holes.iter().map(|h| (true, crate::nest::equivalent_radius(area(h)))).chain(std::iter::once((false, crate::nest::equivalent_radius(area(&g.outline))))).collect()
-            })
-            .unwrap_or_default();
+        // The first target's contours, to show the quality each one takes.
+        let mt = self.machine_tech();
+        // With the qualities set on its contours by hand (CQ6).
+        let geo = targets.first().map(|&i| (self.parts[i].geometry(), self.parts[i].cut_qualities()));
         egui::Window::new("Cut technology by size").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
             ui.label(RichText::new("Each contour's size is the radius of a circle with the same area. The first ticked row it falls in sets its quality (from ≤ r < up to).").size(12.0));
             ui.add_space(6.0);
@@ -520,29 +530,31 @@ impl App {
                         ui.checkbox(&mut row.on, format!("Row {}", k + 1));
                         ui.add(egui::DragValue::new(&mut row.min_r).range(0.0..=99999.0).speed(0.1).suffix(" mm"));
                         ui.add(egui::DragValue::new(&mut row.max_r).range(0.0..=99999.0).speed(0.1).suffix(" mm"));
-                        egui::ComboBox::from_id_salt(("cut_q", k)).width(80.0).selected_text(row.quality.label()).show_ui(ui, |ui| {
-                            for q in crate::nest::CutQuality::ALL {
-                                ui.selectable_value(&mut row.quality, q, q.label());
+                        egui::ComboBox::from_id_salt(("cut_q", k)).width(120.0).selected_text(quality_text(ui, &mt.qualities, row.quality)).show_ui(ui, |ui| {
+                            for q in offered_qualities(&mt.qualities) {
+                                ui.selectable_value(&mut row.quality, q, quality_text(ui, &mt.qualities, q));
                             }
                         });
                         ui.end_row();
                     }
                 });
             });
-            if !sizes.is_empty() {
+            if let Some((g, hand)) = &geo {
                 ui.separator();
-                let part_q = edit.quality;
-                for (hole, r) in &sizes {
-                    let q = crate::nest::quality_for_radius(&edit.cut_ranges, *r, 0.0);
-                    ui.label(
-                        RichText::new(format!("{} r {:.1} mm → {}{}", if *hole { "Hole" } else { "Outside" }, r, q.unwrap_or(part_q).label(), if q.is_some() { " (by size)" } else { "" }))
-                            .size(11.5)
-                            .color(if q.is_some() { th().text_strong } else { th().text_dim }),
-                    );
+                for (k, (hole, pts)) in g.holes.iter().map(|h| (true, h)).chain(std::iter::once((false, &g.outline))).enumerate() {
+                    let (q, from) = crate::cnc::contour_quality(&edit, &mt, pts, hand.get(k).copied().flatten());
+                    let by_row = from == crate::cnc::QualityFrom::SizeRange;
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        ui.label(RichText::new(format!("{} r {:.1} mm →", if hole { "Hole" } else { "Outside" }, crate::cnc::contour_radius(pts))).size(11.5).color(th().text_dim));
+                        ui.label(RichText::new("●").size(11.5).color(quality_colour(&mt.qualities, q)));
+                        ui.label(RichText::new(format!("{} ({})", mt.qualities.label(q), from.label())).size(11.5).color(if by_row { th().text_strong } else { th().text_dim }));
+                    });
                 }
             }
             ui.add_space(4.0);
-            if ui.button("Example: small holes fine").on_hover_text(format!("Row 1: holes up to r {} mm cut with Fine quality", crate::nest::SMALL_HOLE_RADIUS_EXAMPLE)).clicked() {
+            let slowest = mt.qualities.label(crate::nest::CutQuality::new(1).unwrap_or(crate::nest::CutQuality::FALLBACK));
+            if ui.button(format!("Example: small holes at {slowest}")).on_hover_text(format!("Row 1: holes up to r {} mm cut at {slowest}", crate::nest::SMALL_HOLE_RADIUS_EXAMPLE)).clicked() {
                 edit.cut_ranges = Default::default();
                 edit.cut_ranges[0].on = true;
             }
@@ -558,6 +570,49 @@ impl App {
                 *t = Some(x);
             });
         }
+    }
+}
+
+/// A part's own cut quality on screen: the machine's name for it (CQ4), or
+/// "Auto (size bands)" when the machine's size bands decide (CQ1; agents' `auto`).
+pub fn part_quality_label(q: Option<crate::nest::CutQuality>, names: &crate::qualities::CutQualities) -> String {
+    q.map_or_else(|| "Auto (size bands)".to_string(), |q| names.label(q))
+}
+
+/// A cut quality's colour on screen (CQ5).
+pub fn quality_colour(names: &crate::qualities::CutQualities, q: crate::nest::CutQuality) -> egui::Color32 {
+    let [r, g, b] = names.colour(q);
+    egui::Color32::from_rgb(r, g, b)
+}
+
+/// A cut quality as the pickers show it: a dot in its colour (CQ5), then the
+/// machine's name for it (CQ4).
+pub fn quality_text(ui: &egui::Ui, names: &crate::qualities::CutQualities, q: crate::nest::CutQuality) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    let (font, valign) = (egui::FontSelection::Default, egui::Align::Center);
+    RichText::new("● ").color(quality_colour(names, q)).append_to(&mut job, ui.style(), font.clone(), valign);
+    RichText::new(names.label(q)).append_to(&mut job, ui.style(), font, valign);
+    job
+}
+
+/// The qualities a picker lists: every one the machine doesn't hide (CQ4). A
+/// hidden quality already chosen stays chosen and shows as the picker's text.
+pub fn offered_qualities(names: &crate::qualities::CutQualities) -> Vec<crate::nest::CutQuality> {
+    crate::nest::CutQuality::all().filter(|&q| names.offered(q)).collect()
+}
+
+#[cfg(test)]
+mod quality_picker_tests {
+    use crate::nest::CutQuality;
+
+    #[test]
+    fn a_hidden_quality_stays_out_of_the_picker_even_when_chosen() {
+        let codes = [("A923".to_string(), "\"<HIDE>\"".to_string())].into_iter().collect();
+        let names = crate::qualities::CutQualities::from_codes(&codes);
+        let listed = super::offered_qualities(&names);
+        assert_eq!(listed.len(), 11);
+        assert!(!listed.iter().any(|q| q.number() == 2));
+        assert!(listed.contains(&CutQuality::all().next().unwrap()));
     }
 }
 

@@ -130,6 +130,8 @@ pub struct MachineTech {
     pub sizes_override: Option<crate::nest::AutoJoints>,
     /// The file the values came from (None = built-in values).
     pub source: Option<PathBuf>,
+    /// The machine's cut qualities as they show: names (CQ4) and colours (CQ5).
+    pub qualities: Arc<crate::qualities::CutQualities>,
 }
 
 impl Default for MachineTech {
@@ -194,6 +196,7 @@ impl Default for MachineTech {
             picked_for: None,
             sizes_override: None,
             source: None,
+            qualities: Arc::new(Default::default()),
         }
     }
 }
@@ -644,6 +647,7 @@ impl MachineTech {
                 t.file = self.file.clone();
                 t.source = self.source.clone();
                 t.speed_files = self.speed_files.clone();
+                t.qualities = self.qualities.clone();
                 t.section = Some(i);
                 t
             }
@@ -779,6 +783,7 @@ impl MachineTech {
             picked_for: None,
             sizes_override: None,
             source: None,
+            qualities: Arc::new(crate::qualities::CutQualities::from_codes(m)),
         }
     }
 
@@ -806,6 +811,9 @@ impl MachineTech {
         tries.push(Path::new(&dir).join("MchFiles").join("PstAdi06.CT1"));
         let found = tries.iter().find(|p| p.is_file());
         let mut t = found.and_then(|p| MachineTech::load(p)).unwrap_or_default();
+        // The qualities' colours are the original's display settings, the same
+        // for every machine (CQ5).
+        t.qualities = Arc::new(t.qualities.as_ref().clone().with_colours_in(Path::new(&dir)));
         // The machine's CF file names its technology table and time settings
         // (TT1): the BLM post's .CF1, else a .CF<n> post library.
         let cf = [&m.blm_cf1, &m.post_lib].into_iter().filter(|p| !p.is_empty()).map(PathBuf::from).find(|p| {

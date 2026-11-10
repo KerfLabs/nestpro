@@ -235,14 +235,19 @@ pub fn read_file_with(path: &Path, format: Option<Format>, cfg: &crate::settings
 }
 
 /// `read_file_with`, also saying which format the file was read as.
-pub fn read_path(path: &Path, format: Option<Format>, cfg: &crate::settings::AppSettings, mut opts: ReadOpts) -> Result<(Format, Vec<ReadPart>), String> {
-    opts.ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_string();
+pub fn read_path(path: &Path, format: Option<Format>, cfg: &crate::settings::AppSettings, opts: ReadOpts) -> Result<(Format, Vec<ReadPart>), String> {
     let bytes = std::fs::read(path).map_err(|e| format!("{}: couldn't read ({e})", path.display()))?;
-    let fmt = format.or_else(|| detect(path, &bytes)).ok_or_else(|| {
+    read_path_bytes(path, &bytes, format, cfg, opts)
+}
+
+/// `read_path` on the file's bytes, already read.
+pub fn read_path_bytes(path: &Path, bytes: &[u8], format: Option<Format>, cfg: &crate::settings::AppSettings, mut opts: ReadOpts) -> Result<(Format, Vec<ReadPart>), String> {
+    opts.ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_string();
+    let fmt = format.or_else(|| detect(path, bytes)).ok_or_else(|| {
         let kinds: Vec<&str> = Format::ALL.iter().map(|f| f.label()).collect();
         format!("{}: not a drawing this app can read ({})", path.display(), kinds.join(", "))
     })?;
-    let parts = read_bytes(fmt, &bytes, cfg, &opts).map_err(|e| format!("{}: {e}", path.display()))?;
+    let parts = read_bytes(fmt, bytes, cfg, &opts).map_err(|e| format!("{}: {e}", path.display()))?;
     if parts.is_empty() {
         return Err(format!("{}: no part drawing in this {}", path.display(), fmt.label()));
     }

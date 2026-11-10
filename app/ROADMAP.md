@@ -58,7 +58,7 @@ is **`FEATURES.md`** at the top of the repo; keep both in step.
 | Loops (2 types), Round angles | Part — loops | ★ |
 | **Bridges** (join parts so they cut as one) | Missing | ★★ |
 | Standard bevel, 3D bevel | Missing (bevel heads) | ★ |
-| Cut technology: Marking, No cut, Clean cut, Cutting, Micro-joint, Dynamic, Hatch, Bending lines | Part — cut quality per part, marking texts | ★★ |
+| Cut technology: Marking, No cut, Clean cut, Cutting, Micro-joint, Dynamic, Hatch, Bending lines | Part — the machine's numbered cut qualities per part and by size, shown by the machine's names and colours, each contour's own quality to the LC5, marking texts; each contour Cut / Mark / No cut / Bend line / Leave out, open lines kept at import (agents: `contour-tech`, CS1–CS5); a cut quality per contour set by hand, winning over the size ranges and bands (agents: `contour-tech quality=`, CQ6); the cut technology panel on the part's drawing screen paints contours by click, box or sweep, each shown in its quality's or state's colour on the part and the sheet (CS6, CS7); the same panel in the import preview sets the drawing's layers and contours before the part is made (agents: `import-drawing contours=`, IM11, IM12) | ★★ |
 | Texts: Marked, Written, **QR codes**, Templates, Vectorize | Part — marked/note/special texts, curved | ★★ |
 
 ## Machining tab
