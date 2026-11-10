@@ -257,16 +257,14 @@ enum Shown {
     Failed(String),
 }
 
-type Loaded = (PathBuf, Option<u64>, String, FileSig, Shown);
+type Loaded = (PathBuf, Option<u64>, String, Shown);
 
-/// A file's size and last change to the nanosecond, taken when it is read:
-/// Import compares them with the file on disk, so a drawing replaced since
-/// is never brought in as it was set (IM11).
-type FileSig = Option<(u64, u128)>;
-
-fn file_sig(path: &Path) -> FileSig {
-    let md = std::fs::metadata(path).ok()?;
-    Some((md.len(), md.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos()))
+/// The fingerprint of file `path` as it is now (`imports::fingerprint`):
+/// Import compares it with the bytes the preview read, so a drawing changed
+/// since is never brought in as it was set, whatever its size and time say
+/// (IM11).
+fn file_fingerprint(path: &Path) -> Option<u64> {
+    std::fs::read(path).ok().map(|b| imports::fingerprint(&b))
 }
 
 /// A file's last change and the settings it was read with (`preview_key`):
@@ -290,8 +288,6 @@ pub struct LayerRow {
 #[derive(Clone)]
 struct Edited {
     stamp: Stamp,
-    /// The file when `read` was read.
-    sig: FileSig,
     read: Arc<DrawingPreview>,
     choices: DrawingChoices,
 }
@@ -327,7 +323,6 @@ fn layer_rows(d: &DrawingPreview, choices: &DrawingChoices) -> Vec<LayerRow> {
 struct Current {
     path: PathBuf,
     stamp: Stamp,
-    sig: FileSig,
     /// The part of the file shown.
     ix: usize,
     d: Arc<DrawingPreview>,
@@ -370,7 +365,7 @@ impl PaintTarget for PreviewPaint<'_> {
     }
 
     fn push_undo(&mut self, before: DrawingChoices) {
-        self.undo.push((self.cur.path.clone(), Edited { stamp: self.cur.stamp.clone(), sig: self.cur.sig, read: self.cur.d.clone(), choices: before }));
+        self.undo.push((self.cur.path.clone(), Edited { stamp: self.cur.stamp.clone(), read: self.cur.d.clone(), choices: before }));
     }
 
     fn say(&mut self, s: String) {
@@ -415,7 +410,7 @@ pub struct ImportUi {
     sort: SortBy,
     desc: bool,
     /// Previews by file: its last change and the settings it was read with (`preview_key`).
-    cache: HashMap<PathBuf, (Option<u64>, String, FileSig, Shown)>,
+    cache: HashMap<PathBuf, (Option<u64>, String, Shown)>,
     loading: Option<PathBuf>,
     tx: mpsc::Sender<Loaded>,
     rx: mpsc::Receiver<Loaded>,
@@ -549,21 +544,21 @@ impl ImportUi {
 
     /// Take in previews read in the background.
     fn poll(&mut self) {
-        while let Ok((p, m, k, sig, s)) = self.rx.try_recv() {
+        while let Ok((p, m, k, s)) = self.rx.try_recv() {
             if self.loading.as_ref() == Some(&p) {
                 self.loading = None;
             }
-            self.file_preview(p, m, k, sig, s);
+            self.file_preview(p, m, k, s);
         }
     }
 
     /// Keep a preview, forgetting the older ones when there are too many
     /// (what was set for a drawing is kept apart, in `edited`).
-    fn file_preview(&mut self, p: PathBuf, m: Option<u64>, k: String, sig: FileSig, s: Shown) {
+    fn file_preview(&mut self, p: PathBuf, m: Option<u64>, k: String, s: Shown) {
         if self.cache.len() >= MAX_CACHED {
             self.cache.clear();
         }
-        self.cache.insert(p, (m, k, sig, s));
+        self.cache.insert(p, (m, k, s));
     }
 
     /// Start reading the focused file when it has no preview yet (one at a
@@ -574,22 +569,20 @@ impl ImportUi {
         }
         let Some(e) = self.focus.as_ref().and_then(|f| self.entries.iter().find(|e| &e.path == f)) else { return };
         let key = preview_key(cfg, spec);
-        if e.dir || self.cache.get(&e.path).is_some_and(|(m, k, _, _)| *m == e.modified && *k == key) {
+        if e.dir || self.cache.get(&e.path).is_some_and(|(m, k, _)| *m == e.modified && *k == key) {
             return;
         }
         let (path, m) = (e.path.clone(), e.modified);
         if self.sync {
-            let sig = file_sig(&path);
             let s = read_preview(cfg, spec, &path);
-            self.file_preview(path, m, key, sig, s);
+            self.file_preview(path, m, key, s);
             return;
         }
         self.loading = Some(path.clone());
         let (tx, cfg, spec, ctx) = (self.tx.clone(), cfg.clone(), spec.clone(), ctx.clone());
         std::thread::spawn(move || {
-            let sig = file_sig(&path);
             let s = read_preview(&cfg, &spec, &path);
-            let _ = tx.send((path, m, key, sig, s));
+            let _ = tx.send((path, m, key, s));
             ctx.request_repaint();
         });
     }
@@ -640,13 +633,13 @@ impl ImportUi {
     /// File `path` as the preview read it, when it has been read with these
     /// settings since its last change, and the stamp of that reading: the
     /// reading something was set on, else the preview's.
-    fn read_of(&self, path: &Path, cfg: &AppSettings, spec: &SheetSpec) -> Option<(Stamp, FileSig, Arc<DrawingPreview>)> {
+    fn read_of(&self, path: &Path, cfg: &AppSettings, spec: &SheetSpec) -> Option<(Stamp, Arc<DrawingPreview>)> {
         let stamp = self.stamp_now(path, cfg, spec)?;
         if let Some(e) = self.edited.get(path).filter(|e| e.stamp == stamp) {
-            return Some((stamp, e.sig, e.read.clone()));
+            return Some((stamp, e.read.clone()));
         }
         match self.cache.get(path) {
-            Some((m, k, sig, Shown::Drawing(d))) if (m, k) == (&stamp.0, &stamp.1) => Some((stamp, *sig, d.clone())),
+            Some((m, k, Shown::Drawing(d))) if (m, k) == (&stamp.0, &stamp.1) => Some((stamp, d.clone())),
             _ => None,
         }
     }
@@ -663,13 +656,13 @@ impl ImportUi {
         files
             .iter()
             .map(|f| {
-                // The file on disk itself, not the folder listing, which may be
-                // older than the file.
-                let same_file = |e: &Edited| e.sig.is_some() && e.sig == file_sig(f) && Some(&e.stamp) == self.stamp_now(f, cfg, spec).as_ref();
+                // The file's bytes now, not the folder listing or the file's
+                // size and time, which may not show a change.
+                let same_file = |e: &Edited| file_fingerprint(f) == Some(e.read.fingerprint) && Some(&e.stamp) == self.stamp_now(f, cfg, spec).as_ref();
                 let chosen = match self.edited.get(f) {
                     Some(e) if same_file(e) => Chosen::Read(e.read.clone(), e.choices.clone()),
                     Some(_) => Chosen::Changed,
-                    None => self.read_of(f, cfg, spec).map_or(Chosen::Unread, |(_, _, d)| Chosen::Read(d, DrawingChoices::default())),
+                    None => self.read_of(f, cfg, spec).map_or(Chosen::Unread, |(_, d)| Chosen::Read(d, DrawingChoices::default())),
                 };
                 (f.clone(), chosen)
             })
@@ -680,7 +673,7 @@ impl ImportUi {
     /// was set for it (made again only when that changed).
     fn current(&mut self, cfg: &AppSettings, spec: &SheetSpec) -> Option<Current> {
         let path = self.focus.clone()?;
-        let (stamp, sig, d) = self.read_of(&path, cfg, spec)?;
+        let (stamp, d) = self.read_of(&path, cfg, spec)?;
         let ix = self.part_ix.min(d.parts.len().checked_sub(1)?);
         let choices = self.choices_for(&path, &stamp);
         if self.edited.get(&path).is_some_and(|e| e.stamp != stamp) {
@@ -692,7 +685,7 @@ impl ImportUi {
             self.shown = Some((path.clone(), stamp.clone(), ix, choices.clone(), made));
         }
         let made = self.shown.as_ref().map(|s| s.4.clone())?;
-        Some(Current { path, stamp, sig, ix, d, choices, made })
+        Some(Current { path, stamp, ix, d, choices, made })
     }
 
     /// Keep the part the drawing `cur` shows, and what was set for it when
@@ -703,7 +696,7 @@ impl ImportUi {
         if edits && cur.choices == DrawingChoices::default() {
             self.edited.remove(&cur.path);
         } else if edits {
-            self.edited.insert(cur.path.clone(), Edited { stamp: cur.stamp.clone(), sig: cur.sig, read: cur.d.clone(), choices: cur.choices.clone() });
+            self.edited.insert(cur.path.clone(), Edited { stamp: cur.stamp.clone(), read: cur.d.clone(), choices: cur.choices.clone() });
         }
         self.shown = Some((cur.path, cur.stamp, cur.ix, cur.choices, cur.made));
     }
@@ -730,7 +723,7 @@ impl ImportUi {
         }
         let (next, gave_way) = imports::set_layer(cfg, spec, &cur.d.reads, &cur.choices, layer, role);
         let before = std::mem::replace(&mut cur.choices, next);
-        self.undo.push((cur.path.clone(), Edited { stamp: cur.stamp.clone(), sig: cur.sig, read: cur.d.clone(), choices: before }));
+        self.undo.push((cur.path.clone(), Edited { stamp: cur.stamp.clone(), read: cur.d.clone(), choices: before }));
         let what = match role {
             LayerRole::Cut => "its lines are cut (open ones stay Bend line or No cut)",
             LayerRole::Mark => "its lines are marked",
@@ -1262,7 +1255,7 @@ impl App {
                 info.push((e.name.clone(), th().text_strong));
                 info.push((size_text(e.size), th().text_dim));
             }
-            Some(e) => match iu.cache.get(&e.path).filter(|(m, k, _, _)| *m == e.modified && *k == key).map(|(_, _, _, s)| s) {
+            Some(e) => match iu.cache.get(&e.path).filter(|(m, k, _)| *m == e.modified && *k == key).map(|(_, _, s)| s) {
                 None => {
                     ui.put(Rect::from_center_size(rect.center(), Vec2::splat(24.0)), egui::Spinner::new());
                     info.push((e.name.clone(), th().text_strong));
@@ -1700,7 +1693,7 @@ mod tests {
         iu.focus = Some(f.clone());
         let spec = crate::nest::SheetSpec { w: 3000.0, h: 1500.0, margin: 10.0, gap: 10.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
         let width = |iu: &ImportUi| match iu.cache.get(&f) {
-            Some((_, _, _, Shown::Drawing(p))) => p.parts[0].part.as_ref().unwrap().0.w,
+            Some((_, _, Shown::Drawing(p))) => p.parts[0].part.as_ref().unwrap().0.w,
             _ => panic!("no preview"),
         };
         let mut cfg = AppSettings::default();
@@ -1880,6 +1873,29 @@ mod tests {
         // The drawing as it is now comes in as it starts, and the import says so.
         let got = a.parts.last().unwrap();
         assert_eq!(states(got), ["cut", "cut", "cut", "cut", "cut", "cut", "bend-line", "no-cut"], "the bend plate, as it starts");
+        let card = a.result_card.as_ref().expect("a result card").lines.join(" ");
+        assert!(card.contains("changed") && card.contains("set them again"), "{card}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_drawing_changed_with_the_same_size_and_time_is_reported_not_imported_as_set() {
+        let (mut a, d, f) = window_on_layered_plate("same_size");
+        use crate::cutpanel::Row;
+        assert!(a.preview_paint(&[0], Row::LeaveOut, false));
+        // The plate made 400 long instead of 300: the same number of bytes,
+        // and its last-change time put back, as a coarse clock or a network
+        // share's cached details would show it.
+        let when = std::fs::metadata(&f).unwrap().modified().unwrap();
+        let text = std::fs::read_to_string(&f).unwrap();
+        assert_eq!(text.matches("300.0000").count(), 2);
+        std::fs::write(&f, text.replace("300.0000", "400.0000")).unwrap();
+        std::fs::File::options().write(true).open(&f).unwrap().set_modified(when).unwrap();
+        a.import_from_window(vec![f.clone()]);
+        // The drawing as it is now comes in as it starts, and the import says so.
+        let got = a.parts.last().unwrap();
+        assert!((got.w - 400.0).abs() < 1e-6, "{}", got.w);
+        assert_eq!(states(got)[0], "cut");
         let card = a.result_card.as_ref().expect("a result card").lines.join(" ");
         assert!(card.contains("changed") && card.contains("set them again"), "{card}");
         let _ = std::fs::remove_dir_all(&d);

@@ -286,13 +286,26 @@ pub struct DrawingPreview {
     /// Each part as read, to make it again with other layer roles and
     /// contour choices (IM11).
     pub reads: Vec<crate::formats::Incoming>,
+    /// A fingerprint of the bytes read (`fingerprint`): Import compares it
+    /// with the file as it is then (IM11).
+    pub fingerprint: u64,
+}
+
+/// A fingerprint of a file's bytes, to tell whether it changed since it was
+/// read, whatever its size and time say (IM11).
+pub fn fingerprint(bytes: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut h);
+    h.finish()
 }
 
 /// Read a drawing file for the import window's preview (IM10): the same
 /// reading, part names and starting layer roles as Import drawings and
 /// `import-drawing`, without adding anything to the job.
 pub fn drawing_preview(cfg: &AppSettings, spec: &SheetSpec, path: &Path) -> Result<DrawingPreview, String> {
-    let (format, parts) = crate::formats::read_path(path, None, cfg, Default::default())?;
+    let bytes = std::fs::read(path).map_err(|e| format!("{}: couldn't read ({e})", path.display()))?;
+    let (format, parts) = crate::formats::read_path_bytes(path, &bytes, None, cfg, Default::default())?;
     let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Drawing".into());
     let reads = crate::formats::incoming(&stem, parts);
     let roles = DrawingChoices::default().roles(&reads);
@@ -320,7 +333,7 @@ pub fn drawing_preview(cfg: &AppSettings, spec: &SheetSpec, path: &Path) -> Resu
             PreviewPart { name: inc.name.clone(), pieces, min, max, layers: inc.part.drawing.layers().len(), part }
         })
         .collect();
-    Ok(DrawingPreview { format, parts, reads })
+    Ok(DrawingPreview { format, parts, reads, fingerprint: fingerprint(&bytes) })
 }
 
 /// One contour choice made before a drawing is imported (IM11, IM12):
