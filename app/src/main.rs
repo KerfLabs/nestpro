@@ -45,6 +45,8 @@ mod jobfile;
 mod jobs;
 mod libui;
 mod library;
+mod folders;
+mod libtree;
 mod shared;
 mod region;
 mod remline;
@@ -182,6 +184,10 @@ pub struct Job {
     /// The job as last saved or opened (`job_sig`); None = never saved. It
     /// has unsaved changes when it no longer matches (jobtree.rs).
     pub saved: Option<u64>,
+    /// The Library folder a job saved into the Library for the first time
+    /// goes into (JX15): the folder of the library job it was opened or
+    /// copied from. None: by its folder's name.
+    pub lib_folder: Option<u64>,
 }
 
 pub struct App {
@@ -456,7 +462,7 @@ fn demo_jobs(first: &App) -> Vec<Job> {
     let p = |name: &str, shape, w, h, qty, color| Part { name: name.into(), shape, w, h, qty, rotate: true, color, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
     let mk = |week: &str, name: &str, parts: Vec<Part>, spec: SheetSpec| {
         let result = nest::nest(&parts, &spec);
-        Job { week: week.into(), name: name.into(), parts, spec, result, stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None, saved: None }
+        Job { week: week.into(), name: name.into(), parts, spec, result, stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None, saved: None, lib_folder: None }
     };
     let mut steel5 = spec.clone();
     steel5.thickness = 5.0;
@@ -479,6 +485,7 @@ fn demo_jobs(first: &App) -> Vec<Job> {
             cam_changed: None,
             file: None,
             saved: None,
+            lib_folder: None,
             held: Default::default(),
             erp: None,
         },
@@ -740,6 +747,7 @@ impl App {
             held: Default::default(),
             file: None,
             saved: None,
+            lib_folder: None,
             erp: None,
         });
         let i = self.jobs.len() - 1;
@@ -831,7 +839,7 @@ impl App {
         let name = self.unique_job_name(&j.name).unwrap_or_else(|| j.name.clone());
         self.store_job();
         let tried = 0;
-        self.jobs.push(Job { week: if j.week.is_empty() { "Opened jobs".into() } else { j.week }, name, parts: j.parts, spec: j.spec.clone(), result: { let mut r = nest::NestResult { sheets: j.sheets, formats: j.formats, method: j.method, tried }; r.normalise(&j.spec); r }, stale: j.stale, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: j.held.clone(), erp: None, file: None, saved: None });
+        self.jobs.push(Job { week: if j.week.is_empty() { "Opened jobs".into() } else { j.week }, name, parts: j.parts, spec: j.spec.clone(), result: { let mut r = nest::NestResult { sheets: j.sheets, formats: j.formats, method: j.method, tried }; r.normalise(&j.spec); r }, stale: j.stale, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: j.held.clone(), erp: None, file: None, saved: None, lib_folder: None });
         let i = self.jobs.len() - 1;
         self.open_job(i);
         self.cut_lines = j.cut_lines;
@@ -980,7 +988,7 @@ impl App {
             return;
         };
         self.store_job();
-        self.jobs.push(Job { week, name, parts: vec![], spec: engine::with_prefs(&self.spec, &self.cfg), result: NestResult::default(), stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None, saved: None });
+        self.jobs.push(Job { week, name, parts: vec![], spec: engine::with_prefs(&self.spec, &self.cfg), result: NestResult::default(), stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None, saved: None, lib_folder: None });
         let i = self.jobs.len() - 1;
         self.open_job(i);
         self.status = format!("Created job {} — add products, then nest.", self.job_name);
@@ -2876,7 +2884,7 @@ fn main() -> eframe::Result {
             // Without the example jobs: one empty job (not for screenshots).
             if load_layout && !app.cfg.examples {
                 let spec = app.spec.clone();
-                app.jobs = vec![Job { week: String::new(), name: "New job".into(), parts: vec![], spec, result: nest::NestResult::default(), stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None, saved: None }];
+                app.jobs = vec![Job { week: String::new(), name: "New job".into(), parts: vec![], spec, result: nest::NestResult::default(), stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None, saved: None, lib_folder: None }];
                 app.cur_job = 0;
                 app.job_name = "New job".into();
                 app.parts.clear();
@@ -3017,6 +3025,13 @@ fn main() -> eframe::Result {
             // --library-dir=<folder> / --lib-save: screenshots of a filled library.
             if let Some(d) = std::env::args().find_map(|a| a.strip_prefix("--library-dir=").map(str::to_string)) {
                 app.cfg.library_dir = d;
+            }
+            // --lib-tree-open: every Library folder opened out, and the Job
+            // Explorer the whole height (screenshots).
+            if std::env::args().any(|a| a == "--lib-tree-open") {
+                app.libui.reveal_all = true;
+                app.libui.loaded = false;
+                app.dock.close(Workspace::Jobs, dock::PaneId::JobSummary);
             }
             if std::env::args().any(|a| a == "--lib-save") {
                 app.save_job_to_library();

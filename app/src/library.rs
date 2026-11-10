@@ -118,6 +118,8 @@ impl Library {
                 lib.write_index(&entries_of(lib.scan(&first)), &lock)?;
             }
         }
+        // A Library from before folders gets its job folders now (JX11).
+        crate::folders::ensure(&lib, Kind::Job)?;
         Ok(lib)
     }
 
@@ -287,10 +289,26 @@ impl Library {
         }
     }
 
-    /// Save a job (a new record, or over `id`). Returns its number.
+    /// Save a job (a new record, or over `id`). Returns its number. A new
+    /// record goes into the top-level folder named like the job's folder
+    /// (JX15).
     pub fn save_job(&self, job: &JobFile, id: Option<u64>) -> Result<u64, String> {
+        self.save_job_in(job, id, None)
+    }
+
+    /// `save_job`, a new record going into the folder `folder` while that is
+    /// still there (JX15). Saving over a record never moves it. The record,
+    /// its line in the list and its place in the folder tree are written
+    /// under one hold of the write lock (LB1); a place that can't be written
+    /// leaves the job at the top of the tree, saved.
+    pub fn save_job_in(&self, job: &JobFile, id: Option<u64>, folder: Option<u64>) -> Result<u64, String> {
         let text = serde_json::to_string_pretty(job).map_err(|e| e.to_string())?;
-        self.store(Kind::Job, id, &text, |id| job_entry(id, job, now()))
+        let _lock = self.lock()?;
+        let saved = self.store(Kind::Job, id, &text, |id| job_entry(id, job, now()))?;
+        if id.is_none() {
+            let _ = crate::folders::change(self, Kind::Job, |t, _| Ok(t.file_new(saved, folder, &job.week)));
+        }
+        Ok(saved)
     }
 
     pub fn load_job(&self, id: u64) -> Result<JobFile, String> {
@@ -325,7 +343,12 @@ impl Library {
         let _ = std::fs::remove_file(self.path(kind, id));
         let mut all = self.entries();
         all.retain(|x| !(x.kind == kind && x.id == id));
-        self.write_index(&all, &lock)
+        self.write_index(&all, &lock)?;
+        // Its place in the folder tree goes with it (JX10).
+        if kind == Kind::Job {
+            let _ = crate::folders::change(self, kind, |t, _| t.put(id, crate::folders::TOP));
+        }
+        Ok(())
     }
 }
 
