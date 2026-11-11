@@ -104,7 +104,13 @@ impl App {
         self.job_lib_id = None;
         for j in &mut self.jobs {
             j.lib_id = None;
+            // Its folder's number is the old Library's too (JX15).
+            j.lib_folder = None;
         }
+        // A cut, or a name being typed, belongs to the old Library's tree.
+        self.libui.cut = None;
+        self.libui.edit = None;
+        self.libui.reveal.clear();
     }
 
     /// Save the open job into the library (over its record if it came from there).
