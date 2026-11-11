@@ -362,6 +362,8 @@ How the rebuild uses them (Technology tab):
   - Away from corners the chosen **Type** applies: Line (45°), Line + arc, or Arc (a
     quarter-arc arriving tangent to the contour). These are reduced stand-ins for P6's shapes.
   - **Delete** removes leads and corner start.
+  - One lead that comes out wrong can then be **moved by hand** in the Part view: drag the
+    lead-in's pierce (red dot) or the lead-out's end (blue dot) (LE1–LE7).
 - **Micro-Joints → Automatic** sets the part's joint count from its size class (P7).
   **Sizes** edits the limits and counts. "Original defaults" restores P7's off-state, and an
   "Example 0 / 2 / 4" preset is offered. X and Y counts are added together and the joints are
@@ -1718,6 +1720,32 @@ lead-in and one pierce less. Not done for picked or manual starts.
 
 → `nest::Element::lead_point`, `LEAD_PICK_LOW/HIGH`, `LEAD_ELEMENT_FACTOR`, `LEAD_LINEAR_TOL` (0.01, PstAdi06.CF1 A005).
 In the Part view the click position is kept (`sel_pick`). **Lead-in/Lead-outs → On element** puts the lead near the start, in the middle or near the end of a line, by the third you clicked, and the status line says which. Arcs, circles and selections without a click keep the middle (E4). Taking the distance to be the linear tolerance is inferred (the same tolerance pair is used for the corner test).
+
+
+## Moving a lead by hand (dragging its end)
+
+The original can edit a single lead's geometry by hand, next to the joint-lead edit (J8). That
+routine wasn't traced, so the rules below copy J8's gesture (the foot stays, the free end follows
+the pointer) and are otherwise our own.
+
+| # | Rule | |
+|---|---|---|
+| LE1 | **A lead moved by hand belongs to one contour of the part type**, so every piece of that part on every sheet has it. It keeps the contour's start and the lead record it was built from. The lead-in's pierce and the lead-out's end are each kept as a **straight distance** from where the lead meets the contour and an **angle from the contour**: the lead-in's angle is measured from the contour behind the start, the lead-out's from the contour ahead, both turning into the scrap. A turned or mirrored piece leans the same way against its cut. Both are measured on the drawn contour, so kerf compensation (KC8) doesn't change the numbers. When the part's cut contours change (CS4), a moved lead stays on its own contour, and goes when that contour is no longer cut. Up to **16** contours of a part can have one. | estimated (own design) |
+| LE2 | **Dragging an end**: the foot stays on the contour and the end follows the pointer. The angle stays inside the scrap side's opening: 180° on a straight or round stretch, and 360° less the material's angle at a corner (so at a 90° outside corner it can swing through 270°, round past the first side's line). It keeps **1°** clear of each side, and a pointer past the opening gives the nearer side. The length is at least **1 mm**. Both snap, to **0.1 mm** and **1°**. | J8 (gesture) observed for joint leads; the rest estimated |
+| LE3 | **The moved lead's shape**: a straight line from the end to the contour. A lead whose record meets the contour with an arc (laser types 12 and 13, and the tangent-arc forms of types 1–9) keeps that arc's radius and runs straight to it tangentially, so the cut still enters and leaves along the contour. An end dropped closer than the top of the arc gets a smaller arc that starts at the end itself. | estimated (own design) |
+| LE4 | **In the cut plan** a contour picked by hand on the sheet (manual machining) still wins. A moved lead wins over a start picked on an element and over the automatic placement, and that contour no longer starts at its first micro-joint (MJ5). Moving a lead on a part without its own technology gives the part the machine's automatic technology as its own, so nothing else changes. | estimated (own design) |
+| LE5 | **Collisions**: a moved lead is never moved along its contour. It is shortened, in the machine's shortening steps (AL11), when it would cross its own part or leave the sheet (VP3), and also when it would hit another part if the machine tests leads (B185 > 0). So a piece next to the sheet edge or a neighbour may cut a shorter lead than the Part view shows. | estimated (own design) |
+| LE6 | **Putting it back**: double-click the end, or `lead-edit mode=reset`. *Delete lead-ins* removes every moved lead, and *On element* on that contour replaces it. Undo works too. *Auto lead-ins* and *Standard leads* keep moved leads, as they keep starts picked on elements. | estimated (own design) |
+| LE7 | **A part on its own** (Part view, `part-info`, Verify Machining of a part, the agents' part picture) has no sheet around it, so the sheet edge (VP3) doesn't move or shorten its leads. Before this, the part sat at the sheet's corner, and a lead at its bottom-left was moved away from where the tables put it. | estimated (own design) |
+
+In the Part view each lead-in's pierce has a red dot and each lead-out's end a blue one. Hovering
+one shows its length and angle and turns the pointer into a hand. Dragging shows the length and
+angle beside the pointer, and the status line says what is cut (and if it was shortened).
+While the button is down the view keeps its framing, so the part doesn't shift as the lead
+grows; after the drag it stays put until *Fit*. Space-drag still pans. Agents use `lead-edit` (`in_length`, `in_angle`, `out_length`,
+`out_angle`, or `mode=reset`); `part-info` lists every contour's `lead_in` / `lead_out` (length,
+angle and the angles it can take) and `lead_by_hand`.
+→ `leads::build_hand`, `leads::hand_polar`, `engine::drag_lead_end`, `engine::set_lead_end`, `cnc::plan_part`.
 
 
 ## Cut order by sheet zones

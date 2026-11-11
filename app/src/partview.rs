@@ -7,7 +7,7 @@
 //! machine, material and thickness, then starts or brings forward the original's
 //! drawing/nesting program in its drawing mode.
 
-use crate::nest::{Placed, P};
+use crate::nest::P;
 use crate::theme::th;
 use crate::ui_parts::*;
 use crate::{cnc, App, OpenScope, Tab, Workspace};
@@ -257,9 +257,7 @@ impl App {
 
     /// The part's machining on its own, at the drawing's origin.
     fn part_plan(&self, idx: usize) -> cnc::SheetPlan {
-        let (w, h) = self.parts[idx].bbox();
-        let placed = Placed { part: idx, x: 0.0, y: 0.0, w, h, turns: 0, mirror: false };
-        cnc::plan(&self.parts, &[placed], &self.spec)
+        cnc::plan_part(&self.parts, idx, &self.spec)
     }
 
     /// The shown part's program as simulation steps (the sheet's, for this
@@ -320,13 +318,36 @@ impl App {
         }
         // "Zoom All" fits everything drawn — the part and its technology (leads,
         // lead-outs, loops) — like the original (rule V4: good + bad elements).
-        let ext = view_extent(&plan, w, h);
-        let (ew, eh) = ((ext[2] - ext[0]).max(1.0) as f32, (ext[3] - ext[1]).max(1.0) as f32);
-        let ctr = Vec2::new(((ext[0] + ext[2]) / 2.0) as f32, ((ext[1] + ext[3]) / 2.0) as f32);
+        let live_ext = view_extent(&plan, w, h);
         let margin = PART_FIT_MARGIN_PX;
         // While simulating, the part fits above the Simulation Window.
         let view = if self.dv.sim.is_some() && self.dv.machining { Rect::from_min_max(rect.min, Pos2::new(rect.right(), rect.bottom() - SIM_WINDOW_BAND_PX)) } else { rect };
-        let fit = ((view.width() - 2.0 * margin) / ew).min((view.height() - 2.0 * margin) / eh).max(0.001);
+        // The scale and centre that fit an extent in the view.
+        let framing = |ext: [f64; 4]| {
+            let (ew, eh) = ((ext[2] - ext[0]).max(1.0) as f32, (ext[3] - ext[1]).max(1.0) as f32);
+            let fit = ((view.width() - 2.0 * margin) / ew).min((view.height() - 2.0 * margin) / eh).max(0.001);
+            (fit, Vec2::new(((ext[0] + ext[2]) / 2.0) as f32, ((ext[1] + ext[3]) / 2.0) as f32))
+        };
+        // A lead end being dragged changes the extent; the view keeps its
+        // framing while the button is down, so the part stays under the
+        // pointer. On release the zoom and pan take over that framing, so
+        // nothing jumps; Fit refits as usual.
+        let mut ext = live_ext;
+        if let Some((li, frozen)) = self.part_ext_lock {
+            if li != idx {
+                self.part_ext_lock = None;
+            } else if ui.input(|i| i.pointer.primary_down()) {
+                ext = frozen;
+            } else {
+                let ((f0, c0), (f1, c1)) = (framing(frozen), framing(live_ext));
+                let s0 = f0 * self.part_zoom;
+                let o0 = view.center() + self.part_pan + Vec2::new(-c0.x * s0, c0.y * s0);
+                self.part_zoom = s0 / f1;
+                self.part_pan = o0 - view.center() - Vec2::new(-c1.x * s0, c1.y * s0);
+                self.part_ext_lock = None;
+            }
+        }
+        let (fit, ctr) = framing(ext);
         let origin = |zoom: f32, pan: Vec2| view.center() + pan + Vec2::new(-ctr.x * fit * zoom, ctr.y * fit * zoom);
         let now = ui.input(|i| i.time);
         // Scroll zooms about the pointer: the point under it stays put
@@ -604,6 +625,11 @@ impl App {
         // Technology: joints, leads, loops, pierce points and cut order.
         let jcol = Color32::from_rgb(250, 204, 21);
         let mut joint_edit: Option<(f64, f64)> = None;
+        // A lead end dragged (contour, end, pointer) or double-clicked (contour) (LE2, LE6).
+        let mut lead_drag: Option<(usize, crate::engine::LeadEnd, P)> = None;
+        let mut lead_reset: Option<usize> = None;
+        let lead_out_col = Color32::from_rgb(129, 140, 248);
+        let pierce_col = Color32::from_rgb(248, 80, 90);
         let punch_col = Color32::from_rgb(255, 140, 60);
         for (k, c) in plan.contours.iter().enumerate() {
             // Standard-shape recognition label.
@@ -695,7 +721,52 @@ impl App {
             let lp: Vec<Pos2> = c.lead_path.iter().map(|&q| to_s(q)).collect();
             painter.add(EShape::line(lp, Stroke::new(2.0, Color32::WHITE)));
             if c.lead_out_path.len() > 1 {
-                painter.add(EShape::line(c.lead_out_path.iter().map(|&q| to_s(q)).collect(), Stroke::new(2.0, Color32::from_rgb(129, 140, 248))));
+                painter.add(EShape::line(c.lead_out_path.iter().map(|&q| to_s(q)).collect(), Stroke::new(2.0, lead_out_col)));
+            }
+            // Drag a lead's free end — the lead-in's pierce, the lead-out's end —
+            // to swing or stretch that one lead (LE2); double-click puts it back
+            // (LE6). Space (panning) and contour painting keep the canvas's drag.
+            if c.punch.is_none() && !c.closing && !space && !painting {
+                use crate::engine::LeadEnd;
+                let ends = crate::engine::lead_ends(c);
+                let u = self.unit();
+                let free = [(LeadEnd::In, (c.lead_path.len() > 1).then(|| c.lead_path[0]), ends.lead_in, pierce_col), (LeadEnd::Out, (c.lead_out_path.len() > 1).then(|| c.lead_out_path[c.lead_out_path.len() - 1]), ends.lead_out, lead_out_col)];
+                for (end, at, now, col) in free {
+                    let (Some(at), Some((len, ang))) = (at, now) else { continue };
+                    let h = to_s(at);
+                    // The pierce has its own mark while machining is shown.
+                    if end == LeadEnd::Out || !self.dv.machining {
+                        painter.circle_filled(h, 2.5, col);
+                    }
+                    let tip = format!(
+                        "{} {} at {ang:.0}° from the contour{}.\nDrag to swing or stretch this {}{}.",
+                        if end == LeadEnd::In { "Lead-in" } else { "Lead-out" },
+                        u.len(len, 1),
+                        if ends.hand { " (moved by hand)" } else { "" },
+                        end.label(),
+                        if ends.hand { "; double-click to put it back" } else { "" }
+                    );
+                    let hr = ui.interact(Rect::from_center_size(h, Vec2::splat(14.0)), ui.scope_id().with(("lead_end", c.contour, end == LeadEnd::In)), Sense::click_and_drag()).on_hover_text(tip);
+                    if hr.hovered() || hr.dragged() {
+                        painter.circle_stroke(h, 6.0, Stroke::new(1.5, th().accent));
+                        ui.ctx().set_cursor_icon(if hr.dragged() { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab });
+                    }
+                    if hr.drag_started() {
+                        self.checkpoint();
+                        self.part_ext_lock = Some((idx, ext));
+                    }
+                    if let (true, Some(pp)) = (hr.dragged(), hr.interact_pointer_pos()) {
+                        lead_drag = Some((c.contour, end, to_w(pp)));
+                        // The length and angle beside the pointer while dragging.
+                        let g = painter.layout_no_wrap(format!("{} · {ang:.0}°", u.len(len, 1)), FontId::proportional(12.0), Color32::WHITE);
+                        let r = Rect::from_min_size(pp + Vec2::new(14.0, -26.0), g.size() + Vec2::new(10.0, 6.0));
+                        painter.rect_filled(r, CornerRadius::same(5), th().overlay);
+                        painter.galley(r.min + Vec2::new(5.0, 3.0), g, Color32::WHITE);
+                    }
+                    if hr.double_clicked() {
+                        lead_reset = Some(c.contour);
+                    }
+                }
             }
             for (vi, l) in &c.loops {
                 let mut pts = vec![to_s(c.points[*vi])];
@@ -707,7 +778,7 @@ impl App {
             }
             let pierce = to_s(c.lead_in);
             painter.circle_filled(pierce, 4.0, Color32::WHITE);
-            painter.circle_filled(pierce, 2.0, Color32::from_rgb(248, 80, 90));
+            painter.circle_filled(pierce, 2.0, pierce_col);
             // Cut order number beside the pierce point.
             let tag = Rect::from_center_size(pierce + Vec2::new(13.0, -13.0), Vec2::new(18.0, 16.0));
             painter.rect_filled(tag, CornerRadius::same(4), th().overlay);
@@ -815,6 +886,26 @@ impl App {
             x += 104.0;
         }
         self.part_zoom_bar(ui, rect);
+        // A lead end was dragged: that contour's lead takes it (LE2).
+        if let Some((ci, end, p)) = lead_drag {
+            let u = self.unit();
+            self.status = match crate::engine::drag_lead_end(&mut self.parts, idx, &self.spec, ci, end, p, u) {
+                Ok(m) => format!("{m} Double-click its end to put it back."),
+                Err(e) => e,
+            };
+            self.refresh();
+        }
+        if let Some(ci) = lead_reset {
+            let no = crate::engine::contour_number(&self.parts[idx], ci);
+            if self.parts[idx].tech.is_some_and(|t| t.lead_edit(ci).is_some()) {
+                self.checkpoint();
+                crate::engine::reset_lead_edits(&mut self.parts[idx], Some(ci));
+                self.refresh();
+                self.status = format!("Contour {no}'s lead is back where the technology puts it.");
+            } else {
+                self.status = format!("Contour {no}'s lead wasn't moved by hand — drag its end to move it.");
+            }
+        }
         // A joint lead was dragged: all joints of the part take the new lead.
         if let Some((len, ang)) = joint_edit {
             // The lead's distance off the contour is what the joint record keeps (D, AM6).
@@ -1199,9 +1290,10 @@ mod view_tests {
         let a = App::new(None);
         let i = a.parts.iter().position(|p| p.tech.is_some_and(|t| t.lead_in > 0.0)).expect("a part with leads");
         let (w, h) = a.parts[i].bbox();
-        let pl = Placed { part: i, x: 0.0, y: 0.0, w, h, turns: 0, mirror: false };
-        let plan = cnc::plan(&a.parts, &[pl], &a.spec);
+        let plan = cnc::plan_part(&a.parts, i, &a.spec);
         let e = view_extent(&plan, w, h);
         assert!(e[0] <= 0.0 && e[1] <= 0.0 && e[2] >= w && e[3] >= h);
+        let leads = plan.contours.iter().flat_map(|c| c.lead_path.iter().chain(c.lead_out_path.iter()));
+        assert!(leads.into_iter().all(|q| q[0] >= e[0] && q[1] >= e[1] && q[0] <= e[2] && q[1] <= e[3]));
     }
 }
