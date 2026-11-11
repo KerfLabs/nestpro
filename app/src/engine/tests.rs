@@ -2054,6 +2054,9 @@ fn machine_tech_lists_the_qualities_by_name_and_leaves_out_hidden_ones() {
     // The machines list shows the active machine's names too.
     let m = call(&mut s, "machines", None, json!({}));
     assert_eq!(m["data"]["technology"]["qualities"][8]["name"], json!("Marking (9)"), "{m}");
+    // MK1: each machine says what it does, in set-sheet's words.
+    let does = m["data"]["machines"][0]["does"].as_str().unwrap_or_else(|| panic!("{m}"));
+    assert!(crate::machine::MachineKind::from_key(does).is_some(), "{does}");
     crate::ct1::set_thread_active(None);
 }
 
