@@ -141,6 +141,15 @@ impl App {
             self.status = format!("Can't rename to '{n}': empty, too long or already a job.");
             return false;
         }
+        // A Library job: no other job in the Library may hold the name
+        // (JX16). Checked again under the write lock when it's saved.
+        let lib_id = if i == self.cur_job { self.job_lib_id } else { self.jobs.get(i).and_then(|j| j.lib_id) };
+        if let Some((id, Ok(lib))) = lib_id.map(|id| (id, self.library())) {
+            if let Err(e) = lib.check_job_name(n, Some(id)) {
+                self.status = format!("Can't rename to '{n}': {e}.");
+                return false;
+            }
+        }
         if i == self.cur_job {
             self.job_name = n.to_string();
         }
@@ -341,13 +350,11 @@ impl App {
         let qty: u32 = parts.iter().map(|p| p.qty).sum();
         let cam = if i == self.cur_job { self.cam_changed } else { j.cam_changed };
         format!(
-            "{name}\nFolder: {}\n{} product(s), {qty} piece(s)\n{sheets} nesting(s) · {} {} mm · {:.0} × {:.0}\nLast nesting change: {}\nRight-click: open, add nesting, rename, delete",
+            "{name}\nFolder: {}\n{} product(s), {qty} piece(s)\n{sheets} nesting(s) · {} · {}\nLast nesting change: {}\nRight-click: open, add nesting, rename, delete",
             j.week,
             parts.len(),
-            crate::cnc::MATERIALS.get(spec.material).copied().unwrap_or(""),
-            spec.thickness,
-            spec.w,
-            spec.h,
+            self.mat_thk(spec.material, spec.thickness),
+            self.unit().size(spec.w, spec.h, 0),
             cam_date_label(cam)
         )
     }
@@ -405,6 +412,7 @@ mod jobtree_tests {
     fn open_jobs_remember_their_saved_copy() {
         let dir = std::env::temp_dir().join(format!("nestpro_lib_link_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
+        crate::library::create(&dir).unwrap();
         let mut a = App::new(None);
         a.cfg.library_dir = dir.display().to_string();
         a.open_job(0);
@@ -439,6 +447,7 @@ mod jobtree_tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut a = App::new(None);
+        crate::library::create(&dir.join("lib")).unwrap();
         a.cfg.library_dir = dir.join("lib").display().to_string();
         // The examples are nothing to lose.
         assert!((0..a.jobs.len()).all(|i| !a.job_unsaved(i)));

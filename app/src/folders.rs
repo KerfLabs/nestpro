@@ -342,7 +342,12 @@ pub fn load(lib: &Library, kind: Kind) -> Result<Tree, String> {
     let p = lib.dir.join(file_name(kind));
     match std::fs::read_to_string(&p) {
         Ok(t) => serde_json::from_str::<Tree>(&t).map_err(|e| format!("the Library's folder tree ({}) can't be read ({e})", file_name(kind))),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Tree::from_names(&of_kind(lib, kind))),
+        // No tree yet: a Library from before folders (JX11), never one that
+        // can't be reached or a folder that holds no Library (LB11, LB12).
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            crate::library::usable(&lib.dir)?;
+            Ok(Tree::from_names(&of_kind(lib, kind)))
+        }
         Err(e) => Err(format!("the Library's folder tree ({}) can't be read ({e})", file_name(kind))),
     }
 }
@@ -376,6 +381,9 @@ pub fn ensure(lib: &Library, kind: Kind) -> Result<(), String> {
 /// under the lock with the records listed now, change it, write it whole.
 /// Nothing is written when `f` refuses.
 pub fn change<T>(lib: &Library, kind: Kind, f: impl FnOnce(&mut Tree, &[Entry]) -> Result<T, Refused>) -> Result<T, Refused> {
+    // Refused, naming the folder, when the Library can't be reached or the
+    // folder holds no Library: nothing is made there (LB11, LB12).
+    crate::library::usable(&lib.dir).map_err(Refused::Failed)?;
     let lock = lib.lock().map_err(Refused::Failed)?;
     let mut t = load(lib, kind).map_err(|e| Refused::Failed(format!("{e}. Nothing was changed")))?;
     let entries = of_kind(lib, kind);
@@ -413,5 +421,29 @@ mod folders_tests {
         t.put(1, dec).unwrap();
         t.put(2, acme).unwrap();
         assert_eq!((t.records_within(acme, &jobs), t.records_within(dec, &jobs), t.records_in(acme, &jobs).len()), (2, 1, 1));
+    }
+
+    /// LB11, LB12: the folder tree of a Library that can't be reached, or
+    /// of a folder that holds no Library, is never read as empty and never
+    /// made: it is refused in the words a save uses, naming the folder, and
+    /// nothing is written there.
+    #[test]
+    fn the_folders_of_a_library_that_cant_be_reached_are_refused_never_made() {
+        let d = std::env::temp_dir().join(format!("nestpro_folders_unreachable_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let (who, clock) = (crate::shared::Who::new("sam", "PROG-1"), crate::shared::Clock::pc());
+        let gone = d.join("Nesting");
+        let lib = Library::at(&gone, &who, &clock);
+        assert_eq!(load(&lib, Kind::Job).err(), Some(crate::library::unreachable(&gone)));
+        assert_eq!(change(&lib, Kind::Job, |t, _| t.make(TOP, "Acme")).err().map(|e| e.say(false)), Some(crate::library::unreachable(&gone)));
+        assert!(!gone.exists(), "a folder change made the Library folder");
+        // A folder that's there but holds no Library (LB12).
+        let empty = d.join("Empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        let lib = Library::at(&empty, &who, &clock);
+        assert_eq!(load(&lib, Kind::Job).err(), Some(crate::library::no_library(&empty)));
+        assert_eq!(change(&lib, Kind::Job, |t, _| t.make(TOP, "Acme")).err().map(|e| e.say(false)), Some(crate::library::no_library(&empty)));
+        assert_eq!(std::fs::read_dir(&empty).unwrap().count(), 0, "a folder change wrote into a folder that holds no Library");
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

@@ -125,6 +125,57 @@ pub struct Library {
     pub clock: Clock,
 }
 
+/// Said when the Library folder isn't there (LB11): the share, the server or
+/// the network is down, or the folder was moved. Names the folder. This PC's
+/// own default folder that was never made says so instead.
+pub fn unreachable(dir: &Path) -> String {
+    if dir == default_dir() {
+        format!("There's no Library on this PC yet ({}). Make one in Settings → Folders, or pick the shop's Library folder there.", dir.display())
+    } else {
+        format!("The Library on {} can't be reached. Check the network or the server.", dir.display())
+    }
+}
+
+/// Said when the folder is there but holds no Library (LB12).
+pub fn no_library(dir: &Path) -> String {
+    format!("{} holds no Library. Pick the Library's folder in Settings → Folders, or make a new Library there.", dir.display())
+}
+
+/// The folder holds a Library: its list, or its record or stock folders
+/// (LB12). A Library from before the list was kept still counts.
+pub fn holds_library(dir: &Path) -> bool {
+    dir.join(INDEX).is_file() || [Kind::Job.folder(), Kind::Product.folder(), crate::stock::FOLDER].iter().any(|f| dir.join(f).is_dir())
+}
+
+/// The Library in `dir` can be used: the folder is there (LB11) and holds a
+/// Library (LB12). Nothing is made either way.
+pub fn usable(dir: &Path) -> Result<(), String> {
+    if !dir.is_dir() {
+        return Err(unreachable(dir));
+    }
+    if !holds_library(dir) {
+        return Err(no_library(dir));
+    }
+    Ok(())
+}
+
+/// Make a new, empty Library in `dir`, and the folder if it isn't there
+/// (LB12). Only for a folder the user picked in Settings and confirmed; a
+/// folder that already holds a Library is left as it is.
+pub fn create(dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("A new Library can't be made in {} ({e}). Check the network or the server, or pick another folder.", dir.display()))?;
+    if holds_library(dir) {
+        return Ok(());
+    }
+    // An empty list records no save, so who and the clock don't matter here.
+    let lib = Library::at(dir, &Who::this_pc(), &Clock::pc());
+    let lock = lib.lock()?;
+    if !holds_library(dir) {
+        lib.write_index(&[], &lock)?;
+    }
+    Ok(())
+}
+
 impl Library {
     /// The Library in `dir`, as `who` going by `clock`, without setting
     /// anything up (reading).
@@ -132,10 +183,11 @@ impl Library {
         Library { dir: dir.to_path_buf(), who: who.clone(), clock: clock.clone() }
     }
 
-    /// Open (and set up, the first time) a library folder, as `who` going by
-    /// `clock`.
+    /// Open the Library in a folder, as `who` going by `clock`, setting up
+    /// its list if it was lost. A folder that isn't there, or holds no
+    /// Library, is refused, naming it, and nothing is made (LB11, LB12).
     pub fn open(dir: &Path, who: &Who, clock: &Clock) -> Result<Self, String> {
-        std::fs::create_dir_all(dir).map_err(|e| format!("can't use {}: {e}", dir.display()))?;
+        usable(dir)?;
         let lib = Library::at(dir, who, clock);
         if !dir.join(INDEX).exists() {
             let first = lib.scan(&Scanned::new());
@@ -325,19 +377,23 @@ impl Library {
     }
 
     /// Save a job (a new record, or over `id`), recording who saved it and
-    /// when (LB5). Returns its number. A new record goes into the top-level
+    /// when (LB5). Returns its number. Refused when another job in the
+    /// Library holds its name (JX16). A new record goes into the top-level
     /// folder named like the job's folder (JX15).
     pub fn save_job(&self, job: &JobFile, id: Option<u64>) -> Result<u64, String> {
         self.save_job_in(job, id, None)
     }
 
     /// `save_job`, a new record going into the folder `folder` while that is
-    /// still there (JX15). Saving over a record never moves it. The record,
-    /// its line in the list and its place in the folder tree are written
-    /// under one hold of the write lock (LB1); a place that can't be written
-    /// leaves the job at the top of the tree, saved.
+    /// still there (JX15). Saving over a record never moves it. The name is
+    /// checked (JX16), and the record, its line in the list and its place in
+    /// the folder tree written, under one hold of the write lock (LB1), so
+    /// of two PCs saving one new name at the same moment, one is stored and
+    /// the other refused. A place that can't be written leaves the job at
+    /// the top of the tree, saved.
     pub fn save_job_in(&self, job: &JobFile, id: Option<u64>, folder: Option<u64>) -> Result<u64, String> {
         let _lock = self.lock()?;
+        self.check_job_name(&job.name, id).map_err(|e| format!("{e}. Nothing was saved"))?;
         let saved = self.store(Kind::Job, id, |saved| {
             let job = JobFile { saved: Some(saved), ..job.clone() };
             let text = serde_json::to_string_pretty(&job).map_err(|e| e.to_string())?;
@@ -347,6 +403,27 @@ impl Library {
             let _ = crate::folders::change(self, Kind::Job, |t, _| Ok(t.file_new(saved, folder, &job.week)));
         }
         Ok(saved)
+    }
+
+    /// May job `id` (None: a new record, as Save as makes) be saved as
+    /// `name`? Not when another job holds the name (JX16); the refusal names
+    /// that job's folder. A job saved under its own name, unchanged, always
+    /// may, even when an older job shares it (JX17: Libraries from before
+    /// the rule).
+    pub fn check_job_name(&self, name: &str, id: Option<u64>) -> Result<(), String> {
+        let list = self.entries();
+        if id.is_some_and(|id| list.iter().any(|e| e.kind == Kind::Job && e.id == id && e.name == name)) {
+            return Ok(());
+        }
+        let key = name_key(name);
+        match list.iter().find(|e| e.kind == Kind::Job && Some(e.id) != id && name_key(&e.name) == key) {
+            // Its folder as the tree shows it (JX10), not the name written on it.
+            Some(other) => Err(name_taken(other, &crate::folders::load(self, Kind::Job).map_or_else(|_| other.folder.clone(), |t| t.path(t.folder_of(other.id))))),
+            None => {
+                shared::pause("job name checked");
+                Ok(())
+            }
+        }
     }
 
     pub fn load_job(&self, id: u64) -> Result<JobFile, String> {
@@ -400,6 +477,45 @@ type Scanned = std::collections::HashMap<(u8, u64), ((Option<std::time::SystemTi
 fn entries_of(s: Scanned) -> Vec<Entry> {
     let mut out: Vec<Entry> = s.into_values().map(|(_, e)| e).collect();
     out.sort_by_key(|e| (e.kind as u8, e.id));
+    out
+}
+
+/// What a job name is compared by: two names are one when they differ only
+/// in capitals or in spaces around them, as folder names are (JX17,
+/// estimated).
+fn name_key(name: &str) -> String {
+    name.trim().to_lowercase()
+}
+
+/// "with no folder", or "in folder W12".
+fn folder_words(folder: &str) -> String {
+    if folder.trim().is_empty() { "with no folder".into() } else { format!("in folder {folder}") }
+}
+
+/// The refusal of a name `other` holds (JX16): which job, and its folder
+/// (`folder`, its path in the folder tree).
+fn name_taken(other: &Entry, folder: &str) -> String {
+    format!(
+        "the job '{}' ({}) {} already has that name, and job names are unique across the Library, whatever their capitals: pick another name",
+        other.name,
+        auto_ref(Kind::Job, other.id),
+        folder_words(folder)
+    )
+}
+
+/// The jobs whose name another job in the list also holds (JX17: Libraries
+/// saved before names were unique), each with the others holding its name.
+pub fn shared_job_names(entries: &[Entry]) -> std::collections::HashMap<u64, Vec<&Entry>> {
+    let mut by_name: std::collections::HashMap<String, Vec<&Entry>> = Default::default();
+    for e in entries.iter().filter(|e| e.kind == Kind::Job) {
+        by_name.entry(name_key(&e.name)).or_default().push(e);
+    }
+    let mut out = std::collections::HashMap::new();
+    for same in by_name.values().filter(|v| v.len() > 1) {
+        for e in same {
+            out.insert(e.id, same.iter().filter(|o| o.id != e.id).copied().collect());
+        }
+    }
     out
 }
 
@@ -463,6 +579,7 @@ mod library_tests {
     fn stores_products_and_jobs_like_record_folders() {
         let dir = std::env::temp_dir().join(format!("nestpro_lib_test_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
+        create(&dir).unwrap();
         let lib = Library::open(&dir, &Who::new("sam", "PROG-1"), &Clock::pc()).unwrap();
         let part = Part { name: "Bracket".into(), shape: Shape::LBracket, w: 120.0, h: 80.0, qty: 5, rotate: true, color: 1, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
         assert_eq!((auto_ref(Kind::Job, 1), auto_ref(Kind::Product, 1234)), ("JOB000001".to_string(), "SHP001234".to_string()));
@@ -503,9 +620,11 @@ mod library_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A new, empty Library of the test's own.
     fn scratch(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("nestpro_shared_{tag}_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
+        create(&dir).unwrap();
         dir
     }
 
@@ -539,6 +658,36 @@ mod library_tests {
         }
         assert_eq!(list.iter().filter(|e| e.kind == Kind::Job).count(), pcs * saves);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// LB11, LB12: a Library folder that isn't there (the share is down, or
+    /// it was never made) is never made by opening or saving; only making a
+    /// new Library (Settings, after asking) makes one.
+    #[test]
+    fn a_library_folder_that_isnt_there_is_never_made() {
+        let dir = scratch("not_there").join("Nesting");
+        let (who, clock) = (Who::new("sam", "PROG-1"), Clock::pc());
+        let refused = Library::open(&dir, &who, &clock).err().expect("a folder that isn't there was opened");
+        assert!(refused.contains(&dir.display().to_string()) && refused.contains("can't be reached"), "{refused}");
+        assert!(!dir.exists(), "opening made the Library folder");
+        // Made on purpose, it opens, empty.
+        create(&dir).unwrap();
+        let lib = Library::open(&dir, &who, &clock).unwrap();
+        assert!(lib.entries().is_empty());
+        lib.save_job(&job("Frames"), None).unwrap();
+        // The share goes away: saving is refused, naming the folder, and
+        // nothing is made in its place.
+        std::fs::remove_dir_all(&dir).unwrap();
+        let refused = lib.save_job(&job("Brackets"), None).err().expect("a save to a folder that isn't there was stored");
+        assert!(refused.contains(&dir.display().to_string()) && refused.contains("can't be reached"), "{refused}");
+        assert!(!dir.exists(), "saving made the Library folder again");
+        // A folder that's there but holds no Library is refused too, and left
+        // as it was.
+        std::fs::create_dir_all(&dir).unwrap();
+        let refused = Library::open(&dir, &who, &clock).err().expect("an empty folder was opened as a Library");
+        assert!(refused.contains(&dir.display().to_string()) && refused.contains("holds no Library"), "{refused}");
+        assert!(files(&dir).is_empty(), "opening set up a Library in an empty folder");
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
     }
 
     /// Every file under `dir`, as paths relative to it.
@@ -819,6 +968,93 @@ mod library_tests {
         let mut names: Vec<String> = lib.entries().into_iter().map(|e| e.name).collect();
         names.sort();
         assert_eq!(names, ["Brackets", "Frames, second batch", "Gussets"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// JX16, JX17: no two jobs in the Library share a name, in any folder,
+    /// whatever its case. A new save, Save as (the job saved as a new
+    /// record) and a rename (saved over its own record under a new name) to
+    /// a name another job holds are refused, naming that job's folder, and
+    /// nothing is stored.
+    #[test]
+    fn job_names_are_unique_across_the_library_ignoring_case() {
+        let dir = scratch("unique_names");
+        // Sam on PROG-1 saved the frames job; Kim on PROG-2 works on the
+        // same Library.
+        let clock = Clock::at(NOV_9_0920);
+        let prog1 = Library::open(&dir, &Who::new("sam", "PROG-1"), &clock).unwrap();
+        let lib = Library::open(&dir, &Who::new("kim", "PROG-2"), &clock).unwrap();
+        let mut frames = job("DEMO-001 frames");
+        frames.week = "Acme".into();
+        let frames_id = prog1.save_job(&frames, None).unwrap();
+        let mut brackets = job("DEMO-002 brackets");
+        brackets.week = "W12".into();
+        let brackets_id = lib.save_job(&brackets, None).unwrap();
+        let stored = files(&dir);
+        // A new job under a name another job holds, in another folder and
+        // in other capitals.
+        let mut new = job("demo-001 FRAMES");
+        new.week = "W12".into();
+        let e = lib.save_job(&new, None).unwrap_err();
+        assert!(e.contains("DEMO-001 frames") && e.contains("folder Acme") && e.contains("Nothing was saved"), "{e}");
+        // Save as: the brackets job saved as a new record under that name.
+        let mut copy = brackets.clone();
+        copy.name = "DEMO-001 Frames".into();
+        let e = lib.save_job(&copy, None).unwrap_err();
+        assert!(e.contains("folder Acme"), "{e}");
+        // Rename: the brackets job saved over its own record under that name.
+        let e = lib.save_job(&copy, Some(brackets_id)).unwrap_err();
+        assert!(e.contains("folder Acme"), "{e}");
+        assert_eq!(files(&dir), stored, "a refused save stored something");
+        assert_eq!(lib.load_job(brackets_id).unwrap().name, "DEMO-002 brackets");
+        // Its own name in other capitals, or a free name: saved.
+        brackets.name = "DEMO-002 BRACKETS".into();
+        lib.save_job(&brackets, Some(brackets_id)).unwrap();
+        frames.name = "DEMO-003 frames".into();
+        lib.save_job(&frames, Some(frames_id)).unwrap();
+        // The old name is free once its job has another.
+        assert!(lib.save_job(&new, None).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// JX17: a Library saved before names were unique, where two jobs in
+    /// different folders share a name. Both keep saving under their own
+    /// name, and both are marked, each naming the other, until one is
+    /// renamed; neither may take the other's name.
+    #[test]
+    fn jobs_that_already_share_a_name_keep_saving_and_are_marked() {
+        let dir = scratch("old_twins");
+        let lib = Library::open(&dir, &Who::new("sam", "PROG-1"), &Clock::at(NOV_9_0920)).unwrap();
+        // Written as an older version did, with no name check.
+        for (id, name, folder) in [(1, "DEMO-001 frames", "Acme"), (2, "demo-001 FRAMES", "W12"), (3, "DEMO-002 brackets", "W12")] {
+            let mut j = job(name);
+            j.week = folder.into();
+            let p = lib.path(Kind::Job, id);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, serde_json::to_string_pretty(&j).unwrap()).unwrap();
+        }
+        lib.rebuild_index().unwrap();
+        let marked = |lib: &Library| {
+            let list = lib.entries();
+            let mut m: Vec<(u64, Vec<u64>)> = shared_job_names(&list).into_iter().map(|(id, o)| (id, o.iter().map(|e| e.id).collect())).collect();
+            m.sort();
+            m
+        };
+        assert_eq!(marked(&lib), vec![(1, vec![2]), (2, vec![1])]);
+        // Each keeps saving under its own name.
+        let mut first = lib.load_job(1).unwrap();
+        first.parts.clear();
+        lib.save_job(&first, Some(1)).unwrap();
+        lib.save_job(&lib.load_job(2).unwrap(), Some(2)).unwrap();
+        // Neither takes the other's spelling of the name.
+        let mut second = lib.load_job(2).unwrap();
+        second.name = "DEMO-001 frames".into();
+        let e = lib.save_job(&second, Some(2)).unwrap_err();
+        assert!(e.contains("folder Acme"), "{e}");
+        // Renamed, it's no longer marked.
+        second.name = "DEMO-004 frames, second batch".into();
+        lib.save_job(&second, Some(2)).unwrap();
+        assert_eq!(marked(&lib), vec![]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -1232,81 +1232,100 @@ fn fmt_time(secs: f64) -> String {
 /// or the Library window).
 pub const MENU_LIBRARY_PARTS: usize = 8;
 
+/// Add product's "From the library" part: the library's parts of the job's
+/// material and thickness to pick from, or why the Library can't be listed.
+pub(crate) fn library_parts_section(app: &mut App, ui: &mut egui::Ui) {
+    // Preprogrammed parts from this app's library (as Lantek's "Parts
+    // From Database": products with their own technology).
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("From the library").strong().color(th().text_strong));
+        ui.add(egui::TextEdit::singleline(&mut app.libui.part_search).hint_text("🔍 search").desired_width(150.0));
+    });
+    // Lantek lists products of the job's material and thickness
+    // (PK3); "all" drops both filters.
+    let job_mat = app.mat_thk(app.spec.material, app.spec.thickness);
+    ui.checkbox(&mut app.libui.part_all, RichText::new(format!("Every material — not only {job_mat}")).size(11.5));
+    ui.add_space(4.0);
+    let needle = app.libui.part_search.to_lowercase();
+    let (mat, thk) = if app.libui.part_all { (None, crate::library::THICKNESS_FILTER_MIN - 1.0) } else { (Some(app.spec.material), app.spec.thickness) };
+    let found: Vec<(u64, crate::nest::Part, bool, String, String)> = app
+        .libui
+        .products
+        .iter()
+        .filter(|(e, _)| crate::library::product_matches(e, mat, thk, &needle))
+        .take(MENU_LIBRARY_PARTS)
+        .map(|(e, p)| (e.id, p.clone(), e.tech, app.mat_thk(e.material, e.thickness), e.saved_note(&app.clock)))
+        .collect();
+    if let Some(e) = app.libui.error.clone() {
+        // Unreachable, not empty (LB11).
+        let (again, folder) = ui
+            .scope(|ui| {
+                ui.set_max_width(440.0);
+                crate::libui::unreachable_note(ui, &e)
+            })
+            .inner;
+        if again {
+            app.lib_retry();
+        }
+        if folder {
+            app.open_settings(crate::settings_ui::Section::Folders);
+            ui.close();
+        }
+    } else if app.libui.products.is_empty() {
+        ui.label(RichText::new("No parts in the library yet — set a part's technology, then \"Save to library\" in Part Properties.").size(11.5).color(th().text_dim));
+    } else if found.is_empty() {
+        ui.label(RichText::new("No library part matches.").size(11.5).color(th().text_dim));
+    }
+    let mut pick: Option<u64> = None;
+    egui::Grid::new("lib_gallery").spacing([6.0, 6.0]).show(ui, |ui| {
+        for (k, (id, part, tech, info, saved)) in found.iter().enumerate() {
+            let (r, cell) = ui.allocate_exact_size(Vec2::new(104.0, 104.0), Sense::click());
+            let hov = ui.ctx().animate_bool_with_time(cell.id.with("lg"), cell.hovered(), 0.1);
+            let p = ui.painter();
+            p.rect_filled(r, CornerRadius::same(8), lerp_color(th().hover, th().accent_soft, hov));
+            let area = Rect::from_min_max(r.min + Vec2::new(14.0, 10.0), Pos2::new(r.right() - 14.0, r.bottom() - 38.0));
+            let (bw, bh) = part.bbox();
+            let s = (area.width() / bw.max(1e-6) as f32).min(area.height() / bh.max(1e-6) as f32);
+            let o = area.center() + Vec2::new(-(bw as f32) * s / 2.0, bh as f32 * s / 2.0);
+            paint_part(p, part, |q| Pos2::new(o.x + q[0] as f32 * s, o.y - q[1] as f32 * s), part_color(part.color), Stroke::new(1.0, darker(part_color(part.color), 0.5)), lerp_color(th().hover, th().accent_soft, hov));
+            let name: String = if part.name.chars().count() > 14 { format!("{}…", part.name.chars().take(13).collect::<String>()) } else { part.name.clone() };
+            p.text(Pos2::new(r.center().x, r.bottom() - 25.0), Align2::CENTER_CENTER, name, FontId::proportional(11.5), th().text_strong);
+            p.text(Pos2::new(r.center().x, r.bottom() - 11.0), Align2::CENTER_CENTER, info, FontId::proportional(10.0), th().text_dim);
+            if *tech {
+                let b = Rect::from_min_size(Pos2::new(r.right() - 20.0, r.top() + 4.0), Vec2::new(16.0, 16.0));
+                p.rect_filled(b, CornerRadius::same(4), th().accent);
+                p.text(b.center(), Align2::CENTER_CENTER, "T", FontId::proportional(11.0), Color32::WHITE);
+            }
+            // Who last saved it, and when (LB6).
+            let saved = if saved.is_empty() { String::new() } else { format!("\n{saved}") };
+            if cell.on_hover_text(format!("{} — {info}{}{saved}", part.name, if *tech { " · with its technology" } else { "" })).clicked() {
+                pick = Some(*id);
+            }
+            if k % 4 == 3 {
+                ui.end_row();
+            }
+        }
+    });
+    let mut all = false;
+    if !app.libui.products.is_empty() && ui.button(format!("All {} library parts…", app.libui.products.len())).clicked() {
+        all = true;
+    }
+    if let Some(id) = pick {
+        app.add_library_product(id);
+        ui.close();
+    }
+    if all {
+        app.open_library_products();
+        ui.close();
+    }
+}
+
 pub(crate) fn add_part_menu(app: &mut App, resp: &egui::Response) {
     if resp.clicked() && !app.libui.loaded {
         app.lib_refresh();
     }
     egui::Popup::menu(resp).show(|ui| {
-        // Preprogrammed parts from this app's library (as Lantek's "Parts
-        // From Database": products with their own technology).
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("From the library").strong().color(th().text_strong));
-            ui.add(egui::TextEdit::singleline(&mut app.libui.part_search).hint_text("🔍 search").desired_width(150.0));
-        });
-        // Lantek lists products of the job's material and thickness
-        // (PK3); "all" drops both filters.
-        ui.checkbox(
-            &mut app.libui.part_all,
-            RichText::new(format!("Every material — not only {} {} mm", crate::cnc::MATERIALS.get(app.spec.material).copied().unwrap_or(""), app.spec.thickness)).size(11.5),
-        );
-        ui.add_space(4.0);
-        let needle = app.libui.part_search.to_lowercase();
-        let (mat, thk) = if app.libui.part_all { (None, crate::library::THICKNESS_FILTER_MIN - 1.0) } else { (Some(app.spec.material), app.spec.thickness) };
-        let found: Vec<(u64, crate::nest::Part, bool, String, String)> = app
-            .libui
-            .products
-            .iter()
-            .filter(|(e, _)| crate::library::product_matches(e, mat, thk, &needle))
-            .take(MENU_LIBRARY_PARTS)
-            .map(|(e, p)| (e.id, p.clone(), e.tech, format!("{} {} mm", crate::cnc::MATERIALS.get(e.material).copied().unwrap_or(""), e.thickness), e.saved_note(&app.clock)))
-            .collect();
-        if app.libui.products.is_empty() {
-            ui.label(RichText::new("No parts in the library yet — set a part's technology, then \"Save to library\" in Part Properties.").size(11.5).color(th().text_dim));
-        } else if found.is_empty() {
-            ui.label(RichText::new("No library part matches.").size(11.5).color(th().text_dim));
-        }
-        let mut pick: Option<u64> = None;
-        egui::Grid::new("lib_gallery").spacing([6.0, 6.0]).show(ui, |ui| {
-            for (k, (id, part, tech, info, saved)) in found.iter().enumerate() {
-                let (r, cell) = ui.allocate_exact_size(Vec2::new(104.0, 104.0), Sense::click());
-                let hov = ui.ctx().animate_bool_with_time(cell.id.with("lg"), cell.hovered(), 0.1);
-                let p = ui.painter();
-                p.rect_filled(r, CornerRadius::same(8), lerp_color(th().hover, th().accent_soft, hov));
-                let area = Rect::from_min_max(r.min + Vec2::new(14.0, 10.0), Pos2::new(r.right() - 14.0, r.bottom() - 38.0));
-                let (bw, bh) = part.bbox();
-                let s = (area.width() / bw.max(1e-6) as f32).min(area.height() / bh.max(1e-6) as f32);
-                let o = area.center() + Vec2::new(-(bw as f32) * s / 2.0, bh as f32 * s / 2.0);
-                paint_part(p, part, |q| Pos2::new(o.x + q[0] as f32 * s, o.y - q[1] as f32 * s), part_color(part.color), Stroke::new(1.0, darker(part_color(part.color), 0.5)), lerp_color(th().hover, th().accent_soft, hov));
-                let name: String = if part.name.chars().count() > 14 { format!("{}…", part.name.chars().take(13).collect::<String>()) } else { part.name.clone() };
-                p.text(Pos2::new(r.center().x, r.bottom() - 25.0), Align2::CENTER_CENTER, name, FontId::proportional(11.5), th().text_strong);
-                p.text(Pos2::new(r.center().x, r.bottom() - 11.0), Align2::CENTER_CENTER, info, FontId::proportional(10.0), th().text_dim);
-                if *tech {
-                    let b = Rect::from_min_size(Pos2::new(r.right() - 20.0, r.top() + 4.0), Vec2::new(16.0, 16.0));
-                    p.rect_filled(b, CornerRadius::same(4), th().accent);
-                    p.text(b.center(), Align2::CENTER_CENTER, "T", FontId::proportional(11.0), Color32::WHITE);
-                }
-                // Who last saved it, and when (LB6).
-                let saved = if saved.is_empty() { String::new() } else { format!("\n{saved}") };
-                if cell.on_hover_text(format!("{} — {info}{}{saved}", part.name, if *tech { " · with its technology" } else { "" })).clicked() {
-                    pick = Some(*id);
-                }
-                if k % 4 == 3 {
-                    ui.end_row();
-                }
-            }
-        });
-        let mut all = false;
-        if !app.libui.products.is_empty() && ui.button(format!("All {} library parts…", app.libui.products.len())).clicked() {
-            all = true;
-        }
-        if let Some(id) = pick {
-            app.add_library_product(id);
-            ui.close();
-        }
-        if all {
-            app.open_library_products();
-            ui.close();
-        }
+        library_parts_section(app, ui);
         ui.separator();
         ui.label(RichText::new("Blank shapes").strong().color(th().text_strong));
         ui.add_space(4.0);
@@ -1409,9 +1428,9 @@ impl App {
             format!(
                 "Drawing - {} ({} / {} / {:.4}) - [{}]",
                 self.parts[i].name,
-                self.spec.machine.label(),
+                self.machine_name(),
                 cnc::MATERIALS[self.spec.material].to_uppercase(),
-                self.spec.thickness,
+                self.spec.thickness / self.unit().factor(),
                 self.db_label()
             )
         } else if self.workspace == crate::Workspace::Jobs {
@@ -1716,7 +1735,7 @@ impl App {
             // What Nest all will nest in, in view before nesting.
             ui.vertical(|ui| {
                 ui.add_space(8.0);
-                let mat = format!("{} · {} mm  ▾", cnc::MATERIALS[self.spec.material.min(cnc::MATERIALS.len() - 1)], self.spec.thickness);
+                let mat = format!("{} · {}  ▾", cnc::MATERIALS[self.spec.material.min(cnc::MATERIALS.len() - 1)], self.unit().thickness(self.spec.thickness));
                 let resp = ui.add(egui::Button::new(RichText::new(mat).strong()).min_size(Vec2::new(120.0, 26.0))).on_hover_text("The job's material and thickness — click to change them");
                 // Change them in place; the rest of the sheet set-up is on the Sheet tab.
                 egui::Popup::from_toggle_button_response(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
@@ -1730,11 +1749,7 @@ impl App {
                     });
                     ui.add_space(4.0);
                     ui.label(RichText::new("Thickness").strong());
-                    ui.horizontal_wrapped(|ui| {
-                        for t in cnc::THICKNESSES {
-                            ui.selectable_value(&mut self.spec.thickness, t, format!("{t} mm"));
-                        }
-                    });
+                    crate::units::thickness_inline(ui, &mut self.spec.thickness, self.cfg.nesting.units);
                     ui.add_space(4.0);
                     ui.separator();
                     if ui.link("Sheet size, machine and spacing — Sheet tab").clicked() {
@@ -1743,7 +1758,7 @@ impl App {
                     self.after_material_edit(before);
                 });
                 ui.add_space(2.0);
-                ui.label(RichText::new(format!("{:.0} × {:.0} sheet", self.spec.w, self.spec.h)).size(11.5).color(th().text_dim));
+                ui.label(RichText::new(format!("{} sheet", self.unit().size(self.spec.w, self.spec.h, 0))).size(11.5).color(th().text_dim));
             });
         });
         ribbon_group(ui, "Edit", |ui| {
@@ -1835,7 +1850,7 @@ impl App {
 
     /// After the material or thickness was changed outside the Sheet tab:
     /// with parts nested, ask first (T4) as the Sheet tab does; else refresh.
-    fn after_material_edit(&mut self, before: crate::nest::SheetSpec) {
+    pub(crate) fn after_material_edit(&mut self, before: crate::nest::SheetSpec) {
         if self.spec.material == before.material && self.spec.thickness == before.thickness {
             return;
         }
@@ -1863,12 +1878,8 @@ impl App {
                     }
                 });
                 ui.end_row();
-                ui.label("Thickness");
-                egui::ComboBox::from_id_salt("thk").width(130.0).selected_text(format!("{} mm", self.spec.thickness)).show_ui(ui, |ui| {
-                    for t in cnc::THICKNESSES {
-                        cost_changed |= ui.selectable_value(&mut self.spec.thickness, t, format!("{t} mm")).changed();
-                    }
-                });
+                ui.label("Thickness").on_hover_text("Type it (0.25, 3/16, 10ga, 6mm…) or pick a common one with ▾");
+                cost_changed |= crate::units::thickness_box(ui, "thk", &mut self.spec.thickness, self.cfg.nesting.units);
                 ui.end_row();
             });
             // Which section of the machine file applies (MTL1–MTL6).
@@ -1888,12 +1899,14 @@ impl App {
             }
         });
         ribbon_group(ui, "Sheet", |ui| {
+            let u = self.cfg.nesting.units;
             egui::Grid::new("sheet_grid").num_columns(4).spacing([6.0, 5.0]).show(ui, |ui| {
                 ui.label("Size");
-                let cur = format!("{:.0} × {:.0}", self.spec.w, self.spec.h);
+                let cur = u.dims(self.spec.w, self.spec.h, 0);
                 egui::ComboBox::from_id_salt("sheet").width(110.0).selected_text(cur).show_ui(ui, |ui| {
-                    for (w, h) in [(2000.0, 1000.0), (2500.0, 1250.0), (3000.0, 1500.0), (4000.0, 2000.0), (6000.0, 2000.0)] {
-                        if ui.selectable_label(self.spec.w == w && self.spec.h == h, format!("{w:.0} × {h:.0}")).clicked() {
+                    for &(w, h) in u.sheet_presets() {
+                        let on = (self.spec.w - w).abs() < 1e-6 && (self.spec.h - h).abs() < 1e-6;
+                        if ui.selectable_label(on, u.size(w, h, 0)).clicked() {
                             self.spec.w = w;
                             self.spec.h = h;
                             changed = true;
@@ -1901,12 +1914,12 @@ impl App {
                     }
                 });
                 ui.label("Length X");
-                changed |= ui.add(egui::DragValue::new(&mut self.spec.w).range(200.0..=12000.0).clamp_existing_to_range(false).suffix(" mm")).changed();
+                changed |= crate::units::drag_len_in(ui, &mut self.spec.w, u, 200.0, 12000.0).changed();
                 ui.end_row();
                 ui.label("");
                 ui.label("");
                 ui.label("Width Y");
-                changed |= ui.add(egui::DragValue::new(&mut self.spec.h).range(200.0..=3000.0).clamp_existing_to_range(false).suffix(" mm")).changed();
+                changed |= crate::units::drag_len_in(ui, &mut self.spec.h, u, 200.0, 3000.0).changed();
                 ui.end_row();
             });
         });
@@ -1924,7 +1937,8 @@ impl App {
             // (MTL9): offered, never applied by themselves.
             let (g, m) = crate::engine::machine_spacing(&self.spec);
             if g.is_some() || m.is_some() {
-                let fmt = |v: Option<f64>| v.map_or("—".to_string(), |v| format!("{v}"));
+                let u = self.cfg.nesting.units;
+                let fmt = |v: Option<f64>| v.map_or("—".to_string(), |v| u.show(v));
                 let same = g.is_none_or(|g| (g - self.spec.gap).abs() < 1e-9) && m.is_none_or(|m| (m - self.spec.margin).abs() < 1e-9);
                 let txt = format!("Machine: gap {} · margin {}", fmt(g), fmt(m));
                 if same {
@@ -2003,7 +2017,8 @@ impl App {
             if ribbon_button(ui, Icon::Numbers, "Part\nnumbers", self.show_numbers, true).clicked() {
                 self.show_numbers = !self.show_numbers;
             }
-            if ribbon_button(ui, Icon::Grid, "Grid\n100 mm", self.show_grid, true).clicked() {
+            let step = self.unit().len(self.unit().grid_step(), 0);
+            if ribbon_button(ui, Icon::Grid, "Sheet\ngrid", self.show_grid, true).on_hover_text(format!("Lines across the sheet every {step}")).clicked() {
                 self.show_grid = !self.show_grid;
             }
         });
@@ -2125,6 +2140,7 @@ impl App {
         // Edit a draft so a geometry change on a part with technology can be held
         // back and questioned first (T1–T3).
         let mut draft = self.parts[i].clone();
+        let u = self.unit();
         egui::Grid::new("part_edit").num_columns(2).spacing([10.0, 5.0]).show(ui, |ui| {
             let p = &mut draft;
             ui.label("Reference");
@@ -2143,24 +2159,24 @@ impl App {
             if p.shape == Shape::Custom {
                 // Size comes from the drawing; it can't be stretched here.
                 ui.label("Size");
-                ui.label(RichText::new(format!("{:.1} × {:.1} mm", p.w, p.h)).strong());
+                ui.label(RichText::new(u.size(p.w, p.h, 1)).strong());
                 ui.end_row();
                 ui.label("");
                 ui.label(RichText::new("from the drawing").size(11.0).color(th().text_dim));
                 ui.end_row();
             } else if p.shape == Shape::Disc {
                 ui.label("Diameter");
-                if ui.add(egui::DragValue::new(&mut p.w).range(0.5..=3000.0).clamp_existing_to_range(false).speed(1.0).suffix(" mm")).changed() {
+                if crate::units::drag_len_in(ui, &mut p.w, u, 0.5, 3000.0).changed() {
                     p.h = p.w;
                     changed = true;
                 }
                 ui.end_row();
             } else {
                 ui.label("Width");
-                changed |= ui.add(egui::DragValue::new(&mut p.w).range(0.5..=6000.0).clamp_existing_to_range(false).speed(1.0).suffix(" mm")).changed();
+                changed |= crate::units::drag_len_in(ui, &mut p.w, u, 0.5, 6000.0).changed();
                 ui.end_row();
                 ui.label("Height");
-                changed |= ui.add(egui::DragValue::new(&mut p.h).range(0.5..=3000.0).clamp_existing_to_range(false).speed(1.0).suffix(" mm")).changed();
+                changed |= crate::units::drag_len_in(ui, &mut p.h, u, 0.5, 3000.0).changed();
                 ui.end_row();
             }
             ui.label("Quantity");
@@ -2214,19 +2230,19 @@ impl App {
             let names = crate::ct1::for_spec(&self.spec).qualities;
             egui::Grid::new("tech_edit").num_columns(2).spacing([10.0, 5.0]).show(ui, |ui| {
                 ui.label("Lead-in");
-                changed |= ui.add(egui::DragValue::new(&mut t.lead_in).range(0.0..=30.0).clamp_existing_to_range(false).speed(0.1).suffix(" mm")).changed();
+                changed |= crate::units::drag_len_in(ui, &mut t.lead_in, u, 0.0, 30.0).changed();
                 ui.end_row();
                 ui.label("Lead-out");
-                changed |= ui.add(egui::DragValue::new(&mut t.lead_out).range(0.0..=20.0).clamp_existing_to_range(false).speed(0.1).suffix(" mm")).changed();
+                changed |= crate::units::drag_len_in(ui, &mut t.lead_out, u, 0.0, 20.0).changed();
                 ui.end_row();
                 ui.label("Overlap").on_hover_text("Cut on past the start before the lead-out, so the contour closes cleanly");
-                changed |= ui.add(egui::DragValue::new(&mut t.overlap).range(0.0..=10.0).clamp_existing_to_range(false).speed(0.05).suffix(" mm")).changed();
+                changed |= crate::units::drag_len_in(ui, &mut t.overlap, u, 0.0, 10.0).changed();
                 ui.end_row();
                 ui.label("Micro-joints");
                 changed |= ui.add(egui::DragValue::new(&mut t.micro_joints).range(0..=12).clamp_existing_to_range(false)).changed();
                 ui.end_row();
                 ui.label("Joint width");
-                changed |= ui.add(egui::DragValue::new(&mut t.joint_width).range(0.1..=5.0).clamp_existing_to_range(false).speed(0.05).suffix(" mm")).changed();
+                changed |= crate::units::drag_len_in(ui, &mut t.joint_width, u, 0.1, 5.0).changed();
                 ui.end_row();
                 ui.label("Cut quality").on_hover_text("The machine's quality for every contour the size ranges don't set; Auto lets the machine's size bands decide, so small holes are cut slower");
                 let shown: egui::WidgetText = match t.quality {
@@ -2242,7 +2258,7 @@ impl App {
                 ui.end_row();
             });
         } else {
-            ui.label(RichText::new("Automatic: 5 mm lead-in, no micro-joints.").size(11.5).color(th().text_dim));
+            ui.label(RichText::new(format!("Automatic: {} lead-in, no micro-joints.", u.show(5.0))).size(11.5).color(th().text_dim));
         }
 
         if changed {
@@ -2268,9 +2284,12 @@ impl App {
         ui.add_space(2.0);
         ui.label(
             RichText::new(format!(
-                "Area {:.0} cm² · cut {:.0} mm · {} pierce(s) · {:.2} kg",
-                area / 100.0,
-                p.cut_length(),
+                "Area {} · cut {} · {} pierce(s) · {:.2} kg",
+                match u {
+                    crate::units::LenUnit::Mm => format!("{:.0} cm²", area / 100.0),
+                    crate::units::LenUnit::Inch => format!("{:.1} in²", area / (25.4 * 25.4)),
+                },
+                u.len(p.cut_length(), 0),
                 p.pierces(),
                 cnc::weight_kg(self.spec.material, area, self.spec.thickness)
             ))
@@ -2465,7 +2484,7 @@ impl App {
                         p.text(b.center(), Align2::CENTER_CENTER, "Dropping", FontId::proportional(10.5), Color32::WHITE);
                     }
                     let name = part.name.clone();
-                    let resp = resp.on_hover_text(format!("{} — {} pcs, {:.0}×{:.0} mm · click or drag onto the sheet to place · double-click to open", name, part.qty, w, h));
+                    let resp = resp.on_hover_text(format!("{} — {} pcs, {} · click or drag onto the sheet to place · double-click to open", name, part.qty, self.cfg.nesting.units.size(w, h, 0)));
                     if resp.clicked() {
                         pick = Some((i, false));
                     }
@@ -2539,7 +2558,9 @@ impl App {
         let mut clicked = None;
         egui::ScrollArea::vertical().id_salt("parts_scroll").show(ui, |ui| {
             egui::Grid::new("parts_grid").striped(true).num_columns(8).spacing([18.0, 3.0]).show(ui, |ui| {
-                for h in ["", "Reference", "Shape", "Size mm", "Quantity", "Nested", "Pending", "Rotation"] {
+                let u = self.cfg.nesting.units;
+                let size_head = format!("Size {}", u.suffix());
+                for h in ["", "Reference", "Shape", size_head.as_str(), "Quantity", "Nested", "Pending", "Rotation"] {
                     ui.label(RichText::new(h).strong());
                 }
                 ui.end_row();
@@ -2555,7 +2576,7 @@ impl App {
                     }
                     ui.label(p.shape.label());
                     let (w, h) = p.bbox();
-                    ui.label(format!("{:.0} × {:.0}", w, h));
+                    ui.label(u.dims(w, h, 0));
                     ui.label(format!("{}", p.qty));
                     let n = self.placed_of(i) as u32;
                     ui.label(format!("{n}"));
@@ -2653,10 +2674,11 @@ impl App {
         // The cursor position keeps its place on the right; the message on the
         // left gets what is left and is shortened with "…" (full text on hover).
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label("mm");
+            let u = self.unit();
+            ui.label(u.suffix()).on_hover_text("Lengths are shown in this unit — Settings → Nesting → Units");
             ui.separator();
             let (x, y) = match self.cursor_mm {
-                Some(p) => (format!("X: {:.2}", p[0]), format!("Y: {:.3}", p[1])),
+                Some(p) => (format!("X: {}", u.num_dp(p[0], 2)), format!("Y: {}", u.num_dp(p[1], 2))),
                 None => ("X: —".to_string(), "Y: —".to_string()),
             };
             ui.add_sized([110.0, 16.0], egui::Label::new(y));
@@ -2680,7 +2702,7 @@ impl App {
                 // part of the sheet up to where it is free, the remnant left out.
                 ui.label(format!("without remnant {rem:.1} %")).on_hover_text("Usage of the sheet up to Free X — the leftover beyond it (the remnant) not counted");
                 ui.add_space(8.0);
-                ui.label(format!("Free X {cut_x:.0} mm")).on_hover_text("Where the sheet is free from: everything right of this X is left over");
+                ui.label(format!("Free X {}", self.unit().len(cut_x, 0))).on_hover_text("Where the sheet is free from: everything right of this X is left over");
                 ui.add_space(12.0);
                 // The sheet's CNC program name, as the original shows it.
                 ui.label(format!("CNC: {}", self.cnc_name(self.cur_sheet + 1)));
@@ -2737,6 +2759,26 @@ pub fn menu_row(ui: &mut egui::Ui, icon: &str, label: &str, hint: &str) -> bool 
         ui.painter().text(r.right_center() - Vec2::new(10.0, 0.0), Align2::RIGHT_CENTER, hint, FontId::proportional(11.0), t.text_dim);
     }
     resp.clicked()
+}
+
+/// The text a frame drew (tests: what a window or list says).
+#[cfg(test)]
+pub fn shown_text(out: &egui::FullOutput) -> String {
+    fn walk(s: &egui::Shape, t: &mut String) {
+        match s {
+            egui::Shape::Text(x) => {
+                t.push_str(x.galley.text());
+                t.push('\n');
+            }
+            egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, t)),
+            _ => {}
+        }
+    }
+    let mut t = String::new();
+    for c in &out.shapes {
+        walk(&c.shape, &mut t);
+    }
+    t
 }
 
 #[cfg(test)]

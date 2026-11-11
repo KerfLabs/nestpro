@@ -15,12 +15,12 @@ is **`FEATURES.md`** at the top of the repo; keep both in step.
 | Original | Rebuild | Pri |
 |---|---|---|
 | Job Explorer, Product List, Product view, Sheet list, Sheet View | Have (Jobs screen) | |
-| Save jobs to disk / database (New, Connect, Information) | Have — `.snjob` files and the Library (jobs and products on disk, a folder several PCs can share: every change under one write lock, MECHANICS LB1–LB3; `library-check` tests a shared folder from several PCs at once, LB4; one job folder tree for every PC, with sub-folders, Cut and Paste, JX10–JX15); Lantek SQL database is read-only (Windows) | |
+| Save jobs to disk / database (New, Connect, Information) | Have — `.snjob` files and the Library (jobs and products on disk, a folder several PCs can share: every change under one write lock, MECHANICS LB1–LB3; `library-check` tests a shared folder from several PCs at once, LB4; one job folder tree for every PC, with sub-folders, Cut and Paste, JX10–JX15; a Library that can't be reached is said so everywhere, naming its folder, and is never made by itself: a new one is made in Settings after asking, LB11–LB13); Lantek SQL database is read-only (Windows) | |
 | Parts from database, Import parts (DXF/DWG/MEC/IGES/GEO…) | Have — DXF, DWG, Lantek MEC (encrypted too), IGES, PDF, ESSI, DSTV, GEO (`formats/`), picked in an import window with a preview of the drawing (IM10); still missing HPGL, ISO programs, ME10, EPS and others (JOB-26) | |
 | Rectangles (quick rectangular parts) | Part — built-in shapes | |
 | Sheets stock manager (sizes, quantities, remnants) | Have — Sheet stock window: list/criteria, quantities, priority, locking, create, what the open job uses; nesting takes sheets from stock (best sheet format / combination searches, time limit) | |
-| **Materials** and **Consumables** (gas, nozzles) | Part — fixed material list, each with its machine-file key (Settings → Materials → Machine table); the machine file's material × thickness sections pick leads, joints, joint gap and offer gap/margins (MECHANICS MTL1–MTL12); no gas/nozzle keys | ★★ |
-| Machine setup (several machines) | Part — several machines in Settings (post library, BLM, CT1), one active at a time | ★★ |
+| **Materials** and **Consumables** (gas, nozzles) | Part — fixed material list (any thickness typed, in mm or inches: MECHANICS TH1), each with its machine-file key (Settings → Materials → Machine table); the machine file's material × thickness sections pick leads, joints, joint gap and offer gap/margins (MECHANICS MTL1–MTL12); no gas/nozzle keys | ★★ |
+| Machine setup (several machines) | Part — several machines in Settings, each with what it does (laser, plasma, punch…) and its post (library, BLM, CT1); the Sheet tab picks the job's machine from them (MECHANICS MK1) | ★★ |
 | Kits From Database, Kit Explorer | Missing | ★★ |
 | Quotation (save quote, Quotation Jobs) | Missing | ★★ |
 | Element Search (search jobs by type, name, date, status) | Part — simple search | ★ |

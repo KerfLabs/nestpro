@@ -358,6 +358,14 @@ mod libtree_tests {
         dir
     }
 
+    /// A new, empty Library in a scratch folder: made once, as in Settings
+    /// (LB12).
+    fn library(tag: &str) -> PathBuf {
+        let dir = scratch(tag);
+        crate::library::create(&dir).unwrap();
+        dir
+    }
+
     /// One programming PC: `user` at a window on PC `name`, working on the
     /// Library in `dir`, going by `clock` (LB5).
     fn pc(dir: &Path, user: &str, name: &str, clock: &Clock) -> App {
@@ -378,7 +386,7 @@ mod libtree_tests {
 
     #[test]
     fn a_folder_made_renamed_nested_moved_or_deleted_on_one_pc_shows_on_another_after_a_refresh() {
-        let dir = scratch("two_pcs");
+        let dir = library("two_pcs");
         let clock = Clock::at(NOV_9_0920);
         let (mut pc1, mut pc2) = (pc(&dir, "sam", "PROG-1", &clock), pc(&dir, "kim", "PROG-2", &clock));
         let acme = folder(&mut pc1, TOP, "Acme");
@@ -404,7 +412,7 @@ mod libtree_tests {
 
     #[test]
     fn two_pcs_changing_folders_without_refreshing_never_lose_each_others_changes() {
-        let dir = scratch("stale");
+        let dir = library("stale");
         let clock = Clock::at(NOV_9_0920);
         let (mut pc1, mut pc2) = (pc(&dir, "sam", "PROG-1", &clock), pc(&dir, "kim", "PROG-2", &clock));
         // Both make a folder at the top at once, neither having seen the other's.
@@ -440,7 +448,7 @@ mod libtree_tests {
 
     #[test]
     fn deleting_a_folder_that_holds_a_job_is_refused_and_an_empty_folder_is_kept() {
-        let dir = scratch("delete");
+        let dir = library("delete");
         let clock = Clock::at(NOV_9_0920);
         let mut pc1 = pc(&dir, "sam", "PROG-1", &clock);
         let acme = folder(&mut pc1, TOP, "Acme");
@@ -466,7 +474,7 @@ mod libtree_tests {
 
     #[test]
     fn cut_and_paste_move_a_job_and_a_folder_never_goes_into_its_own_sub_folder() {
-        let dir = scratch("cut_paste");
+        let dir = library("cut_paste");
         let clock = Clock::at(NOV_9_0920);
         let mut pc1 = pc(&dir, "sam", "PROG-1", &clock);
         let acme = folder(&mut pc1, TOP, "Acme");
@@ -498,7 +506,7 @@ mod libtree_tests {
 
     #[test]
     fn a_job_saved_for_the_first_time_goes_into_its_folder_and_saving_again_never_moves_it() {
-        let dir = scratch("first_save");
+        let dir = library("first_save");
         let clock = Clock::at(NOV_9_0920);
         let mut pc1 = pc(&dir, "sam", "PROG-1", &clock);
         let acme = folder(&mut pc1, TOP, "Acme");
@@ -569,6 +577,78 @@ mod libtree_tests {
         assert!(pc1.lib_rename_folder(w12, "Week 12"));
         let pc2 = pc(&dir, "kim", "PROG-2", &clock);
         assert_eq!(pc2.library_outline(), ["Acme/", "Acme/DEMO-002", "Week 12/", "Week 12/DEMO-001", "Week 12/DEMO-003", "DEMO-004"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// JX16 with the tree (JX10): a name another job holds is refused
+    /// naming that job's folder as the tree shows it, after it was moved
+    /// there. Cut and Paste keep a job's name, so moving never trips the
+    /// check, even for jobs from before names were unique (JX17).
+    #[test]
+    fn a_taken_name_is_refused_naming_its_folder_in_the_tree_and_moving_never_trips_it() {
+        let dir = library("taken_name");
+        let clock = Clock::at(NOV_9_0920);
+        let (mut pc1, mut pc2) = (pc(&dir, "sam", "PROG-1", &clock), pc(&dir, "kim", "PROG-2", &clock));
+        let job = save(&mut pc1, 0, "DEMO-001 frames", "Acme");
+        let beta = folder(&mut pc1, TOP, "Beta");
+        let nov = folder(&mut pc1, beta, "2026-11");
+        pc1.lib_cut(LibItem::Job(job));
+        assert!(pc1.lib_paste(nov), "{}", pc1.status);
+        // PC 2 saves another job under that name, in other capitals: refused,
+        // naming where the job is now, not the folder name written on it.
+        pc2.lib_refresh();
+        pc2.open_job(1);
+        pc2.job_name = "demo-001 FRAMES".into();
+        pc2.save_job_to_library();
+        assert!(pc2.job_lib_id.is_none(), "saved under a taken name: {}", pc2.status);
+        assert!(pc2.status.contains("'DEMO-001 frames'") && pc2.status.contains("folder Beta/2026-11") && !pc2.status.contains("Acme"), "{}", pc2.status);
+        // A Library from before names were unique: another job shares the
+        // name. Both move freely.
+        let lib = pc1.library().unwrap();
+        let mut twin = lib.load_job(job).unwrap();
+        twin.name = "demo-001 FRAMES".into();
+        std::fs::write(lib.path(crate::library::Kind::Job, 9), serde_json::to_string(&twin).unwrap()).unwrap();
+        lib.rebuild_index().unwrap();
+        pc1.lib_refresh();
+        let acme = pc1.libui.tree.find("Acme").unwrap();
+        pc1.lib_cut(LibItem::Job(9));
+        assert!(pc1.lib_paste(acme), "{}", pc1.status);
+        pc1.lib_cut(LibItem::Job(job));
+        assert!(pc1.lib_paste(beta), "{}", pc1.status);
+        assert_eq!(pc1.library_outline(), ["Acme/", "Acme/demo-001 FRAMES", "Beta/", "Beta/2026-11/", "Beta/DEMO-001 frames"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// LB11 for folders: with the Library's folder gone (the share down),
+    /// New folder, Change name, Delete and Paste are refused naming the
+    /// Library's folder, as a save is, and nothing is made. Once it's back,
+    /// they work.
+    #[test]
+    fn folder_changes_refuse_a_library_that_cant_be_reached_and_make_nothing() {
+        let dir = library("unreachable");
+        let clock = Clock::at(NOV_9_0920);
+        let mut pc1 = pc(&dir, "sam", "PROG-1", &clock);
+        let acme = folder(&mut pc1, TOP, "Acme");
+        let job = save(&mut pc1, 0, "DEMO-001", "");
+        let away = dir.with_extension("away");
+        let _ = std::fs::remove_dir_all(&away);
+        std::fs::rename(&dir, &away).unwrap();
+        let said = format!("The Library on {} can't be reached", dir.display());
+        assert!(pc1.lib_new_folder(TOP).is_none());
+        assert!(pc1.status.contains(&said), "New folder: {}", pc1.status);
+        assert!(!pc1.lib_rename_folder(acme, "Acme Ltd"));
+        assert!(pc1.status.contains(&said), "Change name: {}", pc1.status);
+        assert!(!pc1.lib_delete_folder(acme));
+        assert!(pc1.status.contains(&said), "Delete: {}", pc1.status);
+        pc1.lib_cut(LibItem::Job(job));
+        assert!(!pc1.lib_paste(acme));
+        assert!(pc1.status.contains(&said), "Paste: {}", pc1.status);
+        assert!(!dir.exists(), "a folder change made the Library folder");
+        // The share is back: the job is still cut, and Paste moves it.
+        std::fs::rename(&away, &dir).unwrap();
+        pc1.lib_retry();
+        assert!(pc1.lib_paste(acme), "{}", pc1.status);
+        assert_eq!(pc1.library_outline(), ["Acme/", "Acme/DEMO-001"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

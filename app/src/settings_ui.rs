@@ -3,6 +3,14 @@
 //! editable and saved (settings.rs); Lantek Expert is only an import source.
 
 use crate::settings::{AppSettings, Connection, Machine, Output};
+
+/// A program format in a few words, for machine lists.
+pub fn output_name(o: Output) -> &'static str {
+    match o {
+        Output::Iso => "ISO G-code",
+        Output::BlmSiemens => "BLM / Siemens",
+    }
+}
 use crate::theme::th;
 use crate::ui_parts::*;
 use crate::App;
@@ -54,7 +62,7 @@ impl Section {
             Section::Shortcuts => "Keys and mouse",
             Section::Connections => "Databases to open",
             Section::Machines => "How programs are written",
-            Section::Nesting => "Units, part gap, moving parts",
+            Section::Nesting => "Units (mm / inch), part gap, moving parts",
             Section::Materials => "Names and codes in programs",
             Section::Folders => "Imports and exports",
             Section::Integrations => "Fulcrum and other systems",
@@ -462,7 +470,7 @@ impl App {
         use crate::units::{drag_len, LenUnit};
         ui.label(RichText::new("Nesting").size(18.0).strong().color(th().text_strong));
         ui.add_space(8.0);
-        card(ui, "Units", "Part gap, edge margin and moves on the Nesting screen are shown and typed in this unit. Inches can be typed as fractions (1/4, 1 1/2) or decimals; either unit can be typed with its suffix (6.35mm, 1/4in). DXF and DWG drawings that don't say their unit are read in it too.", |ui| {
+        card(ui, "Units", "Every length in the app is shown and typed in this unit: sheet sizes, thickness, part sizes, gap and margin, the cursor position, the stock list and remnants. Inches can be typed as fractions (1/4, 1 1/2), decimals or steel gauges (10ga); either unit can be typed with its suffix (6.35mm, 1/4in). DXF and DWG drawings that don't say their unit are read in it too. Machine programs keep the unit set for the machine (Machines & output).", |ui| {
             ui.horizontal(|ui| {
                 for u in [LenUnit::Mm, LenUnit::Inch] {
                     ui.radio_value(&mut self.cfg.nesting.units, u, u.label());
@@ -711,16 +719,13 @@ impl App {
                 self.import_lantek_ui();
             }
         });
-        ui.label(RichText::new("Each machine has its own program format. The one marked ● is used for Export CNC.").size(11.5).color(th().text_dim));
+        ui.label(RichText::new("Your shop's machines: what each one does and its program format. Pick the machine a job is cut on from the Sheet tab; the one marked ● is in use.").size(11.5).color(th().text_dim));
         ui.add_space(8.0);
         ui.horizontal_wrapped(|ui| {
             for k in 0..self.cfg.machines.len() {
                 let m = &self.cfg.machines[k];
-                let sub = match m.output {
-                    Output::Iso => "ISO G-code",
-                    Output::BlmSiemens => "BLM · Siemens 840D",
-                };
-                if tile(ui, self.setui.sel_machine == k, self.cfg.active_machine == k, &m.name, sub) {
+                let sub = format!("{} · {}", m.kind.process(), output_name(m.output));
+                if tile(ui, self.setui.sel_machine == k, self.cfg.active_machine == k, &m.name, &sub) {
                     self.setui.sel_machine = k;
                 }
             }
@@ -730,12 +735,23 @@ impl App {
         self.setui.sel_machine = k;
         let start = self.cfg.lantek_dir.clone();
         let mut delete = false;
+        let mut use_now = false;
+        let kind_before = self.cfg.machines[k].kind;
         card(ui, "Machine", "", |ui| {
             let can_delete = self.cfg.machines.len() > 1;
             let active = self.cfg.active_machine == k;
             let m = &mut self.cfg.machines[k];
             row(ui, "Name", |ui| {
                 ui.add(egui::TextEdit::singleline(&mut m.name).desired_width(280.0));
+            });
+            // What it does: picking the machine on the Sheet tab sets the job to it (MK1).
+            row(ui, "What it does", |ui| {
+                egui::ComboBox::from_id_salt("machine_kind").width(180.0).selected_text(m.kind.process()).show_ui(ui, |ui| {
+                    for k in crate::machine::MachineKind::ALL {
+                        ui.selectable_value(&mut m.kind, k, k.process()).on_hover_text(k.describe());
+                    }
+                });
+                ui.label(RichText::new(m.kind.describe()).size(11.5).color(th().text_dim));
             });
             row(ui, "Program format", |ui| {
                 for (o, title) in [(Output::Iso, "ISO G-code (.CNC) — most controls"), (Output::BlmSiemens, "BLM / Siemens 840D (.SPF set + XML, zipped)")] {
@@ -744,14 +760,20 @@ impl App {
             });
             ui.horizontal(|ui| {
                 ui.add_space(154.0);
-                if ui.add_enabled(!active, egui::Button::new(if active { "● In use" } else { "Use this machine" })).clicked() {
-                    self.cfg.active_machine = k;
+                if ui.add_enabled(!active, egui::Button::new(if active { "● In use" } else { "Use this machine" })).on_hover_text("Cut the open job on this machine (the same as picking it on the Sheet tab)").clicked() {
+                    use_now = true;
                 }
                 if can_delete && ui.button(RichText::new("Delete").color(th().warn_fg)).clicked() {
                     delete = true;
                 }
             });
         });
+        // In use = the open job is cut on it too (MK1).
+        if use_now || (self.cfg.active_machine == k && self.spec.machine != self.cfg.machines[k].kind && kind_before != self.cfg.machines[k].kind) {
+            self.cfg.active_machine = k;
+            self.spec.machine = self.cfg.machines[k].kind;
+            self.refresh();
+        }
         if delete {
             self.cfg.machines.remove(k);
             self.setui.sel_machine = k.saturating_sub(1);
@@ -897,7 +919,11 @@ impl App {
         });
     }
 
-    fn settings_folders(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn settings_folders(&mut self, ui: &mut egui::Ui) {
+        // Looked for once, as the lists do; Try again looks again (LB11).
+        if !self.libui.loaded {
+            self.lib_refresh();
+        }
         ui.label(RichText::new("Folders").size(18.0).strong().color(th().text_strong));
         ui.add_space(8.0);
         card(ui, "Export folder", "Where Export CNC writes programs (a sub-folder per job). Empty = Documents\\Sheet Nesting.", |ui| {
@@ -916,28 +942,41 @@ impl App {
         ui.add_space(10.0);
         card(ui, "Library folder", "This app's own product and job database. Put it on a shared drive and everyone in the shop sees the same products and jobs. Empty = Documents\\Sheet Nesting\\Library.", |ui| {
             row(ui, "Folder", |ui| {
-                let r = ui.add(egui::TextEdit::singleline(&mut self.cfg.library_dir).desired_width(380.0).hint_text("Documents\\Sheet Nesting\\Library"));
-                // Typed: it counts as another folder once the typing is done.
-                if r.gained_focus() {
-                    self.lib_dir_typed_from = Some(self.cfg.library_dir.clone());
+                // Typed: it's another folder once the typing is done, never
+                // while half a name is in the box (LB12).
+                let mut text = self.lib_dir_edit.clone().unwrap_or_else(|| self.cfg.library_dir.clone());
+                let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(380.0).hint_text("Documents\\Sheet Nesting\\Library"));
+                if r.has_focus() || r.changed() {
+                    self.lib_dir_edit = Some(text);
                 }
-                if r.lost_focus() && self.lib_dir_typed_from.take().is_some_and(|d| d != self.cfg.library_dir) {
-                    self.library_folder_changed();
-                }
-                if r.changed() {
-                    self.libui.loaded = false;
+                if r.lost_focus() {
+                    if let Some(t) = self.lib_dir_edit.take() {
+                        self.pick_library_folder(t);
+                    }
                 }
                 if ui.button("Browse…").clicked() {
                     if let Some(d) = rfd::FileDialog::new().pick_folder() {
-                        self.cfg.library_dir = d.display().to_string();
-                        self.library_folder_changed();
+                        self.pick_library_folder(d.display().to_string());
                     }
                 }
-                if !self.cfg.library_dir.is_empty() && ui.small_button("✖").clicked() {
-                    self.cfg.library_dir.clear();
-                    self.library_folder_changed();
+                if !self.cfg.library_dir.is_empty() && ui.small_button("✖").on_hover_text("Back to Documents\\Sheet Nesting\\Library on this PC").clicked() {
+                    self.pick_library_folder(String::new());
                 }
             });
+            // The Library can't be reached or isn't there (LB11, LB12).
+            if let Some(e) = self.libui.error.clone() {
+                ui.add_space(4.0);
+                ui.label(RichText::new(format!("⚠ {e}")).size(11.5).color(th().warn_fg));
+                ui.horizontal(|ui| {
+                    if ui.small_button("Try again").clicked() {
+                        self.lib_retry();
+                    }
+                    // Asked first, as for any folder that holds no Library.
+                    if ui.small_button("Make a new Library here…").on_hover_text("Only for a new Library: the shop's own may just be out of reach").clicked() {
+                        self.lib_new_ask = Some(self.cfg.library_dir.clone());
+                    }
+                });
+            }
         });
         ui.add_space(10.0);
         card(ui, "Lantek Expert install (optional)", "Only used to import its database connection, machines and post files.", |ui| {

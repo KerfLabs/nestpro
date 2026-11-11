@@ -2477,6 +2477,25 @@
    "source": "MECHANICS JX6"
   },
   {
+   "name": "job names unique across the Library, in every folder",
+   "group": "job explorer",
+   "value": true,
+   "source": "MECHANICS JX16"
+  },
+  {
+   "name": "job name compare ignores case and surrounding spaces",
+   "group": "job explorer",
+   "value": true,
+   "estimated": true,
+   "source": "MECHANICS JX17"
+  },
+  {
+   "name": "jobs already sharing a name keep saving under it, marked (rebuild)",
+   "group": "job explorer",
+   "value": true,
+   "source": "MECHANICS JX17"
+  },
+  {
    "name": "new folder default name",
    "group": "job explorer",
    "value": "New folder",
@@ -3779,10 +3798,10 @@
   "source": "MECHANICS HM11"
  },
  {
-  "name": "lengths on the nesting screen",
-  "group": "moving parts by hand",
-  "value": "mm or inches (fractions accepted)",
-  "source": "MECHANICS HM12"
+  "name": "lengths shown and typed",
+  "group": "units",
+  "value": "mm or inches (fractions and steel gauges accepted)",
+  "source": "MECHANICS UN1"
  },
  {
   "name": "new job part gap / edge margin",
@@ -5004,6 +5023,66 @@
   "source": "MECHANICS LB6; estimated"
  },
  {
+  "name": "the Library can't be reached when",
+  "group": "shared library",
+  "value": "its folder isn't there (the share, the server or the network is down, or the folder was moved or renamed)",
+  "source": "MECHANICS LB11; estimated"
+ },
+ {
+  "name": "Library can't be reached: message",
+  "group": "shared library",
+  "value": "The Library on <folder> can't be reached. Check the network or the server.",
+  "source": "MECHANICS LB11; estimated"
+ },
+ {
+  "name": "lists while the Library can't be reached",
+  "group": "shared library",
+  "value": "the message naming the folder, with Try again and the Library folder setting, never an empty list; looked at again only on Try again or another folder",
+  "source": "MECHANICS LB11; estimated"
+ },
+ {
+  "name": "folders made while the Library can't be reached",
+  "group": "shared library",
+  "value": "none: no Library folder, sub-folder or write lock is made in a folder that isn't there",
+  "source": "MECHANICS LB11; estimated"
+ },
+ {
+  "name": "Do All while the Library can't be reached",
+  "group": "shared library",
+  "value": "nests on the job's sheet as with no stock for the job, and says the stock wasn't used",
+  "source": "MECHANICS LB11; estimated"
+ },
+ {
+  "name": "a folder holds a Library when it has",
+  "group": "shared library",
+  "value": "index.json, or a Jobs, Products or Sheets folder",
+  "source": "MECHANICS LB12; estimated"
+ },
+ {
+  "name": "a new Library is made",
+  "group": "shared library",
+  "value": "only in Settings → Folders, after asking about a picked folder that holds no Library",
+  "source": "MECHANICS LB12; estimated"
+ },
+ {
+  "name": "picking a folder that holds a Library",
+  "group": "shared library",
+  "value": "used at once, without asking",
+  "source": "MECHANICS LB12; estimated"
+ },
+ {
+  "name": "open jobs while the Library can't be reached",
+  "group": "shared library",
+  "value": "stay open with their changes and their Library link; Save job still saves to a file on this PC",
+  "source": "MECHANICS LB13; estimated"
+ },
+ {
+  "name": "switches to another Library on its own",
+  "group": "shared library",
+  "value": false,
+  "source": "MECHANICS LB13; estimated"
+ },
+ {
   "name": "warn when a job is in use (fresh install)",
   "group": "jobs in use",
   "value": false,
@@ -5151,7 +5230,7 @@
  {
   "name": "job folder changes",
   "group": "job explorer",
-  "value": "made under the Library's write lock, the tree read again under it and written whole",
+  "value": "made under the Library's write lock, the tree read again under it and written whole; refused, naming the folder, while the Library can't be reached or holds no Library (LB11, LB12)",
   "source": "MECHANICS JX10; own design"
  },
  {
@@ -5210,6 +5289,78 @@
   "group": "job explorer",
   "value": false,
   "source": "MECHANICS JX15"
+ },
+ {
+  "name": "area unit with inches",
+  "group": "units",
+  "value": "ft²",
+  "source": "MECHANICS UN1"
+ },
+ {
+  "name": "extra decimals for inches",
+  "group": "units",
+  "value": 2,
+  "source": "MECHANICS UN1"
+ },
+ {
+  "name": "thinnest / thickest sheet (mm)",
+  "group": "units",
+  "value": [0.1, 300.0],
+  "source": "MECHANICS TH1"
+ },
+ {
+  "name": "steel gauges offered (gauge, inches)",
+  "group": "units",
+  "value": [[20, 0.0359], [18, 0.0478], [16, 0.0598], [14, 0.0747], [12, 0.1046], [11, 0.1196], [10, 0.1345]],
+  "source": "MECHANICS TH2"
+ },
+ {
+  "name": "inch fractions offered",
+  "group": "units",
+  "value": ["3/16", "1/4", "5/16", "3/8", "1/2", "5/8", "3/4", "1"],
+  "source": "MECHANICS TH2"
+ },
+ {
+  "name": "inch sheet sizes offered (in)",
+  "group": "units",
+  "value": [[96, 48], [120, 48], [120, 60], [144, 60], [144, 72], [240, 96]],
+  "source": "MECHANICS TH3"
+ },
+ {
+  "name": "sheet grid step with inches (in)",
+  "group": "units",
+  "value": 4,
+  "source": "MECHANICS TH3"
+ },
+ {
+  "name": "machine picker lists",
+  "group": "machines",
+  "value": "the shop's machines (Settings -> Machines & output)",
+  "source": "MECHANICS MK1"
+ },
+ {
+  "name": "process of an imported machine without one",
+  "group": "machines",
+  "value": "laser",
+  "source": "MECHANICS MK2"
+ },
+ {
+  "name": "stock row picked by any cell",
+  "group": "sheet stock",
+  "value": true,
+  "source": "MECHANICS ST16"
+ },
+ {
+  "name": "other material/thickness sheet offers to switch the job",
+  "group": "sheet stock",
+  "value": true,
+  "source": "MECHANICS ST16"
+ },
+ {
+  "name": "empty sheet from stock kept",
+  "group": "sheet stock",
+  "value": true,
+  "source": "MECHANICS ST17"
  }
 ]
 }

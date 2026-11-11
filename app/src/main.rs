@@ -262,8 +262,12 @@ pub struct App {
     /// whether the person chose to close anyway (jobtree.rs `quit_guard`).
     pub quit_ask: Option<Vec<String>>,
     pub quit_confirmed: bool,
-    /// The Library folder as it was when typing in its box began (settings).
-    pub lib_dir_typed_from: Option<String>,
+    /// The Library folder being typed in its box (settings), until the
+    /// typing is done.
+    pub lib_dir_edit: Option<String>,
+    /// A folder picked in Settings that holds no Library, while asking
+    /// whether to make a new Library there (LB12).
+    pub lib_new_ask: Option<String>,
     /// Original option: warn before changing a part that has technology.
     pub warn_tech: bool,
     /// "Use this answer for the rest" given in the technology question.
@@ -581,7 +585,8 @@ impl App {
             pending: None,
             quit_ask: None,
             quit_confirmed: false,
-            lib_dir_typed_from: None,
+            lib_dir_edit: None,
+            lib_new_ask: None,
             warn_tech: true,
             tech_answer_all: None,
             tech_all_box: false,
@@ -764,7 +769,7 @@ impl App {
         self.workspace = Workspace::Nesting;
         self.refresh();
         let extra = if notes.is_empty() { String::new() } else { format!(" ({})", notes.join("; ")) };
-        self.status = format!("Opened {name}: {n_parts} parts of {} kinds on a {:.0} × {:.0} sheet — move, rotate, add or remove parts, then export.{extra}", self.parts.len(), spec.w, spec.h);
+        self.status = format!("Opened {name}: {n_parts} parts of {} kinds on a {} sheet — move, rotate, add or remove parts, then export.{extra}", self.parts.len(), self.unit().size(spec.w, spec.h, 0));
     }
 
     /// Save the open job (Save as… asks where; Save reuses the last place).
@@ -902,12 +907,25 @@ impl App {
             rows.push((t, name, folder, Src::File(p), exists));
         }
         for e in self.libui.entries.iter().filter(|e| e.kind == library::Kind::Job) {
-            let what = format!("{} {} mm · {} sheet(s){}", cnc::MATERIALS[e.material.min(2)], e.thickness, e.count_b, if e.folder.is_empty() { String::new() } else { format!(" · {}", e.folder) });
+            // Its folder as the Library's folder tree shows it (JX10).
+            let folder = self.libui.tree.path(self.libui.tree.folder_of(e.id));
+            let what = format!("{} · {} sheet(s){}", self.mat_thk(e.material, e.thickness), e.count_b, if folder.is_empty() { String::new() } else { format!(" · {folder}") });
             rows.push((e.updated, e.name.clone(), what, Src::Lib(e.id), true));
         }
         rows.sort_by(|a, b| b.0.cmp(&a.0));
         ui.label(RichText::new("Recent jobs").strong().color(th().text_strong));
         ui.label(RichText::new("Job files and Library jobs together, newest first").size(11.5).color(th().text_dim));
+        // The Library's jobs are missing because it can't be reached (LB11).
+        if let Some(e) = self.libui.error.clone() {
+            let (again, folder) = crate::libui::unreachable_note(ui, &format!("Library jobs aren't listed: {e}"));
+            if again {
+                self.lib_retry();
+            }
+            if folder {
+                self.open_settings(crate::settings_ui::Section::Folders);
+                ui.close();
+            }
+        }
         if rows.is_empty() {
             ui.label(RichText::new("None yet — jobs you save or open show up here.").size(12.0).color(th().text_dim));
         }
@@ -1201,7 +1219,7 @@ impl App {
         }
         let mut lines = vec![
             names.join(" · "),
-            format!("Material {} {} mm — the job's; change it before nesting if it's wrong.", cnc::MATERIALS[self.spec.material.min(2)], self.spec.thickness),
+            format!("Material {} — the job's; change it before nesting if it's wrong.", self.mat_thk(self.spec.material, self.spec.thickness)),
         ];
         lines.extend(notes.iter().take(4).cloned());
         if added > 0 {
@@ -1325,14 +1343,15 @@ impl App {
                             ui.label(RichText::new("Sheets").color(th().text_dim));
                             ui.label(RichText::new(format!("all {n} sheet(s) of {}", self.job_name)).strong());
                             ui.end_row();
-                            // Both can be changed here, without leaving the review.
+                            // The machine can be changed here, without leaving the review;
+                            // its program format comes with it (MK1).
                             ui.label(RichText::new("Machine").color(th().text_dim));
                             if self.machine_combo(ui, 200.0) {
                                 self.refresh();
                             }
                             ui.end_row();
-                            ui.label(RichText::new("Post-processor").color(th().text_dim));
-                            self.output_combo(ui, 200.0);
+                            ui.label(RichText::new("Program format").color(th().text_dim));
+                            ui.label(self.cfg.machines.get(self.cfg.active_machine).map_or("—", |m| crate::settings_ui::output_name(m.output)));
                             ui.end_row();
                             ui.label(RichText::new("Files").color(th().text_dim));
                             ui.label(format!("{shown}{more}, and a parts report (.csv)"));
@@ -1440,12 +1459,10 @@ impl App {
                     }
                     Pending::NestedSpecChange { new_spec } => {
                         ui.label(format!(
-                            "{} sheet(s) are nested in {} {} mm. Changing to {} {} mm affects them.",
+                            "{} sheet(s) are nested in {}. Changing to {} affects them.",
                             self.result.sheets.len(),
-                            cnc::MATERIALS[self.spec.material],
-                            self.spec.thickness,
-                            cnc::MATERIALS[new_spec.material],
-                            new_spec.thickness
+                            self.mat_thk(self.spec.material, self.spec.thickness),
+                            self.mat_thk(new_spec.material, new_spec.thickness)
                         ));
                         ui.add_space(8.0);
                         ui.horizontal(|ui| {
@@ -1581,11 +1598,8 @@ impl App {
         nest::compact_contours(&self.parts, &mut self.result.sheets[ci], &cs);
         self.refresh();
         let after = self.sheet_usage(ci).2;
-        self.status = format!(
-            "Compacted — remnant now starts at X {:.0} mm ({:.0} mm gained).",
-            after,
-            (before - after).max(0.0)
-        );
+        let u = self.unit();
+        self.status = format!("Compacted — remnant now starts at X {} ({} gained).", u.len(after, 0), u.len((before - after).max(0.0), 0));
     }
 
     /// Place a copy of the selected parts in the first free spot (left first),
@@ -1726,6 +1740,12 @@ impl App {
         } else {
             format!("{} of {} parts nested — some are larger than the sheet.", placed, need)
         };
+        // From the stock, but the Library can't be reached: said so (LB11).
+        if !(self.group_nest && nest::part_groups(&self.parts).len() > 1) {
+            if let Some(n) = engine::stockflow::stock_unreachable_note(&self.stock_use()) {
+                self.status += &n;
+            }
+        }
         let mut lost = vec![];
         if lost_order > 0 {
             lost.push(format!("the hand-picked cut order on {lost_order} sheet(s)"));
@@ -1771,13 +1791,14 @@ impl App {
                 self.mark_cam_changed();
                 self.refresh();
                 let (usage, _, after) = self.sheet_usage(ci);
+                let u = self.unit();
                 self.status = format!(
-                    "Sheet {} nested again: its {} parts, usage {:.1} %, remnant from X {:.0} mm (was {:.0}). Other sheets unchanged.",
+                    "Sheet {} nested again: its {} parts, usage {:.1} %, remnant from X {} (was {}). Other sheets unchanged.",
                     ci + 1,
                     self.result.sheets[ci].len(),
                     usage,
-                    after,
-                    before
+                    u.len(after, 0),
+                    u.num_dp(before, 0)
                 );
             }
             Err(e) => self.status = e,
@@ -1957,12 +1978,30 @@ impl App {
     /// A sheet's size as shown in lists, with its stock reference if it has one.
     pub fn sheet_label(&self, i: usize, decimals: usize) -> String {
         let f = self.result.format(i, &self.spec);
-        let size = format!("{:.d$}x{:.d$}", f.w, f.h, d = decimals);
+        let k = self.unit().factor();
+        let size = format!("{:.d$}x{:.d$}", f.w / k, f.h / k, d = decimals);
         match (f.remnant, f.stock_ref.is_empty()) {
             (true, _) => format!("{size} remnant {}", f.stock_ref),
             (false, false) => format!("{size} [{}]", f.stock_ref),
             _ => size,
         }
+    }
+
+    /// The unit lengths are shown and typed in (Settings → Nesting → Units;
+    /// the app keeps mm inside).
+    pub fn unit(&self) -> units::LenUnit {
+        self.cfg.nesting.units
+    }
+
+    /// The name of the shop machine the job is cut on (Settings → Machines &
+    /// output, the one in use; MK1).
+    pub fn machine_name(&self) -> String {
+        self.cfg.machines.get(self.cfg.active_machine).map_or_else(|| self.spec.machine.label().to_string(), |m| m.name.clone())
+    }
+
+    /// "Mild steel 3 mm" / "Mild steel 0.1875 in (3/16")".
+    pub fn mat_thk(&self, material: usize, thickness: f64) -> String {
+        format!("{} {}", cnc::MATERIALS[material.min(cnc::MATERIALS.len() - 1)], self.unit().thickness(thickness))
     }
 
     /// Is a part inside sheet `i`: within its margin and, on a remnant, inside
@@ -2101,15 +2140,16 @@ impl App {
         }
         if self.show_grid {
             let grid = Color32::from_rgba_unmultiplied(255, 255, 255, 18);
-            let mut x = 100.0;
+            let step = self.unit().grid_step();
+            let mut x = step;
             while x < cspec.w {
                 painter.line_segment([to_s([x, 0.0]), to_s([x, cspec.h])], Stroke::new(1.0, grid));
-                x += 100.0;
+                x += step;
             }
-            let mut y = 100.0;
+            let mut y = step;
             while y < cspec.h {
                 painter.line_segment([to_s([0.0, y]), to_s([cspec.w, y])], Stroke::new(1.0, grid));
-                y += 100.0;
+                y += step;
             }
         }
         painter.rect_stroke(srect, CornerRadius::ZERO, Stroke::new(1.0, th().sheet_edge), egui::StrokeKind::Middle);
@@ -2128,15 +2168,15 @@ impl App {
                 let selected = self.is_selected(i);
                 let hovered = hover_w.is_some_and(|w| nest::placed_contains(&self.parts, pl, w));
                 if hovered {
+                    let u = self.cfg.nesting.units;
                     self.hover_name = Some(format!(
-                        "{}  ·  #{}\n{:.0} × {:.0} mm{}\nX {:.0}   Y {:.0}",
+                        "{}  ·  #{}\n{}{}\nX {}   Y {}",
                         part.name,
                         i + 1,
-                        pl.w,
-                        pl.h,
+                        u.size(pl.w, pl.h, 0),
                         &match (pl.angle(), pl.mirror) { (0, false) => String::new(), (a, m) => format!("  ·  turned {a}°{}", if m { ", mirrored" } else { "" }) },
-                        pl.x,
-                        pl.y
+                        u.num_dp(pl.x, 0),
+                        u.num_dp(pl.y, 0)
                     ));
                 }
                 // Parts drop onto the sheet one after another after a nest.
@@ -2380,7 +2420,7 @@ impl App {
             painter.text(
                 card.left_bottom() + Vec2::new(10.0, -8.0),
                 Align2::LEFT_BOTTOM,
-                format!("Free from X {cut_x:.0}"),
+                format!("Free from X {}", self.unit().num_dp(cut_x, 0)),
                 FontId::proportional(10.5),
                 Color32::from_rgb(161, 161, 170),
             );
@@ -2576,6 +2616,7 @@ impl eframe::App for App {
             self.open_settings(settings_ui::Section::General);
         }
         self.settings_window(&ctx);
+        self.new_library_window(&ctx);
         self.library_window(&ctx);
         self.import_window(&ctx);
         self.stock_window(&ctx);
@@ -3041,6 +3082,11 @@ fn main() -> eframe::Result {
                 app.libui.loaded = false;
                 app.dock.close(Workspace::Jobs, dock::PaneId::JobSummary);
             }
+            // --library-pick=<folder> (screenshots): that folder picked in
+            // Settings → Folders, asking first when it holds no Library (LB12).
+            if let Some(d) = std::env::args().find_map(|a| a.strip_prefix("--library-pick=").map(str::to_string)) {
+                app.pick_library_folder(d);
+            }
             if std::env::args().any(|a| a == "--lib-save") {
                 app.save_job_to_library();
                 app.add_products_to_library();
@@ -3129,6 +3175,14 @@ fn main() -> eframe::Result {
                     s.add_sheet(r, true)
                 });
                 app.stockui.sel = Some("DEMO-R1".into());
+            }
+            // --stock-other (screenshots): a made-up sheet of another material,
+            // picked, so the window offers to switch the job to it (ST16).
+            if std::env::args().any(|a| a == "--stock-other") {
+                let (m, t) = ((app.spec.material + 1) % cnc::MATERIALS.len(), app.spec.thickness);
+                let _ = stock::Stock::update(&app.library_dir(), |s| s.add_sheet(stock::Item::sheet("DEMO-SS1", m, t, 1486.0, 724.0, 1), true));
+                app.stockui.sel = Some("DEMO-SS1".into());
+                app.stockui.job_only = false;
             }
             if std::env::args().any(|a| a == "--stock") {
                 app.stockui.open = true;
