@@ -407,6 +407,12 @@ impl App {
     /// new.
     pub fn overwrite_theirs(&mut self) {
         let Some(c) = self.job_question() else { return };
+        // The Library gone since it asked: nothing in the job changes, and
+        // the question stays (LB13).
+        if let Err(e) = self.library() {
+            self.libui.question = Some(SaveQuestion::Job(c));
+            return self.library_save_unreachable(e);
+        }
         self.lib_read.revision = c.revision;
         crate::engine::stockflow::forget_booking(&mut self.result.formats, &mut self.held);
         self.libui.overwrite = Some(c.record());
@@ -613,7 +619,12 @@ impl App {
                 p.color = self.color_seq_next();
                 let name = p.name.clone();
                 // Saved back later, it goes over that part as read here (LB7).
-                self.lib_read.parts.insert(name.clone(), Record { id, revision: pf.revision });
+                // A part of that name already in the job keeps what it read:
+                // taken as read now, saving it would go over a newer save
+                // unasked.
+                if !self.parts.iter().any(|q| q.name == name) {
+                    self.lib_read.parts.insert(name.clone(), Record { id, revision: pf.revision });
+                }
                 self.parts.push(p);
                 self.sel_part = Some(self.parts.len() - 1);
                 self.stale = true;
@@ -1425,6 +1436,84 @@ mod libui_tests {
         let lib = a.library().unwrap();
         let e = lib.entries().into_iter().find(|e| e.kind == Kind::Product && e.name == name)?;
         Some((lib.load_product(e.id).unwrap().part.w, e.saved_note(&a.clock)))
+    }
+
+    /// LB7: a library part added to a job a second time, after someone saved
+    /// it again, leaves the first one as it read it: saving that one asks,
+    /// and their save stays.
+    #[test]
+    fn a_library_part_added_twice_keeps_what_the_first_one_read() {
+        let dir = new_library("part_twice");
+        let clock = Clock::at(NOV_9_0920);
+        let mut prog1 = window(&dir, "sam", "PROG-1", &clock);
+        let mut prog2 = window(&dir, "kim", "PROG-2", &clock);
+        prog1.open_job(0);
+        prog1.parts[0].name = "DEMO-P1".into();
+        prog1.save_part_to_library(0);
+        let id = prog1.library().unwrap().find_product("DEMO-P1").unwrap();
+        prog2.open_job(0);
+        prog2.add_library_product(id);
+        let first = prog2.parts.len() - 1;
+        clock.advance(Duration::from_secs(10 * 60));
+        prog1.parts[0].w += 10.0;
+        prog1.save_part_to_library(0);
+        let theirs = library_part(&prog1, "DEMO-P1");
+        prog2.add_library_product(id);
+        prog2.save_part_to_library(first);
+        assert!(matches!(&prog2.libui.question, Some(SaveQuestion::Part { part, .. }) if *part == first), "{}", prog2.status);
+        assert_eq!(library_part(&prog1, "DEMO-P1"), theirs);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// LB7: a job saved to a file and opened again still knows the library
+    /// parts it read: saving one back goes over it without asking.
+    #[test]
+    fn a_job_file_remembers_the_library_parts_it_read() {
+        let dir = new_library("part_in_file");
+        let clock = Clock::at(NOV_9_0920);
+        let mut prog1 = window(&dir, "sam", "PROG-1", &clock);
+        let mut prog2 = window(&dir, "kim", "PROG-2", &clock);
+        prog1.open_job(0);
+        prog1.parts[0].name = "DEMO-P1".into();
+        prog1.save_part_to_library(0);
+        let id = prog1.library().unwrap().find_product("DEMO-P1").unwrap();
+        prog2.open_job(0);
+        prog2.add_library_product(id);
+        let path = dir.join("DEMO-8.snjob");
+        prog2.save_job_to(&path);
+        prog2.open_job_file(&path);
+        let mine = prog2.parts.iter().position(|p| p.name == "DEMO-P1").unwrap();
+        prog2.parts[mine].w += 50.0;
+        prog2.save_part_to_library(mine);
+        assert!(prog2.libui.question.is_none(), "{}", prog2.status);
+        assert_eq!(library_part(&prog1, "DEMO-P1").map(|t| t.0), Some(prog2.parts[mine].w));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// LB13: Overwrite answered once the Library can't be reached changes
+    /// nothing in the job, and the question stays.
+    #[test]
+    fn overwrite_once_the_library_cant_be_reached_changes_nothing() {
+        let dir = new_library("overwrite_gone");
+        let clock = Clock::at(NOV_9_0920);
+        let mut prog1 = demo7(&dir, &clock);
+        let id = prog1.job_lib_id.unwrap();
+        let mut prog2 = stock_window(&dir, "kim", "PROG-2", &clock);
+        prog2.open_library_job(id);
+        clock.advance(Duration::from_secs(60));
+        prog1.parts[0].qty += 1;
+        prog1.save_job_to_library();
+        prog2.parts[0].qty += 2;
+        prog2.save_job_to_library();
+        assert!(matches!(prog2.libui.question, Some(SaveQuestion::Job(_))), "{}", prog2.status);
+        let job = serde_json::to_string(&prog2.current_jobfile()).unwrap();
+        let away = dir.with_extension("away");
+        std::fs::rename(&dir, &away).unwrap();
+        prog2.overwrite_theirs();
+        assert!(prog2.status.contains("can't be reached"), "{}", prog2.status);
+        assert!(matches!(prog2.libui.question, Some(SaveQuestion::Job(_))), "the question went: {}", prog2.status);
+        assert_eq!(serde_json::to_string(&prog2.current_jobfile()).unwrap(), job, "the refused Overwrite changed the job");
+        let _ = std::fs::remove_dir_all(&away);
     }
 
     /// LB7, LB9: PROG-1 and PROG-2 added library part DEMO-P1 to their jobs;

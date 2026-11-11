@@ -2432,6 +2432,23 @@ fn agents_job_folders_are_refused_naming_the_folder_while_the_library_cant_be_re
 }
 
 #[test]
+fn an_agents_copy_of_a_library_job_goes_into_its_folder() {
+    // LB9, LB10, JX15: save-job copy=true files the copy next to the job it
+    // was copied from, not by the job's folder name.
+    let d = dir("agent_copy_folder");
+    let mut s = Session::new(stock_ctx(&d));
+    let jp = d.join("frames.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"name": "DEMO-001", "week": "W12"}));
+    call(&mut s, "library", None, json!({"mode": "save-job"}));
+    call(&mut s, "job-folders", None, json!({"mode": "new", "name": "Acme"}));
+    call(&mut s, "job-folders", None, json!({"mode": "new", "folder": "Acme", "name": "2026-11"}));
+    call(&mut s, "job-folders", None, json!({"mode": "move", "saved_job": "DEMO-001", "to": "Acme/2026-11"}));
+    call(&mut s, "library", None, json!({"mode": "save-job", "copy": true}));
+    let l = call(&mut s, "job-folders", None, json!({"mode": "list"}));
+    assert_eq!(l["data"]["outline"], json!(["Acme/", "Acme/2026-11/", "Acme/2026-11/DEMO-001", "Acme/2026-11/DEMO-001 (1)", "W12/"]), "{l}");
+}
+
+#[test]
 fn agents_make_rename_move_and_delete_job_folders_and_are_told_what_to_do_instead() {
     let d = dir("job_folders");
     let ctx = stock_ctx(&d);

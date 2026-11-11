@@ -1772,8 +1772,11 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                         _ => return Err("library add needs 'id' or 'name'".into()),
                     };
                     let pf = lib.load_product(id)?;
-                    // Saved back, it goes over that part as read here (LB7).
-                    job.library_parts.insert(pf.part.name.clone(), crate::library::Record { id, revision: pf.revision });
+                    // Saved back, it goes over that part as read here (LB7). A
+                    // part of that name already in the job keeps what it read.
+                    if !job.parts.iter().any(|q| q.name == pf.part.name) {
+                        job.library_parts.insert(pf.part.name.clone(), crate::library::Record { id, revision: pf.revision });
+                    }
                     let mut p = pf.part;
                     p.color = next_color(&job.parts);
                     if let Some(q) = a.int("qty")? {
@@ -1833,7 +1836,10 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                     // or, as a copy, a new job under a free name that holds
                     // none of the original's stock (LB9).
                     let copy = a.bool("copy")?.unwrap_or(false);
-                    if copy && job.library.is_some() {
+                    let mut folder = None;
+                    if let Some(from) = job.library.filter(|_| copy) {
+                        // Filed in the folder of the job it was copied from (LB9, JX15).
+                        folder = crate::folders::load(&lib, crate::library::Kind::Job).ok().map(|t| t.folder_of(from.id));
                         job.name = lib.free_name(crate::library::Kind::Job, &job.name, |_| false);
                         job.library = None;
                         stockflow::forget_booking(&mut job.formats, &mut job.held);
@@ -1847,7 +1853,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                     // A name another job in the Library holds is refused (JX16);
                     // checked again under the write lock as it's saved.
                     lib.check_job_name(&job.name, to.id()).map_err(|e| format!("{e} (rename name=…), then save-job again. Nothing was saved"))?;
-                    match lib.save_job(job, to) {
+                    match lib.save_job_in(job, to, folder) {
                         Ok(rec) => {
                             job.library = Some(rec);
                             let mut m = if to == SaveTo::New { format!("Saved job '{}' into the library as record {}.", job.name, rec.id) } else { format!("Saved job '{}' over its library record {}.", job.name, rec.id) };
