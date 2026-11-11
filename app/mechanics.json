@@ -5004,6 +5004,66 @@
   "source": "MECHANICS LB6; estimated"
  },
  {
+  "name": "the Library can't be reached when",
+  "group": "shared library",
+  "value": "its folder isn't there (the share, the server or the network is down, or the folder was moved or renamed)",
+  "source": "MECHANICS LB11; estimated"
+ },
+ {
+  "name": "Library can't be reached: message",
+  "group": "shared library",
+  "value": "The Library on <folder> can't be reached. Check the network or the server.",
+  "source": "MECHANICS LB11; estimated"
+ },
+ {
+  "name": "lists while the Library can't be reached",
+  "group": "shared library",
+  "value": "the message naming the folder, with Try again and the Library folder setting, never an empty list; looked at again only on Try again or another folder",
+  "source": "MECHANICS LB11; estimated"
+ },
+ {
+  "name": "folders made while the Library can't be reached",
+  "group": "shared library",
+  "value": "none: no Library folder, sub-folder or write lock is made in a folder that isn't there",
+  "source": "MECHANICS LB11; estimated"
+ },
+ {
+  "name": "Do All while the Library can't be reached",
+  "group": "shared library",
+  "value": "nests on the job's sheet as with no stock for the job, and says the stock wasn't used",
+  "source": "MECHANICS LB11; estimated"
+ },
+ {
+  "name": "a folder holds a Library when it has",
+  "group": "shared library",
+  "value": "index.json, or a Jobs, Products or Sheets folder",
+  "source": "MECHANICS LB12; estimated"
+ },
+ {
+  "name": "a new Library is made",
+  "group": "shared library",
+  "value": "only in Settings → Folders, after asking about a picked folder that holds no Library",
+  "source": "MECHANICS LB12; estimated"
+ },
+ {
+  "name": "picking a folder that holds a Library",
+  "group": "shared library",
+  "value": "used at once, without asking",
+  "source": "MECHANICS LB12; estimated"
+ },
+ {
+  "name": "open jobs while the Library can't be reached",
+  "group": "shared library",
+  "value": "stay open with their changes and their Library link; Save job still saves to a file on this PC",
+  "source": "MECHANICS LB13; estimated"
+ },
+ {
+  "name": "switches to another Library on its own",
+  "group": "shared library",
+  "value": false,
+  "source": "MECHANICS LB13; estimated"
+ },
+ {
   "name": "warn when a job is in use (fresh install)",
   "group": "jobs in use",
   "value": false,
