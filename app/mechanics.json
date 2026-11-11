@@ -474,6 +474,76 @@
    "estimated": true
   },
   {
+   "name": "setting a part's cut order on the part screen",
+   "group": "part cut order",
+   "value": ["Machining → Contours → Manual Contours: click, sweep or box", "All Marks", "All Cut", "All Contours of one Quality"],
+   "source": "CO11",
+   "estimated": true
+  },
+  {
+   "name": "a sweep of a part's contours while picking the cut order",
+   "group": "part cut order",
+   "value": "adds each cut or marked contour in the order the pointer reaches it, each once, as one command when the button is let go; an outline passed before another contour is left out",
+   "source": "CO11",
+   "estimated": true
+  },
+  {
+   "name": "what picking a part's cut order sets",
+   "group": "part cut order",
+   "value": "the order only, never where a cut starts",
+   "source": "CO11",
+   "estimated": true
+  },
+  {
+   "name": "Ctrl+Z after a cut-order command on the part screen",
+   "group": "part cut order",
+   "value": "takes back that one command (a click, sweep, box or bulk command)",
+   "source": "CO11",
+   "estimated": true
+  },
+  {
+   "name": "Machine part (Automatic) on the part screen",
+   "group": "part cut order",
+   "value": "clears the part's cut order set by hand",
+   "source": "CO11",
+   "estimated": true
+  },
+  {
+   "name": "a box while picking a part's cut order",
+   "group": "part cut order",
+   "value": "adds the cut and marked contours wholly inside it, in the automatic order among themselves",
+   "source": "CO12",
+   "estimated": true
+  },
+  {
+   "name": "where the part screen numbers a contour of the cut order",
+   "group": "part cut order",
+   "value": "beside where it starts: a cut contour at its pierce, a mark at its first point",
+   "source": "CO13",
+   "estimated": true
+  },
+  {
+   "name": "rapids on the part screen",
+   "group": "part cut order",
+   "value": "dashed, from where one contour ends to where the next starts",
+   "source": "CO13",
+   "estimated": true
+  },
+  {
+   "name": "cut order numbers and rapids set by hand, part screen",
+   "group": "part cut order",
+   "value": "#22d3ee, solid",
+   "source": "CO13",
+   "estimated": true
+  },
+  {
+   "name": "automatic cut order numbers and rapids, part screen",
+   "group": "part cut order",
+   "value": "#8c909c, grey",
+   "source": "CO13",
+   "estimated": true
+  },
+  {
    "name": "import preview: cut technology panel",
    "group": "drawing import",
    "value": "the part's cut technology panel (CS6, CS7) on the part about to be imported, with the drawing's layer rows above its rows",

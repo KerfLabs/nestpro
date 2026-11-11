@@ -2523,7 +2523,8 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
     }
 }
 
-/// Every ribbon command of the GUI, as "Ribbon group/Button label", and what
+/// Every ribbon command of the GUI, as "Ribbon group/Button label" (a
+/// command in a button's menu as "Ribbon group/Item label"), and what
 /// does the same for an agent: an operation name, or `view:` (only changes
 /// what the screen shows), `gui:` (a window or picker an agent doesn't need,
 /// with what to use instead), or `todo: [ID]` (not yet reachable by an agent;
@@ -2631,11 +2632,11 @@ pub const GUI_MAP: &[(&str, &str)] = &[
     ("Measure/Orthogonal", "view:"),
     ("Macros/Macros", "todo: [NST-7] macros (greyed out in the app too)"),
     ("Help/Coming\nsoon", "view: list of unbuilt commands"),
-    ("Machining/Machine\npart", "part-info"),
+    ("Machining/Machine\npart", "part-cut-order"),
     ("Machining/Clear\nmachining", "view: the part's machining is only shown or hidden"),
     ("Machining/Clear cut\norder", "view: the hand-picked order is cleared and the path hidden"),
     ("Standard shapes/Recognise\nshapes", "part-info"),
-    ("Contours/Contours", "part-info"),
+    ("Contours/Contours", "part-cut-order"),
     ("Contours/Cycles", "todo: [MAC-11] punch/milling cycles (greyed out in the app too)"),
     ("Settings/Options", "todo: [MAC-1] the Feed rates dialog and postprocessor words (greyed out in the app too); the speeds themselves come from the machine's files: machine-tech shows them"),
     ("Compensation/Kerf", "compensation"),
@@ -2654,6 +2655,12 @@ pub const GUI_MAP: &[(&str, &str)] = &[
     ("Utilities/Contours", "todo: [DRW-4] contour utilities (greyed out in the app too)"),
     ("Utilities/Compare", "todo: [DRW-4] compare parts (greyed out in the app too)"),
     ("Utilities/Lifting", "todo: [DRW-4] lifting (greyed out in the app too)"),
+    ("Contours/Manual Contours", "part-cut-order"),
+    ("Contours/Automatic Contours", "part-info"),
+    ("Contours/Parts", "part-info"),
+    ("Contours/All Marks", "part-cut-order"),
+    ("Contours/All Cut", "part-cut-order"),
+    ("Contours/All Contours of one Quality", "part-cut-order"),
 ];
 
 #[cfg(test)]
@@ -2674,7 +2681,7 @@ mod parity {
                 if let Some(g) = quoted_after(line, "ribbon_group(ui, ") {
                     group = g;
                 }
-                for call in ["ribbon_button(ui, Icon::", "ribbon_button_ex(ui, Icon::", "dropdown(ui, Icon::", "ribbon_small(ui, Icon::"] {
+                for call in ["ribbon_button(ui, Icon::", "ribbon_button_ex(ui, Icon::", "dropdown(ui, Icon::", "ribbon_small(ui, Icon::", "menu_item(ui, Icon::"] {
                     if let Some(rest) = line.split_once(call).map(|x| x.1) {
                         if let Some(label) = rest.split_once(", \"").and_then(|(_, l)| l.split_once('"')).map(|x| x.0.replace("\\n", "\n")) {
                             out.push((format!("{group}/{label}"), file.clone()));

@@ -6,6 +6,7 @@
 //! See MECHANICS.md "Opening a part (Drawing module)".
 
 use crate::nest::{self, ElemKind, Part, TextKind, P};
+use crate::orderpick::ContoursItem;
 use crate::theme::th;
 use crate::ui_parts::*;
 use crate::{cnc, App, Tab, Workspace};
@@ -153,7 +154,7 @@ pub const MISSING: &[(&str, &str, &[&str])] = &[
     ("Technology", "Punch Technology", &["Punches, nibbling, shear (punch machines)"]),
     ("Technology", "Texts", &["Written text", "QR codes", "Templates", "Vectorize text"]),
     ("Machining", "Machining", &["Initialize", "Postprocess", "Rapids (dry run)", "Goto"]),
-    ("Machining", "Contours", &["Manual Contours (in the drawing)", "All Drill Cycles", "All Marks", "All Contours of one Quality", "Automatic Cycles", "Flying cut in holes", "Manual / automatic / semi-automatic hole destruction", "Hatch pattern machining"]),
+    ("Machining", "Contours", &["All Drill Cycles", "Automatic Cycles", "Flying cut in holes", "Manual / automatic / semi-automatic hole destruction", "Hatch pattern machining"]),
     ("Machining", "Cycles", &["Simple, circular, linear, grid and irregular cycles", "Milling pockets and nibbling"]),
     ("Machining", "Modify", &["Order machining", "Micro-joints at the end of the contour", "Regenerate", "Modify lead-in/outs", "Avoid holes already cut", "Continuous cut", "Copy / transform machining", "Modify compensation"]),
     ("Machining", "Options", &["Optimize", "Speed rates", "Postprocessor words", "Contour attributes"]),
@@ -169,7 +170,7 @@ pub const MISSING: &[(&str, &str, &[&str])] = &[
 pub const BUILT: &[(&str, &str)] = &[
     ("Home", "Back/previous/next part, Access to points (picked, end, mid, centre, near), Verify Part, Time and cost, View Geometry, Distance and Angle, Angle between three points, Orthogonal"),
     ("Technology", "Lead-ins (4 types, keypad position, on element), micro-joints (gap, leads, corner; edit leads), loops, cut quality, marking / special / note texts (curved), apply to selected or all parts"),
-    ("Machining", "Automatic, Delete instructions, Contours (Automatic, Parts, All Cut), CN and system (kerf) compensation, Current status, Verify the Machining"),
+    ("Machining", "Automatic, Delete instructions, Contours (Manual Contours by click, box or sweep, Automatic, Parts, All Marks, All Cut, All Contours of one Quality), cut order numbers and rapids, CN and system (kerf) compensation, Current status, Verify the Machining"),
     ("View", "Axis, Color Display, Machining Window, Restore Panels, Full Screen, Show Parts, Zoom All / Window / Previous / In / Out"),
     ("Simulation", "Beginning, Previous, Run/Pause, Next, End, Stop"),
     ("Notes", "Automatic / Delete dimension notes, Texts, Modify text, Text and Dimensions"),
@@ -733,13 +734,16 @@ impl App {
 
     fn ribbon_draw_machining(&mut self, ui: &mut egui::Ui) {
         ribbon_group(ui, "Machining", |ui| {
-            if ribbon_button_ex(ui, Icon::Toolpath, "Machine\npart", self.dv.machining, true, true).on_hover_text("Machine the part automatically: cut order, pierces, leads").clicked() {
-                self.dv.machining = true;
-                self.status = "Part machined automatically (holes first, then the outside).".into();
+            if ribbon_button_ex(ui, Icon::Toolpath, "Machine\npart", self.dv.machining, true, true)
+                .on_hover_text("Machine the part automatically: pierces and leads, and every contour in the automatic order (a cut order set by hand is cleared; Ctrl+Z brings it back)")
+                .clicked()
+            {
+                self.machine_part();
             }
             if ribbon_button(ui, Icon::Remove, "Clear\nmachining", false, self.dv.machining).clicked() {
                 self.dv.machining = false;
                 self.dv.sim = None;
+                self.order_pick.on = None;
                 self.status = "Machining deleted — Automatic machines the part again.".into();
             }
         });
@@ -760,34 +764,79 @@ impl App {
             }
         });
         ribbon_group(ui, "Contours", |ui| {
-            let r = dropdown(ui, Icon::Contours, "Contours", true);
-            egui::Popup::menu(&r).show(|ui| {
+            let r = dropdown(ui, Icon::Contours, "Contours", true).on_hover_text("The part's cut order: set it by hand, or cut the contours in the automatic order");
+            // The items, with their hover cards (CO11). `live` is the real
+            // menu; screenshots show a copy that stays open (--order-menu).
+            let m = self.contours_menu();
+            let menu = |ui: &mut egui::Ui, live: bool| -> Option<ContoursItem> {
+                use crate::orderpick::ContoursItem as C;
+                let mut pick = None;
+                let why = m.why_not.as_deref();
+                let w = 270.0;
                 ui.label(RichText::new("Contours").strong().color(th().text_strong));
-                for (name, on) in [
-                    ("Manual Contours", false),
-                    ("Automatic Contours", true),
-                    ("Parts", true),
-                    ("All Drill Cycles", false),
-                    ("All Marks", false),
-                    ("All Cut", true),
-                    ("All Contours of one Quality", false),
-                    ("Automatic Cycles", false),
-                    ("Flying cut in holes", false),
-                    ("Manual hole destruction", false),
-                    ("Automatic hole destruction", false),
-                    ("Semi-automatic hole destruction", false),
-                    ("Hatch pattern machining", false),
-                ] {
-                    if on {
-                        if ui.button(name).clicked() {
-                            self.dv.machining = true;
-                            self.status = format!("{name}: every contour machined in the automatic order.");
-                        }
-                    } else if self.dv.show_unbuilt {
+                // An item's hover card shown for a screenshot (--order-card).
+                let card = |ui: &egui::Ui, r: &egui::Response, it: C| {
+                    if !live && m.demo_card == Some(it) {
+                        let (title, icon, sentence) = it.card();
+                        egui::Area::new(egui::Id::unique("demo_contours_card")).order(egui::Order::Tooltip).fixed_pos(r.rect.right_top() + Vec2::new(8.0, 0.0)).show(ui.ctx(), |ui| {
+                            egui::Frame::popup(ui.style()).show(ui, |ui| crate::ui_parts::command_card(ui, icon, title, sentence, why.filter(|_| it.sets_order())));
+                        });
+                    }
+                };
+                // Its sentence, and why it can't be used on this part.
+                let says = |it: C| (it.card().2, why.filter(|_| it.sets_order()));
+                let (s, n) = says(C::Manual);
+                let r = menu_item(ui, Icon::PickOrder, "Manual Contours", s, n, w, false);
+                card(ui, &r, C::Manual);
+                pick = pick.or(r.clicked().then_some(C::Manual));
+                let (s, n) = says(C::Automatic);
+                let r = menu_item(ui, Icon::Toolpath, "Automatic Contours", s, n, w, false);
+                card(ui, &r, C::Automatic);
+                pick = pick.or(r.clicked().then_some(C::Automatic));
+                let (s, n) = says(C::Parts);
+                let r = menu_item(ui, Icon::Contours, "Parts", s, n, w, false);
+                card(ui, &r, C::Parts);
+                pick = pick.or(r.clicked().then_some(C::Parts));
+                if m.show_unbuilt {
+                    ui.add_enabled(false, egui::Button::new("All Drill Cycles").frame(false)).on_disabled_hover_text(soon("All Drill Cycles"));
+                }
+                let (s, n) = says(C::AllMarks);
+                let r = menu_item(ui, Icon::OrderMarks, "All Marks", s, n, w, false);
+                card(ui, &r, C::AllMarks);
+                pick = pick.or(r.clicked().then_some(C::AllMarks));
+                let (s, n) = says(C::AllCut);
+                let r = menu_item(ui, Icon::OrderCut, "All Cut", s, n, w, false);
+                card(ui, &r, C::AllCut);
+                pick = pick.or(r.clicked().then_some(C::AllCut));
+                // The item opens the machine's qualities; a quality in it adds.
+                let quality = C::Quality(crate::nest::CutQuality::FALLBACK);
+                let (s, n) = says(quality);
+                let r = menu_item(ui, Icon::OrderQuality, "All Contours of one Quality", s, n, w, true);
+                card(ui, &r, quality);
+                if !live && m.demo_quality {
+                    egui::Area::new(egui::Id::unique("demo_contours_quality")).order(egui::Order::Foreground).fixed_pos(r.rect.right_top() + Vec2::new(6.0, -6.0)).show(ui.ctx(), |ui| {
+                        egui::Frame::menu(ui.style()).show(ui, |ui| crate::orderpick::quality_list(ui, &m));
+                    });
+                } else if live && n.is_none() {
+                    let q = egui::containers::menu::SubMenu::new().show(ui, &r, |ui| crate::orderpick::quality_list(ui, &m)).and_then(|ir| ir.inner);
+                    pick = pick.or(q.map(C::Quality));
+                }
+                if m.show_unbuilt {
+                    for name in ["Automatic Cycles", "Flying cut in holes", "Manual hole destruction", "Automatic hole destruction", "Semi-automatic hole destruction", "Hatch pattern machining"] {
                         ui.add_enabled(false, egui::Button::new(name).frame(false)).on_disabled_hover_text(soon(name));
                     }
                 }
-            });
+                pick
+            };
+            let mut pick = egui::Popup::menu(&r).show(|ui| menu(ui, true)).and_then(|ir| ir.inner);
+            if self.order_pick.demo_menu {
+                egui::Area::new(egui::Id::unique("demo_contours_menu")).order(egui::Order::Foreground).fixed_pos(r.rect.left_bottom() + Vec2::new(0.0, 4.0)).show(ui.ctx(), |ui| {
+                    egui::Frame::menu(ui.style()).show(ui, |ui| pick = pick.or(menu(ui, false)));
+                });
+            }
+            if let Some(it) = pick {
+                self.contours_item(it);
+            }
             if !self.dv.show_unbuilt {
                 return;
             }
