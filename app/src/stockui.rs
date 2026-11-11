@@ -142,13 +142,15 @@ impl App {
             return;
         };
         if it.material != self.spec.material || (it.thickness - self.spec.thickness).abs() > stock::TOL {
-            self.status = format!("Sheet {reference} is {} {} mm; this job is {} {} mm.", crate::cnc::MATERIALS[it.material.min(2)], it.thickness, crate::cnc::MATERIALS[self.spec.material.min(2)], self.spec.thickness);
+            self.status = format!("Sheet {reference} is {}; this job is {}.", self.mat_thk(it.material, it.thickness), self.mat_thk(self.spec.material, self.spec.thickness));
             return;
         }
         self.checkpoint();
         if self.result.sheets.is_empty() {
             self.result.push_sheet(SheetFormat::from_stock(&it));
             self.cur_sheet = 0;
+            // Kept while empty (as Add nesting keeps one), so parts can be put on it.
+            self.empty_sheet_kept = Some(0);
         } else {
             self.result.normalise(&self.spec);
             self.result.formats[self.cur_sheet] = SheetFormat::from_stock(&it);
@@ -159,6 +161,27 @@ impl App {
         self.refresh();
         self.status = if misfits > 0 { format!("Sheet {i1} is now {reference}; {misfits} part(s) no longer fit — move them or nest again.", i1 = i + 1) } else { format!("Sheet {} is now {reference}.", i + 1) };
         self.stockui.note = Some((self.status.clone(), misfits == 0));
+    }
+
+    /// A stock item of another material or thickness than the job: switch the
+    /// job to the item's material and thickness, then use it as a double-click
+    /// would (ST16). With parts nested the usual question comes first and the
+    /// item isn't used yet; the window says so.
+    pub fn use_stock_switching(&mut self, reference: &str) {
+        let Some(it) = Stock::load(&self.library_dir()).ok().and_then(|s| s.get(reference).cloned()) else {
+            self.status = format!("Sheet {reference} isn't in stock.");
+            return;
+        };
+        let before = self.spec.clone();
+        self.spec.material = it.material;
+        self.spec.thickness = it.thickness;
+        self.after_material_edit(before);
+        if self.spec.material != it.material || (self.spec.thickness - it.thickness).abs() > stock::TOL {
+            let w = format!("Answer the question about the nested sheets first, then use {reference}.");
+            self.stockui.note = Some((w, false));
+            return;
+        }
+        self.use_stock_default(reference);
     }
 
     /// How many parts on the shown sheet would not fit on a stock item.
@@ -174,7 +197,7 @@ impl App {
             return;
         };
         let why = if it.material != self.spec.material || (it.thickness - self.spec.thickness).abs() > stock::TOL {
-            Some(format!("{reference} is {} {} mm; this job is {} {} mm.", crate::cnc::MATERIALS[it.material.min(2)], it.thickness, crate::cnc::MATERIALS[self.spec.material.min(2)], self.spec.thickness))
+            Some(format!("{reference} is {}; this job is {}.", self.mat_thk(it.material, it.thickness), self.mat_thk(self.spec.material, self.spec.thickness)))
         } else if it.qty == 0 && !self.cfg.stock.allow_no_stock {
             Some(format!("None of {reference} is left in stock."))
         } else {
@@ -244,6 +267,8 @@ impl App {
         let mut open = true;
         let mut action: Option<Box<dyn FnOnce(&mut App)>> = None;
         let (mat, thk) = (self.spec.material, self.spec.thickness);
+        let u = self.cfg.nesting.units;
+        let job_mat = self.mat_thk(mat, thk);
         // What the open job uses now, and held at its last save.
         let mut using: BTreeMap<String, i32> = BTreeMap::new();
         for f in self.result.formats.iter().take(self.result.sheets.len()) {
@@ -264,14 +289,14 @@ impl App {
             ui.separator();
             if self.stockui.show_options {
                 let out = egui::ScrollArea::vertical().id_salt("stock_opts").auto_shrink([false, false]).show(ui, |ui| {
-                    stock_options(ui, &mut self.cfg.stock);
+                    stock_options(ui, &mut self.cfg.stock, u);
                 });
                 crate::ui_parts::fade_if_more(ui, &out);
                 return;
             }
             let su = &mut self.stockui;
             ui.horizontal(|ui| {
-                ui.checkbox(&mut su.job_only, format!("Only {} {} mm (this job)", crate::cnc::MATERIALS[mat.min(2)], thk));
+                ui.checkbox(&mut su.job_only, format!("Only {job_mat} (this job)"));
                 ui.separator();
                 ui.label(RichText::new("Show").color(th().text_dim));
                 ui.checkbox(&mut su.crit.sheets, "Sheets");
@@ -292,15 +317,36 @@ impl App {
             };
             let ctrl = ui.input(|i| i.modifiers.command);
             let list_h = 290.0;
+            // The picked row is highlighted across the whole row (row 0 is the heading).
+            let sel_row = rows.iter().position(|i| su.sel.as_deref() == Some(i.reference.as_str())).map(|k| k + 1);
+            let sel_bg = th().accent_soft;
             egui::ScrollArea::vertical().id_salt("stock_list").max_height(list_h).auto_shrink([false, false]).show(ui, |ui| {
-                egui::Grid::new("stock_grid").striped(true).min_col_width(40.0).spacing([18.0, 6.0]).show(ui, |ui| {
-                    for h in ["Reference", "Kind", "Material", "Thk", "Length", "Width", "Area m²", "Qty", "This job", "Priority", "Locked", "From", "User data", "Added"] {
+                let grid = egui::Grid::new("stock_grid").min_col_width(40.0).spacing([18.0, 6.0]).with_row_color(move |row, style| {
+                    if Some(row) == sel_row {
+                        Some(sel_bg)
+                    } else {
+                        (row % 2 == 1).then_some(style.visuals.faint_bg_color)
+                    }
+                });
+                grid.show(ui, |ui| {
+                    let (len_h, wid_h, thk_h, area_h) = (format!("Length {}", u.suffix()), format!("Width {}", u.suffix()), format!("Thk {}", u.suffix()), format!("Area {}", u.area_suffix()));
+                    for h in ["Reference", "Kind", "Material", thk_h.as_str(), len_h.as_str(), wid_h.as_str(), area_h.as_str(), "Qty", "This job", "Priority", "Locked", "From", "User data", "Added"] {
                         ui.label(RichText::new(h).strong().size(12.0));
                     }
                     ui.end_row();
+                    // Any cell of a row picks it; a double-click puts it on the sheet.
+                    let cell = |ui: &mut egui::Ui, t: RichText| ui.add(egui::Label::new(t).sense(egui::Sense::click()).selectable(false));
                     for it in &rows {
-                        let sel = su.sel.as_deref() == Some(it.reference.as_str());
-                        let r = ui.selectable_label(sel, RichText::new(&it.reference).strong()).on_hover_text("Click to pick; double-click to put it on the sheet you're looking at");
+                        let mut r = cell(ui, RichText::new(&it.reference).strong());
+                        let kind_col = if it.kind.is_remnant() { th().accent } else { th().text };
+                        r |= cell(ui, RichText::new(it.kind.label()).color(kind_col));
+                        r |= cell(ui, RichText::new(crate::cnc::MATERIALS[it.material.min(2)]));
+                        r |= cell(ui, RichText::new(u.num(it.thickness)));
+                        r |= cell(ui, RichText::new(u.num_dp(it.length, 0)));
+                        r |= cell(ui, RichText::new(u.num_dp(it.width, 0)));
+                        r |= cell(ui, RichText::new(u.area_num(it.area_m2() * 1e6)));
+                        r |= cell(ui, RichText::new(format!("{}", it.qty)).color(if it.qty > 0 { th().text } else { th().text_dim }));
+                        let r = r.on_hover_text("Click to pick; double-click to put it on the sheet you're looking at");
                         if r.clicked() {
                             su.sel = Some(it.reference.clone());
                             su.note = None;
@@ -311,14 +357,6 @@ impl App {
                             let rf = it.reference.clone();
                             action = Some(Box::new(move |app: &mut App| app.use_stock_default(&rf)));
                         }
-                        let kind_col = if it.kind.is_remnant() { th().accent } else { th().text };
-                        ui.label(RichText::new(it.kind.label()).color(kind_col));
-                        ui.label(crate::cnc::MATERIALS[it.material.min(2)]);
-                        ui.label(format!("{}", it.thickness));
-                        ui.label(format!("{:.0}", it.length));
-                        ui.label(format!("{:.0}", it.width));
-                        ui.label(format!("{:.3}", it.area_m2()));
-                        ui.label(RichText::new(format!("{}", it.qty)).color(if it.qty > 0 { th().text } else { th().text_dim }));
                         let (u, hd) = (using.get(&it.reference).copied().unwrap_or(0), held.get(&it.reference).copied().unwrap_or(0));
                         let job_txt = match (u, hd) {
                             (0, 0) => String::new(),
@@ -384,9 +422,12 @@ impl App {
             let cur = self.cur_sheet;
             // 1. Put the picked item on the sheet you're looking at.
             let allow_empty = self.cfg.stock.allow_no_stock;
+            // A sheet of another material or thickness can't go on this job's
+            // sheets; it offers to switch the job to it instead (ST16).
+            let other = selected.as_ref().filter(|i| i.material != mat || (i.thickness - thk).abs() > stock::TOL).map(|i| format!("{} {}", crate::cnc::MATERIALS[i.material.min(2)], u.thickness(i.thickness)));
             let why = match &selected {
                 None => Some("Pick a sheet or remnant in the list (double-click puts it on straight away).".to_string()),
-                Some(i) if i.material != mat || (i.thickness - thk).abs() > stock::TOL => Some("It's another material or thickness than this job.".to_string()),
+                Some(i) if other.is_some() => Some(format!("{} is {}; this job is {job_mat}.", i.reference, other.as_deref().unwrap_or(""))),
                 Some(i) if i.qty == 0 && !allow_empty => Some("None of it left in stock.".to_string()),
                 _ => None,
             };
@@ -397,6 +438,12 @@ impl App {
                 ui.add_space(6.0);
                 if let Some(w) = &why {
                     ui.label(RichText::new(w).size(12.5).color(th().text_dim));
+                    if let (Some(o), Some(r)) = (&other, su.sel.clone()) {
+                        let b = egui::Button::new(RichText::new(format!("Switch the job to {o} and use it")).color(Color32::WHITE).strong()).fill(th().accent);
+                        if ui.add(b).on_hover_text("Change the job's material and thickness to this sheet's, then put it on the sheet you're looking at (with parts already nested, you're asked first). Ctrl + Z undoes it.").clicked() {
+                            action = Some(Box::new(move |app: &mut App| app.use_stock_switching(&r)));
+                        }
+                    }
                     return;
                 }
                 let r = su.sel.clone().unwrap_or_default();
@@ -405,7 +452,7 @@ impl App {
                     if ui.add(primary(format!("Use on sheet {}", cur + 1))).on_hover_text("Put the selected sheet or remnant on the sheet you're looking at (Ctrl + Z undoes it)").clicked() {
                         action = Some(Box::new(move |app: &mut App| app.use_stock_item_on_sheet(&r)));
                     }
-                    let ok = if placed_n == 0 { "The sheet is empty — nest onto it after.".to_string() } else { format!("✔ All {placed_n} parts on sheet {} still fit on it.", cur + 1) };
+                    let ok = if placed_n == 0 { "The sheet is empty — drag parts onto it from Parts View.".to_string() } else { format!("✔ All {placed_n} parts on sheet {} still fit on it.", cur + 1) };
                     ui.label(RichText::new(ok).size(12.5).color(if placed_n == 0 { th().text_dim } else { th().ok_fg }));
                 } else {
                     if ui.add(primary(format!("Use it and re-nest sheet {}", cur + 1))).on_hover_text("Put it on the sheet and nest that sheet's parts on it again — all or nothing: if they can't all fit, nothing changes and this line says so. Ctrl + Z undoes it.").clicked() {
@@ -489,9 +536,9 @@ impl App {
                     ui.add(egui::DragValue::new(&mut n.qty).range(1..=stock::MAX_QTY));
                     ui.end_row();
                     ui.label("Length (X)");
-                    ui.add(egui::DragValue::new(&mut n.length).range(10.0..=20000.0).suffix(" mm"));
+                    crate::units::drag_len_in(ui, &mut n.length, u, 10.0, 20000.0);
                     ui.label("Width (Y)");
-                    ui.add(egui::DragValue::new(&mut n.width).range(10.0..=6000.0).suffix(" mm"));
+                    crate::units::drag_len_in(ui, &mut n.width, u, 10.0, 6000.0);
                     ui.end_row();
                     ui.label("Material");
                     egui::ComboBox::from_id_salt("stock_mat").selected_text(crate::cnc::MATERIALS[n.material.min(2)]).show_ui(ui, |ui| {
@@ -500,7 +547,7 @@ impl App {
                         }
                     });
                     ui.label("Thickness");
-                    ui.add(egui::DragValue::new(&mut n.thickness).range(0.1..=200.0).speed(0.1).suffix(" mm"));
+                    crate::units::thickness_box(ui, "stock_thk", &mut n.thickness, u);
                     ui.end_row();
                     ui.label("Priority");
                     ui.add(egui::DragValue::new(&mut n.priority).range(1..=999));
@@ -587,6 +634,7 @@ impl App {
             return;
         }
         let taken = Stock::load(&self.library_dir()).unwrap_or_default();
+        let nm_unit = self.cfg.nesting.units;
         let Some(nm) = self.naming.as_mut() else { return };
         let mut done: Option<bool> = None;
         egui::Window::new(RichText::new("New remnants").size(15.0).strong()).id(egui::Id::unique("remnant_naming")).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
@@ -601,8 +649,8 @@ impl App {
                 let refs: Vec<String> = nm.rows.iter().map(|r| r.reference.trim().to_string()).collect();
                 for (k, r) in nm.rows.iter_mut().enumerate() {
                     ui.label(format!("{}", r.sheet + 1));
-                    ui.label(format!("{:.0} × {:.0}", r.w, r.h));
-                    ui.label(format!("{:.3} m²", r.area_m2));
+                    ui.label(nm_unit.size(r.w, r.h, 0));
+                    ui.label(nm_unit.area(r.area_m2 * 1e6));
                     let resp = ui.add(egui::TextEdit::singleline(&mut r.reference).char_limit(stock::MAX_REF).desired_width(180.0));
                     let t = r.reference.trim();
                     let bad = if t.is_empty() {
@@ -656,7 +704,7 @@ impl App {
 }
 
 /// The Do All and Sheet Remnants options.
-pub fn stock_options(ui: &mut egui::Ui, st: &mut stock::StockSettings) {
+pub fn stock_options(ui: &mut egui::Ui, st: &mut stock::StockSettings, u: crate::units::LenUnit) {
     // Two cards, like Settings: what Nest all takes from stock, and what goes back.
     crate::settings_ui::card(ui, "Automatic nesting (Nest all)", "Which sheets from stock Nest all uses, and in what order.", |ui| {
         ui.checkbox(&mut st.use_stock, "Nest on sheets from stock");
@@ -727,7 +775,8 @@ pub fn stock_options(ui: &mut egui::Ui, st: &mut stock::StockSettings) {
             ui.checkbox(&mut m.on, "Automatic mark");
             ui.add_enabled(m.on, egui::TextEdit::singleline(&mut m.text).desired_width(140.0)).on_hover_text("#300 reference, #301 length, #302 width, #303 area, #304 weight, #200 sheet, #400 material, #401 thickness, #104 date; #N.d = d decimals");
             ui.add_enabled_ui(m.on, |ui| {
-                ui.add(egui::DragValue::new(&mut m.height).range(1.0..=200.0).speed(0.5).prefix("H ").suffix(" mm"));
+                ui.label("H");
+                crate::units::drag_len_in(ui, &mut m.height, u, 1.0, 200.0);
                 egui::ComboBox::from_id_salt("mark_pos").width(110.0).selected_text(if m.position == 0 { "Find room".to_string() } else { format!("Position {}", m.position) }).show_ui(ui, |ui| {
                     ui.selectable_value(&mut m.position, 0, "Find room");
                     for k in 1..=9u8 {
@@ -766,27 +815,32 @@ pub fn stock_options(ui: &mut egui::Ui, st: &mut stock::StockSettings) {
             }
             ui.label("Offset between the parts and the line");
             ui.horizontal(|ui| {
-                ui.add_enabled(!l.cutter_radius, egui::DragValue::new(&mut l.offset).range(0.0..=500.0).speed(0.5).suffix(" mm"));
+                ui.add_enabled_ui(!l.cutter_radius, |ui| crate::units::drag_len_in(ui, &mut l.offset, u, 0.0, 500.0));
                 ui.checkbox(&mut l.cutter_radius, "Cutter radius");
             });
             ui.end_row();
             ui.label("Minimum width");
-            ui.add(egui::DragValue::new(&mut l.min_width).range(0.0..=5000.0).speed(1.0).suffix(" mm")).on_hover_text("A remnant strip narrower than this isn't made");
+            crate::units::drag_len_in(ui, &mut l.min_width, u, 0.0, 5000.0).on_hover_text("A remnant strip narrower than this isn't made");
             ui.label("Offset in the sheet edge");
-            ui.add(egui::DragValue::new(&mut l.edge_offset).range(0.0..=100.0).speed(0.1).suffix(" mm")).on_hover_text("Leave this much uncut where the line meets the sheet edge, so the remnant stays held");
+            crate::units::drag_len_in(ui, &mut l.edge_offset, u, 0.0, 100.0).on_hover_text("Leave this much uncut where the line meets the sheet edge, so the remnant stays held");
             ui.end_row();
             let xy = l.shape.uses_min_xy();
             ui.label("Minimum X / Y");
             ui.add_enabled_ui(xy, |ui| {
                 ui.horizontal(|ui| {
-                    ui.add(egui::DragValue::new(&mut l.min_x).range(0.0..=20000.0).suffix(" mm"));
-                    ui.add(egui::DragValue::new(&mut l.min_y).range(0.0..=6000.0).suffix(" mm"));
+                    crate::units::drag_len_in(ui, &mut l.min_x, u, 0.0, 20000.0);
+                    crate::units::drag_len_in(ui, &mut l.min_y, u, 0.0, 6000.0);
                 });
             })
             .response
             .on_hover_text("The parts side is at least this long from where nesting starts (first six shapes)");
             ui.checkbox(&mut l.round, "Round the remnant line");
-            ui.add_enabled(l.round, egui::DragValue::new(&mut l.radius).range(0.5..=500.0).speed(0.5).prefix("R ").suffix(" mm"));
+            ui.add_enabled_ui(l.round, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("R");
+                    crate::units::drag_len_in(ui, &mut l.radius, u, 0.5, 500.0);
+                });
+            });
             ui.end_row();
         });
     });
@@ -856,6 +910,30 @@ mod tests {
         a.use_stock_and_renest("BIG");
         assert_eq!(a.result.formats[0].stock_ref, "BIG");
         assert!(a.result.sheets[0].iter().all(|p| a.fits_sheet(p, 0)));
+    }
+
+    #[test]
+    fn a_sheet_of_another_material_switches_the_job_to_it() {
+        // ST16: picking a stainless 3 mm sheet for a mild steel 10 mm job
+        // switches the job and puts the sheet on (nothing nested yet).
+        let (mut a, dir) = app_with_stock("switch");
+        a.result = Default::default();
+        Stock::update(&dir, |s| s.add_sheet(Item::sheet("SS3", 1, 3.0, 1486.0, 724.0, 1), true)).unwrap();
+        a.use_stock_default("SS3");
+        assert_eq!((a.spec.material, a.spec.thickness), (0, 10.0), "a plain double-click doesn't switch");
+        assert!(a.stockui.note.as_ref().is_some_and(|(t, ok)| !ok && t.contains("Stainless steel")), "{:?}", a.stockui.note);
+        a.use_stock_switching("SS3");
+        assert_eq!((a.spec.material, a.spec.thickness), (1, 3.0));
+        assert_eq!(a.result.formats[0].stock_ref, "SS3");
+        // With parts nested the usual question comes first; nothing is used yet.
+        let (mut b, dir) = app_with_stock("switch-nested");
+        b.cfg.stock.use_stock = false;
+        b.run_nesting();
+        Stock::update(&dir, |s| s.add_sheet(Item::sheet("SS3", 1, 3.0, 1486.0, 724.0, 1), true)).unwrap();
+        b.use_stock_switching("SS3");
+        assert!(matches!(b.pending, Some(crate::Pending::NestedSpecChange { .. })));
+        assert_eq!(b.spec.material, 0, "not switched until answered");
+        assert!(b.result.formats.iter().all(|f| f.stock_ref != "SS3"));
     }
 
     #[test]

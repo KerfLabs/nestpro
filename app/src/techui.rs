@@ -298,7 +298,7 @@ impl App {
                 });
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Height").size(11.0).color(th().text_dim));
-                    ui.add(egui::DragValue::new(&mut self.text_height).range(2.0..=100.0).speed(0.2).suffix(" mm"));
+                    crate::units::drag_len_in(ui, &mut self.text_height, self.cfg.nesting.units, 2.0, 100.0);
                     ui.label(RichText::new("Arc").size(11.0).color(th().text_dim));
                     ui.add(egui::DragValue::new(&mut self.text_curve).range(-2000.0..=2000.0).speed(0.5).suffix(" r"))
                         .on_hover_text("Bend the text along an arc of this radius (mm). 0 = straight, positive = over the top of a circle, negative = round the bottom. Or select a line, arc or circle and press On element.");
@@ -387,15 +387,15 @@ impl App {
                     });
                     ui.end_row();
                     ui.label("Gap width");
-                    ui.add(egui::DragValue::new(&mut edit.joint_width).range(0.05..=10.0).speed(0.05).suffix(" mm"));
+                    crate::units::drag_len_in(ui, &mut edit.joint_width, self.cfg.nesting.units, 0.05, 10.0);
                     ui.end_row();
                     let leads = edit.joint_type.has_leads();
                     ui.label("Lead-in distance").on_hover_text("How far off the contour the lead-in starts (perpendicular distance)");
-                    ui.add_enabled(leads, egui::DragValue::new(&mut edit.joint_lead).range(0.0..=50.0).speed(0.1).suffix(" mm"));
+                    ui.add_enabled_ui(leads, |ui| crate::units::drag_len_in(ui, &mut edit.joint_lead, self.cfg.nesting.units, 0.0, 50.0)).inner;
                     ui.end_row();
                     let mut out = edit.joint_lead_out.unwrap_or(edit.joint_lead);
                     ui.label("Lead-out distance").on_hover_text("0 = no lead-out: the beam just stops at the gap");
-                    if ui.add_enabled(leads, egui::DragValue::new(&mut out).range(0.0..=50.0).speed(0.1).suffix(" mm")).changed() {
+                    if ui.add_enabled_ui(leads, |ui| crate::units::drag_len_in(ui, &mut out, self.cfg.nesting.units, 0.0, 50.0)).inner.changed() {
                         edit.joint_lead_out = Some(out);
                     }
                     ui.end_row();
@@ -403,7 +403,7 @@ impl App {
                     ui.add_enabled(edit.joint_type == crate::nest::JointType::LeadsInclined || edit.joint_type == crate::nest::JointType::Corner, egui::DragValue::new(&mut edit.joint_angle).range(1.0..=90.0).speed(0.5).suffix("°"));
                     ui.end_row();
                     ui.label("One every").on_hover_text("Automatic joints: one per this many mm of each contour, holes too (the machine's maximum distance, CT1 F150). 0 = the fixed number of joints on the outside");
-                    ui.add(egui::DragValue::new(&mut edit.joint_every).range(0.0..=5000.0).speed(1.0).suffix(" mm"));
+                    crate::units::drag_len_in(ui, &mut edit.joint_every, self.cfg.nesting.units, 0.0, 5000.0);
                     ui.end_row();
                 });
                 if ui
@@ -446,12 +446,12 @@ impl App {
                 ui.label(RichText::new("Y").strong());
                 ui.end_row();
                 ui.label("Small up to");
-                ui.add(egui::DragValue::new(&mut c.small[0]).range(0.0..=99999.999).suffix(" mm"));
-                ui.add(egui::DragValue::new(&mut c.small[1]).range(0.0..=99999.999).suffix(" mm"));
+                crate::units::drag_len_in(ui, &mut c.small[0], self.cfg.nesting.units, 0.0, 99999.999);
+                crate::units::drag_len_in(ui, &mut c.small[1], self.cfg.nesting.units, 0.0, 99999.999);
                 ui.end_row();
                 ui.label("Large from");
-                ui.add(egui::DragValue::new(&mut c.large[0]).range(0.0..=99999.999).suffix(" mm"));
-                ui.add(egui::DragValue::new(&mut c.large[1]).range(0.0..=99999.999).suffix(" mm"));
+                crate::units::drag_len_in(ui, &mut c.large[0], self.cfg.nesting.units, 0.0, 99999.999);
+                crate::units::drag_len_in(ui, &mut c.large[1], self.cfg.nesting.units, 0.0, 99999.999);
                 ui.end_row();
                 ui.label("");
                 ui.label(RichText::new("Fewest").strong());
@@ -528,8 +528,8 @@ impl App {
                     ui.end_row();
                     for (k, row) in edit.cut_ranges.iter_mut().enumerate() {
                         ui.checkbox(&mut row.on, format!("Row {}", k + 1));
-                        ui.add(egui::DragValue::new(&mut row.min_r).range(0.0..=99999.0).speed(0.1).suffix(" mm"));
-                        ui.add(egui::DragValue::new(&mut row.max_r).range(0.0..=99999.0).speed(0.1).suffix(" mm"));
+                        crate::units::drag_len_in(ui, &mut row.min_r, self.cfg.nesting.units, 0.0, 99999.0);
+                        crate::units::drag_len_in(ui, &mut row.max_r, self.cfg.nesting.units, 0.0, 99999.0);
                         egui::ComboBox::from_id_salt(("cut_q", k)).width(120.0).selected_text(quality_text(ui, &mt.qualities, row.quality)).show_ui(ui, |ui| {
                             for q in offered_qualities(&mt.qualities) {
                                 ui.selectable_value(&mut row.quality, q, quality_text(ui, &mt.qualities, q));

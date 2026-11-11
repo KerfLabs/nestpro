@@ -291,10 +291,10 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.label("Minimum distance");
                     if v.by_value {
-                        ui.add(egui::DragValue::new(&mut v.value).range(0.0..=MIN_DIST_MAX).speed(0.1).suffix(" mm"));
+                        crate::units::drag_len_in(ui, &mut v.value, self.cfg.nesting.units, 0.0, MIN_DIST_MAX);
                     } else {
                         let mut sep = self.spec.gap;
-                        ui.add_enabled(false, egui::DragValue::new(&mut sep).suffix(" mm"));
+                        ui.add_enabled_ui(false, |ui| crate::units::drag_len_in(ui, &mut sep, self.cfg.nesting.units, 0.0, f64::MAX));
                     }
                 });
             });

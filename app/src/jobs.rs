@@ -10,7 +10,7 @@ use crate::{cnc, App, SheetTab, Workspace};
 use eframe::egui;
 use egui::{Align2, Color32, CornerRadius, FontId, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 
-const MACHINE: &str = "Laser 01";
+
 /// Placeholder for the active database name shown in the title and tree root.
 
 fn material_code(m: usize) -> &'static str {
@@ -522,8 +522,8 @@ impl App {
                     ui.end_row();
                 };
                 row(ui, "Job", self.job_name.clone());
-                row(ui, "Material", format!("{} · {} mm", cnc::MATERIALS[self.spec.material], self.spec.thickness));
-                row(ui, "Sheet", format!("{:.0} × {:.0}", self.spec.w, self.spec.h));
+                row(ui, "Material", format!("{} · {}", cnc::MATERIALS[self.spec.material], self.unit().thickness(self.spec.thickness)));
+                row(ui, "Sheet", self.unit().size(self.spec.w, self.spec.h, 0));
                 row(ui, "Products", format!("{} / {} pcs", self.parts.len(), need));
                 row(ui, "Sheets", format!("{sheets}"));
                 row(ui, "Usage", format!("{util:.1} %"));
@@ -551,6 +551,7 @@ impl App {
         let mut pick = None;
         let mut open_nest = false;
         let nested: Vec<u32> = (0..self.parts.len()).map(|i| self.placed_of(i) as u32).collect();
+        let (machine, thk) = (self.machine_name(), self.unit().thickness(self.spec.thickness));
         egui::ScrollArea::both().id_salt("products").auto_shrink([false, false]).show(ui, |ui| {
             egui::Frame::new().inner_margin(egui::Margin::symmetric(6, 4)).show(ui, |ui| {
                 egui::Grid::new("product_grid").striped(true).num_columns(11).spacing([22.0, 6.0]).min_row_height(34.0).show(ui, |ui| {
@@ -570,9 +571,9 @@ impl App {
                             pick = Some(i);
                             open_nest = true;
                         }
-                        ui.label(MACHINE);
+                        ui.label(&machine);
                         ui.label(cnc::MATERIALS[self.spec.material]);
-                        ui.label(format!("{}", self.spec.thickness));
+                        ui.label(&thk);
                         ui.label(format!("{}", p.qty));
                         ui.label(format!("{}", 101 + i));
                         ui.label("0");
@@ -717,10 +718,14 @@ impl App {
     fn sheet_table(&mut self, ui: &mut egui::Ui) {
         let mut pick = None;
         let mut open = false;
+        let un = self.unit();
+        let machine = self.machine_name();
         egui::ScrollArea::both().id_salt("sheet_list").auto_shrink([false, false]).show(ui, |ui| {
             egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
                 egui::Grid::new("sheet_grid").striped(true).num_columns(14).spacing([20.0, 5.0]).show(ui, |ui| {
-                    for h in ["Nesting", "Sheet", "Material", "Thickness", "Length", "Width", "Parts", "Quantity", "Usage %", "Remnant %", "Max X", "Max Y", "Weight kg", "Machine"] {
+                    let sfx = un.suffix();
+                    let heads = [format!("Thickness {sfx}"), format!("Length {sfx}"), format!("Width {sfx}"), format!("Max X {sfx}"), format!("Max Y {sfx}")];
+                    for h in ["Nesting", "Sheet", "Material", &heads[0], &heads[1], &heads[2], "Parts", "Quantity", "Usage %", "Remnant %", &heads[3], &heads[4], "Weight kg", "Machine"] {
                         ui.label(RichText::new(h).strong().color(th().text_dim).size(12.0));
                     }
                     ui.end_row();
@@ -740,17 +745,17 @@ impl App {
                         let sheet_ref = if f.stock_ref.is_empty() { format!("{}{}-{:.0}x{:.0}", material_code(self.spec.material), self.spec.thickness, f.w, f.h) } else { f.stock_ref.clone() };
                         ui.label(sheet_ref);
                         ui.label(cnc::MATERIALS[self.spec.material]);
-                        ui.label(format!("{}", self.spec.thickness));
-                        ui.label(format!("{:.0}", f.w));
-                        ui.label(format!("{:.0}", f.h));
+                        ui.label(un.num(self.spec.thickness));
+                        ui.label(un.num_dp(f.w, 0));
+                        ui.label(un.num_dp(f.h, 0));
                         ui.label(format!("{}", self.result.sheets[i].len()));
                         ui.label(format!("{copies}"));
                         ui.label(format!("{u:.1}"));
                         ui.label(format!("{rem:.1}"));
-                        ui.label(format!("{mx:.1}"));
-                        ui.label(format!("{my:.1}"));
+                        ui.label(un.num_dp(mx, 1));
+                        ui.label(un.num_dp(my, 1));
                         ui.label(format!("{:.1}", cnc::weight_kg(self.spec.material, f.area_mm2(), self.spec.thickness)));
-                        ui.label(MACHINE);
+                        ui.label(&machine);
                         ui.end_row();
                     }
                 });
@@ -764,8 +769,10 @@ impl App {
     /// nesting  "%s / %d / %s (%s) / %s / %1.4f"                       (#6)
     /// (MECHANICS.md "Mechanics read from the original").
     pub fn selection_line(&self) -> String {
-        let t = self.spec.thickness; // unit factor 1.0 (mm)
+        // The thickness in the unit lengths are shown in (the original divides by its unit factor).
+        let t = self.spec.thickness / self.unit().factor();
         let mat = cnc::MATERIALS[self.spec.material];
+        let machine = self.machine_name();
         if self.jobs_pick_sheet {
             if self.cur_sheet >= self.result.sheets.len() {
                 return String::new();
@@ -774,10 +781,10 @@ impl App {
             let nest = format!("{}-{:02}", self.job_name, self.cur_sheet + 1);
             let f = self.result.format(self.cur_sheet, &self.spec);
             let sheet = if f.stock_ref.is_empty() { format!("{}{}-{:.0}x{:.0}", material_code(self.spec.material), self.spec.thickness, f.w, f.h) } else { f.stock_ref };
-            format!("{nest} / {copies} / {MACHINE} ({mat}) / {sheet} / {t:.4}")
+            format!("{nest} / {copies} / {machine} ({mat}) / {sheet} / {t:.4}")
         } else if let Some(p) = self.sel_part.and_then(|i| self.parts.get(i).map(|p| (i, p))) {
             let (i, part) = p;
-            let base = format!("{} / {} / {MACHINE} / {mat} / {t:.4}", part.name, part.qty);
+            let base = format!("{} / {} / {machine} / {mat} / {t:.4}", part.name, part.qty);
             if self.show_labor_ticket { format!("{base} / {}", 101 + i) } else { base }
         } else {
             String::new()
@@ -798,8 +805,9 @@ impl App {
             }
             ui.add_space(8.0);
             ui.label(RichText::new(&self.status).color(th().text_dim));
+            let sfx = self.unit().suffix();
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label("mm");
+                ui.label(sfx);
             });
         });
     }
