@@ -649,7 +649,7 @@ fn agent_booking_names_and_remakes_remnants() {
     assert!(st.get("RACK-C-7").is_none() && st.get(&again[0]).is_some(), "replaced");
     assert_eq!(st.items.iter().filter(|x| x.kind.is_remnant()).count(), 1);
     // Once it's used, moving the line keeps it, and says so.
-    crate::stock::Stock::update(&lib, |s| s.take(&again[0], 1, false)).unwrap();
+    crate::stock::Stock::update(&crate::library::Library::at(&lib, &Who::new("kim", "PROG-2"), &Clock::pc()), |s| s.take(&again[0], 1, false)).unwrap();
     let r = call(&mut s, "remnant", None, json!({"mode": "line", "x": mx + 220.0}));
     assert!(r["message"].as_str().unwrap().contains("already in use"), "{r}");
     assert_eq!(jobfile::load(Path::new(jp)).unwrap().formats[0].made, again);
@@ -715,6 +715,52 @@ fn stock_only_never_invents_a_sheet_and_a_failed_booking_stores_no_remnants() {
     let r = call(&mut s, "stock-book", Some(jb), json!({"mode": "book"}));
     assert!(r["message"].as_str().unwrap().contains("remnants not stored"), "{r}");
     assert_eq!(remnants(&lib), 1, "no remnant of a sheet that wasn't taken");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SV10 for agents: two agents on two PCs nest on the last 2000 × 1000
+/// sheet. Sam's agent on PROG-1 books first; Kim's agent on PROG-2 books ten
+/// minutes later and is told who took the sheet and when. Nothing is taken
+/// for it, and nesting again books what's in stock now (SV11).
+#[test]
+fn an_agents_stock_book_names_who_took_the_last_sheet() {
+    let d = dir("stock_gone");
+    let clock = Clock::at(1_794_216_000); // 2026-11-09 09:20 UTC
+    let agent = |user: &str, pc: &str| {
+        let mut ctx = stock_ctx(&d);
+        ctx.who = Who::new(user, pc).as_agent();
+        ctx.clock = clock.clone();
+        Session::new(ctx)
+    };
+    let (mut prog1, mut prog2) = (agent("sam", "PROG-1"), agent("kim", "PROG-2"));
+    let lib = d.join("library");
+    let (ja, jb) = (d.join("DEMO-001 frames.snjob"), d.join("DEMO-002 brackets.snjob"));
+    let (ja, jb) = (ja.to_str().unwrap(), jb.to_str().unwrap());
+    call(&mut prog1, "stock", None, json!({"mode": "create", "ref": "LAST", "w": 2000, "h": 1000, "thickness": 3, "qty": 1}));
+    call(&mut prog2, "stock", None, json!({"mode": "create", "ref": "SMALL", "w": 1500, "h": 750, "thickness": 3, "qty": 2}));
+    for (s, jp) in [(&mut prog1, ja), (&mut prog2, jb)] {
+        call(s, "new", Some(jp), json!({"w": 2000, "h": 1000, "thickness": 3}));
+        call(s, "add-shape", None, json!({"shape": "rectangle", "w": 300, "h": 200, "qty": 4}));
+        call(s, "nest", None, json!({"stock": "only"}));
+        assert_eq!(jobfile::load(Path::new(jp)).unwrap().formats[0].stock_ref, "LAST");
+    }
+    call(&mut prog1, "stock-book", None, json!({"mode": "book"}));
+    clock.advance(std::time::Duration::from_secs(10 * 60));
+    let r = call(&mut prog2, "stock-book", None, json!({"mode": "book"}));
+    let m = r["message"].as_str().unwrap();
+    assert!(m.starts_with("Not booked: sam on PROG-1 (agent) took the last 2000 × 1000 (LAST) at 09:20"), "{r}");
+    assert!(m.contains("nest again"), "says what to do: {r}");
+    let st = crate::stock::Stock::load(&lib).unwrap();
+    assert_eq!((st.get("LAST").unwrap().qty, st.get("SMALL").unwrap().qty), (0, 2), "nothing taken for PROG-2");
+    // The stock says who changed it, and when (SV9).
+    let l = call(&mut prog2, "stock", None, json!({"mode": "list", "show_zero": true}));
+    let row = |r: &str| l["data"]["sheets"].as_array().unwrap().iter().find(|x| x["ref"] == r).cloned().unwrap();
+    assert_eq!((row("LAST")["changed_by"].as_str(), row("LAST")["changed_at"].as_str()), (Some("sam on PROG-1 (agent)"), Some("2026-11-09 09:20")), "{l}");
+    assert_eq!(row("SMALL")["changed_by"].as_str(), Some("kim on PROG-2 (agent)"), "{l}");
+    // Nesting again plans from the stock as it is now, and books it.
+    let r = call(&mut prog2, "nest", None, json!({"stock": "only"}));
+    assert!(jobfile::load(Path::new(jb)).unwrap().formats.iter().all(|f| f.stock_ref == "SMALL"), "{r}");
+    assert_eq!(crate::stock::Stock::load(&lib).unwrap().get("SMALL").unwrap().qty, 1, "{r}");
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -1157,7 +1203,7 @@ fn an_agents_stock_change_waits_for_another_pcs_change_and_both_count() {
     // read the stock (1 on the rack) and is about to store 6.
     let (read, go) = std::sync::mpsc::channel();
     let other = std::thread::spawn(move || {
-        crate::stock::Stock::update(&lib, |st| {
+        crate::stock::Stock::update(&crate::library::Library::at(&lib, &Who::new("kim", "PROG-2"), &Clock::pc()), |st| {
             read.send(()).unwrap();
             std::thread::sleep(std::time::Duration::from_millis(400));
             st.change_qty("S1", 5)

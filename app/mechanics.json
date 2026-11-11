@@ -4704,6 +4704,48 @@
   "source": "MECHANICS SV8"
  },
  {
+  "name": "a stock change records",
+  "group": "shared library",
+  "value": "who made it (Windows user and PC name; an agent's change marked (agent)) and when (that PC's clock once the change holds the write lock), on the stock and on each item it made or changed",
+  "source": "MECHANICS SV9; estimated"
+ },
+ {
+  "name": "a stock change that takes sheets out also records",
+  "group": "shared library",
+  "value": "on each item it took from: who took them, how many, and when",
+  "source": "MECHANICS SV9; estimated"
+ },
+ {
+  "name": "where who changed a stock item is shown",
+  "group": "shared library",
+  "value": "hover text of the stock row's quantity (Changed by sam on PROG-1, 9 Nov 09:20 / Last taken: 1 by …); agents' stock list (changed_by, changed_at)",
+  "source": "MECHANICS SV9; estimated"
+ },
+ {
+  "name": "a save that finds a sheet gone says",
+  "group": "shared library",
+  "value": "sam on PROG-1 took the last 3000 × 1500 (S-1) at 09:20, so nothing was taken from stock (remnants not stored): nest again (Do All) to use what's in stock now",
+  "source": "MECHANICS SV10; estimated"
+ },
+ {
+  "name": "when it was taken, as said",
+  "group": "shared library",
+  "value": "at 09:20 (today); on 8 Nov 09:20 (another day)",
+  "source": "MECHANICS SV10; estimated"
+ },
+ {
+  "name": "an agent's stock-book that took nothing begins",
+  "group": "shared library",
+  "value": "Not booked:",
+  "source": "MECHANICS SV10; estimated"
+ },
+ {
+  "name": "Do All reads the stock",
+  "group": "shared library",
+  "value": "afresh on every run, just before it plans",
+  "source": "MECHANICS SV11; estimated"
+ },
+ {
   "name": "compact refused on a remnant with an outline",
   "group": "nesting",
   "value": true,

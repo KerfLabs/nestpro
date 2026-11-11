@@ -5,6 +5,7 @@
 //! The stock itself (items, counters, file) is `crate::stock`.
 
 use crate::cutoff::{CutKind, CutLine};
+use crate::library::Library;
 use crate::nest::{self, FormatSlot, NestResult, Part, Placed, SheetFormat, SheetSpec};
 use crate::stock::{self, EffMode, Item, Stock, StockSettings};
 use std::collections::BTreeMap;
@@ -189,10 +190,28 @@ pub fn sheets_used(formats: &[SheetFormat], n_sheets: usize) -> BTreeMap<String,
     used
 }
 
+/// Why a job's sheets weren't taken from stock.
+#[derive(Clone, Debug, PartialEq)]
+pub enum NotTaken {
+    /// A sheet the job is nested on is gone: who took it and when (SV10).
+    Gone(String),
+    /// The stock couldn't be changed (missing sheet, busy Library…).
+    Failed(String),
+}
+
+impl std::fmt::Display for NotTaken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NotTaken::Gone(e) | NotTaken::Failed(e) => f.write_str(e),
+        }
+    }
+}
+
 /// Take the sheets the job now uses from stock and give back the ones it no
-/// longer uses (SS10, SS11), bringing `held` up to date. Returns a note ("" when
-/// nothing changed).
-pub fn reconcile(dir: &Path, formats: &[SheetFormat], n_sheets: usize, held: &mut BTreeMap<String, i32>, allow_neg: bool) -> Result<String, String> {
+/// longer uses (SS10, SS11), bringing `held` up to date, as `lib`'s user and
+/// PC (SV9). Returns a note ("" when nothing changed). Nothing changes when a
+/// sheet it needs is gone; the refusal says who took it (SV10).
+pub fn reconcile(lib: &Library, formats: &[SheetFormat], n_sheets: usize, held: &mut BTreeMap<String, i32>, allow_neg: bool) -> Result<String, NotTaken> {
     let used = sheets_used(formats, n_sheets);
     if &used == held {
         return Ok(String::new());
@@ -201,11 +220,15 @@ pub fn reconcile(dir: &Path, formats: &[SheetFormat], n_sheets: usize, held: &mu
     let refs: std::collections::BTreeSet<String> = used.keys().chain(held.keys()).cloned().collect();
     let before = held.clone();
     let (mut taken, mut back) = (0, 0);
-    Stock::update(dir, |s| {
+    let mut gone = None;
+    Stock::update(lib, |s| {
         for r in &refs {
             let d = used.get(r).copied().unwrap_or(0) - before.get(r).copied().unwrap_or(0);
             if d > 0 {
-                s.take(r, d, allow_neg)?;
+                if let Err(e) = s.take(r, d, allow_neg) {
+                    gone = s.get(r).and_then(|it| it.gone_note(d, &lib.clock));
+                    return Err(e);
+                }
                 taken += d;
             } else if d < 0 {
                 s.give_back(r, -d);
@@ -213,7 +236,8 @@ pub fn reconcile(dir: &Path, formats: &[SheetFormat], n_sheets: usize, held: &mu
             }
         }
         Ok(())
-    })?;
+    })
+    .map_err(|e| gone.map_or(NotTaken::Failed(e), NotTaken::Gone))?;
     *held = used;
     let mut v = vec![];
     if taken > 0 {
@@ -580,11 +604,11 @@ impl Made {
 /// even when "generate remnants when you save" is off (an explicit booking).
 /// `names`: references given for (sheet, piece) (Prompt for references, UI14);
 /// the others are numbered.
-pub fn make_remnants(dir: &Path, j: &JobSheets, formats: &mut Vec<SheetFormat>, st: &StockSettings, force_lines: bool, names: Option<&BTreeMap<(usize, usize), String>>) -> Result<Made, String> {
+pub fn make_remnants(lib: &Library, j: &JobSheets, formats: &mut Vec<SheetFormat>, st: &StockSettings, force_lines: bool, names: Option<&BTreeMap<(usize, usize), String>>) -> Result<Made, String> {
     while formats.len() < j.sheets.len() {
         formats.push(SheetFormat::rect(j.spec.w, j.spec.h));
     }
-    let stock_now = Stock::load(dir).unwrap_or_default();
+    let stock_now = Stock::load(&lib.dir).unwrap_or_default();
     let (todo, kept_used) = pending_remnants(&stock_now, j, formats, st, force_lines);
     let mut out = Made { count: 0, kept_used };
     if todo.is_empty() {
@@ -592,7 +616,7 @@ pub fn make_remnants(dir: &Path, j: &JobSheets, formats: &mut Vec<SheetFormat>, 
     }
     let (material, thickness) = (j.spec.material, j.spec.thickness);
     let fs = formats.clone();
-    let made: Vec<(usize, Vec<String>)> = Stock::update(dir, |s| {
+    let made: Vec<(usize, Vec<String>)> = Stock::update(lib, |s| {
         let mut out = vec![];
         for p in &todo {
             for r in &p.replace {
@@ -637,19 +661,21 @@ pub fn make_remnants(dir: &Path, j: &JobSheets, formats: &mut Vec<SheetFormat>, 
 }
 
 /// Before a job is written: put new remnants in stock and settle what the job
-/// holds (what the window does on every save). Returns the notes ("" when
-/// nothing changed).
+/// holds (what the window does on every save), as `lib`'s user and PC (SV9).
+/// Returns the notes ("" when nothing changed).
 #[allow(clippy::too_many_arguments)]
-pub fn on_save(dir: &Path, j: &JobSheets, formats: &mut Vec<SheetFormat>, held: &mut BTreeMap<String, i32>, st: &StockSettings, force_lines: bool, names: Option<&BTreeMap<(usize, usize), String>>) -> String {
+pub fn on_save(lib: &Library, j: &JobSheets, formats: &mut Vec<SheetFormat>, held: &mut BTreeMap<String, i32>, st: &StockSettings, force_lines: bool, names: Option<&BTreeMap<(usize, usize), String>>) -> String {
     let mut notes = vec![];
     // The sheets first: remnants of a sheet that couldn't be taken from
-    // stock would be remnants of a sheet that isn't there.
-    let (taken, stock_note) = match reconcile(dir, formats, j.sheets.len(), held, st.allow_no_stock) {
+    // stock would be remnants of a sheet that isn't there (SV7).
+    let (taken, stock_note) = match reconcile(lib, formats, j.sheets.len(), held, st.allow_no_stock) {
         Ok(s) => (true, s),
-        Err(e) => (false, format!("stock not updated: {e}; remnants not stored")),
+        // Another PC took a sheet this job is nested on (SV10).
+        Err(NotTaken::Gone(e)) => (false, format!("{e}, so nothing was taken from stock (remnants not stored): nest again (Do All) to use what's in stock now")),
+        Err(NotTaken::Failed(e)) => (false, format!("stock not updated: {e}; remnants not stored")),
     };
     if taken && (st.remnants_on_save || st.keep_completed || force_lines) {
-        match make_remnants(dir, j, formats, st, force_lines, names) {
+        match make_remnants(lib, j, formats, st, force_lines, names) {
             Ok(m) => {
                 if m.count > 0 {
                     notes.push(format!("{} remnant(s) put in stock", m.count));
@@ -672,10 +698,10 @@ pub fn on_save(dir: &Path, j: &JobSheets, formats: &mut Vec<SheetFormat>, held: 
 /// remnants it stored taken out again while nothing else has used them (their
 /// quantity is still the 1 they were stored with). Returns (sheets given back,
 /// remnants removed, remnants left because they were used elsewhere).
-pub fn release(dir: &Path, formats: &mut [SheetFormat], held: &mut BTreeMap<String, i32>) -> Result<(i32, usize, Vec<String>), String> {
+pub fn release(lib: &Library, formats: &mut [SheetFormat], held: &mut BTreeMap<String, i32>) -> Result<(i32, usize, Vec<String>), String> {
     let made: Vec<String> = formats.iter().flat_map(|f| f.made.iter().cloned()).collect();
     let give: Vec<(String, i32)> = held.iter().map(|(r, n)| (r.clone(), *n)).collect();
-    let (back, removed, kept) = Stock::update(dir, |s| {
+    let (back, removed, kept) = Stock::update(lib, |s| {
         let mut back = 0;
         for (r, n) in &give {
             s.give_back(r, *n);
@@ -714,6 +740,11 @@ pub fn one_free(item: &Item, held: &BTreeMap<String, i32>, formats: &[SheetForma
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Library in `dir`, as sam on PROG-1 changes it.
+    fn as_sam(dir: &Path) -> Library {
+        Library::at(dir, &crate::shared::Who::new("sam", "PROG-1"), &crate::shared::Clock::pc())
+    }
 
     #[test]
     fn undo_follows_only_recorded_replacements() {
@@ -790,7 +821,7 @@ mod tests {
         st.replaced.insert("1".into(), vec!["R".into()]);
         st.save(&dir).unwrap();
         for _ in 0..2 {
-            let got = Stock::update(&dir, |s| s.add_sheet(Item::sheet("", 0, 3.0, 2000.0, 1000.0, 1), true)).unwrap();
+            let got = Stock::update(&as_sam(&dir), |s| s.add_sheet(Item::sheet("", 0, 3.0, 2000.0, 1000.0, 1), true)).unwrap();
             assert_ne!(got, "1");
         }
         assert_eq!(Stock::load(&dir).unwrap().items.len(), 2);
@@ -817,7 +848,7 @@ mod tests {
         let store = |sheet: Placed, formats: &mut Vec<SheetFormat>| {
             let sheets = [vec![sheet]];
             let j = JobSheets { name: "DEMO-001", parts: &parts, spec: &spec, sheets: &sheets, cut_lines: &[], material_name: String::new() };
-            make_remnants(&dir, &j, formats, &st, false, None).unwrap()
+            make_remnants(&as_sam(&dir), &j, formats, &st, false, None).unwrap()
         };
         let p = Placed { part: 0, x: 10.0, y: 10.0, w: 100.0, h: 50.0, turns: 0, mirror: false };
         let mut formats = vec![SheetFormat::rect(1000.0, 500.0)];
@@ -831,7 +862,7 @@ mod tests {
         let stock = Stock::load(&dir).unwrap();
         assert_eq!(stock.replaced["R"], second, "R → its real successor, no self-loop");
         // Deleted by hand, then undo to the first layout.
-        Stock::update(&dir, |s| {
+        Stock::update(&as_sam(&dir), |s| {
             s.delete(&second[0]);
             Ok(())
         })
@@ -864,7 +895,7 @@ mod tests {
         let mut formats = vec![SheetFormat::rect(1000.0, 500.0)];
         let lines1 = [line(300.0)];
         let j = JobSheets { name: "DEMO-001", parts: &parts, spec: &spec, sheets: &sheets, cut_lines: &lines1, material_name: String::new() };
-        make_remnants(&dir, &j, &mut formats, &st, false, None).unwrap();
+        make_remnants(&as_sam(&dir), &j, &mut formats, &st, false, None).unwrap();
         assert_eq!(formats[0].made, vec!["R".to_string()]);
         // The line moves: still one piece, to be rebuilt.
         let lines2 = [line(400.0)];
@@ -874,7 +905,7 @@ mod tests {
         assert_eq!(pieces.len(), 1);
         let marked = remnant_refs(&stock, &j, &formats, 0, &pieces, &st);
         let suggested: Vec<String> = remnant_rows(&dir, &j, &formats, &st, false).into_iter().map(|r| r.reference).collect();
-        make_remnants(&dir, &j, &mut formats, &st, false, None).unwrap();
+        make_remnants(&as_sam(&dir), &j, &mut formats, &st, false, None).unwrap();
         assert_ne!(marked, vec!["R".to_string()], "marks don't engrave the outgoing name");
         assert_eq!(marked, suggested);
         assert_eq!(marked, formats[0].made, "what is engraved is what is stored");
@@ -905,7 +936,7 @@ mod tests {
                     remnant_refs(&stock, &j, formats, i, &pieces, &st)
                 })
                 .collect();
-            make_remnants(&dir, &j, formats, &st, false, None).unwrap();
+            make_remnants(&as_sam(&dir), &j, formats, &st, false, None).unwrap();
             assert_eq!(marked, vec![formats[0].made.clone(), formats[1].made.clone()]);
             assert_ne!(formats[0].made, formats[1].made);
         };
@@ -955,12 +986,12 @@ mod tests {
         let f = SheetFormat::from_stock(s.get("S1").unwrap());
         // One sheet held already, a second one added: only that one is taken.
         let mut held: BTreeMap<String, i32> = [("S1".to_string(), 1)].into();
-        Stock::update(&dir, |s| s.take("S1", 1, false)).unwrap();
-        let note = reconcile(&dir, &[f.clone(), f.clone()], 2, &mut held, false).unwrap();
+        Stock::update(&as_sam(&dir), |s| s.take("S1", 1, false)).unwrap();
+        let note = reconcile(&as_sam(&dir), &[f.clone(), f.clone()], 2, &mut held, false).unwrap();
         assert_eq!(note, "1 sheet(s) taken from stock");
         assert_eq!(Stock::load(&dir).unwrap().get("S1").unwrap().qty, 3);
         // Back to one: one given back.
-        reconcile(&dir, &[f], 1, &mut held, false).unwrap();
+        reconcile(&as_sam(&dir), &[f], 1, &mut held, false).unwrap();
         assert_eq!((Stock::load(&dir).unwrap().get("S1").unwrap().qty, held["S1"]), (4, 1));
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -289,7 +289,7 @@ pub fn run(folder: &Path, this_library: &Path, opt: &Options) -> Result<Report, 
         }
         // A stock change on this run's own sheet: one more on the rack.
         let sheet = log.sheet.clone();
-        let changed = Stock::update(folder, |st| {
+        let changed = Stock::update(&lib, |st| {
             let q = st.get(&sheet).map_or(0, |i| i.qty);
             let want = if q == 0 || q >= SHEET_TOP { 1 } else { q + 1 };
             if q == 0 {
