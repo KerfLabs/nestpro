@@ -128,3 +128,26 @@ The five default labels: `needs-triage`, `needs-info`, `ready-for-agent`, `ready
 ### Domain docs
 
 Single-context: `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
+### Agent loop
+
+Settings for running a spec's tickets with agents (`babysit-tickets`):
+
+- **Check:** `tools/check.sh`. It always exits 0: it passes only when the public check is ok,
+  every `test result` line says `ok`, and the Windows check ends `Finished` with no `error`.
+- **Max implementers:** 2, with `CARGO_BUILD_JOBS=2` each (the build machine has 4 cores).
+- **Idle limit:** 45 minutes.
+- **Risky paths:** anything that changes a machine program (`app/src/cnc.rs`, `app/src/post.rs`,
+  `app/src/blm.rs`). The final PR stops for the user.
+- **Hotspot files:** `FEATURES.md`, `app/MECHANICS.md`, `app/mechanics.json`, `app/ROADMAP.md`,
+  `GUI_MAP` and `OPS` in `app/src/engine/ops.rs`, `app/src/engine/tests.rs`. Add only the IDs a
+  ticket assigns; keep both sides' rows on a merge.
+
+Reference lines (this project rebuilds another program):
+
+- **Original:** Lantek Expert v44, its install in `vendor/Expert` (local only, never committed).
+- **Study guide:** `research/AGENTS.md`; research skill `reverse-engineer-anything`.
+- **Private evidence:** `research/evidence/`. Studies commit to `research/` and don't push it.
+- **Public rules:** `app/MECHANICS.md` and `app/mechanics.json`.
+- **Published:** behaviour in our words with its rule ID, marked observed or estimated. Never
+  evidence (see "Keeping the public repo clean").
