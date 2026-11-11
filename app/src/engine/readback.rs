@@ -5,7 +5,7 @@
 //! must never reach the machine looking like a finished program.
 
 use crate::blm::BlmSet;
-use crate::cnc::SheetPlan;
+use crate::cnc::{Made, SheetPlan};
 use crate::cutoff::{CutKind, CutLine};
 use crate::nest::{Part, Placed, P};
 use std::collections::HashMap;
@@ -270,19 +270,25 @@ fn compare(w: &Cut, e: &Cut, tol: f64) -> Option<String> {
 }
 
 /// What a part should cut, absolute on the sheet, in the writer's order: its
-/// marks, then its contours from the pierce, closed. A path the writer has to
+/// marks and contours in its cut order (CO9; with no order set by hand, the
+/// marks first), each contour from the pierce, closed. A path the writer has to
 /// leave out (no length) isn't expected.
 fn planned_paths(plan: &SheetPlan, part_no: usize) -> Vec<Cut> {
     let same = |a: &P, b: &P| (a[0] - b[0]).abs() < 1e-6 && (a[1] - b[1]).abs() < 1e-6;
     let mut out = vec![];
-    for (_, pts) in plan.marks.iter().filter(|m| m.0 == part_no) {
-        let mut p = pts.clone();
-        p.dedup_by(|a, b| same(a, b));
-        if p.len() >= 2 {
-            out.push(Cut { pts: p, comp: None });
-        }
-    }
-    for c in plan.contours.iter().filter(|c| c.part_no == part_no && c.punch.is_none()) {
+    for made in plan.part_order(part_no) {
+        let c = match made {
+            Made::Mark(j) => {
+                let mut p = plan.marks[j].1.clone();
+                p.dedup_by(|a, b| same(a, b));
+                if p.len() >= 2 {
+                    out.push(Cut { pts: p, comp: None });
+                }
+                continue;
+            }
+            Made::Contour(k) if plan.contours[k].punch.is_none() => &plan.contours[k],
+            Made::Contour(_) => continue,
+        };
         let mut body = c.points.clone();
         if body.len() > 1 {
             body.push(c.points[0]);

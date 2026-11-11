@@ -3287,6 +3287,10 @@ fn main() -> eframe::Result {
                 app.show_path = true;
                 app.zoom = 3.0;
             }
+            // --path (screenshots): the sheet's cut path, at the zoom it opens with.
+            if std::env::args().any(|a| a == "--path") {
+                app.show_path = true;
+            }
             // --cut-ranges (screenshots): Quality by size on the plate with holes,
             // its rows and each contour's quality (CQ1) by the machine's names
             // and colours (CQ4, CQ5): rows at qualities 1, 2 and 3; on a job

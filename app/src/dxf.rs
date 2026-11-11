@@ -143,6 +143,12 @@ impl Contour {
     }
 }
 
+/// A marking line of a part saved before contour states that closes on
+/// itself (its last point back on its first): numbered among the holes.
+fn closed_mark(m: &[P]) -> bool {
+    m.len() > 3 && close(m[0], m[m.len() - 1], JOIN_TOL)
+}
+
 /// Where the outline is in a contour list: the last closed contour (CS1
 /// numbering: holes first, the outline, then the open lines).
 pub fn outline_index(list: &[Contour]) -> Option<usize> {
@@ -167,12 +173,30 @@ impl CustomGeo {
         if !self.contours.is_empty() {
             return self.contours.clone();
         }
-        let closed_mark = |m: &Vec<P>| m.len() > 3 && close(m[0], m[m.len() - 1], JOIN_TOL);
         let mut list: Vec<Contour> = self.holes.iter().map(|h| Contour::new(h.clone(), true, ContourState::Cut)).collect();
         list.extend(self.marks.iter().filter(|m| closed_mark(m)).map(|m| Contour::new(m[..m.len() - 1].to_vec(), true, ContourState::Mark)));
         list.push(Contour::new(self.outline.clone(), true, ContourState::Cut));
         list.extend(self.marks.iter().filter(|m| !closed_mark(m)).map(|m| Contour::new(m.clone(), false, ContourState::Mark)));
         list
+    }
+
+    /// Each marking line's contour number (its place in `contour_list`), in
+    /// the order of `marks`: the Mark contours in number order, or for a part
+    /// saved before contour states its closed lines among the holes and its
+    /// open ones after the outline, as `contour_list` numbers them.
+    pub fn mark_numbers(&self) -> Vec<usize> {
+        if !self.contours.is_empty() {
+            return (0..self.contours.len()).filter(|&k| self.contours[k].state == ContourState::Mark).collect();
+        }
+        let closed = self.marks.iter().filter(|m| closed_mark(m)).count();
+        let (mut c, mut o) = (self.holes.len(), self.holes.len() + closed + 1);
+        let mut out = vec![];
+        for m in &self.marks {
+            let k = if closed_mark(m) { &mut c } else { &mut o };
+            out.push(*k);
+            *k += 1;
+        }
+        out
     }
 
     /// The quality set by hand on each contour the part cuts, in the order of

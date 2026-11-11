@@ -432,6 +432,48 @@
    "estimated": true
   },
   {
+   "name": "a sheet cuts each part",
+   "group": "part cut order",
+   "value": "in its cut order: the contours set by hand first, then the automatic order, the outline last; the same on every sheet and copy, turned or mirrored",
+   "source": "CO8",
+   "estimated": true
+  },
+  {
+   "name": "a part with no cut order set by hand is cut on the sheet",
+   "group": "part cut order",
+   "value": "as before: its marks first, then its holes in the drawing's order, the outline last",
+   "source": "CO8",
+   "estimated": true
+  },
+  {
+   "name": "a mark on the sheet is made",
+   "group": "part cut order",
+   "value": "at its place in the part's cut order; with no order set by hand, before the part's first cut",
+   "source": "CO9",
+   "estimated": true
+  },
+  {
+   "name": "a part's marking texts are made",
+   "group": "part cut order",
+   "value": "with its first cut on the sheet (they have no place in the cut order)",
+   "source": "CO9",
+   "estimated": true
+  },
+  {
+   "name": "contours picked in a sheet's Manual cutting",
+   "group": "part cut order",
+   "value": "are cut first on that sheet; the rest of each part follows its own cut order, the outline last",
+   "source": "CO10",
+   "estimated": true
+  },
+  {
+   "name": "a mark when contours are picked on the sheet",
+   "group": "part cut order",
+   "value": "is made before the part's next cut once every cut ahead of it in the part's order is done",
+   "source": "CO10",
+   "estimated": true
+  },
+  {
    "name": "setting a part's cut order on the part screen",
    "group": "part cut order",
    "value": ["Machining → Contours → Manual Contours: click, sweep or box", "All Marks", "All Cut", "All Contours of one Quality"],
