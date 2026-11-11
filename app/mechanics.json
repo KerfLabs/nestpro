@@ -2387,6 +2387,136 @@
    "source": "MECHANICS CZ4"
   },
   {
+   "name": "hole order mode key and default",
+   "group": "cut order",
+   "value": "machine file B565 = 1 (By proximity)",
+   "source": "CO20"
+  },
+  {
+   "name": "hole order mode numbers",
+   "group": "cut order",
+   "value": "0 None, 1 By proximity, 2 By direction, 3 Minimum heat",
+   "source": "CO20",
+   "estimated": true
+  },
+  {
+   "name": "hole order start corner default",
+   "group": "cut order",
+   "value": "B566 = 0 (part corner nearest the head)",
+   "source": "CO20"
+  },
+  {
+   "name": "hole order direction default",
+   "group": "cut order",
+   "value": "B567 = 1 (rows; 2 columns)",
+   "source": "CO20"
+  },
+  {
+   "name": "hole order orthogonality tolerance default",
+   "group": "cut order",
+   "value": 1.0,
+   "source": "CO20"
+  },
+  {
+   "name": "cut small holes first default",
+   "group": "cut order",
+   "value": false,
+   "source": "CO20"
+  },
+  {
+   "name": "big hole minimum length, width and offset defaults",
+   "group": "cut order",
+   "value": [0.0, 0.0, 0.0],
+   "source": "CO20"
+  },
+  {
+   "name": "By proximity distance point",
+   "group": "cut order",
+   "value": "hole centre until it has a lead-in, else where its lead-in starts",
+   "source": "CO21"
+  },
+  {
+   "name": "By proximity near tie",
+   "group": "cut order",
+   "value": "smaller X distance, within the linear tolerance",
+   "source": "CO21"
+  },
+  {
+   "name": "By proximity path optimisation",
+   "group": "cut order",
+   "value": "not found",
+   "source": "CO22",
+   "estimated": true
+  },
+  {
+   "name": "By direction corner on a tie",
+   "group": "cut order",
+   "value": "lower left, lower right, upper right, upper left",
+   "source": "CO23"
+  },
+  {
+   "name": "By direction row",
+   "group": "cut order",
+   "value": "start-side edge within the orthogonality tolerance of the first hole left",
+   "source": "CO23"
+  },
+  {
+   "name": "By direction zig-zag",
+   "group": "cut order",
+   "value": true,
+   "source": "CO24"
+  },
+  {
+   "name": "hole order None on the part",
+   "group": "cut order",
+   "value": "rows from the start corner, every row the same way",
+   "source": "CO24",
+   "estimated": true
+  },
+  {
+   "name": "big hole",
+   "group": "cut order",
+   "value": "box length along X >= minimum length, or width along Y >= minimum width",
+   "source": "CO25"
+  },
+  {
+   "name": "small holes cut first",
+   "group": "cut order",
+   "value": "box in or overlapping the big hole's box grown by the offset",
+   "source": "CO25"
+  },
+  {
+   "name": "ordering the part's contours",
+   "group": "cut order",
+   "value": "contour directions only: holes by A014, outline by A015",
+   "source": "CO26"
+  },
+  {
+   "name": "sheet start corner defaults",
+   "group": "cut order",
+   "value": "start left on, start bottom on, horizontal on, zig-zag off",
+   "source": "CO27"
+  },
+  {
+   "name": "example program bottom-up with start bottom off",
+   "group": "cut order",
+   "value": "not found",
+   "source": "CO28",
+   "estimated": true
+  },
+  {
+   "name": "part automatic order",
+   "group": "cut order",
+   "value": "centre-punch dots, cycles, marking texts, marks, holes, outline",
+   "source": "CO29"
+  },
+  {
+   "name": "manage marks as cuts default",
+   "group": "cut order",
+   "value": "B699 = 0 (marks in their own pass, first)",
+   "source": "CO29"
+  },
+  {
    "name": "file name separator forbidden characters",
    "group": "import",
    "value": "<>:\"/\\|?*",
