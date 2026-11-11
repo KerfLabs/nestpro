@@ -5077,6 +5077,12 @@
   "source": "MECHANICS LB10; estimated"
  },
  {
+  "name": "agents: a booked job file saved into the Library",
+  "group": "shared library",
+  "value": "save-job hands the file's booking to the record (the record keeps its sheets and remnants) and the file stops following the stock (booked off), as one opened from the Library; later changes are booked when someone saves the job in the window",
+  "source": "MECHANICS LB10; estimated"
+ },
+ {
   "name": "warn when a job is in use (fresh install)",
   "group": "jobs in use",
   "value": false,

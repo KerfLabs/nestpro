@@ -2193,6 +2193,59 @@ fn an_agent_cant_book_stock_on_a_job_file_opened_from_the_library() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// LB10: an agent books its job file (1 sheet), then saves it into the
+/// Library: the record keeps that booking and the job file stops following
+/// the stock. Someone saves the job in the window, the agent's change nests
+/// it on 3 sheets and its save is refused: the stock still holds out only
+/// the 1 sheet the record holds, and the agent can take theirs.
+#[test]
+fn a_job_file_booked_before_its_save_into_the_library_leaves_the_stock_to_the_record() {
+    use crate::library::{Library, SaveTo};
+    let d = dir("agent_booked_then_saved");
+    let clock = Clock::at(1_794_216_000); // 2026-11-09 09:20 UTC
+    let mut ctx = stock_ctx(&d);
+    ctx.who = Who::new("sam", "PROG-2").as_agent();
+    ctx.clock = clock.clone();
+    let lib = ctx.library_dir.clone();
+    let window = Library::open(&lib, &Who::new("kim", "PROG-1"), &clock).unwrap();
+    let mut s = Session::new(ctx);
+    let jp = d.join("DEMO-7.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "S1", "w": 2000, "h": 1000, "thickness": 3, "qty": 5}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 300, "qty": 4, "name": "DEMO-P1"}));
+    call(&mut s, "nest", None, json!({}));
+    call(&mut s, "stock-book", None, json!({"mode": "book"}));
+    let in_stock = || crate::stock::Stock::load(&lib).unwrap().get("S1").unwrap().qty;
+    assert_eq!(in_stock(), 4, "booking takes the 1 sheet");
+    // Saved into the Library: the record keeps the booking, the job file
+    // no longer follows the stock.
+    let r = call(&mut s, "library", None, json!({"mode": "save-job"}));
+    let id = r["data"]["id"].as_u64().unwrap();
+    assert!(r["message"].as_str().unwrap().contains("booked when someone saves it in the window"), "{r}");
+    assert_eq!(window.load_job(id).unwrap().held.get("S1"), Some(&1));
+    assert!(!jobfile::load(&jp).unwrap().booked);
+    // Kim saves DEMO-7 in the window; the agent's change nests it on 3
+    // sheets, and its save is refused.
+    clock.advance(std::time::Duration::from_secs(10 * 60));
+    let mut theirs = window.load_job(id).unwrap();
+    theirs.week = "W12".into();
+    window.save_job(&theirs, SaveTo::Read(theirs.library.unwrap())).unwrap();
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 1900, "h": 900, "qty": 2, "name": "DEMO-P2"}));
+    call(&mut s, "nest", None, json!({}));
+    assert_eq!(jobfile::load(&jp).unwrap().sheets.len(), 3);
+    let e = err(&mut s, "library", json!({"mode": "save-job"}));
+    assert!(e.contains("kim on PROG-1") && e.contains("Nothing was saved"), "{e}");
+    // The stock matches the record: 1 sheet out, not 3.
+    let held = window.load_job(id).unwrap().held;
+    assert_eq!(held.get("S1"), Some(&1));
+    assert_eq!(in_stock(), 4, "the stock holds out more sheets than the record");
+    // The agent takes theirs; the stock still matches.
+    call(&mut s, "library", None, json!({"mode": "open", "id": id}));
+    assert_eq!(jobfile::load(&jp).unwrap().week, "W12");
+    assert_eq!(in_stock(), 4);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 /// LB7, LB10: an agent's save-part goes through the same check: a library
 /// part the window saved since the agent added it is refused with who and
 /// when, and nothing is saved.
