@@ -115,27 +115,6 @@ The app is also driven headless by agents and scripts (`nestpro <operation> job.
 - Commit or push only when the user asks.
 - Explain results in shop terms (sheets, remnants, parts, cuts) first, code second.
 
-## Agent loop
-
-Settings for agents running a spec's tickets (`babysit-tickets`):
-
-- **Check command:** `tools/check.sh`
-- **Max implementers:** 2
-- **Idle limit:** 45 min
-- **Risky paths** (always stop for the user): anything that changes the CNC programs written
-  (`app/src/cnc.rs`, `post.rs`, `blm.rs`, `kerf.rs`, `leads.rs`, `joints.rs`), and the public check
-  (`tools/public-check.sh`, `tools/public-images.txt`).
-- **Hotspot files** (the plan assigns each ticket the IDs it may add): `FEATURES.md`,
-  `app/MECHANICS.md`, `app/mechanics.json`, `app/ROADMAP.md`, `app/src/engine/ops.rs` (`OPS`, `GUI_MAP`).
-- **Reference:** Lantek Expert V44 SP01; its install is `vendor/Expert` (git-ignored).
-- **Reference study guide:** `research/AGENTS.md`.
-- **Reference evidence:** `research/evidence/` in the private repo (clone or link it into a worktree as `research/`).
-- **Reference rules:** `app/MECHANICS.md` and `app/mechanics.json`, by rule ID.
-- **Reference research skill:** `reverse-engineer-anything`.
-- **Reference publishable:** behaviour in our own words under its rule ID, marked observed or
-  estimated. Never addresses, internal names, the original's text or images, or shop data (see
-  "Keeping the public repo clean").
-
 ## Agent skills
 
 ### Issue tracker
@@ -160,7 +139,8 @@ Settings for running a spec's tickets with agents (`babysit-tickets`):
 - **Max implementers:** 2, with `CARGO_BUILD_JOBS=2` each (the build machine has 4 cores).
 - **Idle limit:** 45 minutes.
 - **Risky paths:** anything that changes a machine program (`app/src/cnc.rs`, `app/src/post.rs`,
-  `app/src/blm.rs`). The final PR stops for the user.
+  `app/src/blm.rs`, `app/src/kerf.rs`, `app/src/leads.rs`, `app/src/joints.rs`), and the public
+  check (`tools/public-check.sh`, `tools/public-images.txt`). The final PR stops for the user.
 - **Hotspot files:** `FEATURES.md`, `app/MECHANICS.md`, `app/mechanics.json`, `app/ROADMAP.md`,
   `GUI_MAP` and `OPS` in `app/src/engine/ops.rs`, `app/src/engine/tests.rs`. Add only the IDs a
   ticket assigns; keep both sides' rows on a merge.
