@@ -53,7 +53,7 @@ is **`FEATURES.md`** at the top of the repo; keep both in step.
 
 | Original | Rebuild | Pri |
 |---|---|---|
-| Lead-in/outs: Automatic, Semi-automatic, Delete, 16 lead types, dynamic, custom, move point, lead-out like lead-in, bisector | Part — automatic leads from the machine's CT1 tables by contour class and quality (types 1–13, zones, corner rules, round-hole clipping, collision test; `leads.rs`, MECHANICS AL1–AL11); types 14–16, force placement, dynamic/custom leads missing | ★★ |
+| Lead-in/outs: Automatic, Semi-automatic, Delete, 16 lead types, dynamic, custom, move point, lead-out like lead-in, bisector | Part — automatic leads from the machine's CT1 tables by contour class and quality (types 1–13, zones, corner rules, round-hole clipping, collision test; `leads.rs`, MECHANICS AL1–AL11); one lead's free end dragged by hand in the Part view (MECHANICS LE1–LE7); moving a lead's start by drag (TEC-27), types 14–16, force placement, dynamic/custom leads missing | ★★ |
 | Micro-joints: Automatic, Semi-auto, 6 types, corner lead-in, nano-joints, move point, to geometry | Part — Lantek's automatic count (ceil P/F150, size-class min/max, even), holes too, centred on elements, corner joints straddle corners, joint leads (`joints.rs`, MECHANICS AM1–AM6); lead and joint tables per material × thickness section of the machine file (MTL7); per-class V records, zone modes, nano-joints missing | ★ |
 | Loops (2 types), Round angles | Part — loops | ★ |
 | **Bridges** (join parts so they cut as one) | Missing | ★★ |
@@ -95,7 +95,7 @@ is **`FEATURES.md`** at the top of the repo; keep both in step.
 | Feature | Rebuild | Pri |
 |---|---|---|
 | Headless engine shared by the window, CLI and MCP (`src/engine/`) | Have | |
-| Operations: job, parts (shapes, DXF + layer roles, library), sheet, nest, place/move/rotate/copy, technology (leads, element leads, joints, loops, cut quality, texts), cut order, remnants/cut lines, verify, program, export, sheet stock | Have — 46 operations (`nestpro ops`; `machine-tech` reports the machine-file section for the job) | |
+| Operations: job, parts (shapes, DXF + layer roles, library), sheet, nest, place/move/rotate/copy, technology (leads, element leads, leads moved by hand, joints, loops, cut quality, texts), cut order, remnants/cut lines, verify, program, export, sheet stock | Have — 46 operations (`nestpro ops`; `machine-tech` reports the machine-file section for the job) | |
 | Pictures for the agent (sheet/part PNG or SVG, numbered elements) | Have | |
 | Every ribbon command mapped to an operation, test-enforced (`nestpro ops --gui`) | Have | |
 | Window notices when an agent changed the open job file: reloads it, or asks when both changed | Have (`filewatch.rs`, once a second) | |

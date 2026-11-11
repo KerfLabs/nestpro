@@ -307,6 +307,9 @@ pub struct App {
     /// Earlier Part views (zoom, pan) for "Previous", and when the wheel last moved.
     pub part_view_hist: Vec<(f32, Vec2)>,
     pub part_view_last: f64,
+    /// Part view: the extent the view is framed on while a lead end is dragged
+    /// (part index, extent), so the part doesn't move under the pointer.
+    pub part_ext_lock: Option<(usize, [f64; 4])>,
     /// Follow Windows' light/dark setting (the original's default style takes
     /// the system colours).
     pub follow_system: bool,
@@ -593,6 +596,7 @@ impl App {
             part_zoom: 1.0,
             part_pan: Vec2::ZERO,
             part_view_hist: vec![],
+            part_ext_lock: None,
             part_view_last: 0.0,
             follow_system: false,
             options_open: false,

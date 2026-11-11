@@ -888,9 +888,7 @@ impl App {
 
     pub fn verify_machining_now(&mut self) {
         let Some(i) = self.shown_part() else { return };
-        let (w, h) = self.parts[i].bbox();
-        let pl = nest::Placed { part: i, x: 0.0, y: 0.0, w, h, turns: 0, mirror: false };
-        let plan = cnc::plan(&self.parts, &[pl], &self.spec);
+        let plan = cnc::plan_part(&self.parts, i, &self.spec);
         let probs = verify_machining(&plan);
         self.dv.check = Some((
             i,

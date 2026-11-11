@@ -1863,3 +1863,145 @@ fn import_drawing_sets_layers_and_contours_in_one_call() {
     assert!(info["message"].as_str().unwrap().contains("1 part type(s)"), "{info}");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn an_agent_moves_one_contours_lead_by_hand_and_puts_it_back() {
+    let d = dir("lead_edit");
+    let job = d.join("plate.snjob");
+    let jp = job.to_str().unwrap();
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(jp), json!({"w": 1500, "h": 1000, "material": "steel", "thickness": 5}));
+    call(&mut s, "add-shape", None, json!({"shape": "plate-hole", "w": 200, "h": 150, "qty": 3}));
+    call(&mut s, "leads", None, json!({"mode": "auto"}));
+    // part-info shows each contour's lead as cut (LE1): 1 = the hole, 2 = the outline.
+    let info = |s: &mut Session| call(s, "part-info", None, json!({"part": 1}))["data"]["contours"].clone();
+    let c = info(&mut s);
+    let outline = &c[1]["lead_in"];
+    assert!(outline["length_mm"].as_f64().unwrap() > 0.0, "{c}");
+    // Its start is a convex corner: the scrap opens 270°, so it can swing round it.
+    assert_eq!(outline["angles_deg"], json!([-89.0, 179.0]), "{c}");
+    assert_eq!(c[1]["lead_by_hand"], false);
+
+    // Swing the outline's lead-in round the corner and stretch it; shorten the hole's.
+    let r = call(&mut s, "lead-edit", None, json!({"part": 1, "contour": 2, "in_length": 10, "in_angle": -45}));
+    assert!(r["message"].as_str().unwrap().contains("10.0 mm at -45°"), "{r}");
+    call(&mut s, "lead-edit", None, json!({"part": 1, "contour": 1, "in_length": 4}));
+    let c = info(&mut s);
+    assert_eq!((c[1]["lead_in"]["length_mm"].as_f64(), c[1]["lead_in"]["angle_deg"].as_f64(), &c[1]["lead_by_hand"]), (Some(10.0), Some(-45.0), &json!(true)), "{c}");
+    assert_eq!(c[0]["lead_in"]["length_mm"].as_f64(), Some(4.0), "{c}");
+    let saved = jobfile::load(&job).unwrap().parts[0].tech.unwrap();
+    assert_eq!(saved.lead_edits.iter().flatten().count(), 2);
+
+    // Every piece on the sheet takes it, however the nester turned it; one
+    // that would reach the sheet's edge or a neighbour is only shortened (LE5).
+    call(&mut s, "nest", None, json!({"stock": "off"}));
+    let j = jobfile::load(&job).unwrap();
+    let plans = j.plans();
+    let outlines: Vec<&cnc::Contour> = plans[0].contours.iter().filter(|c| c.contour == 1).collect();
+    assert_eq!(outlines.len(), 3);
+    for c in outlines {
+        let e = lead_ends(c);
+        assert!(c.lead_hand, "{e:?}");
+        let (l, a) = e.lead_in.unwrap();
+        assert!(l > 0.0 && l < 10.0 + 1e-6 && (a + 45.0).abs() < 1e-6, "{e:?}");
+    }
+
+    // Refusals say what to do instead.
+    assert!(err(&mut s, "lead-edit", json!({"part": 1, "contour": 2, "in_angle": 200})).contains("can lean"));
+    assert!(err(&mut s, "lead-edit", json!({"part": 1, "contour": 2, "in_length": 0.4})).contains("at least 1 mm"));
+    assert!(err(&mut s, "lead-edit", json!({"part": 1, "contour": 7, "in_length": 5})).contains("isn't one the part cuts"));
+    assert!(err(&mut s, "lead-edit", json!({"part": 1, "contour": 2})).contains("in_length"));
+
+    // Back to automatic: one contour, then the rest.
+    let r = call(&mut s, "lead-edit", None, json!({"part": 1, "contour": 2, "mode": "reset"}));
+    assert!(r["message"].as_str().unwrap().contains("back"), "{r}");
+    let c = info(&mut s);
+    assert_eq!((&c[1]["lead_by_hand"], &c[0]["lead_by_hand"]), (&json!(false), &json!(true)));
+    call(&mut s, "leads", None, json!({"mode": "delete"}));
+    assert_eq!(jobfile::load(&job).unwrap().parts[0].tech.unwrap().lead_edits.iter().flatten().count(), 0);
+}
+
+#[test]
+fn dragging_a_lead_end_in_the_part_view_moves_that_lead_only() {
+    // A plate with a hole and no technology of its own: the machine's leads.
+    let mut parts = vec![Part { name: "P".into(), shape: Shape::PlateHole, w: 200.0, h: 150.0, qty: 1, rotate: false, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
+    let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
+    let before = cnc::plan_part(&parts, 0, &spec);
+    let hole0 = before.contours.iter().find(|c| c.contour == 0).unwrap().lead_path.clone();
+    // Drag the outline's pierce (it starts at the bottom-left corner) out to the left.
+    let to = [-6.0, 4.0];
+    let m = drag_lead_end(&mut parts, 0, &spec, 1, LeadEnd::In, to).unwrap();
+    assert!(m.contains("Contour 2's lead-in moved by hand"), "{m}");
+    let t = parts[0].tech.unwrap();
+    // The part keeps the machine's leads everywhere else (LE4).
+    assert_eq!((t.lead_type, t.corner_start, t.lead_edits.iter().flatten().count()), (nest::LeadType::Machine, true, 1));
+    let after = cnc::plan_part(&parts, 0, &spec);
+    let c = after.contours.iter().find(|c| c.contour == 1).unwrap();
+    // The pierce lands under the pointer, within the 0.1 mm / 1° snap.
+    assert!((c.lead_in[0] - to[0]).hypot(c.lead_in[1] - to[1]) < 0.15, "{:?}", c.lead_in);
+    assert_eq!(after.contours.iter().find(|c| c.contour == 0).unwrap().lead_path, hole0);
+    // Dragging the same point again changes nothing; dragging into the part keeps it in the scrap.
+    drag_lead_end(&mut parts, 0, &spec, 1, LeadEnd::In, to).unwrap();
+    assert_eq!(parts[0].tech.unwrap(), t);
+    drag_lead_end(&mut parts, 0, &spec, 1, LeadEnd::In, [5.0, 8.0]).unwrap();
+    let (o, _) = nest::placed_shape(&parts, &Placed { part: 0, x: 0.0, y: 0.0, w: 200.0, h: 150.0, turns: 0, mirror: false });
+    let c = cnc::plan_part(&parts, 0, &spec).contours.into_iter().find(|c| c.contour == 1).unwrap();
+    assert!(!nest::point_in_poly(&o, c.lead_in), "{:?}", c.lead_in);
+    // The lead-out's end too; then double-click (reset) puts the contour back.
+    let out = *c.lead_out_path.last().unwrap();
+    drag_lead_end(&mut parts, 0, &spec, 1, LeadEnd::Out, [out[0] - 2.0, out[1] - 3.0]).unwrap();
+    assert!(parts[0].tech.unwrap().lead_edit(1).unwrap().lead_out.is_some());
+    assert_eq!(reset_lead_edits(&mut parts[0], Some(1)), 1);
+    assert_eq!(cnc::plan_part(&parts, 0, &spec).contours.iter().find(|c| c.contour == 1).unwrap().lead_path, before.contours.iter().find(|c| c.contour == 1).unwrap().lead_path);
+}
+
+/// Each contour part-info gives a lead: (number, moved by hand).
+fn leads_by_hand(s: &mut Session, part: usize) -> Vec<(u64, bool)> {
+    let pi = call(s, "part-info", None, json!({"part": part}));
+    pi["data"]["contours"].as_array().unwrap().iter().filter_map(|c| c["lead_by_hand"].as_bool().map(|b| (c["contour"].as_u64().unwrap(), b))).collect()
+}
+
+#[test]
+fn a_moved_lead_stays_with_its_contour_when_the_cut_contours_change() {
+    let d = dir("lead_edit_states");
+    let job = d.join("plate.snjob");
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "steel", "thickness": 3}));
+    call(&mut s, "import-drawing", None, json!({"path": contour_plate(&d).to_str().unwrap(), "qty": 1}));
+    call(&mut s, "leads", None, json!({"mode": "auto"}));
+    let holes: Vec<u64> = contour_rows(&mut s, 1).into_iter().filter(|r| r.1 == "hole" && r.2 == "cut").map(|r| r.0).collect();
+    assert!(holes.len() >= 2, "{holes:?}");
+    let (a, b) = (holes[0], holes[1]);
+    call(&mut s, "lead-edit", None, json!({"part": 1, "contour": b, "in_length": 4}));
+    // An earlier hole stops being cut: the moved lead stays on its own hole (LE1, CS4).
+    call(&mut s, "contour-tech", None, json!({"part": 1, "contours": a.to_string(), "state": "mark"}));
+    let moved: Vec<u64> = leads_by_hand(&mut s, 1).into_iter().filter(|r| r.1).map(|r| r.0).collect();
+    assert_eq!(moved, vec![b]);
+    // Its own hole stops being cut: the moved lead goes with it, to no other contour.
+    call(&mut s, "contour-tech", None, json!({"part": 1, "contours": b.to_string(), "state": "mark"}));
+    assert!(leads_by_hand(&mut s, 1).iter().all(|r| !r.1));
+    assert_eq!(jobfile::load(&job).unwrap().parts[0].tech.unwrap().lead_edits.iter().flatten().count(), 0);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_moved_lead_reads_the_same_with_system_compensation() {
+    let d = dir("lead_edit_kerf");
+    let job = d.join("plate.snjob");
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "steel", "thickness": 3}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 200, "h": 100, "qty": 1}));
+    call(&mut s, "leads", None, json!({"mode": "auto"}));
+    call(&mut s, "compensation", None, json!({"control": "off", "system": "on"}));
+    // The lead is measured on the drawn contour, not the offset path (KC8, LE1).
+    let lead = |s: &mut Session| {
+        let c = call(s, "part-info", None, json!({"part": 1}))["data"]["contours"][0]["lead_in"].clone();
+        (c["length_mm"].as_f64().unwrap(), c["angle_deg"].as_f64().unwrap())
+    };
+    call(&mut s, "lead-edit", None, json!({"part": 1, "contour": 1, "in_length": 10, "in_angle": 90}));
+    assert_eq!(lead(&mut s), (10.0, 90.0));
+    // Only the length given: the angle stays.
+    call(&mut s, "lead-edit", None, json!({"part": 1, "contour": 1, "in_length": 12}));
+    assert_eq!(lead(&mut s), (12.0, 90.0));
+    let _ = std::fs::remove_dir_all(&d);
+}
