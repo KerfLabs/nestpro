@@ -940,7 +940,7 @@ impl App {
     /// save asks (LB9). Made-up users and PCs on a clock set to 9 Nov 09:20.
     pub fn demo_save_question(&mut self, what: &str) {
         let dir = self.library_dir();
-        if self.cfg.library_dir.is_empty() || dir == crate::library::default_dir() || dir.join(crate::library::INDEX).exists() {
+        if self.cfg.library_dir.is_empty() || dir == crate::library::default_dir() || crate::library::holds_library(&dir) {
             self.status = "--save-question needs --library-dir= set to a new, empty folder".into();
             return;
         }
@@ -948,6 +948,8 @@ impl App {
         self.clock = clock.clone();
         self.who = crate::shared::Who::new("kim", "PROG-2");
         let r = (|| -> Result<(), String> {
+            // A new Library there, as Settings makes one (LB12).
+            crate::library::create(&dir)?;
             let sam = Library::open(&dir, &crate::shared::Who::new("sam", "PROG-1"), &clock)?;
             let later = |m: u64| clock.advance(std::time::Duration::from_secs(m * 60));
             if what == "part" {
