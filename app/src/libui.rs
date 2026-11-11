@@ -340,6 +340,10 @@ impl App {
                 let mut theirs = lib.load_job(o.id)?;
                 crate::engine::stockflow::release(&lib, &mut theirs.formats, &mut theirs.held)?;
                 crate::engine::stockflow::forget_booking(&mut self.result.formats, &mut self.held);
+                // From here the job goes over their save as Overwrite saw it:
+                // if storing it fails, saving again finishes it without
+                // asking, and gives their sheets back only this once.
+                self.lib_read.revision = o.revision;
             }
             stock_note = self.stock_on_save();
             Ok(self.current_jobfile())
@@ -1568,6 +1572,66 @@ mod libui_tests {
         prog2.libui.question = None;
         prog2.save_job_to_library();
         assert!(matches!(prog2.libui.question, Some(SaveQuestion::Job(_))), "{}", prog2.status);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// LB9: Overwrite gave their sheets back and booked this job, then its
+    /// record couldn't be stored (the Library's list was in the way). Saving
+    /// again finishes it without asking: their sheets went back once and
+    /// this job's were taken once.
+    #[test]
+    fn overwrite_whose_record_couldnt_be_stored_finishes_on_the_next_save() {
+        let Refusal { dir, prog1, mut prog2, id, .. } = refusal("overwrite_store_fails");
+        let (sheets, _) = in_stock(&dir);
+        let before = sheets + holds(&prog1);
+        {
+            let index = dir.join(crate::library::INDEX);
+            crate::shared::hooks::set(move |s| {
+                if s == "record written" && index.is_file() {
+                    std::fs::remove_file(&index).unwrap();
+                    std::fs::create_dir_all(index.join("in the way")).unwrap();
+                }
+            });
+        }
+        prog2.overwrite_theirs();
+        crate::shared::hooks::clear();
+        assert!(prog2.status.contains("Couldn't save"), "{}", prog2.status);
+        assert_eq!(prog2.library().unwrap().load_job(id).unwrap().parts[0].qty, 25, "their save was replaced");
+        std::fs::remove_dir_all(dir.join(crate::library::INDEX)).unwrap();
+        prog2.library().unwrap().rebuild_index().unwrap();
+        prog2.save_job_to_library();
+        assert!(prog2.libui.question.is_none(), "asked again: {}", prog2.status);
+        assert_eq!(prog2.library().unwrap().load_job(id).unwrap().parts[0].qty, 40);
+        let (left, _) = in_stock(&dir);
+        assert_eq!(left, before - holds(&prog2), "PROG-1's sheets went back once, PROG-2's were taken once");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// LB9 with Prompt for references: Overwrite books the job as a new one,
+    /// so the remnants it had stored are named again before anything is
+    /// saved.
+    #[test]
+    fn overwrite_asks_for_the_names_of_every_remnant_it_stores() {
+        let dir = new_library("overwrite_names");
+        let clock = Clock::at(NOV_9_0920);
+        let mut prog1 = demo7(&dir, &clock);
+        let id = prog1.job_lib_id.unwrap();
+        remnant_line(&mut prog1);
+        prog1.save_job_to_library();
+        assert!(!made(&prog1).is_empty(), "{}", prog1.status);
+        let mut prog2 = stock_window(&dir, "kim", "PROG-2", &clock);
+        prog2.open_library_job(id);
+        assert_eq!(made(&prog2), made(&prog1));
+        clock.advance(Duration::from_secs(60));
+        prog1.save_job_to_library();
+        prog2.save_job_to_library();
+        assert!(matches!(prog2.libui.question, Some(SaveQuestion::Job(_))), "{}", prog2.status);
+        prog2.cfg.stock.prompt_remnant_ref = true;
+        let stock = stock_file(&dir);
+        prog2.overwrite_theirs();
+        let nm = prog2.naming.as_ref().expect("asked for the remnants' names");
+        assert_eq!(nm.rows.len(), made(&prog2).len());
+        assert_eq!(stock_file(&dir), stock, "something was saved before they were named");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

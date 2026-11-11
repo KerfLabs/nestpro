@@ -1809,16 +1809,19 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                             lib.find_product(name).map_or(SaveTo::New, |id| job.library_parts.get(name).filter(|r| r.id == id).map_or(SaveTo::Unread(id), |r| SaveTo::Read(*r)))
                         })
                         .collect();
-                    // To work on theirs, this job's part goes first: a part of
-                    // that name still in the job keeps what it read (LB7).
+                    // To work on theirs, this job's parts of that reference go
+                    // first: one still in the job keeps what it read (LB7).
+                    let parts = &job.parts;
                     let refused = |c: crate::library::Changed, read: bool, i: usize| {
+                        let name = &parts[i].name;
+                        let out: Vec<String> = (0..parts.len()).rev().filter(|&k| parts[k].name == *name).map(|k| format!("remove-part part={}", k + 1)).collect();
                         format!(
-                            "Library part '{}' ({}) was saved by {}{}. Nothing was saved. To work on theirs, take this job's part out (remove-part part={}) and add theirs (library mode=add id={}); to keep yours, give the part a new reference (edit-part name=…) and save-part again.",
+                            "Library part '{}' ({}) was saved by {}{}. Nothing was saved. To work on theirs, take this job's '{name}' out ({}) and add theirs (library mode=add id={}); to keep yours, give the part a new reference (edit-part name=…) and save-part again.",
                             c.name,
                             crate::library::auto_ref(crate::library::Kind::Product, c.id),
                             c.saved_by_stamp(&ctx.clock),
                             if read { " since this job added it" } else { ", and this job's part of that name didn't come from it" },
-                            i + 1,
+                            out.join(", then "),
                             c.id
                         )
                     };
