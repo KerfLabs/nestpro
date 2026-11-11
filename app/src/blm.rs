@@ -15,7 +15,7 @@
 //!
 //! Lines end in CR LF. See MECHANICS.md "BLM LC5 programs".
 
-use crate::cnc::SheetPlan;
+use crate::cnc::{Made, SheetPlan};
 use crate::nest::{Part, Placed, SheetSpec, P};
 use std::fmt::Write as _;
 
@@ -436,19 +436,26 @@ pub fn subprogram(name: &str, plan: &SheetPlan, part_no: usize, origin: P) -> St
     let mut s = String::from(";M01\r\nR16=chk_pret\r\nCICLA:\r\nINITPART(1)\r\n");
     let _ = write!(s, ";{name}\r\n");
     let mut first = true;
-    for (_, pts) in plan.marks.iter().filter(|m| m.0 == part_no) {
-        let p: Vec<P> = pts.iter().map(|&q| rel(q)).collect();
-        write_path(&mut s, &p, false, &[], "", first, PathKind::Mark);
-        first = false;
-    }
-    for c in plan.contours.iter().filter(|c| c.part_no == part_no && c.punch.is_none()) {
-        let p: Vec<P> = c.points.iter().map(|&q| rel(q)).collect();
-        let lead: Vec<P> = c.lead_path.iter().map(|&q| rel(q)).collect();
-        // The side from the contour's real direction (KC2): a mirrored part
-        // or a clockwise drawing gets the other word. The LC5 post writes no
-        // corrector number.
-        let comp = c.comp.word().map_or(String::new(), |(side, _)| format!(" {}", side.word()));
-        write_path(&mut s, &p, true, &lead, &comp, first, PathKind::of(plan, c));
+    // Its marks and contours in its cut order (CO9): with no order set by
+    // hand, the marks first.
+    for made in plan.part_order(part_no) {
+        match made {
+            Made::Mark(j) => {
+                let p: Vec<P> = plan.marks[j].1.iter().map(|&q| rel(q)).collect();
+                write_path(&mut s, &p, false, &[], "", first, PathKind::Mark);
+            }
+            Made::Contour(k) if plan.contours[k].punch.is_none() => {
+                let c = &plan.contours[k];
+                let p: Vec<P> = c.points.iter().map(|&q| rel(q)).collect();
+                let lead: Vec<P> = c.lead_path.iter().map(|&q| rel(q)).collect();
+                // The side from the contour's real direction (KC2): a mirrored part
+                // or a clockwise drawing gets the other word. The LC5 post writes no
+                // corrector number.
+                let comp = c.comp.word().map_or(String::new(), |(side, _)| format!(" {}", side.word()));
+                write_path(&mut s, &p, true, &lead, &comp, first, PathKind::of(plan, c));
+            }
+            Made::Contour(_) => continue,
+        }
         first = false;
     }
     s.push_str("ENDGEO\r\nIF R16==1\r\n\t  STOPRE\r\n\t  R16=0\r\n   GOTOB CICLA\r\nENDIF\r\nENDPART\r\nRET\r\n");

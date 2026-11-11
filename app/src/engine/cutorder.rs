@@ -64,6 +64,39 @@ pub fn order(part: &Part) -> Vec<(usize, bool)> {
     by_hand.chain(auto).chain(outline).collect()
 }
 
+/// One step of a part's machining on a sheet, numbered as the sheet plan
+/// numbers it: a cut contour of the part's geometry (its cut holes, then the
+/// outline, as `cnc::sheet_contours` lists them) or a marking line of its
+/// drawing (`dxf::CustomGeo::marks`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    Cut(usize),
+    Mark(usize),
+}
+
+/// The order a sheet cuts and marks part `part` in (CO8, CO9): its cut
+/// order (`order`), the order set by hand first and the outline last, each
+/// contour as the sheet plan numbers it. With no order set by hand, the
+/// marks first, then the holes and the outline, all as the part's geometry
+/// lists them: what every sheet cut before an order set by hand reached it.
+/// That is the automatic order (CO5), and for a part saved before contour
+/// states it keeps its marks in the order they were saved in.
+pub fn sheet_steps(part: &Part) -> Vec<Step> {
+    let marks = part.custom.as_ref().map_or(0, |g| g.marks.len());
+    let geo = match custom(part) {
+        Some(geo) if !hand(part).is_empty() => geo,
+        _ => {
+            let cuts = part.geometry().holes.len() + 1;
+            return (0..marks).map(Step::Mark).chain((0..cuts).map(Step::Cut)).collect();
+        }
+    };
+    let list = geo.contour_list();
+    let cut = dxf::cut_order(&list);
+    let mark = geo.mark_numbers();
+    let step = |k: usize| cut.iter().position(|&c| c == k).map(Step::Cut).or_else(|| mark.iter().position(|&m| m == k).map(Step::Mark));
+    order(part).into_iter().filter_map(|(k, _)| step(k)).collect()
+}
+
 /// A command on a part's cut order (CO3, CO5, CO6). Each one adds to the
 /// end of the order, or takes back the last one, or empties it.
 #[derive(Clone, Debug, PartialEq)]

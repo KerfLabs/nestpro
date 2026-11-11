@@ -2415,3 +2415,514 @@ fn a_moved_lead_reads_the_same_with_system_compensation() {
     assert_eq!(lead(&mut s), (12.0, 90.0));
     let _ = std::fs::remove_dir_all(&d);
 }
+
+// ---------------------------------------------------------------------------
+// Sheets and machine programs follow a part's cut order (MAC-5, CO8–CO10).
+// ---------------------------------------------------------------------------
+
+/// The program written for `name` before a part's hand-set cut order reached
+/// the sheet (spec #70): a job with no hand-set order must write it
+/// unchanged. `NESTPRO_RECORD=1` writes it anew.
+fn same_as_recorded(name: &str, text: &str) {
+    let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/engine/testdata").join(name);
+    if std::env::var_os("NESTPRO_RECORD").is_some() {
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, text).unwrap();
+        return;
+    }
+    let want = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{name}: {e} (NESTPRO_RECORD=1 records it)"));
+    if want != text {
+        let (a, b): (Vec<&str>, Vec<&str>) = (want.split('\n').collect(), text.split('\n').collect());
+        let k = a.iter().zip(&b).position(|(x, y)| x != y).unwrap_or(a.len().min(b.len()));
+        panic!("{name}: line {} was {:?}, now {:?} ({} lines before, {} now)", k + 1, a.get(k), b.get(k), a.len(), b.len());
+    }
+}
+
+/// A made-up 300 × 200 frame: a 200 × 120 window (contour 1), a Ø16 hole
+/// (contour 2), the outline (3) and a line on layer MARK (4).
+fn frame_with_window(d: &Path) -> PathBuf {
+    let rect = |x0: f64, y0: f64, x1: f64, y1: f64| format!("0\nLWPOLYLINE\n8\n0\n90\n4\n70\n1\n10\n{x0}\n20\n{y0}\n10\n{x1}\n20\n{y0}\n10\n{x1}\n20\n{y1}\n10\n{x0}\n20\n{y1}\n");
+    let hole = "0\nCIRCLE\n8\n0\n10\n270\n20\n100\n30\n0\n40\n8\n";
+    let mark = "0\nLINE\n8\nMARK\n10\n20\n20\n185\n11\n120\n21\n185\n";
+    let body = [rect(0.0, 0.0, 300.0, 200.0), rect(40.0, 40.0, 240.0, 160.0), hole.to_string(), mark.to_string()].concat();
+    let p = d.join("DEMO-FRAME.dxf");
+    std::fs::write(&p, format!("0\nSECTION\n2\nENTITIES\n{body}0\nENDSEC\n0\nEOF\n")).unwrap();
+    p
+}
+
+/// Every sheet's program of the job open in `s`, on the post `ctx` sets.
+fn programs(s: &mut Session) -> Vec<String> {
+    let n = call(s, "info", None, json!({}))["data"]["sheets"].as_array().map_or(0, Vec::len);
+    (1..=n).map(|k| call(s, "program", None, json!({"sheet": k}))["data"].as_str().unwrap().to_string()).collect()
+}
+
+/// Made-up jobs with no hand-set cut order, each written on the G-code post
+/// and the LC5: a plate with five holes and a marking line turned and
+/// mirrored, with a text and a built-in flange; a frame with a part sitting
+/// in its window, and a sheet where the window is picked by hand; a part
+/// saved before contour states whose marks are listed open line first.
+fn no_order_jobs(d: &Path, blm: bool) -> Vec<(String, Vec<String>)> {
+    let mut out = vec![];
+    let ctx = || {
+        let mut c = Ctx::builtin();
+        c.blm.on = blm;
+        c
+    };
+    // Five holes, turned and mirrored, with a mark, a text and a flange.
+    let job = d.join("demo.snjob");
+    let mut s = Session::new(ctx());
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1500, "h": 1000, "material": "mild steel", "thickness": 3, "force": true}));
+    call(&mut s, "import-drawing", None, json!({"path": plate_with_five_holes(d).to_str().unwrap(), "qty": 4, "layers": "MARK=mark"}));
+    call(&mut s, "add-shape", None, json!({"shape": "flange", "w": 200, "h": 200, "qty": 1, "name": "DEMO-FLANGE"}));
+    call(&mut s, "text", None, json!({"mode": "add", "parts": "1", "text": "DEMO", "kind": "mark"}));
+    call(&mut s, "edit-part", None, json!({"part": 1, "mirror": true}));
+    for (x, y, angle, mirror) in [(20, 20, 0, false), (400, 20, 90, false), (20, 400, 180, true), (600, 20, 270, true)] {
+        call(&mut s, "place", None, json!({"part": 1, "x": x, "y": y, "angle": angle, "mirror": mirror}));
+    }
+    call(&mut s, "place", None, json!({"part": 2, "x": 800, "y": 400}));
+    out.push(("holes".to_string(), programs(&mut s)));
+
+    // A frame with a part in its window; on sheet 2 the window picked by hand.
+    let job = d.join("rings.snjob");
+    let mut s = Session::new(ctx());
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1500, "h": 1000, "material": "mild steel", "thickness": 3, "force": true}));
+    call(&mut s, "import-drawing", None, json!({"path": frame_with_window(d).to_str().unwrap(), "qty": 3, "layers": "MARK=mark"}));
+    call(&mut s, "add-shape", None, json!({"shape": "plate-hole", "w": 150, "h": 80, "qty": 2, "name": "DEMO-INNER"}));
+    call(&mut s, "edit-part", None, json!({"part": 1, "mirror": true}));
+    call(&mut s, "place", None, json!({"part": 1, "x": 50, "y": 50}));
+    call(&mut s, "place", None, json!({"part": 2, "x": 110, "y": 110}));
+    call(&mut s, "place", None, json!({"part": 1, "x": 500, "y": 50, "angle": 90, "mirror": true}));
+    call(&mut s, "place", None, json!({"part": 1, "sheet": "new", "x": 50, "y": 50}));
+    call(&mut s, "place", None, json!({"part": 2, "sheet": "2", "x": 110, "y": 110}));
+    call(&mut s, "cut-order", None, json!({"mode": "pick", "sheet": 2, "x": 90, "y": 150}));
+    out.push(("rings".to_string(), programs(&mut s)));
+
+    // A part saved before contour states: its marks listed open line first.
+    let job = d.join("old.snjob");
+    let jp = job.to_str().unwrap();
+    let mut s = Session::new(ctx());
+    call(&mut s, "new", Some(jp), json!({"w": 1000, "h": 500, "material": "mild steel", "thickness": 3, "force": true}));
+    call(&mut s, "import-drawing", None, json!({"path": plate_with_five_holes(d).to_str().unwrap(), "qty": 1, "layers": "MARK=mark"}));
+    call(&mut s, "place", None, json!({"part": 1, "x": 50, "y": 50}));
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&job).unwrap()).unwrap();
+    let geo = v["parts"][0]["custom"].as_object_mut().unwrap();
+    geo.remove("contours");
+    let square = json!([[200.0, 60.0], [220.0, 60.0], [220.0, 80.0], [200.0, 80.0], [200.0, 60.0]]);
+    geo["marks"].as_array_mut().unwrap().push(square);
+    std::fs::write(&job, serde_json::to_string(&v).unwrap()).unwrap();
+    let mut s = Session::new(ctx());
+    call(&mut s, "info", Some(jp), json!({}));
+    out.push(("old".to_string(), programs(&mut s)));
+
+    // A 25 mm kerf with system compensation: both holes of a marked plate
+    // can't be cut, so the outline is its first cut (KC18).
+    crate::ct1::set_thread_active(Some(crate::ct1::MachineTech::from_text("B116 ON\nB117 OFF\nB002 12.5\n")));
+    let job = d.join("kerf.snjob");
+    let mut s = Session::new(ctx());
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "mild steel", "thickness": 3, "force": true}));
+    call(&mut s, "import-drawing", None, json!({"path": plate_with_two_holes(d).to_str().unwrap(), "qty": 2, "layers": "MARK=mark"}));
+    call(&mut s, "place", None, json!({"part": 1, "x": 50, "y": 50}));
+    call(&mut s, "place", None, json!({"part": 1, "x": 400, "y": 50, "angle": 180}));
+    out.push(("kerf".to_string(), programs(&mut s)));
+    crate::ct1::set_thread_active(None);
+    out
+}
+
+#[test]
+fn a_job_with_no_hand_set_order_writes_the_programs_it_wrote_before() {
+    for (blm, post) in [(false, "iso"), (true, "lc5")] {
+        let d = dir(&format!("no_order_{post}"));
+        for (job, texts) in no_order_jobs(&d, blm) {
+            for (k, text) in texts.iter().enumerate() {
+                same_as_recorded(&format!("no-order-{job}-{post}-sheet{}.txt", k + 1), text);
+            }
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+/// One path a program cuts or marks, as read back from its text: a mark, or
+/// a cut with the box of its points and the centres of its arcs.
+struct ReadPath {
+    mark: bool,
+    lo: [f64; 2],
+    hi: [f64; 2],
+    arcs: Vec<[f64; 2]>,
+}
+
+impl ReadPath {
+    fn new(mark: bool) -> ReadPath {
+        ReadPath { mark, lo: [f64::MAX; 2], hi: [f64::MIN; 2], arcs: vec![] }
+    }
+    fn add(&mut self, p: [f64; 2]) {
+        self.lo = [self.lo[0].min(p[0]), self.lo[1].min(p[1])];
+        self.hi = [self.hi[0].max(p[0]), self.hi[1].max(p[1])];
+    }
+    /// Where it is: the centre of its arcs, else of its box.
+    fn centre(&self) -> [f64; 2] {
+        match self.arcs.len() {
+            0 => [(self.lo[0] + self.hi[0]) / 2.0, (self.lo[1] + self.hi[1]) / 2.0],
+            n => [self.arcs.iter().map(|c| c[0]).sum::<f64>() / n as f64, self.arcs.iter().map(|c| c[1]).sum::<f64>() / n as f64],
+        }
+    }
+    fn size(&self) -> f64 {
+        (self.hi[0] - self.lo[0]) * (self.hi[1] - self.lo[1])
+    }
+}
+
+/// The value after `key` in a program word list ("X12.5 Y3" → 12.5 for 'X').
+fn word(line: &str, key: char) -> Option<f64> {
+    line.split_whitespace().find_map(|w| w.strip_prefix(key)?.parse().ok())
+}
+
+/// The paths of a G-code program, part by part in the order the parts
+/// first appear: each pierce (M07) or mark (M10) to its end.
+fn iso_paths(text: &str) -> Vec<(usize, Vec<ReadPath>)> {
+    let mut out: Vec<(usize, Vec<ReadPath>)> = vec![];
+    let mut part = 0;
+    let mut cur: Option<ReadPath> = None;
+    for l in text.lines() {
+        if let Some(r) = l.strip_prefix("( PART ") {
+            part = r.split(' ').next().unwrap().parse().unwrap();
+            continue;
+        }
+        let body = l.split_once(' ').map_or(l, |x| x.1);
+        if body.starts_with("M07 ( PIERCE") || body.starts_with("M10") {
+            cur = Some(ReadPath::new(body.starts_with("M10")));
+        } else if body == "M08" || body.starts_with("M11") {
+            if let Some(p) = cur.take() {
+                match out.iter_mut().find(|o| o.0 == part) {
+                    Some(o) => o.1.push(p),
+                    None => out.push((part, vec![p])),
+                }
+            }
+        } else if let (Some(p), true) = (cur.as_mut(), body.starts_with("G1") || body.starts_with("G2") || body.starts_with("G3")) {
+            if let (Some(x), Some(y)) = (word(body, 'X'), word(body, 'Y')) {
+                p.add([x, y]);
+            }
+        }
+    }
+    out
+}
+
+/// The paths of each part's subprogram in an LC5 set as `program` returns
+/// it, in the order the subprograms are written: each NEXT_L to its
+/// LASTLINE, a mark when its pierce and quality codes are 0 and 9.
+fn lc5_paths(text: &str) -> Vec<Vec<ReadPath>> {
+    let mut out = vec![];
+    for file in text.split("; ==== ").skip(1).filter(|f| f.contains("INITPART")) {
+        let mut paths: Vec<ReadPath> = vec![];
+        let mut at = [0.0, 0.0];
+        let mut profile = false;
+        for l in file.lines().map(str::trim) {
+            if let Some(a) = l.strip_prefix("NEXT_L(").and_then(|a| a.strip_suffix(')')) {
+                let a: Vec<f64> = a.split(',').map(|v| v.parse().unwrap()).collect();
+                paths.push(ReadPath::new(a[3] == 0.0 && a[4] == 9.0));
+                at = [a[0], a[1]];
+                profile = false;
+            } else if l == "PROFILE" {
+                profile = true;
+            } else if let Some(a) = l.strip_prefix("LASTLINE(").and_then(|a| a.strip_suffix(')')) {
+                let a: Vec<f64> = a.split(',').map(|v| v.parse().unwrap()).collect();
+                let p = paths.last_mut().unwrap();
+                p.add([a[4], a[5]]);
+                p.add([a[6], a[7]]);
+            } else if let (Some(x), Some(y)) = (word(l, 'X'), word(l, 'Y')) {
+                let p = paths.last_mut().unwrap();
+                if profile {
+                    p.add([x, y]);
+                    if let (Some(i), Some(j)) = (word(l, 'I'), word(l, 'J')) {
+                        p.arcs.push([at[0] + i, at[1] + j]);
+                    }
+                }
+                at = [x, y];
+            }
+        }
+        out.push(paths);
+    }
+    out
+}
+
+/// The contours of DEMO-003 (`plate_with_five_holes`) a part's paths cut, by
+/// part-info's numbers: the biggest cut is the outline (6), each hole is
+/// known by how far it is from the outline's centre (1–5: 110, 60, 10, 40
+/// and 100 mm, however the part is turned or mirrored), a mark is 7.
+fn five_holes_numbers(paths: &[ReadPath]) -> Vec<u64> {
+    let outline = paths.iter().filter(|p| !p.mark).max_by(|a, b| a.size().total_cmp(&b.size())).unwrap();
+    let c = outline.centre();
+    paths
+        .iter()
+        .map(|p| {
+            if p.mark {
+                return 7;
+            }
+            if std::ptr::eq(p, outline) {
+                return 6;
+            }
+            let q = p.centre();
+            let d = ((q[0] - c[0]).powi(2) + (q[1] - c[1]).powi(2)).sqrt();
+            [(1, 110.0), (2, 60.0), (3, 10.0), (4, 40.0), (5, 100.0)].into_iter().min_by(|a, b| (a.1 - d).abs().total_cmp(&(b.1 - d).abs())).unwrap().0
+        })
+        .collect()
+}
+
+/// A job with DEMO-003 (`plate_with_five_holes`, its line on layer MARK)
+/// ordered by hand as `order`, `copies` placed at (x, y, angle, mirrored).
+fn ordered_plate_job(d: &Path, blm: bool, order: &str, copies: &[(i64, i64, i64, bool)]) -> Session {
+    let mut ctx = Ctx::builtin();
+    ctx.blm.on = blm;
+    let mut s = Session::new(ctx);
+    call(&mut s, "new", Some(d.join("ordered.snjob").to_str().unwrap()), json!({"w": 1500, "h": 1000, "material": "mild steel", "thickness": 3, "force": true}));
+    call(&mut s, "import-drawing", None, json!({"path": plate_with_five_holes(d).to_str().unwrap(), "qty": copies.len(), "layers": "MARK=mark"}));
+    call(&mut s, "edit-part", None, json!({"part": 1, "mirror": true}));
+    if !order.is_empty() {
+        call(&mut s, "part-cut-order", None, json!({"part": 1, "mode": "add", "contours": order}));
+    }
+    for &(x, y, angle, mirror) in copies {
+        call(&mut s, "place", None, json!({"part": 1, "x": x, "y": y, "angle": angle, "mirror": mirror}));
+    }
+    s
+}
+
+/// The sheet's G-code program, and each placed part's contours in the order
+/// it cuts and marks them (part-info's numbers).
+fn iso_order(s: &mut Session, sheet: usize) -> Vec<(usize, Vec<u64>)> {
+    let text = call(s, "program", None, json!({"sheet": sheet}))["data"].as_str().unwrap().to_string();
+    iso_paths(&text).iter().map(|(p, paths)| (*p, five_holes_numbers(paths))).collect()
+}
+
+/// Verify Machining finds nothing wrong on any sheet.
+fn verify_clean(s: &mut Session) {
+    let v = call(s, "verify", None, json!({}));
+    assert!(v["data"].as_array().unwrap().iter().all(|r| r["correct"] == true), "{v}");
+}
+
+/// Copies turned 90°, 180° and 270°, and mirrored.
+const TURNED: [(i64, i64, i64, bool); 4] = [(50, 50, 90, false), (400, 50, 180, false), (50, 500, 270, true), (400, 500, 0, true)];
+
+#[test]
+fn every_copy_of_a_part_is_cut_in_its_hand_set_order_turned_or_mirrored() {
+    let d = dir("sheet_order_turned");
+    let mut s = ordered_plate_job(&d, false, "3, 1, 2", &TURNED);
+    // CO8: holes 3, 1, 2 as set by hand, then the rest in the automatic order
+    // (the mark, holes 4 and 5), the outline last: what part-info says.
+    let want = vec![3, 1, 2, 7, 4, 5, 6];
+    assert_eq!(part_cut_order(&mut s, 1).0, want);
+    let got = iso_order(&mut s, 1);
+    assert_eq!(got.len(), 4);
+    for (part, order) in got {
+        assert_eq!(order, want, "copy #{part}");
+    }
+    verify_clean(&mut s);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn the_lc5_set_writes_each_copy_in_its_hand_set_order() {
+    let d = dir("sheet_order_lc5");
+    let mut s = ordered_plate_job(&d, true, "3, 1, 2", &TURNED);
+    let text = call(&mut s, "program", None, json!({"sheet": 1}))["data"].as_str().unwrap().to_string();
+    // One subprogram per copy (each turned or mirrored its own way, BL37),
+    // each writing the contours in the part's cut order (CO8, CO9).
+    let subs = lc5_paths(&text);
+    assert_eq!(subs.len(), 4, "{text}");
+    for paths in &subs {
+        assert_eq!(five_holes_numbers(paths), vec![3, 1, 2, 7, 4, 5, 6], "{text}");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// A point on the edge of DEMO-003's hole `k` (1–5) where `pl` puts it.
+fn five_holes_edge(pl: Placed, k: usize) -> [f64; 2] {
+    let (x, r) = [(40.0, 10.0), (90.0, 5.0), (140.0, 10.0), (190.0, 5.0), (250.0, 15.0)][k - 1];
+    pl.map([x + r, 50.0])
+}
+
+#[test]
+fn a_sheet_pick_wins_on_its_sheet_and_the_rest_follows_the_parts_order() {
+    let d = dir("sheet_order_picks");
+    // Sheet 1: two copies turned 90°; sheet 2: one mirrored.
+    let mut s = ordered_plate_job(&d, false, "3, 1, 2", &[(50, 50, 90, false), (400, 50, 90, false)]);
+    call(&mut s, "place", None, json!({"part": 1, "sheet": "new", "x": 50, "y": 50, "mirror": true}));
+    let turned = |x: f64| Placed { part: 0, x, y: 50.0, w: 100.0, h: 300.0, turns: 1, mirror: false };
+    let mirrored = Placed { part: 0, x: 50.0, y: 50.0, w: 300.0, h: 100.0, turns: 0, mirror: true };
+    // CO10: hole 2, which the part's order names, picked on sheet 2: cut
+    // first there, then the rest in the part's order (3, 1, the mark, 4, 5),
+    // the outline last.
+    let at = five_holes_edge(mirrored, 2);
+    call(&mut s, "cut-order", None, json!({"mode": "pick", "sheet": 2, "x": at[0], "y": at[1], "tol": 1}));
+    assert_eq!(iso_order(&mut s, 2), vec![(1, vec![2, 3, 1, 7, 4, 5, 6])]);
+    // Sheet 1 keeps the part's order on the copy nobody picked; on the other
+    // copy hole 4, which the order doesn't name, is picked and goes first.
+    assert_eq!(iso_order(&mut s, 1), vec![(1, vec![3, 1, 2, 7, 4, 5, 6]), (2, vec![3, 1, 2, 7, 4, 5, 6])]);
+    let at = five_holes_edge(turned(400.0), 4);
+    call(&mut s, "cut-order", None, json!({"mode": "pick", "sheet": 1, "x": at[0], "y": at[1], "tol": 1}));
+    let got = iso_order(&mut s, 1);
+    assert_eq!(got, vec![(2, vec![4, 3, 1, 2, 7, 5, 6]), (1, vec![3, 1, 2, 7, 4, 5, 6])]);
+    assert_eq!(iso_order(&mut s, 2), vec![(1, vec![2, 3, 1, 7, 4, 5, 6])], "the other sheet keeps its own pick");
+    verify_clean(&mut s);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_part_in_a_hole_of_an_ordered_part_is_cut_before_that_hole() {
+    let d = dir("sheet_order_rings");
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(d.join("rings.snjob").to_str().unwrap()), json!({"w": 1500, "h": 1000, "material": "mild steel", "thickness": 3}));
+    call(&mut s, "import-drawing", None, json!({"path": frame_with_window(&d).to_str().unwrap(), "qty": 3, "layers": "MARK=mark"}));
+    call(&mut s, "add-shape", None, json!({"shape": "plate-hole", "w": 150, "h": 80, "qty": 3, "name": "DEMO-INNER"}));
+    assert_eq!(part_cut_order(&mut s, 1), (vec![4, 1, 2, 3], vec![]), "the mark, the window, the Ø16 hole, the outline");
+    // The Ø16 hole by hand, then the window: the part in the window still
+    // goes before the window (CO1, CO2).
+    call(&mut s, "part-cut-order", None, json!({"part": 1, "mode": "add", "contours": "2, 1"}));
+    for sheet in 1..=3 {
+        let new = if sheet == 1 { json!({"part": 1, "x": 50, "y": 50}) } else { json!({"part": 1, "sheet": "new", "x": 50, "y": 50}) };
+        call(&mut s, "place", None, new);
+        call(&mut s, "place", None, json!({"part": 2, "sheet": sheet.to_string(), "x": 110, "y": 110}));
+    }
+    // Sheet 2: the frame's outline picked; sheet 3: its window.
+    call(&mut s, "cut-order", None, json!({"mode": "pick", "sheet": 2, "x": 50, "y": 150, "tol": 1}));
+    call(&mut s, "cut-order", None, json!({"mode": "pick", "sheet": 3, "x": 90, "y": 150, "tol": 1}));
+    // The frame's contours by size: outline 3, window 1, hole 2; its mark 4.
+    // The inner part: its hole, then its outline.
+    let frame = |p: &[ReadPath]| -> Vec<u64> {
+        p.iter().map(|q| if q.mark { 4 } else if q.size() > 50_000.0 { 3 } else if q.size() > 10_000.0 { 1 } else { 2 }).collect()
+    };
+    let inner = |p: &[ReadPath]| -> Vec<&str> { p.iter().map(|q| if q.size() > 10_000.0 { "outline" } else { "hole" }).collect() };
+    let runs = |sheet: usize, s: &mut Session| -> Vec<(usize, usize)> {
+        // (placed part, paths in a row) as the program cuts them.
+        let text = call(s, "program", None, json!({"sheet": sheet}))["data"].as_str().unwrap().to_string();
+        let mut out: Vec<(usize, usize)> = vec![];
+        let mut part = 0;
+        for l in text.lines() {
+            if let Some(r) = l.strip_prefix("( PART ") {
+                part = r.split(' ').next().unwrap().parse().unwrap();
+            }
+            if l.contains("M07 ( PIERCE") || l.contains("M10 ( MARK ON )") {
+                match out.last_mut() {
+                    Some(o) if o.0 == part => o.1 += 1,
+                    _ => out.push((part, 1)),
+                }
+            }
+        }
+        out
+    };
+    let paths = |sheet: usize, s: &mut Session| iso_paths(call(s, "program", None, json!({"sheet": sheet}))["data"].as_str().unwrap());
+    for sheet in 1..=3 {
+        let p = paths(sheet, &mut s);
+        let f = p.iter().find(|x| x.0 == 1).unwrap();
+        let i = p.iter().find(|x| x.0 == 2).unwrap();
+        assert_eq!(inner(&i.1), vec!["hole", "outline"], "sheet {sheet}");
+        let (want, order) = match sheet {
+            // CO1: the part in the window first, then the frame in its order.
+            1 => (vec![2, 1, 4, 3], vec![(2, 2), (1, 4)]),
+            // CO10, CO2: the picked outline cuts the frame whole in its order,
+            // the part in the window just before the window.
+            2 => (vec![2, 1, 4, 3], vec![(1, 1), (2, 2), (1, 3)]),
+            // The picked window first, after the part in it; then the rest
+            // of the frame in its order.
+            _ => (vec![1, 2, 4, 3], vec![(2, 2), (1, 4)]),
+        };
+        assert_eq!(frame(&f.1), want, "sheet {sheet}");
+        assert_eq!(runs(sheet, &mut s), order, "sheet {sheet}");
+    }
+    verify_clean(&mut s);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_mark_set_by_hand_between_two_holes_is_made_between_them() {
+    for blm in [false, true] {
+        let d = dir(&format!("sheet_order_mark_{blm}"));
+        let mut s = ordered_plate_job(&d, blm, "3, 7, 1", &[(50, 50, 90, false), (400, 50, 0, true)]);
+        // A text marked on the part: not a contour, so it is made with the
+        // part's first cut, as before (CO9).
+        call(&mut s, "text", None, json!({"mode": "add", "parts": "1", "text": "DEMO", "kind": "mark"}));
+        let text = call(&mut s, "program", None, json!({"sheet": 1}))["data"].as_str().unwrap().to_string();
+        let copies: Vec<Vec<u64>> = if blm { lc5_paths(&text).iter().map(|p| five_holes_numbers(p)).collect() } else { iso_paths(&text).iter().map(|p| five_holes_numbers(&p.1)).collect() };
+        assert_eq!(copies.len(), 2, "{text}");
+        for order in copies {
+            // The text's strokes, then hole 3, the mark, hole 1 and the rest.
+            let strokes = order.iter().take_while(|&&k| k == 7).count();
+            assert!(strokes > 1, "{order:?}");
+            assert_eq!(order[strokes..], [3, 7, 1, 2, 4, 5, 6], "lc5 {blm}: {order:?}");
+        }
+        // With no order set by hand, the marks first, as before.
+        call(&mut s, "part-cut-order", None, json!({"part": 1, "mode": "clear"}));
+        let text = call(&mut s, "program", None, json!({"sheet": 1}))["data"].as_str().unwrap().to_string();
+        let first = if blm { five_holes_numbers(&lc5_paths(&text)[0]) } else { five_holes_numbers(&iso_paths(&text)[0].1) };
+        let strokes = first.iter().take_while(|&&k| k == 7).count();
+        assert_eq!(first[strokes..], [1, 2, 3, 4, 5, 6], "lc5 {blm}: {first:?}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+#[test]
+fn a_technology_change_after_ordering_reaches_the_program() {
+    let d = dir("sheet_order_tech");
+    let mut s = ordered_plate_job(&d, false, "3, 1, 2", &[(50, 50, 270, true)]);
+    // CO7 on the sheet: hole 1 set to No cut leaves the order and isn't cut.
+    call(&mut s, "contour-tech", None, json!({"part": 1, "contours": "1", "state": "no-cut"}));
+    assert_eq!(iso_order(&mut s, 1), vec![(1, vec![3, 2, 7, 4, 5, 6])]);
+    // Cut again, it joins the automatic part after the mark.
+    call(&mut s, "contour-tech", None, json!({"part": 1, "contours": "1", "state": "cut"}));
+    assert_eq!(iso_order(&mut s, 1), vec![(1, vec![3, 2, 7, 1, 4, 5, 6])]);
+    // Hole 2 marked: it joins the automatic marks, made after hole 3.
+    call(&mut s, "contour-tech", None, json!({"part": 1, "contours": "2", "state": "mark"}));
+    assert_eq!(part_cut_order(&mut s, 1), (vec![3, 2, 7, 1, 4, 5, 6], vec![3]));
+    assert_eq!(iso_order(&mut s, 1), vec![(1, vec![3, 7, 7, 1, 4, 5, 6])]);
+    verify_clean(&mut s);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn cut_time_and_rapid_length_follow_the_order() {
+    let d = dir("sheet_order_time");
+    let mut s = ordered_plate_job(&d, false, "", &[(50, 50, 0, false)]);
+    let sheet = |s: &mut Session| {
+        let i = call(s, "info", None, json!({}));
+        let v = &i["data"]["sheets"][0];
+        (v["rapid_len_mm"].as_f64().unwrap(), v["time_s"].as_f64().unwrap(), v["cut_len_mm"].as_f64().unwrap())
+    };
+    let part = |s: &mut Session| call(s, "part-info", None, json!({"part": 1}))["data"]["machining"]["times_s"]["rapid"].as_f64().unwrap();
+    let (rapid, time, cut) = sheet(&mut s);
+    let own = part(&mut s);
+    // Back and forth across the plate: holes 1, 5, 2, 4, 3, about 300 mm
+    // more from centre to centre than left to right.
+    call(&mut s, "part-cut-order", None, json!({"part": 1, "mode": "add", "contours": "1, 5, 2, 4, 3"}));
+    let (rapid2, time2, cut2) = sheet(&mut s);
+    assert!(rapid2 > rapid + 200.0, "rapids {rapid} → {rapid2}");
+    assert!(time2 > time, "time {time} → {time2}");
+    assert_eq!(cut2, cut, "the same contours are cut");
+    assert!(part(&mut s) > own, "the part's own rapid time follows it too");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_part_saved_before_contour_states_is_cut_and_marked_in_its_hand_set_order() {
+    let d = dir("sheet_order_old_part");
+    let job = d.join("old.snjob");
+    let jp = job.to_str().unwrap();
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(jp), json!({"w": 1000, "h": 500, "material": "mild steel", "thickness": 3}));
+    call(&mut s, "import-drawing", None, json!({"path": plate_with_five_holes(&d).to_str().unwrap(), "qty": 1, "layers": "MARK=mark"}));
+    call(&mut s, "place", None, json!({"part": 1, "x": 50, "y": 50}));
+    // Saved before contour states, with a closed marking square after its
+    // marking line: numbered 1–5 holes, 6 the square, 7 the outline, 8 the line.
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&job).unwrap()).unwrap();
+    let geo = v["parts"][0]["custom"].as_object_mut().unwrap();
+    geo.remove("contours");
+    geo["marks"].as_array_mut().unwrap().push(json!([[200.0, 60.0], [220.0, 60.0], [220.0, 80.0], [200.0, 80.0], [200.0, 60.0]]));
+    std::fs::write(&job, serde_json::to_string(&v).unwrap()).unwrap();
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "info", Some(jp), json!({}));
+    call(&mut s, "part-cut-order", None, json!({"part": 1, "mode": "add", "contours": "3, 6, 1"}));
+    assert_eq!(part_cut_order(&mut s, 1).0, vec![3, 6, 1, 8, 2, 4, 5, 7]);
+    // On the sheet: hole 3, the square, hole 1, the line, the rest.
+    let text = call(&mut s, "program", None, json!({"sheet": 1}))["data"].as_str().unwrap().to_string();
+    let paths = &iso_paths(&text)[0].1;
+    assert_eq!(five_holes_numbers(paths), vec![3, 7, 1, 7, 2, 4, 5, 6], "{text}");
+    let marks: Vec<bool> = paths.iter().filter(|p| p.mark).map(|p| p.size() > 100.0).collect();
+    assert_eq!(marks, vec![true, false], "the square, then the line");
+    let _ = std::fs::remove_dir_all(&d);
+}
