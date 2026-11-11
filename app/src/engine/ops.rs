@@ -1794,6 +1794,12 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                 "save-part" => {
                     let t = parts_sel(&job.parts, a.get("parts"), true)?;
                     let folder = a.str("folder").unwrap_or_default();
+                    // Two parts of one reference would save over each other.
+                    for (k, &i) in t.iter().enumerate() {
+                        if let Some(&j) = t[..k].iter().find(|&&j| job.parts[j].name == job.parts[i].name) {
+                            return Err(format!("Parts {} and {} are both '{}'. Nothing was saved. Give one a new reference (edit-part name=…) or take it out (remove-part), then save-part again.", j + 1, i + 1, job.parts[i].name));
+                        }
+                    }
                     // Over each library part as this job read it, or a new
                     // one (LB7); every part is checked before any is saved.
                     let to: Vec<SaveTo> = t
@@ -1803,19 +1809,22 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                             lib.find_product(name).map_or(SaveTo::New, |id| job.library_parts.get(name).filter(|r| r.id == id).map_or(SaveTo::Unread(id), |r| SaveTo::Read(*r)))
                         })
                         .collect();
-                    let refused = |c: crate::library::Changed, read: bool| {
+                    // To work on theirs, this job's part goes first: a part of
+                    // that name still in the job keeps what it read (LB7).
+                    let refused = |c: crate::library::Changed, read: bool, i: usize| {
                         format!(
-                            "Library part '{}' ({}) was saved by {}{}. Nothing was saved. To work on theirs, add it again (library mode=add id={}); to keep yours, give the part a new reference (edit-part name=…) and save-part again.",
+                            "Library part '{}' ({}) was saved by {}{}. Nothing was saved. To work on theirs, take this job's part out (remove-part part={}) and add theirs (library mode=add id={}); to keep yours, give the part a new reference (edit-part name=…) and save-part again.",
                             c.name,
                             crate::library::auto_ref(crate::library::Kind::Product, c.id),
                             c.saved_by_stamp(&ctx.clock),
                             if read { " since this job added it" } else { ", and this job's part of that name didn't come from it" },
+                            i + 1,
                             c.id
                         )
                     };
-                    for &to in &to {
+                    for (&i, &to) in t.iter().zip(&to) {
                         if let Err(c) = lib.check(crate::library::Kind::Product, to) {
-                            return Err(refused(c, matches!(to, SaveTo::Read(_))));
+                            return Err(refused(c, matches!(to, SaveTo::Read(_)), i));
                         }
                     }
                     let mut ids = vec![];
@@ -1825,7 +1834,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                                 job.library_parts.insert(job.parts[i].name.clone(), rec);
                                 ids.push(rec.id);
                             }
-                            Err(Refused::Changed(c)) => return Err(refused(c, matches!(to, SaveTo::Read(_)))),
+                            Err(Refused::Changed(c)) => return Err(refused(c, matches!(to, SaveTo::Read(_)), i)),
                             Err(Refused::Failed(e)) => return Err(e),
                         }
                     }
@@ -1838,8 +1847,11 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                     let copy = a.bool("copy")?.unwrap_or(false);
                     let mut folder = None;
                     if let Some(from) = job.library.filter(|_| copy) {
-                        // Filed in the folder of the job it was copied from (LB9, JX15).
-                        folder = crate::folders::load(&lib, crate::library::Kind::Job).ok().map(|t| t.folder_of(from.id));
+                        // Filed in the folder of the job it was copied from
+                        // (LB9, JX15); that job gone, by its folder name.
+                        if lib.entries().iter().any(|e| e.kind == crate::library::Kind::Job && e.id == from.id) {
+                            folder = crate::folders::load(&lib, crate::library::Kind::Job).ok().map(|t| t.folder_of(from.id));
+                        }
                         job.name = lib.free_name(crate::library::Kind::Job, &job.name, |_| false);
                         job.library = None;
                         stockflow::forget_booking(&mut job.formats, &mut job.held);

@@ -2398,6 +2398,19 @@ fn an_agents_save_part_is_refused_when_the_library_part_was_saved_since() {
     let e = err(&mut s, "library", json!({"mode": "save-part", "folder": "Acme"}));
     assert!(e.contains("DEMO-P1") && e.contains("kim on PROG-1 at 2026-11-09 09:30") && e.contains("Nothing was saved"), "{e}");
     assert_eq!(window.load_product(first).unwrap().part.w, 450.0);
+    // Theirs added next to the job's own part: two parts of one reference
+    // are refused before anything is saved.
+    call(&mut s, "library", None, json!({"mode": "add", "id": first}));
+    let two = err(&mut s, "library", json!({"mode": "save-part", "folder": "Acme"}));
+    assert!(two.contains("Parts 1 and 2 are both 'DEMO-P1'") && two.contains("Nothing was saved"), "{two}");
+    assert_eq!(window.load_product(first).unwrap().part.w, 450.0);
+    // As the refusal says: the job's part out, theirs in, then it saves.
+    assert!(e.contains("remove-part part=1") && e.contains(&format!("library mode=add id={first}")), "{e}");
+    call(&mut s, "remove-part", None, json!({"part": 2}));
+    call(&mut s, "remove-part", None, json!({"part": 1}));
+    call(&mut s, "library", None, json!({"mode": "add", "id": first}));
+    call(&mut s, "library", None, json!({"mode": "save-part", "folder": "Acme"}));
+    assert_eq!(window.load_product(first).unwrap().part.w, 450.0);
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -2446,6 +2459,29 @@ fn an_agents_copy_of_a_library_job_goes_into_its_folder() {
     call(&mut s, "library", None, json!({"mode": "save-job", "copy": true}));
     let l = call(&mut s, "job-folders", None, json!({"mode": "list"}));
     assert_eq!(l["data"]["outline"], json!(["Acme/", "Acme/2026-11/", "Acme/2026-11/DEMO-001", "Acme/2026-11/DEMO-001 (1)", "W12/"]), "{l}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_agents_copy_of_a_library_job_someone_deleted_goes_by_its_folder_name() {
+    // LB9, JX15: the job it was copied from is gone from the Library, so its
+    // folder isn't known: the copy goes into the folder its name says.
+    let d = dir("agent_copy_deleted");
+    let ctx = stock_ctx(&d);
+    let lib = crate::library::Library::open(&ctx.library_dir, &Who::new("kim", "PROG-1"), &ctx.clock).unwrap();
+    let mut s = Session::new(ctx);
+    let jp = d.join("frames.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"name": "DEMO-001", "week": "W12"}));
+    let id = call(&mut s, "library", None, json!({"mode": "save-job"}))["data"]["id"].as_u64().unwrap();
+    call(&mut s, "job-folders", None, json!({"mode": "new", "name": "Acme"}));
+    call(&mut s, "job-folders", None, json!({"mode": "move", "saved_job": "DEMO-001", "to": "Acme"}));
+    lib.delete(crate::library::Kind::Job, id).unwrap();
+    call(&mut s, "library", None, json!({"mode": "save-job", "copy": true}));
+    let l = call(&mut s, "job-folders", None, json!({"mode": "list"}));
+    let outline: Vec<String> = serde_json::from_value(l["data"]["outline"].clone()).unwrap();
+    assert!(outline.iter().any(|r| r.starts_with("W12/DEMO-001")), "{l}");
+    assert!(!outline.iter().any(|r| r.starts_with("Acme/DEMO")) && !outline.iter().any(|r| r.starts_with("DEMO")), "{l}");
+    let _ = std::fs::remove_dir_all(&d);
 }
 
 #[test]

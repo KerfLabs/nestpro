@@ -28,8 +28,9 @@ pub struct LibUi {
     /// read, waiting for this user's choice (LB9).
     pub question: Option<SaveQuestion>,
     /// Overwrite was chosen: the open job's next save replaces this save of
-    /// its record, their stock booking included (LB9).
-    pub overwrite: Option<Record>,
+    /// its record, their stock booking included (LB9). Nothing in the job
+    /// changes until that save is under the write lock.
+    pub overwrite: Option<Changed>,
     /// The Library's job folders (JX10), as last read.
     pub tree: crate::folders::Tree,
     /// A job or folder cut in the Library section, waiting for Paste (JX14).
@@ -275,7 +276,19 @@ impl App {
     /// Where the open job saves to in the Library: over its record as it was
     /// read, or a new record.
     fn job_save_to(&self) -> SaveTo {
-        self.job_lib_id.map_or(SaveTo::New, |id| SaveTo::Read(Record { id, revision: self.lib_read.revision }))
+        self.job_lib_id.map_or(SaveTo::New, |id| {
+            // Overwrite (LB9) goes over their save as the question saw it.
+            let revision = self.libui.overwrite.as_ref().filter(|o| o.id == id).map_or(self.lib_read.revision, |o| o.revision);
+            SaveTo::Read(Record { id, revision })
+        })
+    }
+
+    /// A save that stopped before Overwrite changed any stock: the job is as
+    /// it was, and the question is back (LB9, LB13).
+    fn overwrite_not_done(&mut self) {
+        if let Some(c) = self.libui.overwrite.take().filter(|c| Some(c.id) == self.job_lib_id) {
+            self.libui.question = Some(SaveQuestion::Job(c));
+        }
     }
 
     /// Save to library refused because the Library can't be reached (LB11):
@@ -295,7 +308,10 @@ impl App {
         // else happens (LB11, LB13).
         let lib = match self.library() {
             Ok(l) => l,
-            Err(e) => return self.library_save_unreachable(e),
+            Err(e) => {
+                self.overwrite_not_done();
+                return self.library_save_unreachable(e);
+            }
         };
         let to = self.job_save_to();
         if let Err(c) = lib.check(Kind::Job, to) {
@@ -323,6 +339,7 @@ impl App {
             if let Some(o) = self.libui.overwrite.take().filter(|o| Some(o.id) == self.job_lib_id) {
                 let mut theirs = lib.load_job(o.id)?;
                 crate::engine::stockflow::release(&lib, &mut theirs.formats, &mut theirs.held)?;
+                crate::engine::stockflow::forget_booking(&mut self.result.formats, &mut self.held);
             }
             stock_note = self.stock_on_save();
             Ok(self.current_jobfile())
@@ -342,10 +359,13 @@ impl App {
             Err(Refused::Changed(c)) => self.ask_about_job(c),
             // Gone since it was found: said the same way, with nothing taken
             // or made (LB11, LB13).
-            Err(Refused::Failed(e)) => match crate::library::usable(&lib.dir) {
-                Err(gone) => self.library_save_unreachable(gone),
-                Ok(()) => self.status = format!("Couldn't save to the library: {e}"),
-            },
+            Err(Refused::Failed(e)) => {
+                self.overwrite_not_done();
+                match crate::library::usable(&lib.dir) {
+                    Err(gone) => self.library_save_unreachable(gone),
+                    Ok(()) => self.status = format!("Couldn't save to the library: {e}"),
+                }
+            }
         }
     }
 
@@ -407,15 +427,7 @@ impl App {
     /// new.
     pub fn overwrite_theirs(&mut self) {
         let Some(c) = self.job_question() else { return };
-        // The Library gone since it asked: nothing in the job changes, and
-        // the question stays (LB13).
-        if let Err(e) = self.library() {
-            self.libui.question = Some(SaveQuestion::Job(c));
-            return self.library_save_unreachable(e);
-        }
-        self.lib_read.revision = c.revision;
-        crate::engine::stockflow::forget_booking(&mut self.result.formats, &mut self.held);
-        self.libui.overwrite = Some(c.record());
+        self.libui.overwrite = Some(c);
         self.save_job_to_library();
     }
 
@@ -438,6 +450,7 @@ impl App {
     /// Someone else saved the open job since it was read: nothing was saved;
     /// ask (LB9).
     fn ask_about_job(&mut self, c: Changed) {
+        self.libui.overwrite = None;
         self.status = format!("{} was saved by {} since you opened it — nothing was saved. Reload theirs, save yours as a copy, or overwrite theirs.", self.job_name, c.saved_by(&self.clock));
         self.libui.question = Some(SaveQuestion::Job(c));
     }
@@ -1514,6 +1527,48 @@ mod libui_tests {
         assert!(matches!(prog2.libui.question, Some(SaveQuestion::Job(_))), "the question went: {}", prog2.status);
         assert_eq!(serde_json::to_string(&prog2.current_jobfile()).unwrap(), job, "the refused Overwrite changed the job");
         let _ = std::fs::remove_dir_all(&away);
+    }
+
+    /// LB13: the share drops while Overwrite is saving, just after it found
+    /// the Library: the job, its stock and the question stay as they were.
+    #[test]
+    fn overwrite_cut_off_while_saving_changes_nothing() {
+        let dir = new_library("overwrite_cut_off");
+        let clock = Clock::at(NOV_9_0920);
+        let mut prog1 = demo7(&dir, &clock);
+        let id = prog1.job_lib_id.unwrap();
+        let mut prog2 = stock_window(&dir, "kim", "PROG-2", &clock);
+        prog2.open_library_job(id);
+        clock.advance(Duration::from_secs(60));
+        prog1.parts[0].qty += 1;
+        prog1.save_job_to_library();
+        prog2.parts[0].qty += 2;
+        prog2.save_job_to_library();
+        assert!(matches!(prog2.libui.question, Some(SaveQuestion::Job(_))), "{}", prog2.status);
+        let job = serde_json::to_string(&prog2.current_jobfile()).unwrap();
+        let stock = std::fs::read_to_string(Stock::file(&dir)).unwrap();
+        let away = dir.with_extension("away");
+        {
+            let (dir, away) = (dir.clone(), away.clone());
+            crate::shared::hooks::set(move |s| {
+                if s == "library reached" {
+                    std::fs::rename(&dir, &away).unwrap();
+                }
+            });
+        }
+        prog2.overwrite_theirs();
+        crate::shared::hooks::clear();
+        assert!(prog2.status.contains("can't be reached"), "{}", prog2.status);
+        assert!(matches!(prog2.libui.question, Some(SaveQuestion::Job(_))), "the question went: {}", prog2.status);
+        assert!(prog2.libui.overwrite.is_none());
+        assert_eq!(serde_json::to_string(&prog2.current_jobfile()).unwrap(), job, "the refused Overwrite changed the job");
+        assert_eq!(std::fs::read_to_string(Stock::file(&away)).unwrap(), stock, "the refused Overwrite changed the stock");
+        // Back again: a plain Save still asks, it doesn't overwrite unasked.
+        std::fs::rename(&away, &dir).unwrap();
+        prog2.libui.question = None;
+        prog2.save_job_to_library();
+        assert!(matches!(prog2.libui.question, Some(SaveQuestion::Job(_))), "{}", prog2.status);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// LB7, LB9: PROG-1 and PROG-2 added library part DEMO-P1 to their jobs;
