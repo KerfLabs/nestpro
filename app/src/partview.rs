@@ -478,7 +478,10 @@ impl App {
                     self.status = format!("Angle between three points: {:.pr$}°", crate::drawing::angle3(m[0], m[1], m[2]));
                 } else if !self.dv.angle3 && self.dv.measure.len() == 2 {
                     let (d, dx, dy, ang) = crate::drawing::measure(self.dv.measure[0], self.dv.measure[1]);
-                    self.status = format!("Distance {d:.pr$} mm  ·  dX {dx:.pr$}  dY {dy:.pr$}  ·  angle {ang:.pr$}°");
+                    let u = self.cfg.nesting.units;
+                    let k = u.factor();
+                    let pr = if u == crate::units::LenUnit::Inch { pr + 1 } else { pr };
+                    self.status = format!("Distance {:.pr$} {}  ·  dX {:.pr$}  dY {:.pr$}  ·  angle {ang:.pr$}°", d / k, u.suffix(), dx / k, dy / k);
                 }
             }
         } else if resp.clicked() && !painting {
@@ -589,7 +592,7 @@ impl App {
         }
         if let Some(e) = hover.and_then(|i| elems.get(i)) {
             if let Some(hp) = resp.hover_pos() {
-                let txt = format!("{} {:.1} mm", e.kind.label(), e.length);
+                let txt = format!("{} {}", e.kind.label(), self.cfg.nesting.units.len(e.length, 1));
                 let g = painter.layout_no_wrap(txt, FontId::proportional(12.0), Color32::WHITE);
                 let r = Rect::from_min_size(hp + Vec2::new(14.0, 12.0), g.size() + Vec2::new(12.0, 6.0));
                 painter.rect_filled(r, CornerRadius::same(6), th().overlay);
@@ -755,10 +758,10 @@ impl App {
         if self.dv.dims && self.dv.texts_dims {
             let y = o.y + 28.0;
             painter.line_segment([Pos2::new(o.x, y), Pos2::new(o.x + w as f32 * s, y)], Stroke::new(1.0, dim));
-            painter.text(Pos2::new(o.x + w as f32 * s / 2.0, y + 4.0), Align2::CENTER_TOP, format!("{w:.1} mm"), FontId::proportional(12.0), dim);
+            painter.text(Pos2::new(o.x + w as f32 * s / 2.0, y + 4.0), Align2::CENTER_TOP, self.cfg.nesting.units.len(w, 1), FontId::proportional(12.0), dim);
             let x = o.x - 28.0;
             painter.line_segment([Pos2::new(x, o.y), Pos2::new(x, o.y - h as f32 * s)], Stroke::new(1.0, dim));
-            painter.text(Pos2::new(x - 4.0, o.y - h as f32 * s / 2.0), Align2::RIGHT_CENTER, format!("{h:.1}"), FontId::proportional(12.0), dim);
+            painter.text(Pos2::new(x - 4.0, o.y - h as f32 * s / 2.0), Align2::RIGHT_CENTER, self.cfg.nesting.units.num_dp(h, 1), FontId::proportional(12.0), dim);
         }
 
         // Technology summary card.
@@ -768,11 +771,11 @@ impl App {
             match t {
                 Some(t) if t.lead_type == crate::nest::LeadType::Machine => format!("Leads from the machine's tables by contour class{}", if t.corner_start { format!(" · automatic, pos {}", t.position) } else { String::new() }),
                 Some(t) => format!(
-                    "Lead-in {:.1} mm {}{}  ·  lead-out {:.1} mm",
-                    t.lead_in,
+                    "Lead-in {} {}{}  ·  lead-out {}",
+                    self.cfg.nesting.units.len(t.lead_in, 1),
                     t.lead_type.label(),
                     if t.corner_start { format!(" · automatic, pos {}", t.position) } else { String::new() },
-                    t.lead_out
+                    self.cfg.nesting.units.len(t.lead_out, 1)
                 ),
                 None => "Automatic sheet technology (machine lead tables)".into(),
             },
@@ -783,12 +786,7 @@ impl App {
                 t.map_or("off", |t| if t.loops { "on" } else { "off" }),
                 crate::techui::part_quality_label(t.and_then(|t| t.quality), &crate::ct1::for_spec(&self.spec).qualities)
             ),
-            format!(
-                "Cut {:.0} mm  ·  {} pierce(s)  ·  {:.1} s",
-                plan.cut_len,
-                plan.pierces,
-                plan.seconds
-            ),
+            format!("Cut {}  ·  {} pierce(s)  ·  {:.1} s", self.cfg.nesting.units.len(plan.cut_len, 0), plan.pierces, plan.seconds),
             // Kerf compensation (KC1): width, kind, and what can't be cut.
             format!(
                 "{}{}",
@@ -826,8 +824,9 @@ impl App {
             self.parts[idx].tech = Some(t);
             self.refresh();
             let reach = self.spec.gap * crate::nest::JOINT_LEAD_REACH;
-            let clamp = if t.joint_lead > reach && crate::ct1::active().joint_test <= 0 { format!(" (cut short to stay {reach:.1} mm out, inside the part gap)") } else { String::new() };
-            self.status = format!("Joint lead-in {:.1} mm off the contour at {:.0}°{clamp}.", t.joint_lead, t.joint_angle);
+            let u = self.cfg.nesting.units;
+            let clamp = if t.joint_lead > reach && crate::ct1::active().joint_test <= 0 { format!(" (cut short to stay {} out, inside the part gap)", u.len(reach, 1)) } else { String::new() };
+            self.status = format!("Joint lead-in {} off the contour at {:.0}°{clamp}.", u.len(t.joint_lead, 1), t.joint_angle);
         }
     }
 
@@ -925,9 +924,9 @@ impl App {
                         "{} / {} / {} / {} / {:.4}",
                         p.name,
                         p.qty,
-                        self.spec.machine.label(),
+                        self.machine_name(),
                         cnc::MATERIALS[self.spec.material],
-                        self.spec.thickness
+                        self.spec.thickness / self.unit().factor()
                     ))
                     .monospace()
                     .color(th().text_strong),
@@ -940,10 +939,11 @@ impl App {
             }
             ui.add_space(12.0);
             ui.label(RichText::new(&self.status).color(th().text_dim));
+            let u = self.cfg.nesting.units;
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label("mm");
+                ui.label(u.suffix());
                 ui.add_space(14.0);
-                let (x, y) = self.dv.cursor.map_or(("—".to_string(), "—".to_string()), |c| (format!("{:.3}", c[0]), format!("{:.3}", c[1])));
+                let (x, y) = self.dv.cursor.map_or(("—".to_string(), "—".to_string()), |c| (u.num_dp(c[0], 3), u.num_dp(c[1], 3)));
                 ui.label(format!("Y: {y}"));
                 ui.add_space(30.0);
                 ui.label(format!("X: {x}"));
@@ -1059,7 +1059,7 @@ impl App {
         match text_for_element(&g, e, &self.text_draft, self.text_height, self.text_kind) {
             Some(t) => {
                 self.checkpoint();
-                let how = if t.curve != 0.0 { format!("curved (radius {:.1} mm)", t.curve.abs()) } else { "along the line".to_string() };
+                let how = if t.curve != 0.0 { format!("curved (radius {})", self.cfg.nesting.units.len(t.curve.abs(), 1)) } else { "along the line".to_string() };
                 self.parts[i].texts.push(t);
                 self.refresh();
                 self.status = format!("Text '{}' placed {how} next to the {}.", self.text_draft, e.kind.label().to_lowercase());

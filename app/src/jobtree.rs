@@ -350,13 +350,11 @@ impl App {
         let qty: u32 = parts.iter().map(|p| p.qty).sum();
         let cam = if i == self.cur_job { self.cam_changed } else { j.cam_changed };
         format!(
-            "{name}\nFolder: {}\n{} product(s), {qty} piece(s)\n{sheets} nesting(s) · {} {} mm · {:.0} × {:.0}\nLast nesting change: {}\nRight-click: open, add nesting, rename, delete",
+            "{name}\nFolder: {}\n{} product(s), {qty} piece(s)\n{sheets} nesting(s) · {} · {}\nLast nesting change: {}\nRight-click: open, add nesting, rename, delete",
             j.week,
             parts.len(),
-            crate::cnc::MATERIALS.get(spec.material).copied().unwrap_or(""),
-            spec.thickness,
-            spec.w,
-            spec.h,
+            self.mat_thk(spec.material, spec.thickness),
+            self.unit().size(spec.w, spec.h, 0),
             cam_date_label(cam)
         )
     }

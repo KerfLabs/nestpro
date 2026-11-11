@@ -206,7 +206,7 @@ impl App {
                     });
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("Height").size(11.5).color(th().text_dim));
-                        ui.add(egui::DragValue::new(&mut self.text_height).range(2.0..=100.0).speed(0.2).suffix(" mm"));
+                        crate::units::drag_len_in(ui, &mut self.text_height, self.cfg.nesting.units, 2.0, 100.0);
                         ui.label(RichText::new("Arc").size(11.5).color(th().text_dim));
                         ui.add(egui::DragValue::new(&mut self.text_curve).range(-2000.0..=2000.0).speed(0.5).suffix(" r"))
                             .on_hover_text("0 = straight; positive bends over the top, negative round the bottom");

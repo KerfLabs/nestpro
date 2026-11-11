@@ -847,25 +847,41 @@ impl App {
         }
     }
 
-    /// Machine choice (combo + what it does). Returns true when it changed.
-    /// The machine the sheet is cut on (its kind: laser, plasma, punch…).
+    /// The machine the job is cut on: one of the shop's machines from
+    /// Settings → Machines & output, by name (MK1). Picking one makes it the
+    /// machine Export CNC writes for and sets the job to what it does (laser,
+    /// plasma, punch …). Returns true when the job's process changed.
     pub fn machine_combo(&mut self, ui: &mut egui::Ui, width: f32) -> bool {
-        let mut changed = false;
-        let cur = self.spec.machine;
-        egui::ComboBox::from_id_salt(("machine", ui.scope_id())).width(width).selected_text(cur.label()).show_ui(ui, |ui| {
-            for (k, group) in [("Cutting", crate::machine::Family::Cut), ("Punch + cut", crate::machine::Family::CutPunch), ("Punching", crate::machine::Family::Punch)] {
-                ui.label(RichText::new(k).size(11.0).color(th().text_dim));
-                for m in crate::machine::MachineKind::ALL.into_iter().filter(|m| m.family() == group) {
-                    if ui.selectable_label(cur == m, m.label()).on_hover_text(m.describe()).clicked() && cur != m {
-                        self.spec.machine = m;
-                        changed = true;
-                    }
+        let cur = self.cfg.active_machine.min(self.cfg.machines.len().saturating_sub(1));
+        let shown = self.cfg.machines.get(cur).map_or("—".to_string(), |m| m.name.clone());
+        let mut pick = None;
+        let mut setup = false;
+        egui::ComboBox::from_id_salt(("machine", ui.scope_id())).width(width).selected_text(shown).show_ui(ui, |ui| {
+            ui.set_min_width(220.0);
+            for (k, m) in self.cfg.machines.iter().enumerate() {
+                let text = format!("{}   ·  {}, {}", m.name, m.kind.process(), crate::settings_ui::output_name(m.output));
+                if ui.selectable_label(k == cur, text).on_hover_text(m.kind.describe()).clicked() {
+                    pick = Some(k);
                 }
             }
-        });
-        if changed {
-            self.status = format!("Machine: {} — {}.", self.spec.machine.label(), self.spec.machine.describe().to_lowercase());
+            ui.separator();
+            if ui.button("Add or change machines…").on_hover_text("Settings → Machines & output: each machine's name, what it does and its program format").clicked() {
+                setup = true;
+            }
+        })
+        .response
+        .on_hover_text("The machine this job is cut on. Its process (laser, plasma, punch…) decides how parts are machined, and Export CNC writes its program format.");
+        if setup {
+            self.open_settings(crate::settings_ui::Section::Machines);
         }
+        let Some(k) = pick else { return false };
+        // The same machine again still puts the job back on its process.
+        let kind = self.cfg.machines[k].kind;
+        let changed = self.spec.machine != kind;
+        self.cfg.active_machine = k;
+        self.spec.machine = kind;
+        let _ = self.cfg.save();
+        self.status = format!("Machine: {} — {}; programs are written in its format.", self.cfg.machines[k].name, kind.describe().to_lowercase());
         changed
     }
 
@@ -876,12 +892,20 @@ impl App {
             ui.spacing_mut().interact_size.y = 21.0;
             ui.add_space(6.0);
             changed = self.machine_combo(ui, 150.0);
-            let fam = match self.spec.machine.family() {
-                crate::machine::Family::Cut => "cuts every contour",
-                crate::machine::Family::CutPunch => "punches standard holes",
-                crate::machine::Family::Punch => "punches and nibbles",
-            };
-            ui.label(RichText::new(fam).size(11.0).color(th().text_dim)).on_hover_text(self.spec.machine.describe());
+            let active = self.cfg.machines.get(self.cfg.active_machine).map(|m| (m.kind, m.output));
+            let job = self.spec.machine;
+            match active {
+                // A job made for another kind of machine says so; picking the
+                // machine again sets the job to it.
+                Some((kind, _)) if kind != job => {
+                    ui.label(RichText::new(format!("⚠ job set for {}", job.process().to_lowercase())).size(11.0).color(th().warn_fg))
+                        .on_hover_text(format!("This job is machined as on a {} ({}). Pick the machine in the list to set the job to it.", job.process().to_lowercase(), job.describe().to_lowercase()));
+                }
+                Some((kind, out)) => {
+                    ui.label(RichText::new(format!("{} · {}", kind.process(), crate::settings_ui::output_name(out))).size(11.0).color(th().text_dim)).on_hover_text(kind.describe());
+                }
+                None => {}
+            }
         });
         changed
     }
