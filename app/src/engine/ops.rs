@@ -293,7 +293,7 @@ pub static OPS: &[Op] = &[
     Op { name: "program", group: "Machining", kind: Kind::Read, help: "The CNC program of a sheet (the active machine's post), returned and optionally written to a file.", args: &[SHEET, a("out", Ty::Path, "Also write it here")] },
     Op { name: "export", group: "Machining", kind: Kind::Read, help: "Write every sheet's program (G-code, or BLM LC5 sets) and a CSV parts report into <folder>\\<job>. Never sends anything to the machine.", args: &[a("dir", Ty::Path, "Folder (default Settings → export folder, else Documents\\Sheet Nesting)")] },
     // --- stock ---
-    Op { name: "stock", group: "Stock", kind: Kind::Global, help: "The sheet stock (the Library folder's Sheets\\stock.json, shared with the window's Sheet stock): list sheets and remnants, create a sheet, add or remove quantity (0 deletes), lock or unlock, edit, delete, or read the Do All / Sheet Remnants options (rules; set in the window).", args: &[
+    Op { name: "stock", group: "Stock", kind: Kind::Global, help: "The sheet stock (the Library folder's Sheets\\stock.json, shared with the window's Sheet stock): list sheets and remnants (each with who changed it last and when: changed_by, changed_at in this PC's local time), create a sheet, add or remove quantity (0 deletes), lock or unlock, edit, delete, or read the Do All / Sheet Remnants options (rules; set in the window). Every change is recorded as this PC's user, marked (agent).", args: &[
         Arg { name: "mode", ty: Ty::Str, required: true, help: "What to do", choices: &["list", "create", "add", "remove", "block", "unblock", "edit", "delete", "rules"] },
         a("ref", Ty::Str, "Sheet reference (create: optional, else the next number; block/unblock: optional, else every listed sheet)"),
         a("material", Ty::Str, "list/create/block: material name or number"), a("thickness", Ty::Num, "list/create/block: thickness, mm"),
@@ -303,7 +303,7 @@ pub static OPS: &[Op] = &[
         a("min_w", Ty::Num, "list: shortest length"), a("max_w", Ty::Num, "list: longest length"), a("min_h", Ty::Num, "list: narrowest width"), a("max_h", Ty::Num, "list: widest width"),
         a("show_zero", Ty::Bool, "list: also items at quantity 0"), a("remnants", Ty::Str, "list: \"only\", \"none\" or \"all\" (default)"),
     ] },
-    Op { name: "stock-book", group: "Stock", kind: Kind::Write, help: "Book the job against the stock, as the window does when it saves a job: take the sheets its nestings use out of stock and store the remnants its remnant lines leave (named <sheet>-<n>, or by refs=; below the minimum area they are scrap). A sheet whose remnant lines changed since gets its remnants made again, unless one of them has been used. Once booked, every later change keeps the stock in step. release gives the sheets back and takes its unused remnants out again.", args: &[
+    Op { name: "stock-book", group: "Stock", kind: Kind::Write, help: "Book the job against the stock, as the window does when it saves a job: take the sheets its nestings use out of stock and store the remnants its remnant lines leave (named <sheet>-<n>, or by refs=; below the minimum area they are scrap). A sheet whose remnant lines changed since gets its remnants made again, unless one of them has been used. Once booked, every later change keeps the stock in step. When a sheet the job is nested on has gone (another PC or job took it), nothing is booked and the reply says who took it and when: nest again to use what's in stock now. release gives the sheets back and takes its unused remnants out again.", args: &[
         Arg { name: "mode", ty: Ty::Str, required: true, help: "book, release or status", choices: &["book", "release", "status"] },
         a("refs", Ty::Str, "book: references for the new remnants, comma-separated, in the order status lists them (default: numbered <sheet>-<n>)"),
     ] },
@@ -1294,11 +1294,13 @@ pub fn auto_remnant_lines(parts: &[Part], sheet: &[Placed], spec: &SheetSpec, ls
     (!lines.is_empty() && lines.iter().all(|l| cutoff::path_hits_part(parts, sheet, &l.pts).is_none())).then_some(lines)
 }
 
-fn stock_json(s: &crate::stock::Item) -> Value {
+fn stock_json(s: &crate::stock::Item, clock: &crate::shared::Clock) -> Value {
     json!({
         "ref": s.reference, "kind": s.kind.label(), "material": cnc::MATERIALS.get(s.material).copied().unwrap_or("?"), "thickness": s.thickness, "w": r1(s.length), "h": r1(s.width), "qty": s.qty,
         "priority": s.priority, "blocked": s.locked, "remnant": s.kind.is_remnant(), "area_m2": (s.area_m2() * 1000.0).round() / 1000.0,
         "origin": s.origin, "job": s.from_job, "irregular": s.outline.is_some(), "user": s.user_data, "created": s.created,
+        // Who changed it last, and when (SV9); null for a stock from before.
+        "changed_by": s.changed.as_ref().map(|c| c.by.label()), "changed_at": s.changed.as_ref().map(|c| clock.stamp(c.at)),
     })
 }
 
@@ -1316,8 +1318,7 @@ fn rules_json(st: &crate::stock::StockSettings) -> Value {
 }
 
 fn stock_op(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
-    let dir = ctx.library_dir.clone();
-    let file = Stock::file(&dir);
+    let file = Stock::file(&ctx.library_dir);
     let mat = match a.str("material") {
         Some(m) => Some(material_from(&m, &ctx.cfg)?),
         None => None,
@@ -1362,7 +1363,7 @@ fn stock_op(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
                 Some("all") | None => {}
                 Some(x) => return Err(format!("remnants '{x}': only, none or all")),
             }
-            let list: Vec<Value> = st.items.iter().filter(|it| matches(it) && crit.admits(it)).map(stock_json).collect();
+            let list: Vec<Value> = st.items.iter().filter(|it| matches(it) && crit.admits(it)).map(|it| stock_json(it, &ctx.clock)).collect();
             let n: i64 = st.items.iter().map(|s| s.qty.max(0) as i64).sum();
             return Ok(Outcome::read(format!("{} stock item(s) listed ({} sheet(s) and remnant(s) in stock in all). Stock file: {}", list.len(), n, file.display()), json!({ "sheets": list, "rules": rules_json(&ctx.cfg.stock) })));
         }
@@ -1376,7 +1377,7 @@ fn stock_op(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
     }
     // Every change re-reads the stock, changes it and saves it under the
     // Library's write lock, as the window does (LB1, STK-9).
-    let m = Stock::update(&dir, |st| match mode.as_str() {
+    let m = Stock::update(&ctx.library_at(), |st| match mode.as_str() {
         "create" => {
             let (Some(w), Some(h)) = (a.num("w")?, a.num("h")?) else { return Err("create needs w and h (mm)".into()) };
             if w <= 0.0 || h <= 0.0 {
@@ -1919,13 +1920,20 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                         }
                     };
                     let note = job.book_stock_named(ctx, true, names.as_ref());
-                    let mut o = Outcome::msg(if note.is_empty() { "Booked: the stock already matches the job.".to_string() } else { format!("Booked: {note}.") });
+                    // Its sheets couldn't be taken (another PC took one, SV10):
+                    // said so, not "Booked".
+                    let booked = stockflow::sheets_used(&job.formats, job.sheets.len()) == job.held;
+                    let mut o = Outcome::msg(match (note.is_empty(), booked) {
+                        (true, _) => "Booked: the stock already matches the job.".to_string(),
+                        (false, true) => format!("Booked: {note}."),
+                        (false, false) => format!("Not booked: {note}."),
+                    });
                     o.files.push(file);
                     Ok(o)
                 }
                 "release" => {
                     job.normalise_formats();
-                    let (back, removed, kept) = stockflow::release(&ctx.library_dir, &mut job.formats, &mut job.held)?;
+                    let (back, removed, kept) = stockflow::release(&ctx.library_at(), &mut job.formats, &mut job.held)?;
                     job.booked = false;
                     let mut m = format!("Released: {back} sheet(s) given back to stock, {removed} remnant(s) taken out again.");
                     if !kept.is_empty() {

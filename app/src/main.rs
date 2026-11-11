@@ -2539,7 +2539,9 @@ impl App {
 
         // --- pop-up notices (bottom-right), fade out after a few seconds ---
         // Long messages (an export's folder, what a nesting removed) stay longer.
-        let life = |m: &str| (4.0 + m.len() as f64 / 40.0).min(9.0);
+        // --keep-notices (screenshots): they stay until the picture is taken.
+        let keep = self.shot.is_some() && std::env::args().any(|a| a == "--keep-notices");
+        let life = |m: &str| if keep { f64::INFINITY } else { (4.0 + m.len() as f64 / 40.0).min(9.0) };
         self.toasts.retain(|t| now - t.1 < life(&t.0));
         let mut y = rect.bottom() - 14.0;
         for (msg, t0) in self.toasts.iter().rev().take(3) {
@@ -3074,6 +3076,11 @@ fn main() -> eframe::Result {
                 app.save_job_to_library();
                 app.add_products_to_library();
             }
+            // --lib-save-job: the open job only, its save message left in the
+            // status line (screenshots of what a save says, SV10).
+            if std::env::args().any(|a| a == "--lib-save-job") {
+                app.save_job_to_library();
+            }
             if want_lib {
                 app.workspace = Workspace::Jobs;
                 app.libui.open = true;
@@ -3151,7 +3158,7 @@ fn main() -> eframe::Result {
             // smaller one picked, so the window shows a real choice.
             if std::env::args().any(|a| a == "--stock-demo") {
                 let (m, t) = (app.spec.material, app.spec.thickness);
-                let _ = stock::Stock::update(&app.library_dir(), |s| {
+                let _ = stock::Stock::update(&app.library_at(), |s| {
                     s.add_sheet(stock::Item::sheet("DEMO-S1", m, t, 2000.0, 1000.0, 5), true)?;
                     let mut r = stock::Item::sheet("DEMO-R1", m, t, 1200.0, 1000.0, 1);
                     r.kind = stock::Kind::UserRemnant;
@@ -3163,7 +3170,7 @@ fn main() -> eframe::Result {
             // picked, so the window offers to switch the job to it (ST16).
             if std::env::args().any(|a| a == "--stock-other") {
                 let (m, t) = ((app.spec.material + 1) % cnc::MATERIALS.len(), app.spec.thickness);
-                let _ = stock::Stock::update(&app.library_dir(), |s| s.add_sheet(stock::Item::sheet("DEMO-SS1", m, t, 1486.0, 724.0, 1), true));
+                let _ = stock::Stock::update(&app.library_at(), |s| s.add_sheet(stock::Item::sheet("DEMO-SS1", m, t, 1486.0, 724.0, 1), true));
                 app.stockui.sel = Some("DEMO-SS1".into());
                 app.stockui.job_only = false;
             }

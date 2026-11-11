@@ -147,6 +147,12 @@ impl Ctx {
         c
     }
 
+    /// The Library folder as this agent works on it (its user and clock),
+    /// without setting anything up: stock changes are signed with it (SV9).
+    pub fn library_at(&self) -> crate::library::Library {
+        crate::library::Library::at(&self.library_dir, &self.who, &self.clock)
+    }
+
     /// The sheet stock (empty when there is none yet).
     pub fn stock(&self) -> Result<Stock, String> {
         Stock::load(&self.library_dir)
@@ -1086,7 +1092,7 @@ impl JobFile {
     pub fn book_stock_named(&mut self, ctx: &Ctx, force_lines: bool, names: Option<&BTreeMap<(usize, usize), String>>) -> String {
         self.normalise_formats();
         let (mut formats, mut held) = (std::mem::take(&mut self.formats), std::mem::take(&mut self.held));
-        let note = stockflow::on_save(&ctx.library_dir, &self.stock_sheets(&ctx.cfg), &mut formats, &mut held, &ctx.cfg.stock, force_lines, names);
+        let note = stockflow::on_save(&ctx.library_at(), &self.stock_sheets(&ctx.cfg), &mut formats, &mut held, &ctx.cfg.stock, force_lines, names);
         (self.formats, self.held) = (formats, held);
         self.booked = true;
         note
