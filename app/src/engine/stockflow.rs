@@ -80,6 +80,15 @@ pub fn stock_plan(spec: &SheetSpec, u: &StockUse, exclude: &[String]) -> Option<
     Some(plan)
 }
 
+/// Said after Do All when it would have nested from the sheet stock but the
+/// Library can't be reached (LB11): it nested on the job's sheet instead.
+pub fn stock_unreachable_note(u: &StockUse) -> Option<String> {
+    if !u.st.use_stock {
+        return None;
+    }
+    crate::library::usable(&u.dir).err().map(|e| format!(" The sheet stock wasn't used: {e}"))
+}
+
 /// Nest from stock, dropping stock sheets below the minimum efficiency and
 /// nesting again without them (SS7), with the Do All searches the options ask
 /// for (ST13): the best sheet combination (each sheet used less than its
@@ -797,6 +806,7 @@ mod tests {
         // working, through the same stock update the window and agents use.
         let dir = std::env::temp_dir().join(format!("nestpro-reserved-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
+        crate::library::create(&dir).unwrap();
         let mut st = Stock::default();
         st.replaced.insert("1".into(), vec!["R".into()]);
         st.save(&dir).unwrap();
@@ -820,6 +830,7 @@ mod tests {
         // one deleted by hand, then undo: it must not be remade.
         let dir = std::env::temp_dir().join(format!("nestpro-selfloop-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
+        crate::library::create(&dir).unwrap();
         Stock::default().save(&dir).unwrap();
         let part = Part { name: "P".into(), shape: nest::Shape::Rectangle, w: 100.0, h: 50.0, qty: 1, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
         let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
@@ -864,6 +875,7 @@ mod tests {
         // must all be the same new name, never the outgoing "R".
         let dir = std::env::temp_dir().join(format!("nestpro-marknames-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
+        crate::library::create(&dir).unwrap();
         Stock::default().save(&dir).unwrap();
         let part = Part { name: "P".into(), shape: nest::Shape::Rectangle, w: 100.0, h: 50.0, qty: 1, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
         let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
@@ -898,6 +910,7 @@ mod tests {
         // automatic numbers: each sheet's preview is what storing gives it.
         let dir = std::env::temp_dir().join(format!("nestpro-marknames2-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
+        crate::library::create(&dir).unwrap();
         Stock::default().save(&dir).unwrap();
         let part = Part { name: "P".into(), shape: nest::Shape::Rectangle, w: 100.0, h: 50.0, qty: 2, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
         let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
@@ -960,6 +973,7 @@ mod tests {
     fn reconciling_moves_each_reference_once() {
         let dir = std::env::temp_dir().join(format!("nestpro-stockflow-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
+        crate::library::create(&dir).unwrap();
         let mut s = Stock::default();
         s.add_sheet(Item::sheet("S1", 0, 3.0, 1500.0, 750.0, 5), true).unwrap();
         s.save(&dir).unwrap();

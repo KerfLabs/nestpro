@@ -1232,81 +1232,102 @@ fn fmt_time(secs: f64) -> String {
 /// or the Library window).
 pub const MENU_LIBRARY_PARTS: usize = 8;
 
+/// Add product's "From the library" part: the library's parts of the job's
+/// material and thickness to pick from, or why the Library can't be listed.
+pub(crate) fn library_parts_section(app: &mut App, ui: &mut egui::Ui) {
+    // Preprogrammed parts from this app's library (as Lantek's "Parts
+    // From Database": products with their own technology).
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("From the library").strong().color(th().text_strong));
+        ui.add(egui::TextEdit::singleline(&mut app.libui.part_search).hint_text("🔍 search").desired_width(150.0));
+    });
+    // Lantek lists products of the job's material and thickness
+    // (PK3); "all" drops both filters.
+    ui.checkbox(
+        &mut app.libui.part_all,
+        RichText::new(format!("Every material — not only {} {} mm", crate::cnc::MATERIALS.get(app.spec.material).copied().unwrap_or(""), app.spec.thickness)).size(11.5),
+    );
+    ui.add_space(4.0);
+    let needle = app.libui.part_search.to_lowercase();
+    let (mat, thk) = if app.libui.part_all { (None, crate::library::THICKNESS_FILTER_MIN - 1.0) } else { (Some(app.spec.material), app.spec.thickness) };
+    let found: Vec<(u64, crate::nest::Part, bool, String, String)> = app
+        .libui
+        .products
+        .iter()
+        .filter(|(e, _)| crate::library::product_matches(e, mat, thk, &needle))
+        .take(MENU_LIBRARY_PARTS)
+        .map(|(e, p)| (e.id, p.clone(), e.tech, format!("{} {} mm", crate::cnc::MATERIALS.get(e.material).copied().unwrap_or(""), e.thickness), e.saved_note(&app.clock)))
+        .collect();
+    if let Some(e) = app.libui.error.clone() {
+        // Unreachable, not empty (LB11).
+        let (again, folder) = ui
+            .scope(|ui| {
+                ui.set_max_width(440.0);
+                crate::libui::unreachable_note(ui, &e)
+            })
+            .inner;
+        if again {
+            app.lib_retry();
+        }
+        if folder {
+            app.open_settings(crate::settings_ui::Section::Folders);
+            ui.close();
+        }
+    } else if app.libui.products.is_empty() {
+        ui.label(RichText::new("No parts in the library yet — set a part's technology, then \"Save to library\" in Part Properties.").size(11.5).color(th().text_dim));
+    } else if found.is_empty() {
+        ui.label(RichText::new("No library part matches.").size(11.5).color(th().text_dim));
+    }
+    let mut pick: Option<u64> = None;
+    egui::Grid::new("lib_gallery").spacing([6.0, 6.0]).show(ui, |ui| {
+        for (k, (id, part, tech, info, saved)) in found.iter().enumerate() {
+            let (r, cell) = ui.allocate_exact_size(Vec2::new(104.0, 104.0), Sense::click());
+            let hov = ui.ctx().animate_bool_with_time(cell.id.with("lg"), cell.hovered(), 0.1);
+            let p = ui.painter();
+            p.rect_filled(r, CornerRadius::same(8), lerp_color(th().hover, th().accent_soft, hov));
+            let area = Rect::from_min_max(r.min + Vec2::new(14.0, 10.0), Pos2::new(r.right() - 14.0, r.bottom() - 38.0));
+            let (bw, bh) = part.bbox();
+            let s = (area.width() / bw.max(1e-6) as f32).min(area.height() / bh.max(1e-6) as f32);
+            let o = area.center() + Vec2::new(-(bw as f32) * s / 2.0, bh as f32 * s / 2.0);
+            paint_part(p, part, |q| Pos2::new(o.x + q[0] as f32 * s, o.y - q[1] as f32 * s), part_color(part.color), Stroke::new(1.0, darker(part_color(part.color), 0.5)), lerp_color(th().hover, th().accent_soft, hov));
+            let name: String = if part.name.chars().count() > 14 { format!("{}…", part.name.chars().take(13).collect::<String>()) } else { part.name.clone() };
+            p.text(Pos2::new(r.center().x, r.bottom() - 25.0), Align2::CENTER_CENTER, name, FontId::proportional(11.5), th().text_strong);
+            p.text(Pos2::new(r.center().x, r.bottom() - 11.0), Align2::CENTER_CENTER, info, FontId::proportional(10.0), th().text_dim);
+            if *tech {
+                let b = Rect::from_min_size(Pos2::new(r.right() - 20.0, r.top() + 4.0), Vec2::new(16.0, 16.0));
+                p.rect_filled(b, CornerRadius::same(4), th().accent);
+                p.text(b.center(), Align2::CENTER_CENTER, "T", FontId::proportional(11.0), Color32::WHITE);
+            }
+            // Who last saved it, and when (LB6).
+            let saved = if saved.is_empty() { String::new() } else { format!("\n{saved}") };
+            if cell.on_hover_text(format!("{} — {info}{}{saved}", part.name, if *tech { " · with its technology" } else { "" })).clicked() {
+                pick = Some(*id);
+            }
+            if k % 4 == 3 {
+                ui.end_row();
+            }
+        }
+    });
+    let mut all = false;
+    if !app.libui.products.is_empty() && ui.button(format!("All {} library parts…", app.libui.products.len())).clicked() {
+        all = true;
+    }
+    if let Some(id) = pick {
+        app.add_library_product(id);
+        ui.close();
+    }
+    if all {
+        app.open_library_products();
+        ui.close();
+    }
+}
+
 pub(crate) fn add_part_menu(app: &mut App, resp: &egui::Response) {
     if resp.clicked() && !app.libui.loaded {
         app.lib_refresh();
     }
     egui::Popup::menu(resp).show(|ui| {
-        // Preprogrammed parts from this app's library (as Lantek's "Parts
-        // From Database": products with their own technology).
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("From the library").strong().color(th().text_strong));
-            ui.add(egui::TextEdit::singleline(&mut app.libui.part_search).hint_text("🔍 search").desired_width(150.0));
-        });
-        // Lantek lists products of the job's material and thickness
-        // (PK3); "all" drops both filters.
-        ui.checkbox(
-            &mut app.libui.part_all,
-            RichText::new(format!("Every material — not only {} {} mm", crate::cnc::MATERIALS.get(app.spec.material).copied().unwrap_or(""), app.spec.thickness)).size(11.5),
-        );
-        ui.add_space(4.0);
-        let needle = app.libui.part_search.to_lowercase();
-        let (mat, thk) = if app.libui.part_all { (None, crate::library::THICKNESS_FILTER_MIN - 1.0) } else { (Some(app.spec.material), app.spec.thickness) };
-        let found: Vec<(u64, crate::nest::Part, bool, String, String)> = app
-            .libui
-            .products
-            .iter()
-            .filter(|(e, _)| crate::library::product_matches(e, mat, thk, &needle))
-            .take(MENU_LIBRARY_PARTS)
-            .map(|(e, p)| (e.id, p.clone(), e.tech, format!("{} {} mm", crate::cnc::MATERIALS.get(e.material).copied().unwrap_or(""), e.thickness), e.saved_note(&app.clock)))
-            .collect();
-        if app.libui.products.is_empty() {
-            ui.label(RichText::new("No parts in the library yet — set a part's technology, then \"Save to library\" in Part Properties.").size(11.5).color(th().text_dim));
-        } else if found.is_empty() {
-            ui.label(RichText::new("No library part matches.").size(11.5).color(th().text_dim));
-        }
-        let mut pick: Option<u64> = None;
-        egui::Grid::new("lib_gallery").spacing([6.0, 6.0]).show(ui, |ui| {
-            for (k, (id, part, tech, info, saved)) in found.iter().enumerate() {
-                let (r, cell) = ui.allocate_exact_size(Vec2::new(104.0, 104.0), Sense::click());
-                let hov = ui.ctx().animate_bool_with_time(cell.id.with("lg"), cell.hovered(), 0.1);
-                let p = ui.painter();
-                p.rect_filled(r, CornerRadius::same(8), lerp_color(th().hover, th().accent_soft, hov));
-                let area = Rect::from_min_max(r.min + Vec2::new(14.0, 10.0), Pos2::new(r.right() - 14.0, r.bottom() - 38.0));
-                let (bw, bh) = part.bbox();
-                let s = (area.width() / bw.max(1e-6) as f32).min(area.height() / bh.max(1e-6) as f32);
-                let o = area.center() + Vec2::new(-(bw as f32) * s / 2.0, bh as f32 * s / 2.0);
-                paint_part(p, part, |q| Pos2::new(o.x + q[0] as f32 * s, o.y - q[1] as f32 * s), part_color(part.color), Stroke::new(1.0, darker(part_color(part.color), 0.5)), lerp_color(th().hover, th().accent_soft, hov));
-                let name: String = if part.name.chars().count() > 14 { format!("{}…", part.name.chars().take(13).collect::<String>()) } else { part.name.clone() };
-                p.text(Pos2::new(r.center().x, r.bottom() - 25.0), Align2::CENTER_CENTER, name, FontId::proportional(11.5), th().text_strong);
-                p.text(Pos2::new(r.center().x, r.bottom() - 11.0), Align2::CENTER_CENTER, info, FontId::proportional(10.0), th().text_dim);
-                if *tech {
-                    let b = Rect::from_min_size(Pos2::new(r.right() - 20.0, r.top() + 4.0), Vec2::new(16.0, 16.0));
-                    p.rect_filled(b, CornerRadius::same(4), th().accent);
-                    p.text(b.center(), Align2::CENTER_CENTER, "T", FontId::proportional(11.0), Color32::WHITE);
-                }
-                // Who last saved it, and when (LB6).
-                let saved = if saved.is_empty() { String::new() } else { format!("\n{saved}") };
-                if cell.on_hover_text(format!("{} — {info}{}{saved}", part.name, if *tech { " · with its technology" } else { "" })).clicked() {
-                    pick = Some(*id);
-                }
-                if k % 4 == 3 {
-                    ui.end_row();
-                }
-            }
-        });
-        let mut all = false;
-        if !app.libui.products.is_empty() && ui.button(format!("All {} library parts…", app.libui.products.len())).clicked() {
-            all = true;
-        }
-        if let Some(id) = pick {
-            app.add_library_product(id);
-            ui.close();
-        }
-        if all {
-            app.open_library_products();
-            ui.close();
-        }
+        library_parts_section(app, ui);
         ui.separator();
         ui.label(RichText::new("Blank shapes").strong().color(th().text_strong));
         ui.add_space(4.0);
@@ -2737,6 +2758,26 @@ pub fn menu_row(ui: &mut egui::Ui, icon: &str, label: &str, hint: &str) -> bool 
         ui.painter().text(r.right_center() - Vec2::new(10.0, 0.0), Align2::RIGHT_CENTER, hint, FontId::proportional(11.0), t.text_dim);
     }
     resp.clicked()
+}
+
+/// The text a frame drew (tests: what a window or list says).
+#[cfg(test)]
+pub fn shown_text(out: &egui::FullOutput) -> String {
+    fn walk(s: &egui::Shape, t: &mut String) {
+        match s {
+            egui::Shape::Text(x) => {
+                t.push_str(x.galley.text());
+                t.push('\n');
+            }
+            egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, t)),
+            _ => {}
+        }
+    }
+    let mut t = String::new();
+    for c in &out.shapes {
+        walk(&c.shape, &mut t);
+    }
+    t
 }
 
 #[cfg(test)]

@@ -215,14 +215,19 @@ impl crate::App {
     /// in the folder "XML import", with each product's drawing (Fich) or the
     /// library product of the same reference.
     pub fn import_xml(&mut self, path: &std::path::Path) {
-        let lib = self.library().ok();
-        let im = match crate::engine::imports::xml_import(&self.cfg, lib.as_ref(), path, self.color_seq) {
+        let lib = self.library();
+        let mut im = match crate::engine::imports::xml_import(&self.cfg, lib.as_ref().ok(), path, self.color_seq) {
             Ok(im) => im,
             Err(e) => {
                 self.status = e;
                 return;
             }
         };
+        // Products without a drawing come from the Library: say why it
+        // wasn't looked in (LB11).
+        if let Err(e) = &lib {
+            im.notes.insert(0, format!("Library parts weren't looked up: {e}"));
+        }
         let mut notes = im.notes;
         self.color_seq += im.added;
         let jobs = im.jobs.len();
