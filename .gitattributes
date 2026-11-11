@@ -1,0 +1,2 @@
+# Machine programs recorded for tests: compared byte for byte, so never converted.
+app/src/engine/testdata/** -text
