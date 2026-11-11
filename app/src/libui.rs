@@ -207,6 +207,9 @@ impl App {
     /// They become new records there.
     pub fn library_folder_changed(&mut self) {
         self.libui.loaded = false;
+        // The Sheet stock window lists the new Library's stock (LB12).
+        self.stockui.loaded = false;
+        self.stockui.sel = None;
         self.job_lib_id = None;
         for j in &mut self.jobs {
             j.lib_id = None;
@@ -784,6 +787,14 @@ mod libui_tests {
         let stock = shown(&ctx, |c| a.stock_window(c));
         assert!(stock.contains(&said), "Sheet stock:\n{stock}");
         assert!(!stock.contains("Reference"), "the stock shown as an empty list:\n{stock}");
+        // Settings → Folders and the Open job menu say so too, each looking
+        // for the Library itself when nothing else has yet.
+        for which in ["Settings", "Open job"] {
+            let mut b = App::new(None);
+            b.cfg.library_dir = dir.display().to_string();
+            let text = shown_in_panel(&ctx, |ui| if which == "Settings" { b.settings_folders(ui) } else { b.open_job_menu(ui) });
+            assert!(text.contains(&said) && text.contains("Try again"), "{which}:\n{text}");
+        }
         assert!(!dir.exists(), "looking at the lists made the Library folder");
         // The share is back: Try again lists what's there.
         library::create(&dir).unwrap();
@@ -824,10 +835,18 @@ mod libui_tests {
         a.confirm_new_library();
         assert_eq!(a.cfg.library_dir, empty.display().to_string(), "{}", a.status);
         assert!(Library::open(&empty, &a.who, &a.clock).unwrap().entries().is_empty());
-        // A folder that holds a Library is used without asking.
+        // A folder that holds a Library is used without asking, and the
+        // Sheet stock window shows its stock, not the last folder's.
+        a.stockui.open = true;
+        a.stockui.sel = Some("S1".into());
+        let _ = shown(&ctx, |c| a.stock_window(c));
+        crate::stock::Stock::update(&shop, |s| s.add_sheet(crate::stock::Item::sheet("SHOP-SHEET", 0, 3.0, 3000.0, 1500.0, 1), true)).unwrap();
         a.pick_library_folder(shop.display().to_string());
         assert!(a.lib_new_ask.is_none());
         assert_eq!(a.cfg.library_dir, shop.display().to_string());
+        assert!(a.stockui.sel.is_none(), "a sheet picked in the last Library is still selected");
+        let _ = shown(&ctx, |c| a.stock_window(c));
+        assert!(a.stockui.stock.get("SHOP-SHEET").is_some(), "the stock window still shows the last Library's stock");
         // A folder that isn't there is asked about too, and not made before.
         let new = d.join("New");
         a.pick_library_folder(new.display().to_string());

@@ -897,7 +897,11 @@ impl App {
         });
     }
 
-    fn settings_folders(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn settings_folders(&mut self, ui: &mut egui::Ui) {
+        // Looked for once, as the lists do; Try again looks again (LB11).
+        if !self.libui.loaded {
+            self.lib_refresh();
+        }
         ui.label(RichText::new("Folders").size(18.0).strong().color(th().text_strong));
         ui.add_space(8.0);
         card(ui, "Export folder", "Where Export CNC writes programs (a sub-folder per job). Empty = Documents\\Sheet Nesting.", |ui| {

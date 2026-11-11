@@ -907,7 +907,14 @@ impl App {
         ui.label(RichText::new("Job files and Library jobs together, newest first").size(11.5).color(th().text_dim));
         // The Library's jobs are missing because it can't be reached (LB11).
         if let Some(e) = self.libui.error.clone() {
-            ui.label(RichText::new(format!("⚠ Library jobs aren't listed: {e}")).size(11.5).color(th().warn_fg));
+            let (again, folder) = crate::libui::unreachable_note(ui, &format!("Library jobs aren't listed: {e}"));
+            if again {
+                self.lib_retry();
+            }
+            if folder {
+                self.open_settings(crate::settings_ui::Section::Folders);
+                ui.close();
+            }
         }
         if rows.is_empty() {
             ui.label(RichText::new("None yet — jobs you save or open show up here.").size(12.0).color(th().text_dim));
