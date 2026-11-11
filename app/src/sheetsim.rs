@@ -259,23 +259,12 @@ impl App {
                 self.show_path = false;
             }
         });
-        // The two machine choices side by side, each labelled: the kind of
-        // machine the sheet is cut on (technology, nesting) and the output
-        // machine whose program format Export CNC writes.
+        // One machine choice: the shop's machine the sheet is cut on, which
+        // sets both how parts are machined and the program format (MK1).
         ribbon_group(ui, "Machine", |ui| {
-            ui.vertical(|ui| {
-                ui.add_space(8.0);
-                egui::Grid::new("machine_pair").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
-                    ui.label(RichText::new("Machine").color(th().text_dim)).on_hover_text("The machine the sheet is cut on: its technology tables and how parts are nested");
-                    if self.machine_combo(ui, 150.0) {
-                        self.refresh();
-                    }
-                    ui.end_row();
-                    ui.label(RichText::new("Post-processor").color(th().text_dim)).on_hover_text("How Export CNC writes the programs: the output machine's format and file names");
-                    self.output_combo(ui, 150.0);
-                    ui.end_row();
-                });
-            });
+            if self.machine_picker(ui) {
+                self.refresh();
+            }
         });
         ribbon_group(ui, "Compensation", |ui| {
             let r = crate::drawing::dropdown(ui, Icon::Kerf, "Kerf", true).on_hover_text(crate::kerf::status_line(&self.spec));
@@ -630,33 +619,5 @@ mod sim_tests {
         assert!(step_time(&ops, t, -1) < t);
         assert_eq!(contours_done(&ops, plan.contours.len(), 0.0), 0);
         assert_eq!(contours_done(&ops, plan.contours.len(), total), plan.contours.len());
-    }
-}
-
-impl App {
-    /// The output machine Export CNC writes programs for (its format and
-    /// file names), as a list; picking one makes it the active machine.
-    pub fn output_combo(&mut self, ui: &mut egui::Ui, width: f32) {
-        let cur = self.cfg.active_machine.min(self.cfg.machines.len().saturating_sub(1));
-        let fmt = |o: crate::settings::Output| match o {
-            crate::settings::Output::Iso => "ISO G-code",
-            crate::settings::Output::BlmSiemens => "BLM / Siemens",
-        };
-        let shown = self.cfg.machines.get(cur).map_or("—".to_string(), |m| format!("{} · {}", m.name, fmt(m.output)));
-        let mut pick = None;
-        egui::ComboBox::from_id_salt(("output_machine", ui.scope_id())).width(width).selected_text(shown).show_ui(ui, |ui| {
-            for (k, m) in self.cfg.machines.iter().enumerate() {
-                if ui.selectable_label(k == cur, format!("{} · {}", m.name, fmt(m.output))).clicked() {
-                    pick = Some(k);
-                }
-            }
-        })
-        .response
-        .on_hover_text("The output machine Export CNC writes programs for (its format and file names). Add or edit machines in Machine & output.");
-        if let Some(k) = pick.filter(|&k| k != cur) {
-            self.cfg.active_machine = k;
-            let _ = self.cfg.save();
-            self.status = format!("Programs are now written for {}.", self.cfg.machines[k].name);
-        }
     }
 }

@@ -298,7 +298,7 @@ impl App {
         self.sel_cut = Some(self.cut_list().len() - 1);
         self.refresh();
         self.status = match (kind, self.remnant_info()) {
-            (CutKind::Remnant, Some((w, h, a))) => format!("Remnant line added — remnant about {w:.0} × {h:.0} mm ({:.2} m²).", a / 1e6),
+            (CutKind::Remnant, Some((w, h, a))) => format!("Remnant line added — remnant about {} ({}).", self.unit().size(w, h, 0), self.unit().area(a)),
             _ => "Cut line added — it is cut after the parts.".into(),
         };
         true
@@ -315,7 +315,7 @@ impl App {
         let ls = self.cfg.stock.line.clone();
         let lines = crate::remline::auto_lines(&self.parts, self.sheet_now(), &self.cur_spec(), &ls, crate::kerf::kerf_mm(&self.cur_spec()) / 2.0);
         if lines.is_empty() {
-            self.status = format!("No remnant: less than the minimum width ({:.0} mm) is left past the parts.", ls.min_width);
+            self.status = format!("No remnant: less than the minimum width ({}) is left past the parts.", self.unit().len(ls.min_width, 0));
             return;
         }
         self.set_remnant_lines(lines, ls.shape.label());
@@ -337,7 +337,7 @@ impl App {
         self.sel_cut = None;
         self.refresh();
         self.status = match self.remnant_info() {
-            Some((w, h, a)) => format!("{what}: remnant about {w:.0} × {h:.0} mm ({:.2} m²).", a / 1e6),
+            Some((w, h, a)) => format!("{what}: remnant about {} ({}).", self.unit().size(w, h, 0), self.unit().area(a)),
             None => format!("{what}: remnant line added."),
         };
         true
@@ -541,7 +541,7 @@ impl App {
         let has = !self.result.sheets.is_empty();
         ribbon_group(ui, "Remnants & cut lines", |ui| {
             if ribbon_button(ui, Icon::CutLine, "Cut off\nleftover", false, has)
-                .on_hover_text(format!("Add a remnant line: the leftover beyond the parts is cut off and kept as a remnant — in the chosen shape ({}), {:.0} mm past the parts (the same as Home → Cut off leftover)", self.cfg.stock.line.shape.label(), self.cfg.stock.line.offset))
+                .on_hover_text(format!("Add a remnant line: the leftover beyond the parts is cut off and kept as a remnant — in the chosen shape ({}), {} past the parts (the same as Home → Cut off leftover)", self.cfg.stock.line.shape.label(), self.unit().len(self.cfg.stock.line.offset, 0)))
                 .clicked()
             {
                 self.auto_remnant_edge();
@@ -680,7 +680,7 @@ impl App {
                 let c = area_centre(&r);
                 let (w, h) = piece.size();
                 let a = piece.area_mm2();
-                let txt = format!("Remnant  {w:.0} × {h:.0} mm\n{:.2} m²", a / 1e6);
+                let txt = format!("Remnant  {}\n{}", self.unit().size(w, h, 0), self.unit().area(a));
                 let g = painter.layout(txt, FontId::proportional(12.0), Color32::WHITE, 200.0);
                 let rr = Rect::from_center_size(to_s(c), g.size() + Vec2::new(16.0, 10.0));
                 painter.rect_filled(rr, CornerRadius::same(6), Color32::from_rgba_unmultiplied(120, 90, 10, 210));
@@ -762,7 +762,7 @@ impl App {
                 let edge_to_edge = remnant_region(&prev, &self.cur_spec()).is_some();
                 if let Some(&last) = prev.last() {
                     let len: f64 = prev.windows(2).map(|w| dist(w[0], w[1])).sum();
-                    let tip = format!("{len:.0} mm{}{}", if edge_to_edge { " · cuts a remnant off" } else { "" }, if bad { " · crosses a part" } else { "" });
+                    let tip = format!("{}{}{}", self.unit().len(len, 0), if edge_to_edge { " · cuts a remnant off" } else { "" }, if bad { " · crosses a part" } else { "" });
                     painter.text(to_s(last) + Vec2::new(12.0, -12.0), Align2::LEFT_BOTTOM, tip, FontId::proportional(12.0), col);
                 }
             }

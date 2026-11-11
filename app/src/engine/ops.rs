@@ -319,7 +319,7 @@ pub static OPS: &[Op] = &[
     ] },
     // --- reference ---
     Op { name: "catalog", group: "Reference", kind: Kind::Global, help: "Choices the other operations take: shapes, materials, thicknesses, nesting levels, machine types, lead/joint types, qualities, text kinds and fields, layer roles.", args: &[] },
-    Op { name: "machines", group: "Reference", kind: Kind::Global, help: "The machines in Settings (read-only here): output, post library, and the active machine's technology (CT1) values.", args: &[] },
+    Op { name: "machines", group: "Reference", kind: Kind::Global, help: "The machines in Settings (read-only here): what each does (laser, plasma, punch…), output, post library, and the active machine's technology (CT1) values.", args: &[] },
 ];
 
 pub fn find(name: &str) -> Option<&'static Op> {
@@ -950,7 +950,7 @@ fn machines(ctx: &Ctx) -> Value {
     json!({
         "active": ctx.cfg.active_machine + 1,
         "machines": ctx.cfg.machines.iter().enumerate().map(|(i, m)| json!({
-            "machine": i + 1, "name": m.name, "output": m.output.key(), "post_lib": m.post_lib, "blm_ps1": m.blm_ps1, "blm_cf1": m.blm_cf1, "gas": m.gas_name,
+            "machine": i + 1, "name": m.name, "does": m.kind.key(), "output": m.output.key(), "post_lib": m.post_lib, "blm_ps1": m.blm_ps1, "blm_cf1": m.blm_cf1, "gas": m.gas_name,
         })).collect::<Vec<_>>(),
         "technology": {
             "source": t.source.as_ref().map_or("built-in values".to_string(), |p| p.display().to_string()),
@@ -961,7 +961,7 @@ fn machines(ctx: &Ctx) -> Value {
             "note": "These are the machine's own values; a job's material and thickness may pick a section of the file instead (machine-tech).",
         },
         "post": { "extension": ctx.post.file_name("JOB", 1) },
-        "note": "Settings are changed in the app (Settings window), not by agents.",
+        "note": "Settings are changed in the app (Settings window), not by agents. A job is put on a machine's process with set-sheet machine=<does> (MK1).",
     })
 }
 
@@ -2531,7 +2531,7 @@ pub const GUI_MAP: &[(&str, &str)] = &[
     ("Remnants/Cut off\nleftover", "remnant"),
     ("Show/Cutting\npath", "render"),
     ("Show/Part\nnumbers", "render"),
-    ("Show/Grid\n100 mm", "view:"),
+    ("Show/Sheet\ngrid", "view:"),
     ("Panes/CNC\nprogram", "program"),
     ("Panes/Times and\ncosts", "info"),
     ("Panes/Side\npanels", "view:"),
