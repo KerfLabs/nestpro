@@ -339,6 +339,7 @@ impl App {
             result: Default::default(),
             stale: true,
             lib_id: None,
+            lib_read: Default::default(),
             cut_lines: vec![],
             manual_cuts: vec![],
             cam_changed: None,
