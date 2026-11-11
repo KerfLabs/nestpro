@@ -4,11 +4,14 @@
 //! made-up jobs and library parts, saves over them again and changes the
 //! sheet stock in a loop, tagged with its PC's name, then checks that
 //! everything it and every other run wrote is there and whole, and prints a
-//! plain pass/fail report.
+//! plain pass/fail report. Each round also makes, renames, nests, moves and
+//! deletes job folders and files its new job in one (JX10–JX15), and the
+//! check finds every folder and every job where its run left it.
 //!
 //! It only works in an empty folder or one it made itself (it leaves
 //! `library-check.json` there), and refuses a real Library.
 
+use crate::folders::{self, TOP};
 use crate::jobfile::{self, JobFile};
 use crate::library::{Kind, Library};
 use crate::nest::{SheetSpec, Shape};
@@ -45,6 +48,18 @@ struct Saved {
     id: u64,
     name: String,
     rev: u32,
+    /// Jobs: the folder the run put it in (None: where its save filed it,
+    /// the top-level DEMO-CHECK folder).
+    #[serde(default)]
+    folder: Option<u64>,
+}
+
+/// A job folder a run made, as its last change left it.
+#[derive(Clone, Serialize, Deserialize)]
+struct MadeFolder {
+    id: u64,
+    name: String,
+    parent: u64,
 }
 
 /// What a run saved, written after every round (`library-check\<run>.json`).
@@ -62,6 +77,13 @@ struct Log {
     sheet: String,
     sheet_qty: i32,
     sheet_changes: u64,
+    /// Job folders the run made, and those it deleted again.
+    #[serde(default)]
+    folders: Vec<MadeFolder>,
+    #[serde(default)]
+    deleted: Vec<u64>,
+    #[serde(default)]
+    folder_changes: u64,
     errors: Vec<String>,
 }
 
@@ -110,7 +132,8 @@ pub fn refuse_real_library(folder: &Path, this_library: &Path) -> Result<(), Str
     // Only what the check and the Library under it make: temporary files and
     // the write lock's files come and go while another run is saving.
     let passing = |n: &str| n.ends_with(".tmp") || n.starts_with(shared::LOCK_FILE);
-    if let Some(n) = top.iter().find(|n| ![MARKER, LOGS, crate::library::INDEX, "Jobs", "Products", "Sheets"].contains(&n.as_str()) && !passing(n)) {
+    let tree = folders::file_name(Kind::Job);
+    if let Some(n) = top.iter().find(|n| ![MARKER, LOGS, crate::library::INDEX, tree, "Jobs", "Products", "Sheets"].contains(&n.as_str()) && !passing(n)) {
         return Err(real(format!("'{n}'")));
     }
     if let Some(n) = folder.join("Sheets").is_dir().then(|| names(&folder.join("Sheets"))).transpose()?.unwrap_or_default().iter().find(|n| *n != "stock.json" && !passing(n)) {
@@ -118,6 +141,13 @@ pub fn refuse_real_library(folder: &Path, this_library: &Path) -> Result<(), Str
     }
     // The list: readable, and only the check's own records.
     let lib = Library::at(folder, &shared::Who::this_pc(), &shared::Clock::pc());
+    // The job folders: readable, and only the check's own.
+    if folder.join(tree).exists() {
+        let t = folders::load(&lib, Kind::Job).map_err(|e| unsure(e.to_string()))?;
+        if let Some(f) = t.folders.iter().find(|f| !f.name.starts_with(TAG)) {
+            return Err(real(format!("the job folder '{}'", f.name)));
+        }
+    }
     if folder.join(crate::library::INDEX).exists() {
         let listed = lib.read_index().map_err(|e| unsure(format!("its list of records ({}) can't be read ({e})", crate::library::INDEX)))?;
         if let Some(e) = listed.iter().find(|e| !e.name.starts_with(TAG)) {
@@ -206,6 +236,71 @@ fn job_rev(j: &JobFile) -> Option<u32> {
     j.method.strip_prefix("rev ").and_then(|r| r.parse().ok())
 }
 
+/// One round of job folder changes (JX10–JX15): the run's own top-level
+/// folder (first round), a new folder in it, renamed, this round's new job
+/// moved into it, every second round the folder before moved into it, and a
+/// spare folder made and deleted again. Each change is logged as it leaves
+/// the folder, so the check can find it.
+fn folder_round(lib: &Library, log: &mut Log, n: u64, own: &str) {
+    let change = |log: &mut Log, what: &str, f: &dyn Fn(&mut folders::Tree, &[crate::library::Entry]) -> Result<u64, folders::Refused>| -> Option<u64> {
+        match folders::change(lib, Kind::Job, |t, es| f(t, es)) {
+            Ok(id) => {
+                log.folder_changes += 1;
+                Some(id)
+            }
+            Err(e) => {
+                log.errors.push(format!("{what} reported an error: {}", e.say(true)));
+                None
+            }
+        }
+    };
+    let run = match log.folders.first() {
+        Some(f) => f.id,
+        None => match change(log, &format!("making job folder '{own}'"), &|t, _| t.make(TOP, own)) {
+            Some(id) => {
+                log.folders.push(MadeFolder { id, name: own.to_string(), parent: TOP });
+                id
+            }
+            None => return,
+        },
+    };
+    let name = format!("{TAG} round {n}");
+    let Some(id) = change(log, &format!("making job folder '{name}'"), &|t, _| t.make(run, &name)) else { return };
+    log.folders.push(MadeFolder { id, name: name.clone(), parent: run });
+    let renamed = format!("{name} renamed");
+    if change(log, &format!("renaming job folder '{name}'"), &|t, _| t.rename(id, &renamed).map(|_| id)).is_some() {
+        if let Some(f) = log.folders.iter_mut().find(|f| f.id == id) {
+            f.name = renamed;
+        }
+    }
+    // This round's new job, into the new folder.
+    if let Some(k) = log.jobs.iter().position(|j| j.name.ends_with(&format!(" job {n}"))) {
+        let r = log.jobs[k].id;
+        if change(log, &format!("moving job '{}' into a folder", log.jobs[k].name.clone()), &|t, _| t.put(r, id).map(|_| id)).is_some() {
+            log.jobs[k].folder = Some(id);
+        }
+    }
+    // Every second round, the folder before goes into this one.
+    if n % 2 == 0 {
+        let prev = format!("{TAG} round {} ", n - 1);
+        if let Some(before) = log.folders.iter().find(|f| f.parent == run && format!("{} ", f.name).starts_with(&prev)).map(|f| f.id) {
+            if change(log, "moving a job folder into another", &|t, _| t.move_folder(before, id).map(|_| before)).is_some() {
+                if let Some(f) = log.folders.iter_mut().find(|f| f.id == before) {
+                    f.parent = id;
+                }
+            }
+        }
+    }
+    let spare = format!("{TAG} spare {n}");
+    if let Some(s) = change(log, &format!("making job folder '{spare}'"), &|t, _| t.make(run, &spare)) {
+        if change(log, &format!("deleting job folder '{spare}'"), &|t, es| t.delete(s, es).map(|_| s)).is_some() {
+            log.deleted.push(s);
+        } else {
+            log.folders.push(MadeFolder { id: s, name: spare, parent: run });
+        }
+    }
+}
+
 fn write_log(folder: &Path, log: &Log) -> Result<(), String> {
     let text = serde_json::to_string_pretty(log).map_err(|e| e.to_string())?;
     shared::write_file(&folder.join(LOGS).join(format!("{}.json", log.run)), text.as_bytes(), None)
@@ -263,6 +358,9 @@ pub fn run(folder: &Path, this_library: &Path, opt: &Options) -> Result<Report, 
         sheet: format!("{TAG}-{stamp}"),
         sheet_qty: 0,
         sheet_changes: 0,
+        folders: vec![],
+        deleted: vec![],
+        folder_changes: 0,
         errors: vec![],
     };
     let until = started + Duration::from_secs_f64(opt.minutes.max(0.0) * 60.0);
@@ -273,7 +371,7 @@ pub fn run(folder: &Path, this_library: &Path, opt: &Options) -> Result<Report, 
         // A new job, then one of this run's jobs saved over again.
         let name = format!("{TAG} {pc} {stamp} job {n}");
         match lib.save_job(&demo_job(&name, 0), None) {
-            Ok(id) => log.jobs.push(Saved { id, name, rev: 0 }),
+            Ok(id) => log.jobs.push(Saved { id, name, rev: 0, folder: None }),
             Err(e) => log.errors.push(format!("saving job '{name}' reported an error: {e}")),
         }
         if let Some(k) = (!log.jobs.is_empty()).then(|| (n as usize * 7) % log.jobs.len()) {
@@ -289,7 +387,7 @@ pub fn run(folder: &Path, this_library: &Path, opt: &Options) -> Result<Report, 
         // The same for a library part.
         let name = format!("{TAG} {pc} {stamp} part {n}");
         match lib.save_product(&demo_part(&name, 0), TAG, 0, 3.0, None) {
-            Ok(id) => log.parts.push(Saved { id, name, rev: 0 }),
+            Ok(id) => log.parts.push(Saved { id, name, rev: 0, folder: None }),
             Err(e) => log.errors.push(format!("saving library part '{name}' reported an error: {e}")),
         }
         if let Some(k) = (!log.parts.is_empty()).then(|| (n as usize * 5) % log.parts.len()) {
@@ -302,6 +400,7 @@ pub fn run(folder: &Path, this_library: &Path, opt: &Options) -> Result<Report, 
                 Err(e) => log.errors.push(format!("saving library part '{}' over record {} reported an error: {e}", s.name, s.id)),
             }
         }
+        folder_round(&lib, &mut log, n, &format!("{TAG} {pc} {stamp}"));
         // A stock change on this run's own sheet: one more on the rack.
         let sheet = log.sheet.clone();
         let changed = Stock::update(&lib, |st| {
@@ -337,7 +436,7 @@ pub fn run(folder: &Path, this_library: &Path, opt: &Options) -> Result<Report, 
     problems.extend(checked.problems);
     let took = started.elapsed().as_secs_f64();
     let mut text = format!(
-        "Library check of {} by {pc} ({}): {} round(s) in {}.\nThis run: {} job(s) and {} library part(s) saved, {job_overs} job(s) and {part_overs} part(s) saved over again, {} stock change(s).\nChecked: {} job(s), {} library part(s) and {} stock sheet(s) from {} run(s) ({}).\n",
+        "Library check of {} by {pc} ({}): {} round(s) in {}.\nThis run: {} job(s) and {} library part(s) saved, {job_overs} job(s) and {part_overs} part(s) saved over again, {} stock change(s), {} job folder change(s).\nChecked: {} job(s), {} library part(s), {} stock sheet(s) and {} job folder(s) from {} run(s) ({}).\n",
         folder.display(),
         who.user,
         log.rounds,
@@ -345,9 +444,11 @@ pub fn run(folder: &Path, this_library: &Path, opt: &Options) -> Result<Report, 
         log.jobs.len(),
         log.parts.len(),
         log.sheet_changes,
+        log.folder_changes,
         checked.jobs,
         checked.parts,
         checked.sheets,
+        checked.folders,
         checked.runs.len(),
         checked.runs.join(", "),
     );
@@ -367,6 +468,7 @@ struct Checked {
     jobs: usize,
     parts: usize,
     sheets: usize,
+    folders: usize,
     runs: Vec<String>,
     problems: Vec<String>,
 }
@@ -418,11 +520,19 @@ fn verify(folder: &Path, lib: &Library, own: &Log) -> Checked {
             None
         }
     };
+    let tree = match folders::load(lib, Kind::Job) {
+        Ok(t) => Some(t),
+        Err(e) => {
+            add("folders".into(), format!("The Library's job folders ({}) are half-written or damaged ({e}).", folders::file_name(Kind::Job)));
+            None
+        }
+    };
+    let filed = tree.as_ref().and_then(|t| t.find(TAG));
     let rel = |p: &Path| p.strip_prefix(folder).unwrap_or(p).to_string_lossy().replace('\\', "/");
     // Records that can't be read are looked at again under the write lock: a
     // save in progress on another PC has its number taken but nothing in it yet.
     let mut suspects: Vec<(Kind, u64, PathBuf)> = vec![];
-    let (mut jobs, mut parts) = (0, 0);
+    let (mut jobs, mut parts, mut folder_count) = (0, 0, 0);
     for l in &logs {
         // A run still going may save over its records again after its log
         // was read: its saves can only be newer.
@@ -443,6 +553,13 @@ fn verify(folder: &Path, lib: &Library, own: &Log) -> Checked {
             if !list.iter().any(|e| e.kind == Kind::Job && e.id == s.id && e.name == s.name) {
                 add(format!("list job {}", s.id), format!("Job '{}' (record {}), saved by {}, is missing from the Library's list.", s.name, s.id, l.pc));
             }
+            // Where its run put it, or where its save filed it.
+            if let Some(t) = &tree {
+                let (at, want) = (t.folder_of(s.id), s.folder.or(filed).unwrap_or(TOP));
+                if at != want {
+                    add(format!("place job {}", s.id), format!("Job '{}' (record {}) is in {} where {} left it in {}: its place in the job folders was lost.", s.name, s.id, t.place(at), l.pc, t.place(want)));
+                }
+            }
         }
         for s in &l.parts {
             parts += 1;
@@ -459,6 +576,24 @@ fn verify(folder: &Path, lib: &Library, own: &Log) -> Checked {
             }
             if !list.iter().any(|e| e.kind == Kind::Product && e.id == s.id && e.name == s.name) {
                 add(format!("list part {}", s.id), format!("Library part '{}' (record {}), saved by {}, is missing from the Library's list.", s.name, s.id, l.pc));
+            }
+        }
+        if let Some(t) = &tree {
+            for f in &l.folders {
+                folder_count += 1;
+                match t.get(f.id) {
+                    None => add(format!("folder {}", f.id), format!("Job folder '{}' (#{}), made by {}, is missing: a folder change was lost.", f.name, f.id, l.pc)),
+                    Some(now) if exact && (now.name != f.name || now.parent != f.parent) => add(
+                        format!("folder {}", f.id),
+                        format!("Job folder #{} is '{}' in {} where {}'s last change left it '{}' in {}: a folder change was lost.", f.id, now.name, t.place(now.parent), l.pc, f.name, t.place(f.parent)),
+                    ),
+                    Some(_) => {}
+                }
+            }
+            for id in &l.deleted {
+                if t.get(*id).is_some() {
+                    add(format!("folder {id}"), format!("Job folder #{id}, which {} deleted, is back: a folder change was lost.", l.pc));
+                }
             }
         }
         if let (Some(st), true) = (&stock, exact && l.sheet_changes > 0) {
@@ -498,5 +633,5 @@ fn verify(folder: &Path, lib: &Library, own: &Log) -> Checked {
         }
     }
     let sheets = logs.iter().filter(|l| l.sheet_changes > 0).count();
-    Checked { jobs, parts, sheets, runs: logs.iter().map(|l| l.pc.clone()).collect(), problems: problems.into_values().collect() }
+    Checked { jobs, parts, sheets, folders: folder_count, runs: logs.iter().map(|l| l.pc.clone()).collect(), problems: problems.into_values().collect() }
 }

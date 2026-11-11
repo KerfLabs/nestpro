@@ -81,6 +81,10 @@ nestpro ops --gui      # which GUI ribbon command each operation stands for
   --minutes 10 --text` on two PCs at once: it saves made-up jobs, parts and
   stock changes there and reports PASS or FAIL in plain words. It refuses a
   real Library.
+- **Job folders** are the Library's, the same on every PC: `job-folders
+  --mode=list` shows the tree, and `new`, `rename`, `delete` (empty folders
+  only) and `move` (a saved job or a folder) change it, as the Job Explorer's
+  Library section does.
 - Agents may create and change jobs, use the Library, and write programs to the
   export folder. They never send anything to a machine and don't change
   settings (machines, posts, materials are set in the app).

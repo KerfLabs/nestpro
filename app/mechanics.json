@@ -5258,6 +5258,81 @@
   "source": "MECHANICS JX8, JX9"
  },
  {
+  "name": "job folder tree",
+  "group": "job explorer",
+  "value": "job-folders.json in the Library: each folder's number, name and parent (0 = the top), and each saved job's folder by number",
+  "source": "MECHANICS JX10; own design on DT8, DT9"
+ },
+ {
+  "name": "job folder numbers",
+  "group": "job explorer",
+  "value": "one more than the highest ever given; never given twice",
+  "source": "MECHANICS JX10; own design"
+ },
+ {
+  "name": "job folder changes",
+  "group": "job explorer",
+  "value": "made under the Library's write lock, the tree read again under it and written whole; refused, naming the folder, while the Library can't be reached or holds no Library (LB11, LB12)",
+  "source": "MECHANICS JX10; own design"
+ },
+ {
+  "name": "job folder names of a Library from before folders",
+  "group": "job explorer",
+  "value": "top-level folders holding the same jobs; names differing only in case are one folder, spelt as on the lowest-numbered job",
+  "estimated": true,
+  "source": "MECHANICS JX11"
+ },
+ {
+  "name": "folder name check on New folder, Change name and Move",
+  "group": "job explorer",
+  "value": "trimmed, not empty, not used in the same folder (without case): else error 9",
+  "source": "MECHANICS JX12"
+ },
+ {
+  "name": "move a folder into itself or one of its own folders",
+  "group": "job explorer",
+  "value": "refused",
+  "source": "MECHANICS JX12"
+ },
+ {
+  "name": "delete a job folder",
+  "group": "job explorer",
+  "value": "only when it holds no saved job and no folder",
+  "estimated": true,
+  "source": "MECHANICS JX13"
+ },
+ {
+  "name": "empty job folders",
+  "group": "job explorer",
+  "value": "kept until deleted",
+  "source": "MECHANICS JX13"
+ },
+ {
+  "name": "Library folder menu",
+  "group": "job explorer",
+  "value": "New > Folder, Cut, Paste, Delete, Change name, Refresh",
+  "source": "MECHANICS JX14"
+ },
+ {
+  "name": "Library tree order",
+  "group": "job explorer",
+  "value": "in each folder: its folders by name without case, then its jobs",
+  "source": "MECHANICS JX14"
+ },
+ {
+  "name": "job saved into the Library for the first time goes into",
+  "group": "job explorer",
+  "value": "the folder of the library job it came from, else the top-level folder named like its Open jobs folder (made if missing)",
+  "estimated": true,
+  "source": "MECHANICS JX15"
+ },
+ {
+  "name": "saving over a Library job moves it",
+  "group": "job explorer",
+  "value": false,
+  "source": "MECHANICS JX15"
+ },
+ {
   "name": "hand-moved leads per part (contours)",
   "group": "leads",
   "value": 16,

@@ -81,10 +81,10 @@ pub struct Op {
 }
 
 impl Op {
-    /// Changes a file: the job, the sheet stock (`stock`) or a test Library
-    /// folder (`library-check`).
+    /// Changes a file: the job, the sheet stock (`stock`), the Library's job
+    /// folders (`job-folders`) or a test Library folder (`library-check`).
     pub fn writes(&self) -> bool {
-        matches!(self.kind, Kind::Write | Kind::Create) || matches!(self.name, "stock" | "library-check")
+        matches!(self.kind, Kind::Write | Kind::Create) || matches!(self.name, "stock" | "library-check" | "job-folders")
     }
 
     /// MCP tool name (underscores).
@@ -318,6 +318,13 @@ pub static OPS: &[Op] = &[
         r("folder", Ty::Path, "The test folder: empty or missing, or one the check made before (e.g. a folder next to the Library on the share). Never the Library itself"),
         a("minutes", Ty::Num, "How long to keep saving, minutes (default 1)"), a("rounds", Ty::Int, "Stop after this many rounds instead (each round: 2 job saves, 2 library part saves, 1 stock change)"),
         a("pc", Ty::Str, "Name to tag this run with (default: this PC's name)"),
+    ] },
+    Op { name: "job-folders", group: "Library", kind: Kind::Global, help: "The Library's job folders, the same on every PC that shares the Library (the Job Explorer's Library section): list the tree (each folder's path and #number, what it holds, and every saved job's folder), make a folder (new), change a folder's name (rename), delete an empty folder (delete), or move a saved job or a folder into another folder or to the top (move). Folder names are unique within their folder, without case (error 9); a folder never goes into itself or one of its own folders; a folder that still holds jobs or folders isn't deleted.", args: &[
+        Arg { name: "mode", ty: Ty::Str, required: true, help: "What to do", choices: &["list", "new", "rename", "delete", "move"] },
+        a("folder", Ty::Str, "The folder: its path from the top, names separated by / (\"Acme/2026-11\", without case), or #<number> from list. new: the folder to make it in (default: the top); rename, delete: the folder; move: the folder to move"),
+        a("name", Ty::Str, "new: the new folder's name (default \"New folder\", then \"New folder (1)\"…); rename: its new name"),
+        a("saved_job", Ty::Str, "move: the saved job to move: its reference (JOB000012) or record number from list, or its name when no other saved job has it"),
+        a("to", Ty::Str, "move: where to: a folder's path or #<number>, or \"/\" for the top of the Library"),
     ] },
     // --- looking at it ---
     Op { name: "render", group: "View", kind: Kind::Read, help: "Draw a sheet (parts, numbers, cut path, leads, joints, cut lines) or one part (numbered elements, leads, joints) to PNG or SVG.", args: &[
@@ -1145,6 +1152,7 @@ pub fn run_global(ctx: &Ctx, name: &str, args: &Value) -> Result<Outcome, String
         "stock" => stock_op(ctx, &a),
         "machines" => Ok(Outcome::read(format!("Active machine: {}.", ctx.cfg.machine().name), machines(ctx))),
         "import-xml" => import_xml(ctx, &a),
+        "job-folders" => super::folderops::run(ctx, &a),
         "library-check" => {
             let rounds = match a.int("rounds")? {
                 Some(n) if n < 1 => return Err(format!("rounds {n}: at least 1")),
@@ -1236,7 +1244,7 @@ fn library(ctx: &Ctx) -> Result<crate::library::Library, String> {
 /// The Library folder can be used, or the refusal naming it, what was left
 /// as it was (`kept`) and what to do instead (LB11, LB12, LB13). Nothing is
 /// made either way.
-fn reach_library(ctx: &Ctx, kept: &str) -> Result<(), String> {
+pub(super) fn reach_library(ctx: &Ctx, kept: &str) -> Result<(), String> {
     crate::library::usable(&ctx.library_dir).map_err(|e| format!("{e} {kept}: try again once it can be reached."))
 }
 
@@ -1704,13 +1712,16 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             match a.need_str("mode")?.as_str() {
                 "list" => {
                     let find = a.str("find").unwrap_or_default().to_lowercase();
+                    // A job's folder is its place in the Library's job folders (JX10).
+                    let tree = crate::folders::load(&lib, crate::library::Kind::Job)?;
+                    let folder = |e: &crate::library::Entry| if e.kind == crate::library::Kind::Job { tree.path(tree.folder_of(e.id)) } else { e.folder.clone() };
                     let mut list: Vec<Value> = lib
                         .entries()
                         .into_iter()
-                        .filter(|e| find.is_empty() || e.name.to_lowercase().contains(&find) || e.folder.to_lowercase().contains(&find))
+                        .filter(|e| find.is_empty() || e.name.to_lowercase().contains(&find) || folder(e).to_lowercase().contains(&find))
                         // Who last saved it and when, in this PC's local time (LB6);
                         // no one for a record saved before saves recorded it.
-                        .map(|e| json!({"id": e.id, "kind": format!("{:?}", e.kind).to_lowercase(), "name": e.name, "folder": e.folder, "material": cnc::MATERIALS.get(e.material).copied().unwrap_or("?"), "thickness": e.thickness, "w": r1(e.w), "h": r1(e.h), "preprogrammed": e.tech, "saved_by": e.saved_by.as_ref().map(|w| w.label()), "saved_at": (e.updated > 0).then(|| ctx.clock.stamp(e.updated))}))
+                        .map(|e| json!({"id": e.id, "kind": format!("{:?}", e.kind).to_lowercase(), "name": e.name, "folder": folder(&e), "material": cnc::MATERIALS.get(e.material).copied().unwrap_or("?"), "thickness": e.thickness, "w": r1(e.w), "h": r1(e.h), "preprogrammed": e.tech, "saved_by": e.saved_by.as_ref().map(|w| w.label()), "saved_at": (e.updated > 0).then(|| ctx.clock.stamp(e.updated))}))
                         .collect();
                     // Jobs that share their name with another job (JX17:
                     // Libraries saved before names were unique): the others'

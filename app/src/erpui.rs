@@ -346,6 +346,7 @@ impl App {
             erp: Some(link),
             file: None,
             saved: None,
+            lib_folder: None,
         });
         let i = self.jobs.len() - 1;
         self.open_job(i);

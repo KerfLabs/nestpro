@@ -1361,14 +1361,28 @@ fn the_library_check_passes_on_a_test_folder_and_fails_on_a_half_written_record(
     // Run again on the folder it made: it checks the first run's records too.
     let r = call(&mut s, "library-check", None, json!({"folder": folder.to_str().unwrap(), "rounds": 3, "pc": "PROG-2"}));
     let report = r["message"].as_str().unwrap();
-    assert!(report.contains("PASS") && report.contains("Checked: 9 job(s), 9 library part(s) and 2 stock sheet(s) from 2 run(s) (PROG-1, PROG-2)"), "{report}");
+    // Each run's own folder and one folder a round (the spare ones are deleted again).
+    assert!(report.contains("PASS") && report.contains("Checked: 9 job(s), 9 library part(s), 2 stock sheet(s) and 11 job folder(s) from 2 run(s) (PROG-1, PROG-2)"), "{report}");
+    // Round 1: its own folder, then each round a folder made, renamed and a job
+    // moved in, a spare made and deleted; every second round a folder nested.
+    assert!(report.contains("3 stock change(s), 17 job folder change(s)"), "{report}");
     // A job record cut off halfway through, as a dropped connection would leave it.
     let lib = crate::library::Library::open(&folder, &Who::new("sam", "PROG-1"), &Clock::pc()).unwrap();
     let rec = lib.path(crate::library::Kind::Job, 2);
     let text = std::fs::read_to_string(&rec).unwrap();
     std::fs::write(&rec, &text[..text.len() / 2]).unwrap();
+    // Folder changes lost, as a PC writing the folders without the lock
+    // would lose them: a rename undone and a job's place dropped.
+    let file = folder.join(crate::folders::file_name(crate::library::Kind::Job));
+    let mut t = crate::folders::load(&lib, crate::library::Kind::Job).unwrap();
+    let renamed = t.folders.iter().position(|f| f.name.ends_with(" round 1 renamed")).unwrap();
+    t.folders[renamed].name = "DEMO-CHECK round 1".into();
+    t.placed.remove(&3);
+    std::fs::write(&file, serde_json::to_string(&t).unwrap()).unwrap();
     let e = err(&mut s, "library-check", json!({"folder": folder.to_str().unwrap(), "rounds": 1, "pc": "PROG-1"}));
     assert!(e.contains("FAIL") && e.contains("Job record 2") && e.contains("half-written"), "{e}");
+    assert!(e.contains("is 'DEMO-CHECK round 1' in") && e.contains("a folder change was lost"), "{e}");
+    assert!(e.contains("(record 3) is in the top of the Library where PROG-1 left it in 'DEMO-CHECK PROG-1"), "{e}");
 }
 
 /// A test folder the Library check made itself (one round, so it holds the
@@ -1419,6 +1433,14 @@ fn the_library_check_refuses_a_folder_it_cant_read_or_recognise() {
     let f = check_folder(&mut s, &d, "other files");
     std::fs::create_dir_all(f.join("Drawings")).unwrap();
     refused(&mut s, &f, "'Drawings'");
+    // A job folder the check didn't make, or folders that can't be read.
+    let f = check_folder(&mut s, &d, "real folder");
+    let lib = crate::library::Library::open(&f, &Who::new("sam", "PROG-1"), &Clock::pc()).unwrap();
+    crate::folders::change(&lib, crate::library::Kind::Job, |t, _| t.make(crate::folders::TOP, "Acme")).unwrap();
+    refused(&mut s, &f, "the job folder 'Acme'");
+    let f = check_folder(&mut s, &d, "damaged folders");
+    std::fs::write(f.join(crate::folders::file_name(crate::library::Kind::Job)), "{ half a tree").unwrap();
+    refused(&mut s, &f, "folder tree");
 }
 
 /// The 200 × 100 mm outline of the contour-state tests' made-up plates.
@@ -2179,6 +2201,81 @@ fn an_agents_library_saves_say_agent_and_the_list_says_who_and_when() {
     let rec = crate::library::Library::open(&lib, &Who::new("kim", "PROG-1"), &clock).unwrap().load_job(job["id"].as_u64().unwrap()).unwrap();
     assert_eq!(rec.saved.map(|s| s.by.label()).as_deref(), Some("sam on PROG-2 (agent)"));
     let _ = std::fs::remove_dir_all(&d);
+}
+
+// ---------------------------------------------------------------------------
+// The Library's job folders through the agents' `job-folders` (JX10–JX15).
+// ---------------------------------------------------------------------------
+
+/// LB11 for agents' folders: `job-folders` on a Library that can't be
+/// reached is refused naming its folder and saying what to do, as
+/// `library save-job` is, and nothing is made.
+#[test]
+fn agents_job_folders_are_refused_naming_the_folder_while_the_library_cant_be_reached() {
+    let d = dir("job_folders_unreachable");
+    let mut ctx = Ctx::builtin();
+    ctx.library_dir = d.join("Nesting");
+    let lib = ctx.library_dir.clone();
+    let mut s = Session::new(ctx);
+    let said = format!("The Library on {} can't be reached", lib.display());
+    for args in [
+        json!({"mode": "list"}),
+        json!({"mode": "new", "name": "Acme"}),
+        json!({"mode": "rename", "folder": "Acme", "name": "Acme Ltd"}),
+        json!({"mode": "delete", "folder": "Acme"}),
+        json!({"mode": "move", "saved_job": "JOB000001", "to": "Acme"}),
+    ] {
+        let e = err(&mut s, "job-folders", args.clone());
+        assert!(e.contains(&said), "{args}: {e}");
+        assert!(e.contains("try again once it can be reached"), "{args} doesn't say what to do: {e}");
+        assert!(!lib.exists(), "{args} made the Library folder");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn agents_make_rename_move_and_delete_job_folders_and_are_told_what_to_do_instead() {
+    let d = dir("job_folders");
+    let ctx = stock_ctx(&d);
+    let mut s = Session::new(ctx);
+    let jp = d.join("frames.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"name": "DEMO-001", "week": "W12"}));
+    // Saved into the Library, a job goes into the folder named like its week.
+    call(&mut s, "library", None, json!({"mode": "save-job"}));
+    call(&mut s, "job-folders", None, json!({"mode": "new", "name": "Acme"}));
+    let nov = call(&mut s, "job-folders", None, json!({"mode": "new", "folder": "acme", "name": "2026-11"}));
+    assert!(nov["message"].as_str().unwrap().contains("Acme/2026-11"), "{nov}");
+    // A name taken in the same folder, without case: the original's error 9.
+    let e = err(&mut s, "job-folders", json!({"mode": "new", "name": "ACME"}));
+    assert!(e.contains("already in the top of the Library") && e.contains("error 9"), "{e}");
+    // A saved job, by name, into a folder by its path.
+    let moved = call(&mut s, "job-folders", None, json!({"mode": "move", "saved_job": "demo-001", "to": "Acme/2026-11"}));
+    assert_eq!(moved["data"]["outline"], json!(["Acme/", "Acme/2026-11/", "Acme/2026-11/DEMO-001", "W12/"]), "{moved}");
+    // Refusals say what to do instead.
+    let e = err(&mut s, "job-folders", json!({"mode": "delete", "folder": "Acme"}));
+    assert!(e.contains("still holds 1 folder") && e.contains("Move or delete what's in it first"), "{e}");
+    let e = err(&mut s, "job-folders", json!({"mode": "move", "folder": "Acme", "to": "Acme/2026-11"}));
+    assert!(e.contains("can't go into itself or one of its own folders"), "{e}");
+    let e = err(&mut s, "job-folders", json!({"mode": "move", "folder": "Beta", "to": "/"}));
+    assert!(e.contains("no folder 'Beta'") && e.contains("job-folders mode=list"), "{e}");
+    let e = err(&mut s, "job-folders", json!({"mode": "move", "saved_job": "DEMO-404", "to": "/"}));
+    assert!(e.contains("JOB000012"), "{e}");
+    // Renaming a folder keeps what's in it; an empty one can be deleted.
+    call(&mut s, "job-folders", None, json!({"mode": "rename", "folder": "Acme", "name": "Acme Ltd"}));
+    call(&mut s, "job-folders", None, json!({"mode": "delete", "folder": "W12"}));
+    let l = call(&mut s, "job-folders", None, json!({"mode": "list"}));
+    assert_eq!(l["data"]["outline"], json!(["Acme Ltd/", "Acme Ltd/2026-11/", "Acme Ltd/2026-11/DEMO-001"]), "{l}");
+    assert_eq!(l["data"]["jobs"][0]["folder"], "Acme Ltd/2026-11", "{l}");
+    // By number too, and the job by its reference: to the top.
+    let id = l["data"]["folders"][1]["folder"].as_str().unwrap().to_string();
+    call(&mut s, "job-folders", None, json!({"mode": "move", "saved_job": "JOB000001", "to": "/"}));
+    call(&mut s, "job-folders", None, json!({"mode": "move", "folder": id, "to": "/"}));
+    let l = call(&mut s, "job-folders", None, json!({"mode": "list"}));
+    assert_eq!(l["data"]["outline"], json!(["2026-11/", "Acme Ltd/", "DEMO-001"]), "{l}");
+    // The library listing names a job's folder by its place in the tree.
+    call(&mut s, "job-folders", None, json!({"mode": "move", "saved_job": "DEMO-001", "to": "2026-11"}));
+    let l = call(&mut s, "library", None, json!({"mode": "list", "find": "2026"}));
+    assert_eq!((l["data"][0]["name"].as_str(), l["data"][0]["folder"].as_str()), (Some("DEMO-001"), Some("2026-11")), "{l}");
 }
 
 #[test]
