@@ -133,8 +133,9 @@ Single-context: `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents
 
 Settings for running a spec's tickets with agents (`babysit-tickets`):
 
-- **Check:** `tools/check.sh`. It always exits 0: it passes only when the public check is ok,
-  every `test result` line says `ok`, and the Windows check ends `Finished` with no `error`.
+- **Check:** `tools/check.sh`. Pass = exit 0 and a last line `== All checks passed`; any failed
+  step exits 1 and names it on a `== FAILED:` line. A second check in the same checkout waits
+  for the first.
 - **Max implementers:** 2, with `CARGO_BUILD_JOBS=2` each (the build machine has 4 cores).
 - **Idle limit:** 45 minutes.
 - **Risky paths:** anything that changes a machine program (`app/src/cnc.rs`, `app/src/post.rs`,
