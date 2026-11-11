@@ -1855,7 +1855,7 @@ mod kerf_plan_tests {
     }
     /// A drawing part from outline and holes as drawn (direction kept).
     fn drawn(outline: Vec<P>, holes: Vec<Vec<P>>) -> Part {
-        let g = crate::dxf::CustomGeo { w: 100.0, h: 60.0, outline, holes, fills: vec![], hole_fills: vec![], marks: vec![], texts: vec![], contours: vec![] };
+        let g = crate::dxf::CustomGeo { w: 100.0, h: 60.0, outline, holes, fills: vec![], hole_fills: vec![], marks: vec![], texts: vec![], contours: vec![], hand_order: vec![] };
         part(Shape::Custom, 100.0, 60.0, Some(g))
     }
     fn sides(p: &SheetPlan) -> Vec<(bool, Side)> {
@@ -2001,7 +2001,7 @@ mod kerf_plan_tests {
             let a = k as f64 * std::f64::consts::TAU / 48.0;
             [100.0 + 3.0 * a.cos(), 50.0 + 3.0 * a.sin()]
         }).collect();
-        part.custom = Some(std::sync::Arc::new(crate::dxf::CustomGeo { outline: vec![[0.0, 0.0], [200.0, 0.0], [200.0, 100.0], [0.0, 100.0]], holes: vec![hole], fills: vec![], hole_fills: vec![], marks: vec![], texts: vec![], w: 200.0, h: 100.0, contours: vec![] }));
+        part.custom = Some(std::sync::Arc::new(crate::dxf::CustomGeo { outline: vec![[0.0, 0.0], [200.0, 0.0], [200.0, 100.0], [0.0, 100.0]], holes: vec![hole], fills: vec![], hole_fills: vec![], marks: vec![], texts: vec![], w: 200.0, h: 100.0, contours: vec![], hand_order: vec![] }));
         part.shape = Shape::Custom;
         let pl = Placed { part: 0, x: 50.0, y: 50.0, w: 200.0, h: 100.0, turns: 0, mirror: false };
         let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material, thickness, level: 3, machine: Default::default(), kerf: Default::default() };

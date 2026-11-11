@@ -68,7 +68,7 @@ is **`FEATURES.md`** at the top of the repo; keep both in step.
 | Machine All / Automatic / Regenerate | Have (automatic cut order + program) | |
 | Manual contours, two points, between micro-joints, continuous contours | Part — manual contour picking | ★★ |
 | **Common-cut / continuous cut**, flying cut in holes, hole destruction | Missing | ★★ |
-| **Order machining**, change cutting direction, contour ordering | Part — manual order, reverse | ★★ |
+| **Order machining**, change cutting direction, contour ordering | Part — manual order, reverse; a part's own cut order set by hand, kept with the part and its library product (agents: `part-cut-order`, CO3–CO7; sheets, programs and the part screen follow it later, MAC-5) | ★★ |
 | Delete instructions (current, by selection, from-to) | Part — undo pick / clear | ★ |
 | **Component extraction** (stop, trap, lift; assign boxes) | Missing | ★ |
 | Avoid holes already cut (head rapids) | Missing | ★★ |

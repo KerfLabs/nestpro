@@ -1866,3 +1866,408 @@ fn import_drawing_sets_layers_and_contours_in_one_call() {
     assert!(info["message"].as_str().unwrap().contains("1 part type(s)"), "{info}");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+// ---------------------------------------------------------------------------
+// A part's cut order set by hand (MAC-5, CO3–CO7).
+// ---------------------------------------------------------------------------
+
+/// A part's cut order as part-info gives it: the contours in the order they
+/// are cut, and the ones set by hand.
+fn part_cut_order(s: &mut Session, part: usize) -> (Vec<u64>, Vec<u64>) {
+    let pi = call(s, "part-info", None, json!({"part": part}));
+    let nums = |v: &Value| v.as_array().unwrap_or_else(|| panic!("{pi}")).iter().map(|n| n.as_u64().unwrap()).collect::<Vec<_>>();
+    (nums(&pi["data"]["cut_order"]["contours"]), nums(&pi["data"]["cut_order"]["by_hand"]))
+}
+
+/// Each contour's (number, place in the cut order, set by hand) as part-info
+/// lists them; a contour that is neither cut nor marked has no place (0).
+fn cut_places(s: &mut Session, part: usize) -> Vec<(u64, u64, bool)> {
+    let pi = call(s, "part-info", None, json!({"part": part}));
+    pi["data"]["contours"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{pi}"))
+        .iter()
+        .map(|c| (c["contour"].as_u64().unwrap(), c["cut_order"].as_u64().unwrap_or(0), c["cut_order_by_hand"].as_bool().unwrap_or(false)))
+        .collect()
+}
+
+#[test]
+fn contours_ordered_by_hand_are_cut_first_and_the_outline_last() {
+    let d = dir("part_order");
+    let job = d.join("plate.snjob");
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "steel", "thickness": 3}));
+    call(&mut s, "import-drawing", None, json!({"path": contour_plate(&d).to_str().unwrap(), "qty": 1}));
+    // No order set by hand: the holes in number order, then the outline.
+    assert_eq!(part_cut_order(&mut s, 1), (vec![1, 2, 3, 4], vec![]));
+    // A start picked on hole 1 (element 1) and a quality set by hand on hole 3.
+    call(&mut s, "lead-at", None, json!({"part": 1, "element": 1}));
+    call(&mut s, "contour-tech", None, json!({"part": 1, "contours": "3", "quality": 1}));
+    let unchanged = |s: &mut Session| {
+        let pi = call(s, "part-info", None, json!({"part": 1}));
+        (pi["data"]["elements"].clone(), pi["data"]["technology"].clone(), contour_qualities(s, 1))
+    };
+    let before = unchanged(&mut s);
+
+    // CO3: holes 3, 1, 2 by hand take places 1–3; the outline follows in the
+    // automatic part. The bend line and the no-cut line have no place.
+    let r = call(&mut s, "part-cut-order", None, json!({"part": 1, "mode": "add", "contours": "3, 1, 2"}));
+    assert_eq!(r["data"]["added"], json!([3, 1, 2]), "{r}");
+    assert_eq!(cut_places(&mut s, 1), [(1, 2, true), (2, 3, true), (3, 1, true), (4, 4, false), (5, 0, false), (6, 0, false)]);
+    assert_eq!(part_cut_order(&mut s, 1), (vec![3, 1, 2, 4], vec![3, 1, 2]));
+    // Contour numbers don't change: elements, the picked start and the
+    // quality set by hand stay on the same contours.
+    assert_eq!(unchanged(&mut s), before);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn the_outline_is_always_cut_last_and_later_picks_go_in_before_it() {
+    let d = dir("part_order_outline");
+    let job = d.join("plate.snjob");
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "steel", "thickness": 3}));
+    call(&mut s, "import-drawing", None, json!({"path": contour_plate(&d).to_str().unwrap(), "qty": 1}));
+    // The line across the plate (contour 5) marked: an etching.
+    call(&mut s, "contour-tech", None, json!({"part": 1, "contours": "5", "state": "mark"}));
+    assert_eq!(part_cut_order(&mut s, 1), (vec![5, 1, 2, 3, 4], vec![]), "marks first, as today");
+
+    // CO4: a hole named after the outline in one command is refused with the
+    // reason, and nothing changes; so is a mark (marks go before the outline).
+    let e = err(&mut s, "part-cut-order", json!({"part": 1, "mode": "add", "contours": "4, 1"}));
+    assert!(e.contains("Contour 4 is the part's outline") && e.contains("always cut last") && e.contains("drops before its holes are cut"), "{e}");
+    let e = err(&mut s, "part-cut-order", json!({"part": 1, "mode": "add", "contours": "2, 4, 5"}));
+    assert!(e.contains("contour 5 after it") && e.contains("always cut last"), "{e}");
+    assert_eq!(part_cut_order(&mut s, 1), (vec![5, 1, 2, 3, 4], vec![]));
+
+    // The outline named last is taken; it stays last, and what is added
+    // later goes in just before it: a hole, then the mark.
+    call(&mut s, "part-cut-order", None, json!({"part": 1, "mode": "add", "contours": "2, 4"}));
+    assert_eq!(part_cut_order(&mut s, 1), (vec![2, 5, 1, 3, 4], vec![2, 4]));
+    call(&mut s, "part-cut-order", None, json!({"part": 1, "mode": "add", "contours": "3"}));
+    call(&mut s, "part-cut-order", None, json!({"part": 1, "mode": "add", "contours": "5"}));
+    assert_eq!(part_cut_order(&mut s, 1), (vec![2, 3, 5, 1, 4], vec![2, 3, 5, 4]));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// A made-up 300 × 100 plate: contours 1–5 holes (Ø20, Ø10, Ø20, Ø10, Ø30
+/// from left to right), 6 the outline, 7 a line on layer MARK.
+fn plate_with_five_holes(d: &Path) -> PathBuf {
+    let sq = "0\nLWPOLYLINE\n8\n0\n90\n4\n70\n1\n10\n0\n20\n0\n10\n300\n20\n0\n10\n300\n20\n100\n10\n0\n20\n100\n";
+    let circle = |layer: &str, x: f64, r: f64| format!("0\nCIRCLE\n8\n{layer}\n10\n{x}\n20\n50\n30\n0\n40\n{r}\n");
+    let line = "0\nLINE\n8\nMARK\n10\n20\n20\n85\n11\n80\n21\n85\n";
+    let body = [sq.to_string(), circle("0", 40.0, 10.0), circle("0", 90.0, 5.0), circle("0", 140.0, 10.0), circle("0", 190.0, 5.0), circle("0", 250.0, 15.0), line.to_string()].concat();
+    let p = d.join("DEMO-003.dxf");
+    std::fs::write(&p, format!("0\nSECTION\n2\nENTITIES\n{body}0\nENDSEC\n0\nEOF\n")).unwrap();
+    p
+}
+
+#[test]
+fn bulk_commands_add_only_contours_not_yet_ordered_in_the_automatic_order() {
+    let d = dir("part_order_bulk");
+    let job = d.join("plate.snjob");
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "steel", "thickness": 3}));
+    call(&mut s, "import-drawing", None, json!({"path": plate_with_five_holes(&d).to_str().unwrap(), "qty": 1, "layers": "MARK=mark"}));
+    // Marks between the holes: the small holes 2 and 4 marked.
+    call(&mut s, "contour-tech", None, json!({"part": 1, "contours": "2,4", "state": "mark"}));
+    let rows: Vec<(String, String, u64)> = contour_rows(&mut s, 1).into_iter().map(|r| (r.1, r.2, r.3.round() as u64)).collect();
+    let row = |k: &str, st: &str, l: u64| (k.to_string(), st.to_string(), l);
+    assert_eq!(rows, [row("hole", "cut", 63), row("hole", "mark", 31), row("hole", "cut", 63), row("hole", "mark", 31), row("hole", "cut", 94), row("outside", "cut", 800), row("open", "mark", 60)]);
+    // Holes 1 and 5 cut at quality 1 by hand; the rest at the default 3.
+    call(&mut s, "contour-tech", None, json!({"part": 1, "contours": "1,5", "quality": 1}));
+    assert_eq!(part_cut_order(&mut s, 1), (vec![2, 4, 7, 1, 3, 5, 6], vec![]), "marks first, then holes, then the outline");
+    let order = |s: &mut Session, args: Value| {
+        let mut a = args;
+        a["part"] = json!(1);
+        let r = call(s, "part-cut-order", None, a);
+        (r["data"]["added"].clone(), r["data"]["skipped"].clone())
+    };
+
+    // CO5: All marks adds the marks not yet ordered, in the automatic order
+    // (number order), after mark 4 set by hand.
+    order(&mut s, json!({"mode": "add", "contours": "4"}));
+    assert_eq!(order(&mut s, json!({"mode": "all-marks"})), (json!([2, 7]), json!([4])));
+    assert_eq!(part_cut_order(&mut s, 1), (vec![4, 2, 7, 1, 3, 5, 6], vec![4, 2, 7]));
+    // All of quality 1: holes 1 and 5.
+    assert_eq!(order(&mut s, json!({"mode": "all-quality", "quality": 1})), (json!([1, 5]), json!([])));
+    assert_eq!(part_cut_order(&mut s, 1), (vec![4, 2, 7, 1, 5, 3, 6], vec![4, 2, 7, 1, 5]));
+    // A contour already in the order is skipped, and so is one named twice.
+    assert_eq!(order(&mut s, json!({"mode": "add", "contours": "3, 1, 3"})), (json!([3]), json!([1, 3])));
+    // All cut: only the outline is left.
+    assert_eq!(order(&mut s, json!({"mode": "all-cut"})), (json!([6]), json!([1, 3, 5])));
+    assert_eq!(part_cut_order(&mut s, 1), (vec![4, 2, 7, 1, 5, 3, 6], vec![4, 2, 7, 1, 5, 3, 6]));
+
+    // Nothing left to add: nothing changes, and the job isn't saved again.
+    let saved = std::fs::read_to_string(&job).unwrap();
+    let r = call(&mut s, "part-cut-order", None, json!({"part": 1, "mode": "all-marks"}));
+    assert!(r["message"].as_str().unwrap().contains("already in the cut order"), "{r}");
+    assert_eq!(std::fs::read_to_string(&job).unwrap(), saved);
+    // A quality no contour is cut at, or a part with no marks: refused, saying
+    // what the part has.
+    let e = err(&mut s, "part-cut-order", json!({"part": 1, "mode": "all-quality", "quality": 7}));
+    assert!(e.contains("quality 7") && e.contains("1 and 3") && e.contains("part-info"), "{e}");
+    for q in [json!(0), json!(13), json!("auto")] {
+        let e = err(&mut s, "part-cut-order", json!({"part": 1, "mode": "all-quality", "quality": q}));
+        assert!(e.contains("1 to 12"), "{q}: {e}");
+    }
+    call(&mut s, "import-drawing", None, json!({"path": contour_plate(&d).to_str().unwrap(), "qty": 1}));
+    let e = err(&mut s, "part-cut-order", json!({"part": 2, "mode": "all-marks"}));
+    assert!(e.contains("no marks") && e.contains("contour-tech"), "{e}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn undo_takes_back_the_last_command_and_clear_empties_the_order() {
+    let d = dir("part_order_undo");
+    let job = d.join("plate.snjob");
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "steel", "thickness": 3}));
+    call(&mut s, "import-drawing", None, json!({"path": contour_plate(&d).to_str().unwrap(), "qty": 1}));
+    call(&mut s, "place", None, json!({"part": 1, "x": 50, "y": 50}));
+    let program = |s: &mut Session| call(s, "program", None, json!({"sheet": 1}))["data"].as_str().unwrap().to_string();
+    let before = program(&mut s);
+    let add = |s: &mut Session, c: &str| call(s, "part-cut-order", None, json!({"part": 1, "mode": "add", "contours": c}));
+
+    // Nothing to undo yet: refused, saying so.
+    let e = err(&mut s, "part-cut-order", json!({"part": 1, "mode": "undo"}));
+    assert!(e.contains("no cut order set by hand") && e.contains("automatic"), "{e}");
+
+    // CO6: undo takes back exactly the last command, the contours it added
+    // in front of the outline too.
+    add(&mut s, "2, 4");
+    add(&mut s, "3, 1");
+    assert_eq!(part_cut_order(&mut s, 1), (vec![2, 3, 1, 4], vec![2, 3, 1, 4]));
+    let r = call(&mut s, "part-cut-order", None, json!({"part": 1, "mode": "undo"}));
+    assert!(r["message"].as_str().unwrap().contains("3 and 1"), "{r}");
+    assert_eq!(part_cut_order(&mut s, 1), (vec![2, 1, 3, 4], vec![2, 4]));
+    call(&mut s, "part-cut-order", None, json!({"part": 1, "mode": "undo"}));
+    assert_eq!(part_cut_order(&mut s, 1), (vec![1, 2, 3, 4], vec![]));
+    assert!(err(&mut s, "part-cut-order", json!({"part": 1, "mode": "undo"})).contains("no cut order set by hand"));
+
+    // Clear empties the whole order at once; on an empty order it changes nothing.
+    add(&mut s, "3");
+    call(&mut s, "part-cut-order", None, json!({"part": 1, "mode": "all-cut"}));
+    let r = call(&mut s, "part-cut-order", None, json!({"part": 1, "mode": "clear"}));
+    assert!(r["message"].as_str().unwrap().contains("automatic"), "{r}");
+    assert_eq!(part_cut_order(&mut s, 1), (vec![1, 2, 3, 4], vec![]));
+    let saved = std::fs::read_to_string(&job).unwrap();
+    let r = call(&mut s, "part-cut-order", None, json!({"part": 1, "mode": "clear"}));
+    assert!(r["message"].as_str().unwrap().contains("no cut order set by hand"), "{r}");
+    assert_eq!(std::fs::read_to_string(&job).unwrap(), saved);
+    // With no order set by hand the program is the one from before.
+    assert_eq!(program(&mut s), before);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn contours_set_to_another_state_leave_the_order_and_new_cuts_join_the_automatic_part() {
+    let d = dir("part_order_tech");
+    let job = d.join("plate.snjob");
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "steel", "thickness": 3}));
+    call(&mut s, "import-drawing", None, json!({"path": plate_with_five_holes(&d).to_str().unwrap(), "qty": 1, "layers": "MARK=mark"}));
+    let tech = |s: &mut Session, c: &str, st: &str| call(s, "contour-tech", None, json!({"part": 1, "contours": c, "state": st}));
+    let add = |s: &mut Session, c: &str| call(s, "part-cut-order", None, json!({"part": 1, "mode": "add", "contours": c}));
+
+    // A contour left out (or No cut, or a Bend line) before ordering has no
+    // place in the order: naming it is refused, saying what to do instead.
+    tech(&mut s, "3", "leave-out");
+    let e = err(&mut s, "part-cut-order", json!({"part": 1, "mode": "add", "contours": "1, 3"}));
+    assert!(e.contains("Contour 3 is set to Leave out") && e.contains("contour-tech"), "{e}");
+    assert_eq!(part_cut_order(&mut s, 1), (vec![7, 1, 2, 4, 5, 6], vec![]));
+    // The open marked line is an etching: it can go first.
+    add(&mut s, "7, 1, 2, 4, 5");
+    assert_eq!(part_cut_order(&mut s, 1), (vec![7, 1, 2, 4, 5, 6], vec![7, 1, 2, 4, 5]));
+
+    // CO7: set to No cut or Bend line, a contour leaves the order.
+    tech(&mut s, "2", "no-cut");
+    tech(&mut s, "4", "bend-line");
+    assert_eq!(part_cut_order(&mut s, 1), (vec![7, 1, 5, 6], vec![7, 1, 5]));
+    assert_eq!(cut_places(&mut s, 1)[1], (2, 0, false), "no place");
+    // A cut hole set to Mark leaves the order and joins the automatic marks;
+    // a contour newly set to Cut joins the automatic part (after the marks).
+    tech(&mut s, "1", "mark");
+    tech(&mut s, "3", "cut");
+    assert_eq!(part_cut_order(&mut s, 1), (vec![7, 5, 1, 3, 6], vec![7, 5]));
+    // An ordered mark set to Cut leaves the order too.
+    add(&mut s, "1");
+    tech(&mut s, "1", "cut");
+    assert_eq!(part_cut_order(&mut s, 1), (vec![7, 5, 1, 3, 6], vec![7, 5]));
+    // Setting a contour to the state it has, or only its quality, keeps it.
+    tech(&mut s, "7", "mark");
+    tech(&mut s, "5", "cut");
+    call(&mut s, "contour-tech", None, json!({"part": 1, "contours": "5", "quality": 2}));
+    assert_eq!(part_cut_order(&mut s, 1), (vec![7, 5, 1, 3, 6], vec![7, 5]));
+    // The open mark set to No cut leaves; naming it again is refused.
+    tech(&mut s, "7", "no-cut");
+    assert_eq!(part_cut_order(&mut s, 1), (vec![5, 1, 3, 6], vec![5]));
+    let e = err(&mut s, "part-cut-order", json!({"part": 1, "mode": "add", "contours": "7"}));
+    assert!(e.contains("Contour 7 is set to No cut"), "{e}");
+    // Undo takes back the command the order's contour 5 came from: the
+    // contours that left with a technology change are gone from it already.
+    call(&mut s, "part-cut-order", None, json!({"part": 1, "mode": "undo"}));
+    assert_eq!(part_cut_order(&mut s, 1), (vec![1, 3, 5, 6], vec![]));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_built_in_shape_follows_the_automatic_order_and_ordering_it_is_refused() {
+    let d = dir("part_order_shape");
+    let job = d.join("plate.snjob");
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "steel", "thickness": 3}));
+    call(&mut s, "add-shape", None, json!({"shape": "plate-hole", "w": 200, "h": 100, "qty": 1}));
+    // Its hole, then its outline, in the automatic order.
+    assert_eq!(part_cut_order(&mut s, 1), (vec![1, 2], vec![]));
+    for args in [json!({"mode": "add", "contours": "1"}), json!({"mode": "add", "contours": "5"}), json!({"mode": "all-cut"}), json!({"mode": "undo"}), json!({"mode": "clear"})] {
+        let mut a = args.clone();
+        a["part"] = json!(1);
+        let e = err(&mut s, "part-cut-order", a);
+        assert!(e.contains("built-in") && e.contains("automatic order") && e.contains("export-part-dxf") && e.contains("import"), "{args}: {e}");
+    }
+    assert_eq!(part_cut_order(&mut s, 1), (vec![1, 2], vec![]));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_hand_set_order_is_kept_in_jobs_and_products_and_old_files_open_with_none() {
+    let d = dir("part_order_keep");
+    let job = d.join("plate.snjob");
+    let jp = job.to_str().unwrap();
+    let ctx = || {
+        let mut c = Ctx::builtin();
+        c.cfg.library_dir = d.join("library").to_string_lossy().into_owned();
+        c
+    };
+    let mut s = Session::new(ctx());
+    call(&mut s, "new", Some(jp), json!({"w": 1000, "h": 500, "material": "steel", "thickness": 3}));
+    call(&mut s, "import-drawing", None, json!({"path": contour_plate(&d).to_str().unwrap(), "qty": 1, "name": "DEMO-001"}));
+    call(&mut s, "place", None, json!({"part": 1, "x": 50, "y": 50}));
+    let program = |s: &mut Session| call(s, "program", None, json!({"sheet": 1}))["data"].as_str().unwrap().to_string();
+    let code = program(&mut s);
+    assert!(!std::fs::read_to_string(&job).unwrap().contains("hand_order"), "no order set by hand, nothing written for it");
+    call(&mut s, "part-cut-order", None, json!({"part": 1, "mode": "add", "contours": "3, 1"}));
+    call(&mut s, "part-cut-order", None, json!({"part": 1, "mode": "add", "contours": "2"}));
+    let set = (vec![3, 1, 2, 4], vec![3, 1, 2]);
+
+    // The job reopened from its file keeps the order, command by command:
+    // undo in a new run takes back the last one.
+    let mut s = Session::new(ctx());
+    call(&mut s, "info", Some(jp), json!({}));
+    assert_eq!(part_cut_order(&mut s, 1), set);
+    call(&mut s, "part-cut-order", None, json!({"part": 1, "mode": "undo"}));
+    assert_eq!(part_cut_order(&mut s, 1), (vec![3, 1, 2, 4], vec![3, 1]));
+    call(&mut s, "part-cut-order", None, json!({"part": 1, "mode": "add", "contours": "2"}));
+    // A product saved to the library and used in a new job keeps it.
+    call(&mut s, "library", None, json!({"mode": "save-part", "parts": "1"}));
+    let job2 = d.join("other.snjob");
+    call(&mut s, "new", Some(job2.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "steel", "thickness": 3}));
+    call(&mut s, "library", None, json!({"mode": "add", "name": "DEMO-001", "qty": 2}));
+    assert_eq!(part_cut_order(&mut s, 1), set);
+
+    // A job saved before cut orders (no order in its file) opens with none,
+    // and writes the same program.
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&job).unwrap()).unwrap();
+    v["parts"][0]["custom"].as_object_mut().unwrap().remove("hand_order").expect("the order was saved with the part");
+    std::fs::write(&job, serde_json::to_string(&v).unwrap()).unwrap();
+    let mut s = Session::new(ctx());
+    call(&mut s, "info", Some(jp), json!({}));
+    assert_eq!(part_cut_order(&mut s, 1), (vec![1, 2, 3, 4], vec![]));
+    assert_eq!(program(&mut s), code);
+    // So does a product saved before.
+    let products = d.join("library").join("Products");
+    let file = walk(&products).into_iter().find(|p| p.extension().is_some_and(|e| e == "json")).expect("the product's file");
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    v["part"]["custom"].as_object_mut().unwrap().remove("hand_order").expect("the order was saved with the product");
+    std::fs::write(&file, serde_json::to_string(&v).unwrap()).unwrap();
+    call(&mut s, "library", None, json!({"mode": "add", "name": "DEMO-001", "qty": 1}));
+    assert_eq!(part_cut_order(&mut s, 2), (vec![1, 2, 3, 4], vec![]));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Every file under `dir`.
+fn walk(dir: &Path) -> Vec<PathBuf> {
+    let mut out = vec![];
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let p = e.path();
+        if p.is_dir() { out.extend(walk(&p)) } else { out.push(p) }
+    }
+    out
+}
+
+#[test]
+fn odd_cut_order_commands_are_refused_or_change_nothing() {
+    let d = dir("part_order_odd");
+    let job = d.join("plate.snjob");
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "steel", "thickness": 3}));
+    call(&mut s, "import-drawing", None, json!({"path": contour_plate(&d).to_str().unwrap(), "qty": 1}));
+    let order = |args: Value| {
+        let mut a = args;
+        a["part"] = json!(1);
+        a
+    };
+    // Numbers the part doesn't have, none at all, or no mode it knows.
+    for c in ["7", "0", "2, 9", "1-7"] {
+        let e = err(&mut s, "part-cut-order", order(json!({"mode": "add", "contours": c})));
+        assert!(e.contains("6 contours") && e.contains("part-info"), "{c}: {e}");
+    }
+    for c in ["", " , ", "two"] {
+        let e = err(&mut s, "part-cut-order", order(json!({"mode": "add", "contours": c})));
+        assert!(e.contains("contour"), "{c:?}: {e}");
+    }
+    assert!(err(&mut s, "part-cut-order", order(json!({"mode": "add"}))).contains("contours"));
+    assert!(err(&mut s, "part-cut-order", order(json!({"mode": "all-quality"}))).contains("quality"));
+    let e = err(&mut s, "part-cut-order", order(json!({"mode": "reverse"})));
+    assert!(e.contains("add, all-marks, all-cut, all-quality, undo or clear"), "{e}");
+    // The open lines (a bend line and a no-cut line) have no place.
+    let e = err(&mut s, "part-cut-order", order(json!({"mode": "add", "contours": "5"})));
+    assert!(e.contains("Contour 5 is set to Bend line"), "{e}");
+    assert_eq!(part_cut_order(&mut s, 1), (vec![1, 2, 3, 4], vec![]), "nothing changed");
+    // A range runs the way it is written.
+    call(&mut s, "part-cut-order", None, order(json!({"mode": "add", "contours": "3-1"})));
+    assert_eq!(part_cut_order(&mut s, 1), (vec![3, 2, 1, 4], vec![3, 2, 1]));
+
+    // A part with only an outline: the outline is its whole order.
+    let sq = d.join("DEMO-SQUARE.dxf");
+    std::fs::write(&sq, format!("0\nSECTION\n2\nENTITIES\n{DEMO_SQUARE}0\nENDSEC\n0\nEOF\n")).unwrap();
+    call(&mut s, "import-drawing", None, json!({"path": sq.to_str().unwrap(), "qty": 1}));
+    assert_eq!(part_cut_order(&mut s, 2), (vec![1], vec![]));
+    assert!(err(&mut s, "part-cut-order", json!({"part": 2, "mode": "all-marks"})).contains("no marks"));
+    call(&mut s, "part-cut-order", None, json!({"part": 2, "mode": "all-cut"}));
+    assert_eq!(part_cut_order(&mut s, 2), (vec![1], vec![1]));
+    call(&mut s, "part-cut-order", None, json!({"part": 2, "mode": "undo"}));
+    assert_eq!(part_cut_order(&mut s, 2), (vec![1], vec![]));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_part_saved_before_contour_states_takes_an_order_and_keeps_its_program() {
+    let d = dir("part_order_old");
+    let job = d.join("plate.snjob");
+    let jp = job.to_str().unwrap();
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(jp), json!({"w": 1000, "h": 500, "material": "steel", "thickness": 3}));
+    call(&mut s, "import-drawing", None, json!({"path": plate_with_five_holes(&d).to_str().unwrap(), "qty": 1, "layers": "MARK=mark"}));
+    call(&mut s, "place", None, json!({"part": 1, "x": 50, "y": 50}));
+    // Saved before contour states: no contour list, only its outline, holes and marks.
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&job).unwrap()).unwrap();
+    v["parts"][0]["custom"].as_object_mut().unwrap().remove("contours");
+    std::fs::write(&job, serde_json::to_string(&v).unwrap()).unwrap();
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "info", Some(jp), json!({}));
+    let program = |s: &mut Session| call(s, "program", None, json!({"sheet": 1}))["data"].as_str().unwrap().to_string();
+    let code = program(&mut s);
+    // Its holes, the outline, its marking line: the mark first, as today.
+    assert_eq!(part_cut_order(&mut s, 1), (vec![7, 1, 2, 3, 4, 5, 6], vec![]));
+    call(&mut s, "part-cut-order", None, json!({"part": 1, "mode": "add", "contours": "5, 3"}));
+    assert_eq!(part_cut_order(&mut s, 1), (vec![5, 3, 7, 1, 2, 4, 6], vec![5, 3]));
+    // Ordering doesn't remake its outline, holes or marks: cleared again, the
+    // program is the one it had.
+    call(&mut s, "part-cut-order", None, json!({"part": 1, "mode": "clear"}));
+    assert_eq!(program(&mut s), code);
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(&job).unwrap()).unwrap();
+    assert!(v["parts"][0]["custom"].get("contours").is_none(), "its contours weren't written");
+    let _ = std::fs::remove_dir_all(&d);
+}
