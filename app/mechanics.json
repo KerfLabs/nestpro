@@ -3798,10 +3798,10 @@
   "source": "MECHANICS HM11"
  },
  {
-  "name": "lengths on the nesting screen",
-  "group": "moving parts by hand",
-  "value": "mm or inches (fractions accepted)",
-  "source": "MECHANICS HM12"
+  "name": "lengths shown and typed",
+  "group": "units",
+  "value": "mm or inches (fractions and steel gauges accepted)",
+  "source": "MECHANICS UN1"
  },
  {
   "name": "new job part gap / edge margin",
@@ -5274,6 +5274,78 @@
   "group": "job explorer",
   "value": true,
   "source": "MECHANICS JX8, JX9"
+ },
+ {
+  "name": "area unit with inches",
+  "group": "units",
+  "value": "ft²",
+  "source": "MECHANICS UN1"
+ },
+ {
+  "name": "extra decimals for inches",
+  "group": "units",
+  "value": 2,
+  "source": "MECHANICS UN1"
+ },
+ {
+  "name": "thinnest / thickest sheet (mm)",
+  "group": "units",
+  "value": [0.1, 300.0],
+  "source": "MECHANICS TH1"
+ },
+ {
+  "name": "steel gauges offered (gauge, inches)",
+  "group": "units",
+  "value": [[20, 0.0359], [18, 0.0478], [16, 0.0598], [14, 0.0747], [12, 0.1046], [11, 0.1196], [10, 0.1345]],
+  "source": "MECHANICS TH2"
+ },
+ {
+  "name": "inch fractions offered",
+  "group": "units",
+  "value": ["3/16", "1/4", "5/16", "3/8", "1/2", "5/8", "3/4", "1"],
+  "source": "MECHANICS TH2"
+ },
+ {
+  "name": "inch sheet sizes offered (in)",
+  "group": "units",
+  "value": [[96, 48], [120, 48], [120, 60], [144, 60], [144, 72], [240, 96]],
+  "source": "MECHANICS TH3"
+ },
+ {
+  "name": "sheet grid step with inches (in)",
+  "group": "units",
+  "value": 4,
+  "source": "MECHANICS TH3"
+ },
+ {
+  "name": "machine picker lists",
+  "group": "machines",
+  "value": "the shop's machines (Settings -> Machines & output)",
+  "source": "MECHANICS MK1"
+ },
+ {
+  "name": "process of an imported machine without one",
+  "group": "machines",
+  "value": "laser",
+  "source": "MECHANICS MK2"
+ },
+ {
+  "name": "stock row picked by any cell",
+  "group": "sheet stock",
+  "value": true,
+  "source": "MECHANICS ST16"
+ },
+ {
+  "name": "other material/thickness sheet offers to switch the job",
+  "group": "sheet stock",
+  "value": true,
+  "source": "MECHANICS ST16"
+ },
+ {
+  "name": "empty sheet from stock kept",
+  "group": "sheet stock",
+  "value": true,
+  "source": "MECHANICS ST17"
  }
 ]
 }

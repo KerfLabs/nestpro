@@ -577,7 +577,7 @@ Nesting screen. Code: `engine/arrange.rs` (rules), `arrange_ui.rs` (mouse and ke
 | HM10 | **Copying a selection**: Ctrl+D (ribbon Copy) puts a copy of all selected parts, keeping their layout, at the first free spot by their boxes, left first, then lowest; Ctrl + drag drags a copy instead. Each copy adds one to its part's order. | Copy command: observed; spot order and Ctrl+drag: rebuild |
 | HM11 | Parts being dragged can show the **part gap** as a dashed outline around them (the original's option to draw the moving parts grown by the part gap). Off at the factory; on first start the rebuild takes the install's setting. | observed option and default; look: rebuild |
 | HM13 | **Plain arrow keys move the view** (left/right/up/down) and **Page Down / Page Up zoom in / out**; the mouse wheel issues the same commands in the original. The rebuild pans 80 px per press and zooms by 2 (the original's default keyboard zoom factor). | keys: observed; pan step: estimate |
-| HM12 | **Settings → Nesting**: the part gap, edge margin and moves are shown and typed in mm or inches (fractions such as 1/4 accepted); new jobs start with the part gap and edge margin set there; the movement value, snapping, snap reach and the gap outline are set there too. | rebuild |
+| HM12 | **Settings → Nesting**: the units (mm or inches) every length in the app is shown and typed in (UN1); new jobs start with the part gap and edge margin set there; the movement value, snapping, snap reach and the gap outline are set there too. | rebuild |
 
 How the rebuild uses them:
 
@@ -974,9 +974,12 @@ shapes are recognised.
 
 How the rebuild uses them:
 
-- **Machine** choice (Sheet tab → Machine, and the drawing's Machining tab): Laser, Plasma,
-  Oxyfuel, Waterjet (cutting, MC1 type 0), Laser-Punch (type 1) and Punch (type 2). The machine
-  shows in the window title, the status line and the program header (`( MACHINE … - TYPE n )`).
+- **Machine** choice (Sheet tab → Machine, Machining tab, the drawing's Machining tab and the
+  Export review): the shop's own machines from Settings → Machines & output, by name. Each has
+  what it does — Laser, Plasma, Oxyfuel, Waterjet (cutting, MC1 type 0), Laser + punch (type 1)
+  or Punch (type 2) — and a program format; picking one sets the job to that process and makes
+  it the machine Export CNC writes for (MK1). The machine's name shows in the window title, the
+  jobs lists and the status line; the program header keeps the process (`( MACHINE … - TYPE n )`).
 - **Recognise shapes** (Machining tab) labels every contour that is a standard shape — circle
   (Ø), rectangle (w × h), obround slot (length × width) — in the original's order (MC3). Our
   outlines are polygons, so the tests work on points: a circle when every point is the same
@@ -993,6 +996,11 @@ How the rebuild uses them:
   hit. Each hit counts 0.25 s in the time estimate (estimated).
 - Not imitated: punch tool libraries and turrets (tools are assumed to exist in every size),
   different speeds per cutting technology, circles in one move (A024) and ring sectors.
+
+| # | Rule | Source |
+|---|---|---|
+| MK1 | **One machine choice.** The Sheet tab lists the shop's machines (Settings → Machines & output) by name, each with what it does (laser, plasma, oxyfuel, waterjet, laser + punch, punch) and its program format. Picking one — there, in the Export review or with *Use this machine* in Settings — sets the open job to that process and makes it the machine programs are written for. A job made for another process says so under the list ("job set for punch") until a machine is picked. Changing what the machine in use does, in Settings, changes the open job with it. | rebuild |
+| MK2 | Machines brought in from the other program get their process from their name: *plasma*, *oxy* / *flame*, *water*, *punch* (with *laser* or *combi*: laser + punch); anything else is a laser. It can be changed in Settings. | estimate |
 
 ## How the original builds its ribbon
 
@@ -1411,6 +1419,18 @@ part and nesting counts); jobs in no folder sit under the root. Only folders of 
 jobs are kept. Typing in "Find a job" lists matching jobs flat. Up to 5000 jobs are read, newest first.
 
 
+## Units and sheet thickness (rebuild)
+
+The app keeps every length in millimetres inside and shows it in the unit picked in
+Settings → Nesting → Units (`units.rs`).
+
+| # | Rule | Source |
+|---|---|---|
+| UN1 | **Every length in the window follows the unit**: sheet size, thickness, part sizes, gap and margin, technology lengths, the cursor X / Y and the unit shown beside it, the hover card, Free X, the jobs and stock lists, remnants and their areas (m² or ft²), the part view's dimensions and measurements, and status messages. Inches are typed as decimals, fractions (`1 1/2`) or steel gauges (`10ga`); either unit can be typed with its suffix (`6mm`, `1/4in`, `1/4"`). Lengths in inches show two more decimals than in mm (at most 4). Agents' operations stay in mm, machine programs in the unit set for the machine, and sheet references (`ST3-2000x1000`) in mm. | rebuild |
+| TH1 | **Any thickness can be typed** (0.1–300 mm), in either unit, beside a list of common ones. When the machine's files give no speed, the built-in fallback speed for a thickness between two of its rows is read in a straight line between them (outside them, the nearest row). | rebuild; fallback speeds: estimate |
+| TH2 | Thicknesses offered: in mm 0.5–25 mm; in inches the steel gauges 20, 18, 16, 14, 12, 11 and 10 (0.0359, 0.0478, 0.0598, 0.0747, 0.1046, 0.1196, 0.1345 in) and 3/16, 1/4, 5/16, 3/8, 1/2, 5/8, 3/4 and 1 in. A thickness that is a gauge is shown with it ("0.1345 in (10 ga)"). | estimate (manufacturers' standard gauge for steel; other materials' gauges differ) |
+| TH3 | Sheet sizes offered on the Sheet tab: in mm 2000 × 1000, 2500 × 1250, 3000 × 1500, 4000 × 2000, 6000 × 2000; in inches 96 × 48, 120 × 48, 120 × 60, 144 × 60, 144 × 72, 240 × 96. Any size can be typed. The sheet grid is 100 mm, or 4 in. | estimate |
+
 ## Settings (the rebuild's own — not tied to one install)
 
 Saved in `%APPDATA%\nestpro\settings.ini` (src/settings.rs), edited in **Settings** (Options → Settings…,
@@ -1419,9 +1439,10 @@ Jobs → Database → Connections, Nesting → Machining → Machine & output):
   database, Windows account or SQL login with any user name; a password can be remembered encrypted for
   the Windows user (DPAPI via ConvertFrom-SecureString, decrypted only inside the query helper). The
   active one opens in Browse database, which loads the Job Explorer tree right away when it can sign in.
-- **Machines & output**: any number of machines, each ISO G-code (with any .CFF/.CF1 post library or
-  built-in values) or BLM / Siemens 840D (with any .PS1/.CF1 post files and gas); the active one is used
-  for Export CNC.
+- **Machines & output**: any number of machines, each with what it does (laser, plasma, oxyfuel,
+  waterjet, laser + punch, punch; MK1) and ISO G-code (with any .CFF/.CF1 post library or built-in
+  values) or BLM / Siemens 840D (with any .PS1/.CF1 post files and gas); the one in use is the job's
+  machine and is used for Export CNC.
 - **Materials**: the name and code each material gets in programs. **Folders**: export folder; an
   optional Lantek Expert folder.
 - Lantek Expert is only an import source ("Import from Lantek…": LANTEKIN.CNI connection, DBConnect.lst
@@ -2011,6 +2032,8 @@ Sheet stock, remnants made from nested sheets, and how automatic nesting picks s
 | ST13 | Do All: best sheet format (whole job per size; complete → less waste → higher worst efficiency) and best sheet combination (per sheet, other sizes tried under the minimum efficiency), within the time limit. |
 | ST14 | Automatic sheet / remnant references from a format (off and empty by default): `[MAT]` material, `[UD1]`–`[UD3]` user data, `[SHT]` origin sheet, `[AUT]` next number, `[LNGx]` / `[WDTx]` / `[THKx]` sizes (x starting with 1 = ÷10, 2 = ÷100; a third character gives the decimals); an unknown `[xxx]` becomes `xxx`; the first 40 characters are kept. Without a format a remnant is `<origin>-<number>`. Counters skip the names Windows keeps for devices. Sheet formats use the same tokens (estimated). Observed (remnants); sheet tokens estimated. |
 | ST15 | Automatic mark on remnants (cutting machines, off by default): text with `#300` reference, `#301` length, `#302` width, `#303` area, `#304` weight, `#200` sheet, `#400` material, `#401` thickness, `#104` date (`#N.d` = d decimals; anything unavailable prints `?`); keypad position 1–9 on the remnant's box with X/Y margins, or a search (spots across the remnant, then turned 90°, then smaller text down to the minimum height); engraved before the remnant line is cut. Observed; the default text, size and margins are estimated. |
+| ST16 | **Picking in the Sheet stock window**: a click anywhere on a row picks it (the whole row is highlighted), a double-click puts it on the sheet shown. A sheet of another material or thickness than the job can't go on its sheets; the window says what each is and offers *Switch the job to … and use it*, which changes the job's material and thickness to the sheet's and then uses it — with parts already nested the usual question (keep or remove the nestings) comes first and the sheet isn't used yet. Rebuild. |
+| ST17 | Using a stock sheet on a job with nothing nested yet makes sheet 1 from it and keeps it while empty (as *Add nesting* does), so parts can be dragged onto it. Rebuild. |
 
 Not yet built: remnant reference points for the post-processor (RF11, meaning estimated),
 prenesting, "nesting equals sheet" (UI25).

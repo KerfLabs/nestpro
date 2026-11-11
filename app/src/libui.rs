@@ -702,6 +702,7 @@ impl App {
                 });
             }
             let mats = crate::cnc::MATERIALS;
+            let un = self.unit();
             egui::ScrollArea::vertical().id_salt("lib_rows").auto_shrink([false, false]).show_rows(ui, 30.0, rows.len(), |ui, range| {
                 for e in &rows[range] {
                     ui.horizontal(|ui| {
@@ -720,7 +721,7 @@ impl App {
                         }
                         ui.label(RichText::new(&e.folder).size(11.5).color(th().accent_fg));
                         let mat = mats.get(e.material).copied().unwrap_or("");
-                        let info = if e.kind == Kind::Job { format!("{mat} {} mm · {:.0}×{:.0} · {} products · {} sheets", e.thickness, e.w, e.h, e.count_a, e.count_b) } else { format!("{mat} {} mm · {:.0}×{:.0} · qty {}", e.thickness, e.w, e.h, e.count_a) };
+                        let info = if e.kind == Kind::Job { format!("{mat} {} · {} · {} products · {} sheets", un.thickness(e.thickness), un.size(e.w, e.h, 0), e.count_a, e.count_b) } else { format!("{mat} {} · {} · qty {}", un.thickness(e.thickness), un.size(e.w, e.h, 0), e.count_a) };
                         ui.label(RichText::new(info).size(11.5).color(th().text_dim));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.small_button("🗑").on_hover_text("Delete from the library").clicked() {

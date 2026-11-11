@@ -61,11 +61,14 @@ pub struct Machine {
     pub blm_cf1: String,
     pub gas_id: u32,
     pub gas_name: String,
+    /// What the machine does (laser, plasma, punch …): picking the machine
+    /// on the Sheet tab sets the job to it (MK1).
+    pub kind: crate::machine::MachineKind,
 }
 
 impl Default for Machine {
     fn default() -> Self {
-        Machine { name: "Laser 01".into(), output: Output::Iso, post_lib: String::new(), blm_ps1: String::new(), blm_cf1: String::new(), gas_id: 1, gas_name: "Nitrogen".into() }
+        Machine { name: "Laser 01".into(), output: Output::Iso, post_lib: String::new(), blm_ps1: String::new(), blm_cf1: String::new(), gas_id: 1, gas_name: "Nitrogen".into(), kind: Default::default() }
     }
 }
 
@@ -409,14 +412,15 @@ impl AppSettings {
         }
         for m in &self.machines {
             s += &format!(
-                "[machine]\nname = {}\noutput = {}\npost_lib = {}\nblm_ps1 = {}\nblm_cf1 = {}\ngas_id = {}\ngas_name = {}\n",
+                "[machine]\nname = {}\noutput = {}\npost_lib = {}\nblm_ps1 = {}\nblm_cf1 = {}\ngas_id = {}\ngas_name = {}\nkind = {}\n",
                 esc(&m.name),
                 m.output.key(),
                 esc(&m.post_lib),
                 esc(&m.blm_ps1),
                 esc(&m.blm_cf1),
                 m.gas_id,
-                esc(&m.gas_name)
+                esc(&m.gas_name),
+                m.kind.key()
             );
         }
         for i in &self.integrations {
@@ -566,13 +570,19 @@ impl AppSettings {
                 "machine" => {
                     if let Some(m) = st.machines.last_mut() {
                         match k {
-                            "name" => m.name = v,
+                            // Settings saved before machines said what they do: guessed
+                            // from the name (MK2); a `kind` line after it wins.
+                            "name" => {
+                                m.kind = crate::machine::MachineKind::guess_from_name(&v);
+                                m.name = v;
+                            }
                             "output" => m.output = Output::from_key(&v),
                             "post_lib" => m.post_lib = v,
                             "blm_ps1" => m.blm_ps1 = v,
                             "blm_cf1" => m.blm_cf1 = v,
                             "gas_id" => m.gas_id = v.parse().unwrap_or(1),
                             "gas_name" => m.gas_name = v,
+                            "kind" => m.kind = crate::machine::MachineKind::from_key(&v).unwrap_or_default(),
                             _ => {}
                         }
                     }
@@ -653,6 +663,7 @@ impl AppSettings {
                 post_lib: cff.clone(),
                 blm_ps1: if blm { file_if(&mch.join("PstAdi06.PS1")) } else { String::new() },
                 blm_cf1: if blm { file_if(&mch.join("PstAdi06.CF1")) } else { String::new() },
+                kind: crate::machine::MachineKind::guess_from_name(m),
                 ..Default::default()
             });
             added += 1;
@@ -782,7 +793,7 @@ mod settings_tests {
                 Connection { name: "Test = 2".into(), ..Default::default() },
             ],
             active_conn: 1,
-            machines: vec![Machine { name: "LC5".into(), output: Output::BlmSiemens, blm_ps1: r"C:\x\PstAdi06.PS1".into(), gas_id: 2, gas_name: "Oxygen".into(), ..Default::default() }, Machine::default()],
+            machines: vec![Machine { name: "LC5".into(), output: Output::BlmSiemens, blm_ps1: r"C:\x\PstAdi06.PS1".into(), gas_id: 2, gas_name: "Oxygen".into(), ..Default::default() }, Machine { name: "Plasma table".into(), kind: crate::machine::MachineKind::Plasma, ..Default::default() }],
             active_machine: 0,
             materials: vec![("S235".into(), "0010".into()), ("304".into(), "0100".into()), ("5052".into(), "0200".into())],
             material_aliases: vec!["A36, S275".into(), String::new(), "AL".into()],
@@ -810,6 +821,9 @@ mod settings_tests {
             }],
         };
         assert_eq!(AppSettings::parse(&s.to_text()), s);
+        // MK2: settings saved before machines said what they do guess it from the name.
+        let old = AppSettings::parse("[machine]\nname = Plasma 2\noutput = iso\n");
+        assert_eq!(old.machines.iter().find(|m| m.name == "Plasma 2").map(|m| m.kind), Some(crate::machine::MachineKind::Plasma));
         // A system this build doesn't know is skipped; every known one is there.
         let odd = AppSettings::parse("[integration]\nprovider = sap\nbase_url = x\n");
         assert_eq!(odd.integrations, default_integrations());

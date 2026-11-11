@@ -72,6 +72,48 @@ impl MachineKind {
         }
     }
 
+    /// What the machine does, in shop words: "Laser", "Plasma" … (MK1).
+    pub fn process(self) -> &'static str {
+        match self {
+            MachineKind::Laser => "Laser",
+            MachineKind::Plasma => "Plasma",
+            MachineKind::Oxyfuel => "Oxyfuel",
+            MachineKind::Waterjet => "Waterjet",
+            MachineKind::LaserPunch => "Laser + punch",
+            MachineKind::Punch => "Punch",
+        }
+    }
+
+    /// The key it is saved under in the settings file ("laser", "laserpunch" …).
+    pub fn key(self) -> String {
+        format!("{self:?}").to_lowercase()
+    }
+
+    pub fn from_key(k: &str) -> Option<MachineKind> {
+        MachineKind::ALL.into_iter().find(|m| m.key() == k.trim().to_lowercase())
+    }
+
+    /// A machine's process guessed from its name, for machines brought in
+    /// from the other program that don't say (MK2, estimate): a name with
+    /// plasma, oxy, water or punch in it is that; anything else a laser.
+    pub fn guess_from_name(name: &str) -> MachineKind {
+        let n = name.to_lowercase();
+        let punch = n.contains("punch") || n.contains("stanz");
+        if punch && (n.contains("laser") || n.contains("combi")) {
+            MachineKind::LaserPunch
+        } else if punch {
+            MachineKind::Punch
+        } else if n.contains("plasma") {
+            MachineKind::Plasma
+        } else if n.contains("oxy") || n.contains("flame") {
+            MachineKind::Oxyfuel
+        } else if n.contains("water") {
+            MachineKind::Waterjet
+        } else {
+            MachineKind::Laser
+        }
+    }
+
     pub fn family(self) -> Family {
         match self {
             MachineKind::LaserPunch => Family::CutPunch,
@@ -276,6 +318,24 @@ pub fn nibble(pts: &[P]) -> Vec<P> {
 mod machine_tests {
     use super::*;
     use crate::nest::circle;
+
+    #[test]
+    fn a_machine_says_what_it_does() {
+        // MK1: saved by key, shown in shop words.
+        for m in MachineKind::ALL {
+            assert_eq!(MachineKind::from_key(&m.key()), Some(m));
+        }
+        assert_eq!(MachineKind::from_key(" Plasma "), Some(MachineKind::Plasma));
+        assert_eq!(MachineKind::from_key("lathe"), None);
+        assert_eq!(MachineKind::LaserPunch.process(), "Laser + punch");
+        // MK2: guessed from a name brought in from the other program.
+        assert_eq!(MachineKind::guess_from_name("LC5 B"), MachineKind::Laser);
+        assert_eq!(MachineKind::guess_from_name("Table plasma 2"), MachineKind::Plasma);
+        assert_eq!(MachineKind::guess_from_name("Oxy table"), MachineKind::Oxyfuel);
+        assert_eq!(MachineKind::guess_from_name("Waterjet 01"), MachineKind::Waterjet);
+        assert_eq!(MachineKind::guess_from_name("Punch 01"), MachineKind::Punch);
+        assert_eq!(MachineKind::guess_from_name("Laser-Punch 01"), MachineKind::LaserPunch);
+    }
 
     #[test]
     fn recognises_the_standard_shapes() {
