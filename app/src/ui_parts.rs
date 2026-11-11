@@ -1252,13 +1252,13 @@ pub(crate) fn add_part_menu(app: &mut App, resp: &egui::Response) {
         ui.add_space(4.0);
         let needle = app.libui.part_search.to_lowercase();
         let (mat, thk) = if app.libui.part_all { (None, crate::library::THICKNESS_FILTER_MIN - 1.0) } else { (Some(app.spec.material), app.spec.thickness) };
-        let found: Vec<(u64, crate::nest::Part, bool, String)> = app
+        let found: Vec<(u64, crate::nest::Part, bool, String, String)> = app
             .libui
             .products
             .iter()
             .filter(|(e, _)| crate::library::product_matches(e, mat, thk, &needle))
             .take(MENU_LIBRARY_PARTS)
-            .map(|(e, p)| (e.id, p.clone(), e.tech, format!("{} {} mm", crate::cnc::MATERIALS.get(e.material).copied().unwrap_or(""), e.thickness)))
+            .map(|(e, p)| (e.id, p.clone(), e.tech, format!("{} {} mm", crate::cnc::MATERIALS.get(e.material).copied().unwrap_or(""), e.thickness), e.saved_note(&app.clock)))
             .collect();
         if app.libui.products.is_empty() {
             ui.label(RichText::new("No parts in the library yet — set a part's technology, then \"Save to library\" in Part Properties.").size(11.5).color(th().text_dim));
@@ -1267,7 +1267,7 @@ pub(crate) fn add_part_menu(app: &mut App, resp: &egui::Response) {
         }
         let mut pick: Option<u64> = None;
         egui::Grid::new("lib_gallery").spacing([6.0, 6.0]).show(ui, |ui| {
-            for (k, (id, part, tech, info)) in found.iter().enumerate() {
+            for (k, (id, part, tech, info, saved)) in found.iter().enumerate() {
                 let (r, cell) = ui.allocate_exact_size(Vec2::new(104.0, 104.0), Sense::click());
                 let hov = ui.ctx().animate_bool_with_time(cell.id.with("lg"), cell.hovered(), 0.1);
                 let p = ui.painter();
@@ -1285,7 +1285,9 @@ pub(crate) fn add_part_menu(app: &mut App, resp: &egui::Response) {
                     p.rect_filled(b, CornerRadius::same(4), th().accent);
                     p.text(b.center(), Align2::CENTER_CENTER, "T", FontId::proportional(11.0), Color32::WHITE);
                 }
-                if cell.on_hover_text(format!("{} — {info}{}", part.name, if *tech { " · with its technology" } else { "" })).clicked() {
+                // Who last saved it, and when (LB6).
+                let saved = if saved.is_empty() { String::new() } else { format!("\n{saved}") };
+                if cell.on_hover_text(format!("{} — {info}{}{saved}", part.name, if *tech { " · with its technology" } else { "" })).clicked() {
                     pick = Some(*id);
                 }
                 if k % 4 == 3 {

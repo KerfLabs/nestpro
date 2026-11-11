@@ -82,23 +82,195 @@ pub const LONGEST_WAIT: Duration = Duration::from_secs(120);
 /// lock over) are followed before the rest are ignored.
 const MAX_MARKS: usize = 16;
 
-/// Who is writing: the Windows user and PC name (user and host name on Linux).
+/// Who is working: the Windows user and PC name (user and host name on
+/// Linux), and whether it's an agent (the command line or the MCP server)
+/// working for that user (LB5). The window and the agents give the engine
+/// their own; it never reads them itself, so a test can be two PCs at once.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Who {
     pub user: String,
     pub pc: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub agent: bool,
 }
 
 impl Who {
     /// This PC and the user logged on to it.
     pub fn this_pc() -> Who {
-        Who { user: user_name(), pc: pc_name() }
+        Who::new(&user_name(), &pc_name())
     }
 
-    /// "sam on PROG-1".
-    pub fn label(&self) -> String {
-        format!("{} on {}", self.user, self.pc)
+    pub fn new(user: &str, pc: &str) -> Who {
+        Who { user: user.into(), pc: pc.into(), agent: false }
     }
+
+    /// The same user and PC, working through an agent.
+    pub fn as_agent(mut self) -> Who {
+        self.agent = true;
+        self
+    }
+
+    /// "sam on PROG-1", or "sam on PROG-1 (agent)".
+    pub fn label(&self) -> String {
+        format!("{} on {}{}", self.user, self.pc, if self.agent { " (agent)" } else { "" })
+    }
+}
+
+/// Who saved a Library record, and when (seconds since 1970) (LB5).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Saved {
+    pub by: Who,
+    pub at: u64,
+}
+
+/// The clock the engine goes by: seconds since 1970, shown in local time.
+/// The window and the agents give the engine this PC's clock; a test gives
+/// it one that stands still until the test moves it (shown as UTC), shared
+/// by every PC the test plays.
+#[derive(Clone, Debug, Default)]
+pub struct Clock(Option<std::sync::Arc<AtomicU64>>);
+
+impl Clock {
+    /// This PC's clock and time zone.
+    pub fn pc() -> Clock {
+        Clock(None)
+    }
+
+    /// A clock set to `secs` since 1970 (tests).
+    pub fn at(secs: u64) -> Clock {
+        Clock(Some(std::sync::Arc::new(AtomicU64::new(secs))))
+    }
+
+    /// Move a set clock forward (this PC's clock moves by itself).
+    pub fn advance(&self, d: Duration) {
+        if let Some(t) = &self.0 {
+            t.fetch_add(d.as_secs(), Ordering::SeqCst);
+        }
+    }
+
+    pub fn now(&self) -> u64 {
+        self.0.as_ref().map_or_else(now_secs, |t| t.load(Ordering::SeqCst))
+    }
+
+    /// `t` in local time: year, month, day, hour, minute.
+    fn local(&self, t: u64) -> (i64, u32, u32, u32, u32) {
+        let zone = if self.0.is_some() { 0 } else { local_offset(t) };
+        civil(t as i64 + zone)
+    }
+
+    /// "9 Nov 09:20" in local time, with the year when it isn't this year
+    /// ("9 Nov 2025 09:20") (LB6).
+    pub fn shown(&self, t: u64) -> String {
+        let (y, m, d, hh, mm) = self.local(t);
+        let month = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][(m as usize - 1).min(11)];
+        if y == self.local(self.now()).0 { format!("{d} {month} {hh:02}:{mm:02}") } else { format!("{d} {month} {y} {hh:02}:{mm:02}") }
+    }
+
+    /// "2026-11-09 09:20" in local time (agents) (LB6).
+    pub fn stamp(&self, t: u64) -> String {
+        let (y, m, d, hh, mm) = self.local(t);
+        format!("{y}-{m:02}-{d:02} {hh:02}:{mm:02}")
+    }
+}
+
+/// Year, month, day, hour and minute of `t` seconds since 1970 (Howard
+/// Hinnant's civil-from-days).
+fn civil(t: i64) -> (i64, u32, u32, u32, u32) {
+    let (day, s) = (t.div_euclid(86400), t.rem_euclid(86400));
+    let z = day + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32;
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    (y, m, d, (s / 3600) as u32, (s % 3600 / 60) as u32)
+}
+
+/// Seconds since 1970 of a civil date (Howard Hinnant's days-from-civil).
+#[cfg(windows)]
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = i64::from((m + 9) % 12);
+    let doy = (153 * mp + 2) / 5 + i64::from(d) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// What to add to `t` (UTC) for this PC's local time at that moment.
+#[cfg(windows)]
+fn local_offset(t: u64) -> i64 {
+    #[repr(C)]
+    #[derive(Default)]
+    #[allow(dead_code)]
+    struct SystemTime {
+        year: u16,
+        month: u16,
+        day_of_week: u16,
+        day: u16,
+        hour: u16,
+        minute: u16,
+        second: u16,
+        ms: u16,
+    }
+    unsafe extern "system" {
+        fn SystemTimeToTzSpecificLocalTime(zone: *const std::ffi::c_void, utc: *const SystemTime, local: *mut SystemTime) -> i32;
+    }
+    let t = t - t % 60;
+    let (y, m, d, hh, mm) = civil(t as i64);
+    let utc = SystemTime { year: y as u16, month: m as u16, day: d as u16, hour: hh as u16, minute: mm as u16, ..Default::default() };
+    let mut local = SystemTime::default();
+    // SAFETY: both point to SYSTEMTIMEs that live through the call; no zone
+    // (null) means this PC's own time zone.
+    if unsafe { SystemTimeToTzSpecificLocalTime(std::ptr::null(), &utc, &mut local) } == 0 {
+        return 0;
+    }
+    let back = days_from_civil(i64::from(local.year), u32::from(local.month), u32::from(local.day)) * 86400 + i64::from(local.hour) * 3600 + i64::from(local.minute) * 60;
+    back - t as i64
+}
+
+/// What to add to `t` (UTC) for this PC's local time at that moment.
+#[cfg(all(unix, target_pointer_width = "64"))]
+fn local_offset(t: u64) -> i64 {
+    use std::os::raw::{c_char, c_int, c_long};
+    #[repr(C)]
+    #[allow(dead_code)]
+    struct Tm {
+        sec: c_int,
+        min: c_int,
+        hour: c_int,
+        mday: c_int,
+        mon: c_int,
+        year: c_int,
+        wday: c_int,
+        yday: c_int,
+        isdst: c_int,
+        gmtoff: c_long,
+        zone: *const c_char,
+    }
+    unsafe extern "C" {
+        fn localtime_r(t: *const i64, out: *mut Tm) -> *mut Tm;
+    }
+    let secs = t as i64;
+    let mut tm = std::mem::MaybeUninit::<Tm>::zeroed();
+    // SAFETY: `secs` and `tm` live through the call; localtime_r fills `tm`
+    // and returns null when it can't.
+    let ok = unsafe { localtime_r(&secs, tm.as_mut_ptr()) };
+    if ok.is_null() {
+        return 0;
+    }
+    // SAFETY: filled by localtime_r above.
+    i64::from(unsafe { tm.assume_init() }.gmtoff)
+}
+
+/// UTC, where the time zone can't be asked.
+#[cfg(not(any(windows, all(unix, target_pointer_width = "64"))))]
+fn local_offset(_t: u64) -> i64 {
+    0
 }
 
 /// This PC's name: `COMPUTERNAME` on Windows, the host name elsewhere.

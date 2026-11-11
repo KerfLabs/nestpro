@@ -49,6 +49,11 @@ pub struct JobFile {
     /// The ERP/MES work the job came from (integrations::ErpJob), if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub erp: Option<crate::integrations::ErpJob>,
+    /// A Library job: who saved it, and when (LB5). Set by the Library when
+    /// it stores the job; None for a job file, and for a Library job saved
+    /// before saves recorded it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saved: Option<crate::shared::Saved>,
 }
 
 pub fn save(path: &std::path::Path, job: &JobFile) -> Result<(), String> {
@@ -91,7 +96,7 @@ mod jobfile_tests {
         // The sheet is an L-shaped remnant from stock.
         let outline = crate::stock::Outline { outer: vec![[0.0, 0.0], [2000.0, 0.0], [2000.0, 1000.0], [800.0, 1000.0], [800.0, 400.0], [0.0, 400.0]], holes: vec![] };
         let formats = vec![crate::nest::SheetFormat { w: 2000.0, h: 1000.0, outline: Some(outline), stock_ref: "2-16".into(), remnant: true, made: vec![], made_from: 0 }];
-        let j = JobFile { format: FORMAT.into(), version: VERSION, name: "Frames".into(), week: "W12".into(), parts, spec, sheets, formats, held: Default::default(), cut_lines: cuts, method: "Modules".into(), manual_cuts: vec![vec![crate::cnc::ManualCut { placed: 0, contour: 0, start: [5.0, 5.0], reverse: true }]], stale: true, booked: false, erp: None };
+        let j = JobFile { format: FORMAT.into(), version: VERSION, name: "Frames".into(), week: "W12".into(), parts, spec, sheets, formats, held: Default::default(), cut_lines: cuts, method: "Modules".into(), manual_cuts: vec![vec![crate::cnc::ManualCut { placed: 0, contour: 0, start: [5.0, 5.0], reverse: true }]], stale: true, booked: false, erp: None, saved: None };
         let path = std::env::temp_dir().join("nestpro_test_job.snjob");
         save(&path, &j).unwrap();
         let k = load(&path).unwrap();

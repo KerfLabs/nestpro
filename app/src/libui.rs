@@ -37,8 +37,9 @@ impl App {
         self.library_dir().file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "Library".into())
     }
 
+    /// The Library, as whoever works at this window (LB5).
     pub fn library(&self) -> Result<Library, String> {
-        Library::open(&self.library_dir())
+        Library::open(&self.library_dir(), &self.who, &self.clock)
     }
 
     pub fn lib_refresh(&mut self) {
@@ -72,6 +73,7 @@ impl App {
             // The window books the stock on every save (stock_on_save).
             booked: true,
             erp: self.erp_job.clone(),
+            saved: None,
         }
     }
 
@@ -263,7 +265,7 @@ impl App {
         let mut rescan = false;
         let mut settings = false;
         let dir = self.library_dir();
-        egui::Window::new(RichText::new("Library").size(16.0).strong()).id(egui::Id::unique("library_window")).pivot(egui::Align2::CENTER_TOP).default_pos(dialog_pos(ctx)).open(&mut open).default_size([760.0, 460.0]).collapsible(false).show(ctx, |ui| {
+        egui::Window::new(RichText::new("Library").size(16.0).strong()).id(egui::Id::unique("library_window")).pivot(egui::Align2::CENTER_TOP).default_pos(dialog_pos(ctx)).open(&mut open).default_size([980.0, 460.0]).collapsible(false).show(ctx, |ui| {
             ui.horizontal(|ui| {
                 // The folder's own name (the full path on hover): where saved jobs go.
                 let short = dir.file_name().map_or_else(|| dir.display().to_string(), |n| n.to_string_lossy().to_string());
@@ -367,6 +369,9 @@ impl App {
                             } else if ui.button("Add to job").clicked() {
                                 add_part = Some(e.id);
                             }
+                            // Who last saved it, and when (LB6).
+                            ui.add_space(6.0);
+                            ui.add(egui::Label::new(RichText::new(e.saved_note(&self.clock)).size(11.5).color(th().text_dim)).truncate());
                         });
                     });
                 }
@@ -464,7 +469,10 @@ impl App {
                         let sel = self.job_lib_id == Some(e.id);
                         let open_now = self.jobs.iter().any(|j| j.lib_id == Some(e.id)) || self.job_lib_id == Some(e.id);
                         let label = format!("{}  ·  {} sh{}", e.name, e.count_b, if open_now { "  · open" } else { "" });
-                        if ui.selectable_label(sel, label).on_hover_text(format!("{} — {lib_tip}", crate::library::auto_ref(e.kind, e.id))).clicked() {
+                        // Who last saved it, and when (LB6).
+                        let saved = e.saved_note(&self.clock);
+                        let saved = if saved.is_empty() { String::new() } else { format!("\n{saved}") };
+                        if ui.selectable_label(sel, label).on_hover_text(format!("{} — {lib_tip}{saved}", crate::library::auto_ref(e.kind, e.id))).clicked() {
                             open = Some(e.id);
                         }
                     }
@@ -480,11 +488,33 @@ impl App {
 #[cfg(test)]
 mod libui_tests {
     use crate::jobfile::JobFile;
-    use crate::library::Library;
+    use crate::library::{Kind, Library};
     use crate::nest::{Part, Shape};
+    use crate::shared::{Clock, Who};
     use crate::stock::{Item, Stock};
     use crate::App;
     use std::path::{Path, PathBuf};
+    use std::time::Duration;
+
+    /// 2026-11-09 09:20 UTC: a test clock shows UTC.
+    const NOV_9_0920: u64 = 1_794_216_000;
+
+    /// A window on PC `pc`, working on the Library in `dir`.
+    fn window(dir: &Path, user: &str, pc: &str, clock: &Clock) -> App {
+        let mut a = App::new(None);
+        a.cfg.library_dir = dir.display().to_string();
+        a.who = Who::new(user, pc);
+        a.clock = clock.clone();
+        a
+    }
+
+    /// What the Library window shows of each record of `kind`: its name and
+    /// who saved it, and when.
+    fn shown(a: &App, kind: Kind) -> Vec<(String, String)> {
+        let mut v: Vec<(String, String)> = a.libui.entries.iter().filter(|e| e.kind == kind).map(|e| (e.name.clone(), e.saved_note(&a.clock))).collect();
+        v.sort();
+        v
+    }
 
     fn scratch(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("nestpro_libui_{tag}_{}", std::process::id()));
@@ -492,12 +522,73 @@ mod libui_tests {
         dir
     }
 
-    /// A programmer's window on the Library in `dir`, with the open job
-    /// named `name`: one kind of part, 10 mm, nested from a stock of two
-    /// 3000 × 1500 sheets ("S-1").
-    fn app_on(dir: &Path, name: &str) -> App {
-        let mut a = App::new(None);
-        a.cfg.library_dir = dir.display().to_string();
+    /// LB5, LB6: two windows on two PCs, one Library: each saves a job, and
+    /// both Library lists show each job with who saved it and when.
+    #[test]
+    fn two_pcs_saving_jobs_see_who_saved_each_and_when() {
+        let dir = scratch("jobs");
+        let clock = Clock::at(NOV_9_0920);
+        let mut prog1 = window(&dir, "sam", "PROG-1", &clock);
+        let mut prog2 = window(&dir, "kim", "PROG-2", &clock);
+        prog1.open_job(0);
+        prog1.save_job_to_library();
+        let first = prog1.job_name.clone();
+        clock.advance(Duration::from_secs(25 * 60));
+        prog2.open_job(1);
+        prog2.save_job_to_library();
+        let second = prog2.job_name.clone();
+        assert_ne!(first, second);
+        for a in [&mut prog1, &mut prog2] {
+            a.lib_refresh();
+            assert_eq!(
+                shown(a, Kind::Job),
+                {
+                    let mut v = vec![(first.clone(), "Saved by sam on PROG-1, 9 Nov 09:20".to_string()), (second.clone(), "Saved by kim on PROG-2, 9 Nov 09:45".to_string())];
+                    v.sort();
+                    v
+                }
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// LB5, LB6: the same for library parts, in the Library window and in
+    /// Add product's library list.
+    #[test]
+    fn two_pcs_saving_library_parts_see_who_saved_each_and_when() {
+        let dir = scratch("parts");
+        let clock = Clock::at(NOV_9_0920);
+        let mut prog1 = window(&dir, "sam", "PROG-1", &clock);
+        let mut prog2 = window(&dir, "kim", "PROG-2", &clock);
+        prog1.open_job(0);
+        prog1.save_part_to_library(0);
+        let first = prog1.parts[0].name.clone();
+        clock.advance(Duration::from_secs(10 * 60));
+        prog2.open_job(0);
+        prog2.parts[1].name = "DEMO-P2".into();
+        prog2.save_part_to_library(1);
+        let mut want = vec![(first.clone(), "Saved by sam on PROG-1, 9 Nov 09:20".to_string()), ("DEMO-P2".to_string(), "Saved by kim on PROG-2, 9 Nov 09:30".to_string())];
+        want.sort();
+        for a in [&mut prog1, &mut prog2] {
+            a.lib_refresh();
+            assert_eq!(shown(a, Kind::Product), want);
+            let mut menu: Vec<(String, String)> = a.libui.products.iter().map(|(e, p)| (p.name.clone(), e.saved_note(&a.clock))).collect();
+            menu.sort();
+            assert_eq!(menu, want, "Add product's library list");
+        }
+        // PROG-2 saves PROG-1's part again: it's PROG-2's now.
+        clock.advance(Duration::from_secs(60));
+        prog2.save_part_to_library(0);
+        prog1.lib_refresh();
+        assert!(shown(&prog1, Kind::Product).contains(&(first, "Saved by kim on PROG-2, 9 Nov 09:31".to_string())), "{:?}", shown(&prog1, Kind::Product));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `user`'s window on PC `pc`, working on the Library in `dir`, with the
+    /// open job named `name`: one kind of part, 10 mm, nested from a stock
+    /// of two 3000 × 1500 sheets ("S-1").
+    fn app_on(dir: &Path, name: &str, user: &str, pc: &str, clock: &Clock) -> App {
+        let mut a = window(dir, user, pc, clock);
         a.cfg.stock = crate::stock::StockSettings::default();
         a.job_name = name.into();
         a.spec.material = 0;
@@ -516,11 +607,11 @@ mod libui_tests {
         s.save(dir).unwrap();
     }
 
-    /// Another PC's job, saved into the Library in `folder`.
+    /// A job kim saved on PROG-3 into the Library, in `folder`.
     fn saved_elsewhere(dir: &Path, name: &str, folder: &str) -> u64 {
         let mut j = JobFile::new_job(name, crate::nest::SheetSpec { w: 3000.0, h: 1500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 10.0, level: 3, machine: Default::default(), kerf: Default::default() });
         j.week = folder.into();
-        Library::open(dir).unwrap().save_job(&j, None).unwrap()
+        Library::open(dir, &Who::new("kim", "PROG-3"), &Clock::at(NOV_9_0920)).unwrap().save_job(&j, None).unwrap()
     }
 
     /// JX16: saving the open job into the Library under a name another job
@@ -531,7 +622,7 @@ mod libui_tests {
         let dir = scratch("refused_stock");
         stock_of_two(&dir);
         saved_elsewhere(&dir, "DEMO-001 frames", "Acme");
-        let mut a = app_on(&dir, "DEMO-001 FRAMES");
+        let mut a = app_on(&dir, "DEMO-001 FRAMES", "sam", "PROG-1", &Clock::at(NOV_9_0920));
         a.run_nesting();
         assert_eq!(a.result.formats.first().map(|f| f.stock_ref.as_str()), Some("S-1"), "{}", a.status);
         let before = std::fs::read_to_string(Stock::file(&dir)).unwrap();
@@ -556,14 +647,14 @@ mod libui_tests {
     #[test]
     fn two_pcs_saving_one_new_name_at_the_same_moment_store_one_and_refuse_the_other() {
         use std::sync::mpsc::channel;
-        use std::time::Duration;
         let dir = scratch("same_moment");
         stock_of_two(&dir);
+        let clock = Clock::at(NOV_9_0920);
         let (checked, checked_rx) = channel::<()>();
         let prog1 = {
-            let dir = dir.clone();
+            let (dir, clock) = (dir.clone(), clock.clone());
             std::thread::spawn(move || {
-                let mut a = app_on(&dir, "DEMO-001 frames");
+                let mut a = app_on(&dir, "DEMO-001 frames", "sam", "PROG-1", &clock);
                 a.jobs[a.cur_job].week = "Acme".into();
                 a.run_nesting();
                 let mut first = true;
@@ -579,9 +670,9 @@ mod libui_tests {
             })
         };
         let prog2 = {
-            let dir = dir.clone();
+            let (dir, clock) = (dir.clone(), clock.clone());
             std::thread::spawn(move || {
-                let mut a = app_on(&dir, "demo-001 FRAMES");
+                let mut a = app_on(&dir, "demo-001 FRAMES", "kim", "PROG-2", &clock);
                 a.jobs[a.cur_job].week = "W12".into();
                 a.run_nesting();
                 checked_rx.recv_timeout(Duration::from_secs(60)).expect("PROG-1 checked the name");
@@ -592,9 +683,10 @@ mod libui_tests {
         let (one, two) = (prog1.join().unwrap(), prog2.join().unwrap());
         assert!(one.0.is_some(), "PROG-1: {}", one.1);
         assert!(two.0.is_none() && two.1.contains("DEMO-001 frames") && two.1.contains("folder Acme"), "PROG-2: {}", two.1);
-        let lib = Library::open(&dir).unwrap();
-        let jobs: Vec<String> = lib.entries().into_iter().filter(|e| e.kind == crate::library::Kind::Job).map(|e| e.name).collect();
-        assert_eq!(jobs, ["DEMO-001 frames"]);
+        // The one stored is PROG-1's, signed by it (LB5).
+        let lib = Library::open(&dir, &Who::new("sam", "PROG-1"), &clock).unwrap();
+        let jobs: Vec<(String, Option<Who>)> = lib.entries().into_iter().filter(|e| e.kind == Kind::Job).map(|e| (e.name, e.saved_by)).collect();
+        assert_eq!(jobs, [("DEMO-001 frames".to_string(), Some(Who::new("sam", "PROG-1")))]);
         assert_eq!(Stock::load(&dir).unwrap().get("S-1").map(|s| s.qty), Some(1), "the refused save took a sheet too");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -607,7 +699,8 @@ mod libui_tests {
     fn renaming_a_library_job_to_a_name_another_job_holds_is_refused() {
         let dir = scratch("rename");
         saved_elsewhere(&dir, "DEMO-001 frames", "Acme");
-        let mut a = app_on(&dir, "DEMO-002 brackets");
+        let clock = Clock::at(NOV_9_0920);
+        let mut a = app_on(&dir, "DEMO-002 brackets", "sam", "PROG-1", &clock);
         a.save_job_to_library();
         let id = a.job_lib_id.expect("saved");
         let i = a.cur_job;
@@ -617,7 +710,7 @@ mod libui_tests {
         assert!(a.rename_job(i, "DEMO-003 brackets"), "{}", a.status);
         a.save_job_to_library();
         assert_eq!(a.job_lib_id, Some(id), "{}", a.status);
-        let mut names: Vec<String> = Library::open(&dir).unwrap().entries().into_iter().map(|e| e.name).collect();
+        let mut names: Vec<String> = Library::open(&dir, &Who::new("sam", "PROG-1"), &clock).unwrap().entries().into_iter().map(|e| e.name).collect();
         names.sort();
         assert_eq!(names, ["DEMO-001 frames", "DEMO-003 brackets"]);
         let _ = std::fs::remove_dir_all(&dir);
