@@ -237,7 +237,7 @@ fn part_geo(loops: &[Vec<P>], marks: &[Vec<P>]) -> Option<(CustomGeo, P)> {
     let fills = crate::dxf::triangulate(&outline);
     let hole_fills = holes.iter().flat_map(|h| crate::dxf::triangulate(h)).collect();
     let marks = marks.iter().map(sh).collect();
-    Some((CustomGeo { outline, holes, fills, hole_fills, marks, texts: vec![], w: hi[0] - lo[0], h: hi[1] - lo[1], contours: vec![] }, lo))
+    Some((CustomGeo { outline, holes, fills, hole_fills, marks, texts: vec![], w: hi[0] - lo[0], h: hi[1] - lo[1], contours: vec![], hand_order: vec![] }, lo))
 }
 
 /// Part names from the job sheet: CNCSub → PartRef.

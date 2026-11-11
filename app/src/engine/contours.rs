@@ -65,8 +65,18 @@ fn no_contour(n: usize, k: usize) -> String {
 }
 
 /// Contour numbers as an agent writes them ("5", "1,3", "2-4", [1, 3]),
-/// from 0, checked against the part's `n` contours.
+/// from 0, checked against the part's `n` contours, in number order.
 pub fn parse_numbers(s: &str, n: usize) -> Result<Vec<usize>, String> {
+    let mut v = parse_in_order(s, n)?;
+    v.sort_unstable();
+    v.dedup();
+    Ok(v)
+}
+
+/// Contour numbers as an agent writes them, from 0, in the order written
+/// and with any repeats: "3,1,2" is 3, 1, 2, and a range runs the way it is
+/// written ("4-2" is 4, 3, 2).
+pub fn parse_in_order(s: &str, n: usize) -> Result<Vec<usize>, String> {
     let mut v = vec![];
     for tok in s.split([',', ' ', ';', '[', ']']).map(str::trim).filter(|t| !t.is_empty()) {
         let (a, b) = match tok.split_once('-') {
@@ -77,13 +87,15 @@ pub fn parse_numbers(s: &str, n: usize) -> Result<Vec<usize>, String> {
         if let Some(k) = [a, b].into_iter().find(|&k| k == 0 || k > n) {
             return Err(no_contour(n, k));
         }
-        v.extend((a.min(b)..=a.max(b)).map(|k| k - 1));
+        if a <= b {
+            v.extend((a..=b).map(|k| k - 1));
+        } else {
+            v.extend((b..=a).rev().map(|k| k - 1));
+        }
     }
     if v.is_empty() {
         return Err("Name the contours, e.g. contours=5 or contours=1,3 (numbers from part-info).".into());
     }
-    v.sort_unstable();
-    v.dedup();
     Ok(v)
 }
 
@@ -206,6 +218,8 @@ pub fn set_state(part: &mut Part, picks: &[usize], state: ContourState, same: bo
         return Err(e);
     }
     let before = dxf::cut_order(&list);
+    // CO7: a contour set to another state leaves the cut order set by hand.
+    let moved: Vec<usize> = chosen.iter().copied().filter(|&k| list[k].state != state).collect();
     for &k in &chosen {
         list[k].state = state;
         if state != ContourState::Cut {
@@ -214,6 +228,7 @@ pub fn set_state(part: &mut Part, picks: &[usize], state: ContourState, same: bo
     }
     let after = dxf::cut_order(&list);
     store(part, list);
+    super::cutorder::forget(part, &moved);
     let cut_moved: Vec<Option<usize>> = before.iter().map(|c| after.iter().position(|a| a == c)).collect();
     // A lead or joint picked on a contour follows it to its new place in the
     // cut order, or goes with it.

@@ -130,6 +130,7 @@ const MACHINES: &[&str] = &["laser", "plasma", "oxyfuel", "waterjet", "laserpunc
 const LEADS: &[&str] = &["machine", "perpendicular", "line", "arc", "line-arc", "corner"];
 const JOINTS: &[&str] = &["gap", "leads", "leads-inclined", "corner"];
 const QUALITIES: &[&str] = &["auto", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"];
+const CUT_QUALITIES: &[&str] = &["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"];
 const TEXTS: &[&str] = &["mark", "special", "note"];
 const CONTOUR_STATES: &[&str] = &["cut", "mark", "no-cut", "bend-line", "leave-out"];
 
@@ -179,12 +180,17 @@ pub static OPS: &[Op] = &[
         a("rotate", Ty::Bool, "May turn 90°"), a("mirror", Ty::Bool, "May be mirrored"), a("group", Ty::Str, "Group"), c("tech", &["copy", "drop"], "Size change on a part with technology"),
     ] },
     Op { name: "remove-part", group: "Parts", kind: Kind::Write, help: "Take a part out of the job (its placed copies go too).", args: &[PART] },
-    Op { name: "part-info", group: "Parts", kind: Kind::Read, help: "A part's geometry and technology: size, area, cut length, every contour (numbered: holes first, the outline, then open lines; open or closed; its state: cut, mark, no-cut, bend-line or leave-out, set with contour-tech; cut contours with their cut quality by the machine's name, e.g. Slow (1), or Quality n when the machine names none, and where it comes from: by hand (contour-tech quality=), part size range, part, machine size band or default), every element (numbered, for lead-at / joint-at), texts, and Verify Part / Verify Machining results.", args: &[PART] },
+    Op { name: "part-info", group: "Parts", kind: Kind::Read, help: "A part's geometry and technology: size, area, cut length, every contour (numbered: holes first, the outline, then open lines; open or closed; its state: cut, mark, no-cut, bend-line or leave-out, set with contour-tech; cut contours with their cut quality by the machine's name, e.g. Slow (1), or Quality n when the machine names none, and where it comes from: by hand (contour-tech quality=), part size range, part, machine size band or default; each cut or marked contour's place in the cut order, cut_order from 1, and cut_order_by_hand when set with part-cut-order), the whole cut order (contours in the order cut, and those set by hand), every element (numbered, for lead-at / joint-at), texts, and Verify Part / Verify Machining results.", args: &[PART] },
     Op { name: "contour-tech", group: "Technology", kind: Kind::Write, help: "Set contours of an imported part (numbers from part-info: holes first, the outline, then open lines) to cut, mark (marked on the surface, open or closed), no-cut (kept on the part and shown, never machined), bend-line (a no-cut line in its own colour) or leave-out (not on the part), and/or give cut contours a cut quality by hand (1-12, which wins over the part's size ranges and quality and the machine's size bands; auto gives the choice back to them). same=true also sets every contour equal to one of them (same shape, moved; with only a quality, the equal contours that are cut). The outline is always cut, open lines can't be cut yet, and a mark always uses the machine's marking quality.", args: &[
         PART, r("contours", Ty::Str, "Contour numbers from part-info, e.g. \"5\", \"1,3\" or \"2-4\""),
         c("state", CONTOUR_STATES, "What the contours become (state, quality or both)"),
         c("quality", QUALITIES, "Cut quality set by hand on cut contours: the machine's quality 1-12, or auto = the part's size ranges and quality and the machine's size bands decide (state, quality or both)"),
         a("same", Ty::Bool, "Also every contour equal to one of them (default false)"),
+    ] },
+    Op { name: "part-cut-order", group: "Machining", kind: Kind::Write, help: "Set the order an imported part's contours are cut and marked in, by hand (part-info shows each contour's place, and which were set by hand). Each command adds to the end of the order: add (contours by number, in the order given), all-marks, all-cut, or all-quality (every cut contour at one cut quality); undo takes back the last command, clear empties the order. A contour already in the order is skipped, and a bulk command adds only contours not yet ordered, in the automatic order among themselves. Whatever isn't ordered by hand follows in the automatic order (marks, holes, outline). The outline is always cut last: naming a contour after it in one command is refused, and contours added later go in before it. Marks can go anywhere before the outline. A contour that is No cut, Bend line or Leave out has no place in the order; setting an ordered contour to another state with contour-tech takes it out of the order. Built-in shapes follow the automatic order.", args: &[
+        PART, Arg { name: "mode", ty: Ty::Str, required: true, help: "add, all-marks, all-cut, all-quality, undo or clear", choices: &["add", "all-marks", "all-cut", "all-quality", "undo", "clear"] },
+        a("contours", Ty::Str, "add: contour numbers from part-info in cut order, e.g. \"3,1,2\" or \"4-2\" (4, 3, 2)"),
+        c("quality", CUT_QUALITIES, "all-quality: the machine's cut quality 1-12, as part-info shows each contour's"),
     ] },
     Op { name: "export-part-dxf", group: "Parts", kind: Kind::Read, help: "Save a part as DXF (outline and holes on CUT, marking on MARK).", args: &[PART, r("out", Ty::Path, "DXF file to write")] },
     Op { name: "library", group: "Parts", kind: Kind::Write, help: "The product/job library: list it, add a library product to the job, or save parts / the job into it.", args: &[
@@ -768,12 +774,18 @@ fn part_info(job: &JobFile, i: usize) -> Value {
     let list = contours::list(p);
     let numbers = dxf::cut_order(&list);
     let (tech, mt) = (p.tech.unwrap_or_default(), crate::ct1::for_spec(&job.spec));
+    // CO3: each contour's place in the cut order, and whether it was set by hand.
+    let order = cutorder::order(p);
     let contours: Vec<Value> = list
         .iter()
         .enumerate()
         .map(|(k, c)| {
             let shape = if c.closed { crate::machine::recognise(&c.pts).map(|s| s.label()) } else { None };
             let mut v = json!({"contour": k + 1, "kind": contours::kind(&list, k), "closed": c.closed, "state": c.state.key(), "length_mm": r1(c.length()), "standard_shape": shape});
+            if let Some(place) = order.iter().position(|o| o.0 == k) {
+                v["cut_order"] = json!(place + 1);
+                v["cut_order_by_hand"] = json!(order[place].1);
+            }
             // CQ1, CQ6: the cut quality each cut contour gets on this job's
             // machine, and why ("by hand" when set on the contour).
             if c.closed && c.state == dxf::ContourState::Cut {
@@ -798,6 +810,10 @@ fn part_info(job: &JobFile, i: usize) -> Value {
         "area_mm2": r1(p.net_area()), "cut_len_mm": r1(p.cut_length()),
         "rotations": { "turn_90": p.rotate, "plain": p.rots.plain, "mirrored": p.rots.mirrored },
         "contours": contours,
+        "cut_order": {
+            "contours": order.iter().map(|o| o.0 + 1).collect::<Vec<_>>(),
+            "by_hand": order.iter().filter(|o| o.1).map(|o| o.0 + 1).collect::<Vec<_>>(),
+        },
         "elements": elems.iter().enumerate().map(|(k, e)| json!({
             "element": k + 1, "contour": numbers.get(e.contour).map_or(e.contour, |n| *n) + 1, "kind": e.kind.label().to_lowercase(), "length_mm": r1(e.length), "mid": [r1(e.midpoint()[0]), r1(e.midpoint()[1])],
         })).collect::<Vec<_>>(),
@@ -1639,6 +1655,32 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             let mut o = Outcome::msg(done.message);
             o.data = data;
             Ok(o)
+        }
+        "part-cut-order" => {
+            let i = one_part(job, &a)?;
+            let part = &mut job.parts[i];
+            cutorder::check(part)?;
+            let cmd = match a.need_str("mode")?.as_str() {
+                "add" => cutorder::Command::Contours(contours::parse_in_order(&a.need_str("contours")?, contours::list(part).len())?),
+                "all-marks" => cutorder::Command::AllMarks,
+                "all-cut" => cutorder::Command::AllCut,
+                "undo" => cutorder::Command::Undo,
+                "clear" => cutorder::Command::Clear,
+                "all-quality" => {
+                    let q = a.need_str("quality")?;
+                    cutorder::Command::Quality(numbered_quality(&q).ok_or_else(|| format!("quality '{}': give one of the machine's cut qualities, 1 to 12 (part-info shows each contour's).", q.trim()))?)
+                }
+                m => return Err(format!("part-cut-order mode '{m}': give add, all-marks, all-cut, all-quality, undo or clear.")),
+            };
+            // One engine function for agents and the part screen's Contours menu (CO3).
+            let done = cutorder::apply(part, &crate::ct1::for_spec(&job.spec), &cmd)?;
+            let one = |v: &[usize]| v.iter().map(|k| k + 1).collect::<Vec<_>>();
+            Ok(Outcome {
+                message: format!("Part {} '{}': {}", i + 1, part.name, done.message),
+                data: json!({"added": one(&done.added), "skipped": one(&done.skipped)}),
+                changed: done.changed,
+                files: vec![],
+            })
         }
         "export-part-dxf" => {
             let i = one_part(job, &a)?;

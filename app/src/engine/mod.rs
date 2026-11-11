@@ -8,6 +8,7 @@
 
 pub mod arrange;
 pub mod contours;
+pub mod cutorder;
 pub mod imports;
 pub mod ops;
 pub mod readback;
