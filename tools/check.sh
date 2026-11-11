@@ -2,10 +2,29 @@
 # Check before every commit: nothing private in the files to publish, the
 # tests pass on Linux, and the app type-checks for Windows (the main target).
 # Windows linking and the .exe icon need a Windows machine.
-set -euo pipefail
+# Exits 1 when any step fails, so scripts and agents can trust the exit code.
+set -uo pipefail
 export PATH="$HOME/.cargo/bin:$PATH"
 cd "$(dirname "$0")/.."
-echo "== Public check";     tools/public-check.sh | tail -40 || true
+
+# One check at a time per checkout: a second one waits instead of sharing app/target.
+mkdir -p app/target
+if command -v flock >/dev/null; then
+  exec 9>app/target/.check.lock
+  flock -n 9 || { echo "== Waiting for another check in this checkout"; flock 9; }
+fi
+
+failed=()
+echo "== Public check";  tools/public-check.sh | tail -40
+[ "${PIPESTATUS[0]}" = 0 ] || failed+=("public check")
 cd app
-echo "== Linux tests";      cargo test 2>&1 | grep -E "^test result|FAILED|panicked|^error" || true
-echo "== Windows check";    cargo check --target x86_64-pc-windows-gnu 2>&1 | grep -E "^(warning|error)|Finished" || true
+echo "== Linux tests";   cargo test 2>&1 | grep -E "^test result|FAILED|panicked|^error"
+[ "${PIPESTATUS[0]}" = 0 ] || failed+=("Linux tests")
+echo "== Windows check"; cargo check --target x86_64-pc-windows-gnu 2>&1 | grep -E "^(warning|error)|Finished"
+[ "${PIPESTATUS[0]}" = 0 ] || failed+=("Windows check")
+
+if [ ${#failed[@]} -gt 0 ]; then
+  echo "== FAILED: ${failed[*]}"
+  exit 1
+fi
+echo "== All checks passed"

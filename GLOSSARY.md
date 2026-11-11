@@ -71,5 +71,13 @@ One of the machine's 12 numbered sets of cutting settings (speed, pierce, gas pr
 _Avoid_: technology, quality level
 
 **Cut order**:
-The order the machine cuts things in: a part's cut order is the order of its contours, a sheet's cut order the order of its parts.
+The order the machine cuts things in: a part's cut order is the order of its contours, a sheet's cut order the order of its parts. The programmer can set any part of it by hand; the rest follows the machine's automatic order. The outline is always cut last.
 _Avoid_: machining order, cut sequence, cut pattern
+
+**Rapid**:
+The head moving from the end of one cut to the start of the next without cutting.
+_Avoid_: travel, jump, idle move
+
+**Sweep**:
+Holding the mouse button down and dragging across contours or parts as if the pointer were the head; each is taken in the order the pointer passes over it.
+_Avoid_: drag-select, paint stroke
