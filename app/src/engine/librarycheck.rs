@@ -215,7 +215,20 @@ fn write_log(folder: &Path, log: &Log) -> Result<(), String> {
 /// save in a loop, then check everything every run saved.
 pub fn run(folder: &Path, this_library: &Path, opt: &Options) -> Result<Report, String> {
     refuse_real_library(folder, this_library)?;
-    std::fs::create_dir_all(folder).map_err(|e| format!("can't make {}: {e}", folder.display()))?;
+    // The test folder is made if missing, but only in a folder that can be
+    // reached: a share that's down is said so, and never stood in for by
+    // folders made here (LB11).
+    if !folder.is_dir() {
+        let parent = folder.parent().filter(|p| !p.as_os_str().is_empty());
+        if parent.is_some_and(|p| !p.is_dir()) || folder.parent().is_none() {
+            let around = parent.map_or_else(String::new, |p| format!(" ({} isn't there)", p.display()));
+            return Err(format!("The test folder {} can't be reached{around}. Check the network or the server, then run the check again.", folder.display()));
+        }
+        match std::fs::create_dir(folder) {
+            Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => return Err(format!("can't make {}: {e}", folder.display())),
+            _ => {}
+        }
+    }
     let who = shared::Who::this_pc();
     match std::fs::OpenOptions::new().write(true).create_new(true).open(folder.join(MARKER)) {
         Ok(mut f) => {
@@ -226,6 +239,8 @@ pub fn run(folder: &Path, this_library: &Path, opt: &Options) -> Result<Report, 
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(e) => return Err(format!("can't write in {}: {e}", folder.display())),
     }
+    // The test folder is the check's own: it sets up a Library there itself.
+    crate::library::create(folder)?;
     let lib = Library::open(folder)?;
     let started = Instant::now();
     // The run's own tag: when it started, its process and a count, so no two

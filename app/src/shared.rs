@@ -264,7 +264,11 @@ impl WriteLock {
         if let Some(lease) = again {
             return Ok(WriteLock(lease));
         }
-        std::fs::create_dir_all(dir).map_err(|e| format!("can't use the Library folder {}: {e}", dir.display()))?;
+        // A folder that isn't there is never made here: the share may be
+        // down (LB11).
+        if !dir.is_dir() {
+            return Err(crate::library::unreachable(dir));
+        }
         let (token, text) = claim();
         let started = Instant::now();
         // The lock (and marks) seen last, and since when this PC has seen

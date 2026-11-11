@@ -1045,8 +1045,13 @@ pub fn create(ctx: &Ctx, op_name: &str, default_name: &str, args: &Value) -> Res
 /// `import-xml`: one job file per material and thickness.
 fn import_xml(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
     let path = PathBuf::from(a.need_str("path")?);
-    let lib = library(ctx).ok();
-    let im = imports::xml_import(&ctx.cfg, lib.as_ref(), &path, 0)?;
+    let lib = library(ctx);
+    let mut im = imports::xml_import(&ctx.cfg, lib.as_ref().ok(), &path, 0)?;
+    // Products without a drawing come from the Library: say why it wasn't
+    // looked in (LB11).
+    if let Err(e) = &lib {
+        im.notes.insert(0, format!("Library parts weren't looked up: {e}"));
+    }
     let dir = a.str("dir").map(PathBuf::from).unwrap_or_else(|| path.parent().map(Path::to_path_buf).unwrap_or_default());
     let force = a.bool("force")?.unwrap_or(false);
     let files: Vec<PathBuf> = im.jobs.iter().map(|j| dir.join(format!("{}.{}", safe_name(&j.name), jobfile::EXT))).collect();
@@ -1209,7 +1214,15 @@ fn read_drawing(ctx: &Ctx, path: &Path, a: &Args) -> Result<Vec<crate::formats::
 }
 
 fn library(ctx: &Ctx) -> Result<crate::library::Library, String> {
+    reach_library(ctx, "Nothing was read from or saved to the Library, and the job is as it was")?;
     crate::library::Library::open(&ctx.library_dir)
+}
+
+/// The Library folder can be used, or the refusal naming it, what was left
+/// as it was (`kept`) and what to do instead (LB11, LB12, LB13). Nothing is
+/// made either way.
+fn reach_library(ctx: &Ctx, kept: &str) -> Result<(), String> {
+    crate::library::usable(&ctx.library_dir).map_err(|e| format!("{e} {kept}: try again once it can be reached."))
 }
 
 fn who(job: &JobFile, t: &[usize]) -> String {
@@ -1321,6 +1334,11 @@ fn stock_op(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
     let matches = |it: &crate::stock::Item| mat.is_none_or(|m| it.material == m) && thk.is_none_or(|t| (it.thickness - t).abs() <= crate::stock::TOL);
     let describe = |it: &crate::stock::Item| format!("{} {} ({:.0} × {:.0} mm)", it.kind.label().to_lowercase(), it.reference, it.length, it.width);
     let mode = a.need_str("mode")?;
+    // The stock is the Library's: none to read or change while it can't be
+    // reached (LB11). The options are this PC's settings.
+    if mode != "rules" {
+        reach_library(ctx, "The sheet stock was not read or changed")?;
+    }
     match mode.as_str() {
         "list" => {
             let st = ctx.stock()?;
@@ -1770,6 +1788,8 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             }
             let stock = (mode != "off").then(|| stockflow::StockUse { st: &st, ..ctx.stock_use(job) });
             let r = nest_all(&job.parts, &job.spec, group, stock.as_ref());
+            let grouped = group && nest::part_groups(&job.parts).len() > 1;
+            let unreachable = stock.as_ref().filter(|_| !grouped).and_then(stockflow::stock_unreachable_note).unwrap_or_default();
             drop(stock);
             job.sheets = r.sheets;
             job.formats = r.formats;
@@ -1799,7 +1819,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                 format!("{placed} of {need} parts nested on {} sheet(s){from} — some are larger than the sheet.", job.sheets.len())
             };
             let usage: Vec<Value> = job.sheets.iter().enumerate().map(|(k, s)| { let f = job.format(k); json!({"sheet": k + 1, "parts": s.len(), "usage_pct": r1(sheet_usage(&job.parts, s, &job.spec, &f).0), "stock_ref": (!f.stock_ref.is_empty()).then(|| f.stock_ref.clone())}) }).collect();
-            let mut o = Outcome::msg(m);
+            let mut o = Outcome::msg(m + &unreachable);
             o.data = json!({ "sheets": usage, "method": job.method });
             Ok(o)
         }
@@ -1836,6 +1856,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             Ok(Outcome::msg(format!("Sheet {} deleted — {n} part(s) are no longer nested.", s + 1)))
         }
         "stock-book" => {
+            reach_library(ctx, "Nothing was booked or given back, and the job is as it was")?;
             let file = Stock::file(&ctx.library_dir);
             match a.need_str("mode")?.as_str() {
                 "status" => {
