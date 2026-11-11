@@ -1190,6 +1190,43 @@ fn listing(dir: &Path) -> Vec<(String, u64)> {
     out
 }
 
+/// JX16 for agents: saving a job into the Library under a name another job
+/// holds (in another folder, in other capitals) is refused, naming that
+/// job's folder and saying what to do instead, and nothing is stored.
+/// Renamed, it saves.
+#[test]
+fn an_agent_saving_into_the_library_under_a_name_another_job_holds_is_refused() {
+    let d = dir("unique_job_names");
+    let mut s = Session::new(stock_ctx(&d));
+    // A programmer saved DEMO-001 frames in folder Acme.
+    let spec = SheetSpec { w: 3000.0, h: 1500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
+    let mut theirs = JobFile::new_job("DEMO-001 frames", spec);
+    theirs.week = "Acme".into();
+    crate::library::Library::open(&s.ctx.library_dir, &Who::new("sam", "PROG-1"), &Clock::pc()).unwrap().save_job(&theirs, crate::library::SaveTo::New).unwrap();
+    let job = d.join("frames.snjob");
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 3000, "h": 1500, "material": "steel", "thickness": 3}));
+    call(&mut s, "rename", None, json!({"name": "demo-001 FRAMES", "week": "W12"}));
+    let e = err(&mut s, "library", json!({"mode": "save-job"}));
+    assert!(e.contains("'DEMO-001 frames'") && e.contains("folder Acme") && e.contains("Nothing was saved") && e.contains("rename"), "{e}");
+    let names = |s: &mut Session| call(s, "library", None, json!({"mode": "list"}))["data"].as_array().unwrap().iter().map(|e| e["name"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    assert_eq!(names(&mut s), ["DEMO-001 frames"]);
+    call(&mut s, "rename", None, json!({"name": "DEMO-002 frames"}));
+    call(&mut s, "library", None, json!({"mode": "save-job"}));
+    assert_eq!(names(&mut s), ["DEMO-001 frames", "DEMO-002 frames"]);
+    // A Library saved before names were unique: jobs 1 and 3 share a name.
+    // The list marks each with the other's number, as the window does
+    // (JX17); the others carry no mark.
+    let lib = crate::library::Library::open(&s.ctx.library_dir, &Who::new("sam", "PROG-1"), &Clock::pc()).unwrap();
+    let mut twin = theirs.clone();
+    twin.name = "demo-001 FRAMES".into();
+    std::fs::write(lib.path(crate::library::Kind::Job, 3), serde_json::to_string(&twin).unwrap()).unwrap();
+    lib.rebuild_index().unwrap();
+    let list = call(&mut s, "library", None, json!({"mode": "list"}))["data"].clone();
+    let marks: Vec<(u64, Value)> = list.as_array().unwrap().iter().map(|e| (e["id"].as_u64().unwrap(), e["same_name_as"].clone())).collect();
+    assert_eq!(marks, [(1, json!([3])), (2, Value::Null), (3, json!([1]))]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 #[test]
 fn the_library_check_refuses_a_real_library() {
     let d = dir("check_refuses");

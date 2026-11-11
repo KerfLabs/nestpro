@@ -2477,6 +2477,25 @@
    "source": "MECHANICS JX6"
   },
   {
+   "name": "job names unique across the Library, in every folder",
+   "group": "job explorer",
+   "value": true,
+   "source": "MECHANICS JX16"
+  },
+  {
+   "name": "job name compare ignores case and surrounding spaces",
+   "group": "job explorer",
+   "value": true,
+   "estimated": true,
+   "source": "MECHANICS JX17"
+  },
+  {
+   "name": "jobs already sharing a name keep saving under it, marked (rebuild)",
+   "group": "job explorer",
+   "value": true,
+   "source": "MECHANICS JX17"
+  },
+  {
    "name": "new folder default name",
    "group": "job explorer",
    "value": "New folder",

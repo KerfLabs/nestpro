@@ -141,6 +141,15 @@ impl App {
             self.status = format!("Can't rename to '{n}': empty, too long or already a job.");
             return false;
         }
+        // A Library job: no other job in the Library may hold the name
+        // (JX16). Checked again under the write lock when it's saved.
+        let lib_id = if i == self.cur_job { self.job_lib_id } else { self.jobs.get(i).and_then(|j| j.lib_id) };
+        if let Some((id, Ok(lib))) = lib_id.map(|id| (id, self.library())) {
+            if let Err(e) = lib.check_job_name(n, Some(id)) {
+                self.status = format!("Can't rename to '{n}': {e}.");
+                return false;
+            }
+        }
         if i == self.cur_job {
             self.job_name = n.to_string();
         }
