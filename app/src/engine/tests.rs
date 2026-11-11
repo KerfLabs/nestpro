@@ -1379,10 +1379,16 @@ fn the_library_check_passes_on_a_test_folder_and_fails_on_a_half_written_record(
     t.folders[renamed].name = "DEMO-CHECK round 1".into();
     t.placed.remove(&3);
     std::fs::write(&file, serde_json::to_string(&t).unwrap()).unwrap();
+    // A library part's place in the part folders lost the same way.
+    let parts = folder.join(crate::folders::file_name(crate::library::Kind::Product));
+    let mut t = crate::folders::load(&lib, crate::library::Kind::Product).unwrap();
+    t.placed.remove(&2);
+    std::fs::write(&parts, serde_json::to_string(&t).unwrap()).unwrap();
     let e = err(&mut s, "library-check", json!({"folder": folder.to_str().unwrap(), "rounds": 1, "pc": "PROG-1"}));
     assert!(e.contains("FAIL") && e.contains("Job record 2") && e.contains("half-written"), "{e}");
     assert!(e.contains("is 'DEMO-CHECK round 1' in") && e.contains("a folder change was lost"), "{e}");
     assert!(e.contains("(record 3) is in the top of the Library where PROG-1 left it in 'DEMO-CHECK PROG-1"), "{e}");
+    assert!(e.contains("(record 2) is in the top of the Library where PROG-1's save filed it in 'DEMO-CHECK': its place in the part folders was lost"), "{e}");
 }
 
 /// A test folder the Library check made itself (one round, so it holds the
@@ -1441,6 +1447,14 @@ fn the_library_check_refuses_a_folder_it_cant_read_or_recognise() {
     let f = check_folder(&mut s, &d, "damaged folders");
     std::fs::write(f.join(crate::folders::file_name(crate::library::Kind::Job)), "{ half a tree").unwrap();
     refused(&mut s, &f, "folder tree");
+    // The same for the part folders (JX18).
+    let f = check_folder(&mut s, &d, "real part folder");
+    let lib = crate::library::Library::open(&f, &Who::new("sam", "PROG-1"), &Clock::pc()).unwrap();
+    crate::folders::change(&lib, crate::library::Kind::Product, |t, _| t.make(crate::folders::TOP, "Acme")).unwrap();
+    refused(&mut s, &f, "the part folder 'Acme'");
+    let f = check_folder(&mut s, &d, "damaged part folders");
+    std::fs::write(f.join(crate::folders::file_name(crate::library::Kind::Product)), "{ half a tree").unwrap();
+    refused(&mut s, &f, "part-folders.json");
 }
 
 /// The 200 × 100 mm outline of the contour-state tests' made-up plates.
@@ -2276,6 +2290,87 @@ fn agents_make_rename_move_and_delete_job_folders_and_are_told_what_to_do_instea
     call(&mut s, "job-folders", None, json!({"mode": "move", "saved_job": "DEMO-001", "to": "2026-11"}));
     let l = call(&mut s, "library", None, json!({"mode": "list", "find": "2026"}));
     assert_eq!((l["data"][0]["name"].as_str(), l["data"][0]["folder"].as_str()), (Some("DEMO-001"), Some("2026-11")), "{l}");
+}
+
+// ---------------------------------------------------------------------------
+// The Library's part folders through the agents' `part-folders` (JX18–JX20).
+// ---------------------------------------------------------------------------
+
+/// JX19, JX20: an agent's new library parts go into the part folder named
+/// like the job's week (or the folder it names), made if missing; `library
+/// list` names each part's folder by its path; `part-folders` lists the tree
+/// and moves a part, with refusals that say what to do instead.
+#[test]
+fn agents_list_the_part_folders_and_move_a_library_part() {
+    let d = dir("part_folders");
+    let mut s = Session::new(stock_ctx(&d));
+    let jp = d.join("frames.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"name": "DEMO-001", "week": "Acme"}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 300, "h": 120, "qty": 4, "name": "DEMO-P1"}));
+    call(&mut s, "add-shape", None, json!({"shape": "disc", "w": 200, "qty": 2, "name": "DEMO-P2"}));
+    // Saved into the Library: filed in the part folder named like the job's week.
+    let saved = call(&mut s, "library", None, json!({"mode": "save-part", "parts": [1]}));
+    assert!(saved["message"].as_str().unwrap().contains("in part folder 'Acme'"), "{saved}");
+    // Or in the folder it names, several levels made.
+    let saved = call(&mut s, "library", None, json!({"mode": "save-part", "parts": [2], "folder": "Beta/2026-11"}));
+    assert_eq!(saved["data"]["folders"], json!(["Beta/2026-11"]), "{saved}");
+    let l = call(&mut s, "part-folders", None, json!({"mode": "list"}));
+    assert_eq!(l["data"]["outline"], json!(["Acme/", "Acme/DEMO-P1", "Beta/", "Beta/2026-11/", "Beta/2026-11/DEMO-P2"]), "{l}");
+    assert_eq!(l["data"]["parts"][0]["ref"], "SHP000001", "{l}");
+    assert_eq!(l["data"]["folders"][0]["parts"], 1, "{l}");
+    // The job folders are a tree of their own: none was made.
+    let jobs = call(&mut s, "job-folders", None, json!({"mode": "list"}));
+    assert_eq!(jobs["data"]["outline"], json!([]), "{jobs}");
+    // A part by its name into a folder by its path, then by its reference to the top.
+    let moved = call(&mut s, "part-folders", None, json!({"mode": "move", "library_part": "demo-p1", "to": "beta"}));
+    assert_eq!(moved["data"]["outline"], json!(["Acme/", "Beta/", "Beta/2026-11/", "Beta/2026-11/DEMO-P2", "Beta/DEMO-P1"]), "{moved}");
+    let again = call(&mut s, "part-folders", None, json!({"mode": "move", "library_part": "SHP000001", "to": "Beta"}));
+    assert!(again["message"].as_str().unwrap().contains("already in 'Beta': nothing moved"), "{again}");
+    // Saving a part over again never moves it.
+    call(&mut s, "edit-part", None, json!({"part": 1, "qty": 9}));
+    call(&mut s, "library", None, json!({"mode": "save-part", "parts": [1]}));
+    // `library list` names a part's folder by its path, and finds by it.
+    let found = call(&mut s, "library", None, json!({"mode": "list", "find": "2026-11"}));
+    assert_eq!(found["data"].as_array().unwrap().iter().map(|v| (v["name"].as_str().unwrap(), v["folder"].as_str().unwrap())).collect::<Vec<_>>(), [("DEMO-P2", "Beta/2026-11")], "{found}");
+    // Refusals say what to do instead.
+    let e = err(&mut s, "part-folders", json!({"mode": "delete", "folder": "Beta"}));
+    assert!(e.contains("'Beta' still holds 1 part and 1 folder") && e.contains("Move or delete what's in it first"), "{e}");
+    let e = err(&mut s, "part-folders", json!({"mode": "move", "library_part": "DEMO-404", "to": "/"}));
+    assert!(e.contains("No library part") && e.contains("part-folders mode=list") && e.contains("SHP000012"), "{e}");
+    let e = err(&mut s, "part-folders", json!({"mode": "move", "folder": "Gamma", "to": "/"}));
+    assert!(e.contains("no folder 'Gamma'") && e.contains("part-folders mode=list"), "{e}");
+    let e = err(&mut s, "part-folders", json!({"mode": "new", "name": "ACME"}));
+    assert!(e.contains("already in the top of the Library") && e.contains("error 9"), "{e}");
+    call(&mut s, "part-folders", None, json!({"mode": "move", "library_part": "SHP000001", "to": "Acme"}));
+    let l = call(&mut s, "part-folders", None, json!({"mode": "list"}));
+    assert_eq!(l["data"]["outline"], json!(["Acme/", "Acme/DEMO-P1", "Beta/", "Beta/2026-11/", "Beta/2026-11/DEMO-P2"]), "{l}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// LB11 for agents' part folders: `part-folders` on a Library that can't be
+/// reached is refused naming its folder and saying what to do, and nothing
+/// is made.
+#[test]
+fn agents_part_folders_are_refused_naming_the_folder_while_the_library_cant_be_reached() {
+    let d = dir("part_folders_unreachable");
+    let mut ctx = Ctx::builtin();
+    ctx.library_dir = d.join("Nesting");
+    let lib = ctx.library_dir.clone();
+    let mut s = Session::new(ctx);
+    let said = format!("The Library on {} can't be reached", lib.display());
+    for args in [
+        json!({"mode": "list"}),
+        json!({"mode": "new", "name": "Acme"}),
+        json!({"mode": "rename", "folder": "Acme", "name": "Acme Ltd"}),
+        json!({"mode": "delete", "folder": "Acme"}),
+        json!({"mode": "move", "library_part": "SHP000001", "to": "Acme"}),
+    ] {
+        let e = err(&mut s, "part-folders", args.clone());
+        assert!(e.contains(&said) && e.contains("no part folder was made"), "{args}: {e}");
+        assert!(e.contains("try again once it can be reached"), "{args} doesn't say what to do: {e}");
+        assert!(!lib.exists(), "{args} made the Library folder");
+    }
+    let _ = std::fs::remove_dir_all(&d);
 }
 
 #[test]

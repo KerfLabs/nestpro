@@ -3,6 +3,7 @@
 //! stored products to the open job.
 
 use crate::library::{Entry, Kind, Library};
+use crate::libtree::{TreeAct, TreeLook};
 use crate::theme::th;
 use crate::ui_parts::*;
 use crate::App;
@@ -34,18 +35,76 @@ pub struct LibUi {
     /// folder was made or something pasted; every folder for screenshots).
     pub reveal: Vec<u64>,
     pub reveal_all: bool,
+    /// The Library's part folders (JX18), shown in the Library window's
+    /// Products tab, with what is cut or being named there.
+    pub parts: FolderView,
     /// Why the Library can't be listed (LB11, LB12): its folder can't be
     /// reached or holds no Library. The lists say this instead of looking
     /// empty.
     pub error: Option<String>,
 }
 
-/// A job or folder in the Library's tree.
+/// A job, part or folder in one of the Library's trees.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LibItem {
     /// A saved job, by its record number.
     Job(u64),
+    /// A library part, by its record number.
+    Part(u64),
     Folder(u64),
+}
+
+impl LibItem {
+    /// The record `id` of a `kind` tree.
+    pub fn record(kind: Kind, id: u64) -> LibItem {
+        match kind {
+            Kind::Job => LibItem::Job(id),
+            Kind::Product => LibItem::Part(id),
+        }
+    }
+}
+
+/// One of the Library's folder trees as this window shows it: the tree as
+/// last read, what is cut waiting for Paste (JX14), the folder whose name is
+/// being typed, and the folders to open out next time it's drawn.
+#[derive(Clone, Default)]
+pub struct FolderView {
+    pub tree: crate::folders::Tree,
+    pub cut: Option<LibItem>,
+    pub edit: Option<(u64, String)>,
+    pub reveal: Vec<u64>,
+}
+
+/// A `kind` tree's view, to change (`LibUi::view`).
+pub struct ViewMut<'a> {
+    pub tree: &'a mut crate::folders::Tree,
+    pub cut: &'a mut Option<LibItem>,
+    pub edit: &'a mut Option<(u64, String)>,
+    pub reveal: &'a mut Vec<u64>,
+}
+
+impl LibUi {
+    /// The jobs' (JX10) or the parts' (JX18) folder tree as last read.
+    pub fn tree_of(&self, kind: Kind) -> &crate::folders::Tree {
+        match kind {
+            Kind::Job => &self.tree,
+            Kind::Product => &self.parts.tree,
+        }
+    }
+
+    /// The jobs' or the parts' tree view, to change.
+    pub fn view(&mut self, kind: Kind) -> ViewMut<'_> {
+        match kind {
+            Kind::Job => ViewMut { tree: &mut self.tree, cut: &mut self.cut, edit: &mut self.edit, reveal: &mut self.reveal },
+            Kind::Product => ViewMut { tree: &mut self.parts.tree, cut: &mut self.parts.cut, edit: &mut self.parts.edit, reveal: &mut self.parts.reveal },
+        }
+    }
+
+    /// A library part's folder, as the parts tree shows it (JX20): its path,
+    /// "" at the top.
+    pub fn part_folder(&self, id: u64) -> String {
+        self.parts.tree.path(self.parts.tree.folder_of(id))
+    }
 }
 
 /// The Library can't be listed (LB11, LB12): the message naming the folder,
@@ -239,6 +298,7 @@ impl App {
         self.libui.cut = None;
         self.libui.edit = None;
         self.libui.reveal.clear();
+        self.libui.parts = Default::default();
     }
 
     /// Save to library refused because the Library can't be reached (LB11):
@@ -303,9 +363,25 @@ impl App {
         };
     }
 
-    /// Store the open job's products in the library (group = the job's folder).
+    /// Where a library part saved from the open job for the first time goes
+    /// (JX19): the part folder named like the job's folder.
+    pub fn parts_folder_of_job(&self) -> crate::folders::PartsFolder {
+        let j = self.jobs.get(self.cur_job);
+        crate::folders::PartsFolder::LikeJob { record: self.job_lib_id, folder: j.and_then(|j| j.lib_folder), week: j.map_or_else(String::new, |j| j.week.clone()) }
+    }
+
+    /// "in part folder Acme/2026-11", or "at the top of the part folders".
+    fn part_place_words(&self, id: u64) -> String {
+        let f = self.libui.part_folder(id);
+        if f.is_empty() { "at the top of the part folders".into() } else { format!("in part folder {f}") }
+    }
+
+    /// Store the open job's products in the library (group = the job's
+    /// folder), each new one in the part folder named like the job's folder
+    /// (JX19).
     pub fn add_products_to_library(&mut self) {
         let folder = self.jobs.get(self.cur_job).map_or(String::new(), |j| j.week.clone());
+        let to = self.parts_folder_of_job();
         let lib = match self.library() {
             Ok(l) => l,
             Err(e) => {
@@ -314,20 +390,22 @@ impl App {
             }
         };
         let known: Vec<String> = lib.entries().iter().filter(|e| e.kind == Kind::Product).map(|e| e.name.clone()).collect();
-        let (mut added, mut skipped) = (0, 0);
+        let (mut added, mut skipped, mut last) = (0, 0, None);
         for p in &self.parts {
             // A reference already stored is the same product (as in Lantek,
-            // PK1): keep the stored one.
+            // PK1): keep the stored one, where it is.
             if known.contains(&p.name) {
                 skipped += 1;
                 continue;
             }
-            if lib.save_product(p, &folder, self.spec.material, self.spec.thickness, None).is_ok() {
+            if let Ok(id) = lib.save_product_in(p, &folder, self.spec.material, self.spec.thickness, None, &to) {
                 added += 1;
+                last = Some(id);
             }
         }
         self.lib_refresh();
-        self.status = format!("Library: {added} product(s) added{}.", if skipped > 0 { format!(", {skipped} already there") } else { String::new() });
+        let place = last.map_or_else(String::new, |id| format!(" {}", self.part_place_words(id)));
+        self.status = format!("Library: {added} product(s) added{place}{}.", if skipped > 0 { format!(", {skipped} already there") } else { String::new() });
     }
 
     /// Save one product (with its technology and texts) to the library,
@@ -336,19 +414,24 @@ impl App {
     pub fn save_part_to_library(&mut self, i: usize) {
         let Some(p) = self.parts.get(i).cloned() else { return };
         let folder = self.jobs.get(self.cur_job).map_or(String::new(), |j| j.week.clone());
+        // A new part goes into the part folder named like the job's folder;
+        // saving over one never moves it (JX19).
+        let to = self.parts_folder_of_job();
         let r = self.library().and_then(|l| {
             let id = l.find_product(&p.name);
-            l.save_product(&p, &folder, self.spec.material, self.spec.thickness, id).map(|n| (n, id.is_some()))
+            l.save_product_in(&p, &folder, self.spec.material, self.spec.thickness, id, &to).map(|n| (n, id.is_some()))
         });
         self.status = match r {
             Ok((n, again)) => {
                 self.lib_refresh();
                 format!(
-                    "{} {} as {}{}.",
+                    "{} {} as {}{}, {}{}.",
                     if again { "Updated" } else { "Saved" },
                     p.name,
                     crate::library::auto_ref(Kind::Product, n),
-                    if p.tech.is_some() { " with its technology" } else { "" }
+                    if p.tech.is_some() { " with its technology" } else { "" },
+                    if again { "where it was: " } else { "" },
+                    self.part_place_words(n)
                 )
             }
             Err(e) => format!("Couldn't save to the library: {e}"),
@@ -443,9 +526,8 @@ impl App {
             self.lib_refresh();
         }
         let mut open = true;
-        let mut open_job: Option<u64> = None;
-        let mut add_part: Option<u64> = None;
-        let mut delete: Option<(Kind, u64)> = None;
+        // What a row or a part folder's menu asked for, and in which tab.
+        let mut acted: Option<(Kind, TreeAct)> = None;
         let mut save_job = false;
         let mut open_file = false;
         let mut save_parts = false;
@@ -506,86 +588,95 @@ impl App {
             ui.separator();
             let kind = if self.libui.tab == 0 { Kind::Job } else { Kind::Product };
             let needle = self.libui.search.to_lowercase();
-            // A job's folder is its place in the Library's job folders (JX10).
-            let tree = &self.libui.tree;
-            let folder = |e: &Entry| if e.kind == Kind::Job { tree.path(tree.folder_of(e.id)) } else { e.folder.clone() };
-            let mut rows: Vec<&Entry> = self.libui.entries.iter().filter(|e| e.kind == kind && (needle.is_empty() || e.name.to_lowercase().contains(&needle) || folder(e).to_lowercase().contains(&needle))).collect();
-            rows.sort_by(|a, b| b.updated.cmp(&a.updated));
-            // Jobs that share their name with another job: Libraries saved
-            // before names were unique (JX17). Marked so one can be renamed.
-            let twins = crate::library::shared_job_names(&self.libui.entries);
-            if rows.is_empty() {
+            let un = self.unit();
+            if !self.libui.entries.iter().any(|e| e.kind == kind) {
                 // Empty: say what the library is for and offer the next step.
                 ui.vertical_centered(|ui| {
                     ui.add_space(40.0);
-                    let (msg, btn) = match (self.libui.entries.iter().any(|e| e.kind == kind), self.libui.tab) {
-                        (true, _) => ("Nothing matches the search.", None),
-                        (false, 0) => ("No jobs in the Library yet — it holds jobs saved with \"Save to library\", for every PC that shares this folder. Jobs saved with Save job are files: find them under Open job ▾ (recent jobs) or browse for one.", Some("Save open job to the Library")),
-                        _ => ("No products yet. Products can be added to any job from here.", Some("Add open job's products")),
+                    let (msg, btn) = if kind == Kind::Job {
+                        ("No jobs in the Library yet — it holds jobs saved with \"Save to library\", for every PC that shares this folder. Jobs saved with Save job are files: find them under Open job ▾ (recent jobs) or browse for one.", "Save open job to the Library")
+                    } else {
+                        ("No products yet. Products can be added to any job from here.", "Add open job's products")
                     };
                     ui.set_max_width(560.0);
                     ui.label(RichText::new(msg).color(th().text));
-                    if let Some(b) = btn {
-                        ui.add_space(8.0);
-                        ui.horizontal(|ui| {
-                            if ui.add(egui::Button::new(RichText::new(b).color(egui::Color32::WHITE)).fill(th().accent).min_size(egui::Vec2::new(0.0, 30.0))).clicked() {
-                                if self.libui.tab == 0 {
-                                    save_job = true;
-                                } else {
-                                    save_parts = true;
-                                }
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.add(egui::Button::new(RichText::new(btn).color(egui::Color32::WHITE)).fill(th().accent).min_size(egui::Vec2::new(0.0, 30.0))).clicked() {
+                            if kind == Kind::Job {
+                                save_job = true;
+                            } else {
+                                save_parts = true;
                             }
-                            if self.libui.tab == 0 && ui.add(egui::Button::new("Open a job file…").min_size(egui::Vec2::new(0.0, 30.0))).clicked() {
-                                open_file = true;
-                            }
-                        });
-                    }
+                        }
+                        if kind == Kind::Job && ui.add(egui::Button::new("Open a job file…").min_size(egui::Vec2::new(0.0, 30.0))).clicked() {
+                            open_file = true;
+                        }
+                    });
+                    ui.add_space(12.0);
                 });
             }
-            let mats = crate::cnc::MATERIALS;
-            let un = self.unit();
+            if kind == Kind::Product {
+                // The Library's part folders (JX18, JX20): in each folder its
+                // folders, then its parts; a search lists the matching parts
+                // with their folders.
+                let parts = self.lib_records(Kind::Product);
+                let (cut, clock) = (self.libui.parts.cut, self.clock.clone());
+                let row = move |ui: &mut egui::Ui, e: &Entry, path: Option<&str>, act: &mut Option<TreeAct>| {
+                    lib_row(ui, e, path, None, &record_info(e, un), &e.saved_note(&clock), cut == Some(LibItem::Part(e.id)), act);
+                };
+                let look = TreeLook {
+                    title: format!("📦 Library parts ({})", parts.len()),
+                    tip: "Library parts, filed in the Library's part folders: the same on every PC that shares it. Right-click: New ▸ Folder, Paste, Refresh".into(),
+                    empty: "📦 Part folders — none yet".into(),
+                    empty_tip: "Library parts go into the part folder named like their job's folder. Right-click here for New ▸ Folder.".into(),
+                    salt: "lib_parts_root",
+                };
+                egui::ScrollArea::vertical().id_salt("lib_parts").auto_shrink([false, false]).show(ui, |ui| {
+                    if let Some(a) = self.lib_tree(ui, Kind::Product, &parts, &needle, &look, &row) {
+                        acted = Some((Kind::Product, a));
+                    }
+                });
+                return;
+            }
+            // Jobs, newest first. A job's folder is its place in the
+            // Library's job folders (JX10).
+            let tree = &self.libui.tree;
+            let folder = |e: &Entry| tree.path(tree.folder_of(e.id));
+            let mut rows: Vec<&Entry> = self.libui.entries.iter().filter(|e| e.kind == Kind::Job && (needle.is_empty() || e.name.to_lowercase().contains(&needle) || folder(e).to_lowercase().contains(&needle))).collect();
+            rows.sort_by(|a, b| b.updated.cmp(&a.updated));
+            if rows.is_empty() && self.libui.entries.iter().any(|e| e.kind == Kind::Job) {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(40.0);
+                    ui.label(RichText::new("Nothing matches the search.").color(th().text));
+                });
+            }
+            // Jobs that share their name with another job: Libraries saved
+            // before names were unique (JX17). Marked so one can be renamed.
+            let twins = crate::library::shared_job_names(&self.libui.entries);
+            let mut act = None;
             egui::ScrollArea::vertical().id_salt("lib_rows").auto_shrink([false, false]).show_rows(ui, 30.0, rows.len(), |ui, range| {
                 for e in &rows[range] {
-                    ui.horizontal(|ui| {
-                        ui.set_min_height(28.0);
-                        ui.label(RichText::new(crate::library::auto_ref(e.kind, e.id)).monospace().size(11.0).color(th().text_dim));
-                        ui.label(RichText::new(&e.name).strong());
-                        if e.tech {
-                            chip(ui, "technology", th().accent_soft, th().accent_fg);
-                        }
-                        if let Some(others) = twins.get(&e.id).filter(|_| e.kind == Kind::Job) {
-                            let which: Vec<String> = others.iter().map(|o| format!("{} '{}' ({})", crate::library::auto_ref(o.kind, o.id), o.name, {
+                    let same = twins.get(&e.id).map(|others| {
+                        let which: Vec<String> = others
+                            .iter()
+                            .map(|o| {
                                 // Its folder as the tree shows it (JX10).
                                 let f = folder(o);
-                                if f.trim().is_empty() { "no folder".to_string() } else { format!("folder {f}") }
-                            })).collect();
-                            chip(ui, "same name", th().warn_bg, th().warn_fg).on_hover_text(format!(
-                                "Another job in the Library has this name: {}.\nJob names are unique across the Library, whatever their capitals. These jobs were saved before that, so each still saves under its own name: open one, change its name and save it to the library.",
-                                which.join(", ")
-                            ));
-                        }
-                        ui.label(RichText::new(folder(e)).size(11.5).color(th().accent_fg));
-                        let mat = mats.get(e.material).copied().unwrap_or("");
-                        let info = if e.kind == Kind::Job { format!("{mat} {} · {} · {} products · {} sheets", un.thickness(e.thickness), un.size(e.w, e.h, 0), e.count_a, e.count_b) } else { format!("{mat} {} · {} · qty {}", un.thickness(e.thickness), un.size(e.w, e.h, 0), e.count_a) };
-                        ui.label(RichText::new(info).size(11.5).color(th().text_dim));
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.small_button("🗑").on_hover_text("Delete from the library").clicked() {
-                                delete = Some((e.kind, e.id));
-                            }
-                            if e.kind == Kind::Job {
-                                if ui.button("Open").clicked() {
-                                    open_job = Some(e.id);
-                                }
-                            } else if ui.button("Add to job").clicked() {
-                                add_part = Some(e.id);
-                            }
-                            // Who last saved it, and when (LB6).
-                            ui.add_space(6.0);
-                            ui.add(egui::Label::new(RichText::new(e.saved_note(&self.clock)).size(11.5).color(th().text_dim)).truncate());
-                        });
+                                format!("{} '{}' ({})", crate::library::auto_ref(o.kind, o.id), o.name, if f.trim().is_empty() { "no folder".to_string() } else { format!("folder {f}") })
+                            })
+                            .collect();
+                        format!(
+                            "Another job in the Library has this name: {}.\nJob names are unique across the Library, whatever their capitals. These jobs were saved before that, so each still saves under its own name: open one, change its name and save it to the library.",
+                            which.join(", ")
+                        )
                     });
+                    lib_row(ui, e, Some(&folder(e)), same.as_deref(), &record_info(e, un), &e.saved_note(&self.clock), false, &mut act);
                 }
             });
+            if let Some(a) = act {
+                acted = Some((Kind::Job, a));
+            }
         });
         if !open {
             self.libui.open = false;
@@ -612,20 +703,23 @@ impl App {
         if save_parts {
             self.add_products_to_library();
         }
-        if let Some(id) = open_job {
-            self.open_library_job(id);
-        }
-        if let Some(id) = add_part {
-            self.add_library_product(id);
-        }
-        if let Some((k, id)) = delete {
-            if let Ok(l) = self.library() {
-                let _ = l.delete(k, id);
+        match acted {
+            Some((Kind::Job, TreeAct::Open(id))) => self.open_library_job(id),
+            Some((Kind::Product, TreeAct::Open(id))) => self.add_library_product(id),
+            Some((k, TreeAct::Remove(id))) => {
+                if let Ok(l) = self.library() {
+                    let _ = l.delete(k, id);
+                }
+                if k == Kind::Job && self.job_lib_id == Some(id) {
+                    self.job_lib_id = None;
+                }
+                let v = self.libui.view(k);
+                if *v.cut == Some(LibItem::record(k, id)) {
+                    *v.cut = None;
+                }
+                self.lib_refresh();
             }
-            if k == Kind::Job && self.job_lib_id == Some(id) {
-                self.job_lib_id = None;
-            }
-            self.lib_refresh();
+            _ => {}
         }
     }
 
@@ -681,6 +775,74 @@ impl App {
             self.open_library_job(id);
         }
     }
+}
+
+/// What a library record is, for its row: its material, thickness and size,
+/// and its products and sheets (a job) or its quantity (a part).
+fn record_info(e: &Entry, un: crate::units::LenUnit) -> String {
+    let mat = crate::cnc::MATERIALS.get(e.material).copied().unwrap_or("");
+    if e.kind == Kind::Job {
+        format!("{mat} {} · {} · {} products · {} sheets", un.thickness(e.thickness), un.size(e.w, e.h, 0), e.count_a, e.count_b)
+    } else {
+        format!("{mat} {} · {} · qty {}", un.thickness(e.thickness), un.size(e.w, e.h, 0), e.count_a)
+    }
+}
+
+/// One record's row in the Library window: its reference, name and chips
+/// ("same name", JX17, with `same_name` on hover), its folder's path when
+/// given (JX10, JX20), what it is (`info`), then its buttons and who last
+/// saved it (`saved`, LB6). A part's name has a menu: Add to job, Cut
+/// (`cut`: shown cut), Delete from the library (JX20).
+#[allow(clippy::too_many_arguments)]
+fn lib_row(ui: &mut egui::Ui, e: &Entry, folder: Option<&str>, same_name: Option<&str>, info: &str, saved: &str, cut: bool, act: &mut Option<TreeAct>) {
+    let part = e.kind == Kind::Product;
+    ui.horizontal(|ui| {
+        ui.set_min_height(28.0);
+        ui.label(RichText::new(crate::library::auto_ref(e.kind, e.id)).monospace().size(11.0).color(th().text_dim));
+        let name = if cut { RichText::new(format!("✂ {}", e.name)).strong().color(th().text_dim) } else { RichText::new(&e.name).strong() };
+        let r = ui.add(egui::Label::new(name).sense(egui::Sense::click()));
+        if part {
+            r.on_hover_text("Right-click: Add to job, Cut, Delete from the library").context_menu(|ui| {
+                if ui.button("Add to job").clicked() {
+                    *act = Some(TreeAct::Open(e.id));
+                    ui.close();
+                }
+                if ui.button("Cut").on_hover_text("Then right-click a folder (or Library parts) and Paste to move the part there").clicked() {
+                    *act = Some(TreeAct::Cut(LibItem::Part(e.id)));
+                    ui.close();
+                }
+                if ui.button("Delete from the library").clicked() {
+                    *act = Some(TreeAct::Remove(e.id));
+                    ui.close();
+                }
+            });
+        }
+        if e.tech {
+            chip(ui, "technology", th().accent_soft, th().accent_fg);
+        }
+        if let Some(words) = same_name {
+            chip(ui, "same name", th().warn_bg, th().warn_fg).on_hover_text(words);
+        }
+        if let Some(f) = folder.filter(|f| !f.is_empty()) {
+            ui.label(RichText::new(f).size(11.5).color(th().accent_fg));
+        }
+        ui.label(RichText::new(info).size(11.5).color(th().text_dim));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.small_button("🗑").on_hover_text("Delete from the library").clicked() {
+                *act = Some(TreeAct::Remove(e.id));
+            }
+            if !part {
+                if ui.button("Open").clicked() {
+                    *act = Some(TreeAct::Open(e.id));
+                }
+            } else if ui.button("Add to job").clicked() {
+                *act = Some(TreeAct::Open(e.id));
+            }
+            // Who last saved it, and when (LB6).
+            ui.add_space(6.0);
+            ui.add(egui::Label::new(RichText::new(saved).size(11.5).color(th().text_dim)).truncate());
+        });
+    });
 }
 
 #[cfg(test)]

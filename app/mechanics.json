@@ -5333,6 +5333,50 @@
   "source": "MECHANICS JX15"
  },
  {
+  "name": "part folder tree",
+  "group": "library",
+  "value": "part-folders.json in the Library, apart from the job folders: each folder's number, name and parent (0 = the top), and each library part's folder by number",
+  "source": "MECHANICS JX18; own design on DT8, DT9"
+ },
+ {
+  "name": "part folder changes",
+  "group": "library",
+  "value": "the job folders' rules (name check, never into itself, delete only when empty), under the Library's write lock; refused, naming the folder, while the Library can't be reached or holds no Library (LB11, LB12)",
+  "source": "MECHANICS JX18"
+ },
+ {
+  "name": "part folder names of a Library from before part folders",
+  "group": "library",
+  "value": "top-level part folders holding the same parts; names differing only in case are one folder, spelt as on the lowest-numbered part",
+  "estimated": true,
+  "source": "MECHANICS JX18"
+ },
+ {
+  "name": "library part saved into the Library for the first time goes into",
+  "group": "library",
+  "value": "the part folder named like its job's folder (the job's place in the job folders, else the folder of the library job it came from, else its Open jobs folder), each level made if missing",
+  "estimated": true,
+  "source": "MECHANICS JX19"
+ },
+ {
+  "name": "saving over a library part moves it",
+  "group": "library",
+  "value": false,
+  "source": "MECHANICS JX19"
+ },
+ {
+  "name": "part folder menu",
+  "group": "library",
+  "value": "New > Folder, Cut, Paste, Delete, Change name, Refresh; a part: Add to job, Cut, Delete from the library",
+  "source": "MECHANICS JX20"
+ },
+ {
+  "name": "Paste where it already is",
+  "group": "library",
+  "value": "moves nothing and says so",
+  "source": "MECHANICS JX20"
+ },
+ {
   "name": "hand-moved leads per part (contours)",
   "group": "leads",
   "value": 16,

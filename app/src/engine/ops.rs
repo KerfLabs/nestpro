@@ -82,9 +82,10 @@ pub struct Op {
 
 impl Op {
     /// Changes a file: the job, the sheet stock (`stock`), the Library's job
-    /// folders (`job-folders`) or a test Library folder (`library-check`).
+    /// or part folders (`job-folders`, `part-folders`) or a test Library
+    /// folder (`library-check`).
     pub fn writes(&self) -> bool {
-        matches!(self.kind, Kind::Write | Kind::Create) || matches!(self.name, "stock" | "library-check" | "job-folders")
+        matches!(self.kind, Kind::Write | Kind::Create) || matches!(self.name, "stock" | "library-check" | "job-folders" | "part-folders")
     }
 
     /// MCP tool name (underscores).
@@ -191,7 +192,7 @@ pub static OPS: &[Op] = &[
     Op { name: "library", group: "Parts", kind: Kind::Write, help: "The product/job library: list it (each record with who last saved it and when: saved_by, e.g. \"sam on PROG-2 (agent)\", and saved_at in this PC's local time), add a library product to the job, or save parts / the job into it (recorded as saved by this PC's user, marked (agent)).", args: &[
         Arg { name: "mode", ty: Ty::Str, required: true, help: "What to do. save-job: job names are unique across the Library, whatever their capitals; list marks old jobs that share a name (same_name_as)", choices: &["list", "add", "save-part", "save-job"] },
         a("find", Ty::Str, "list: text to look for"), a("id", Ty::Int, "add: the product's record number"), a("name", Ty::Str, "add: the product's name"),
-        a("qty", Ty::Int, "add: quantity"), a("parts", Ty::Parts, "save-part: which parts"), a("folder", Ty::Str, "save-part: product folder/group"),
+        a("qty", Ty::Int, "add: quantity"), a("parts", Ty::Parts, "save-part: which parts"), a("folder", Ty::Str, "save-part: the part folder a new library part goes into, its path (\"Acme/2026-11\", made if missing; default: the one named like the job's week); a part already in the Library stays where it is"),
     ] },
     // --- sheet and nesting ---
     Op { name: "set-sheet", group: "Nesting", kind: Kind::Write, help: "Change the sheet: size, margin, gap, material, thickness, nesting level, machine. A new material or thickness with nested sheets needs nestings=keep or nestings=remove.", args: &[
@@ -324,6 +325,13 @@ pub static OPS: &[Op] = &[
         a("folder", Ty::Str, "The folder: its path from the top, names separated by / (\"Acme/2026-11\", without case), or #<number> from list. new: the folder to make it in (default: the top); rename, delete: the folder; move: the folder to move"),
         a("name", Ty::Str, "new: the new folder's name (default \"New folder\", then \"New folder (1)\"…); rename: its new name"),
         a("saved_job", Ty::Str, "move: the saved job to move: its reference (JOB000012) or record number from list, or its name when no other saved job has it"),
+        a("to", Ty::Str, "move: where to: a folder's path or #<number>, or \"/\" for the top of the Library"),
+    ] },
+    Op { name: "part-folders", group: "Library", kind: Kind::Global, help: "The Library's part folders, apart from its job folders and the same on every PC that shares the Library (the Library window's Products tab): list the tree (each folder's path and #number, what it holds, and every library part's folder), make a folder (new), change a folder's name (rename), delete an empty folder (delete), or move a library part or a folder into another folder or to the top (move). A part saved into the Library for the first time goes into the part folder named like its job's folder (`library save-part`). Folder names are unique within their folder, without case (error 9); a folder never goes into itself or one of its own folders; a folder that still holds parts or folders isn't deleted.", args: &[
+        Arg { name: "mode", ty: Ty::Str, required: true, help: "What to do", choices: &["list", "new", "rename", "delete", "move"] },
+        a("folder", Ty::Str, "The folder: its path from the top, names separated by / (\"Acme/2026-11\", without case), or #<number> from list. new: the folder to make it in (default: the top); rename, delete: the folder; move: the folder to move"),
+        a("name", Ty::Str, "new: the new folder's name (default \"New folder\", then \"New folder (1)\"…); rename: its new name"),
+        a("library_part", Ty::Str, "move: the library part to move: its reference (SHP000012) or record number from list, or its name when no other library part has it"),
         a("to", Ty::Str, "move: where to: a folder's path or #<number>, or \"/\" for the top of the Library"),
     ] },
     // --- looking at it ---
@@ -1152,7 +1160,8 @@ pub fn run_global(ctx: &Ctx, name: &str, args: &Value) -> Result<Outcome, String
         "stock" => stock_op(ctx, &a),
         "machines" => Ok(Outcome::read(format!("Active machine: {}.", ctx.cfg.machine().name), machines(ctx))),
         "import-xml" => import_xml(ctx, &a),
-        "job-folders" => super::folderops::run(ctx, &a),
+        "job-folders" => super::folderops::run(ctx, &a, crate::library::Kind::Job),
+        "part-folders" => super::folderops::run(ctx, &a, crate::library::Kind::Product),
         "library-check" => {
             let rounds = match a.int("rounds")? {
                 Some(n) if n < 1 => return Err(format!("rounds {n}: at least 1")),
@@ -1712,9 +1721,13 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             match a.need_str("mode")?.as_str() {
                 "list" => {
                     let find = a.str("find").unwrap_or_default().to_lowercase();
-                    // A job's folder is its place in the Library's job folders (JX10).
-                    let tree = crate::folders::load(&lib, crate::library::Kind::Job)?;
-                    let folder = |e: &crate::library::Entry| if e.kind == crate::library::Kind::Job { tree.path(tree.folder_of(e.id)) } else { e.folder.clone() };
+                    // A job's folder is its place in the Library's job folders
+                    // (JX10), a part's in its part folders (JX20).
+                    let (jobs, parts) = (crate::folders::load(&lib, crate::library::Kind::Job)?, crate::folders::load(&lib, crate::library::Kind::Product)?);
+                    let folder = |e: &crate::library::Entry| {
+                        let tree = if e.kind == crate::library::Kind::Job { &jobs } else { &parts };
+                        tree.path(tree.folder_of(e.id))
+                    };
                     let mut list: Vec<Value> = lib
                         .entries()
                         .into_iter()
@@ -1758,13 +1771,25 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                 }
                 "save-part" => {
                     let t = parts_sel(&job.parts, a.get("parts"), true)?;
-                    let folder = a.str("folder").unwrap_or_default();
+                    // A new part goes into the part folder `folder` names, else
+                    // the one named like the job's folder (its week), made if
+                    // missing; saving over a part never moves it (JX19).
+                    let to = match a.str("folder") {
+                        Some(f) => crate::folders::PartsFolder::Path(f),
+                        None => crate::folders::PartsFolder::LikeJob { record: None, folder: None, week: job.week.clone() },
+                    };
+                    let group = a.str("folder").unwrap_or_else(|| job.week.clone());
                     let mut ids = vec![];
                     for &i in &t {
                         let existing = lib.find_product(&job.parts[i].name);
-                        ids.push(lib.save_product(&job.parts[i], &folder, job.spec.material, job.spec.thickness, existing)?);
+                        ids.push(lib.save_product_in(&job.parts[i], &group, job.spec.material, job.spec.thickness, existing, &to)?);
                     }
-                    Ok(Outcome::read(format!("Saved {} into the library.", who(job, &t)), json!({ "ids": ids })))
+                    // Where each is now in the part folders.
+                    let tree = crate::folders::load(&lib, crate::library::Kind::Product)?;
+                    let places: Vec<String> = ids.iter().map(|&id| tree.path(tree.folder_of(id))).collect();
+                    let mut shown: Vec<String> = places.iter().map(|p| if p.is_empty() { "the top of the part folders".to_string() } else { format!("part folder '{p}'") }).collect();
+                    shown.dedup();
+                    Ok(Outcome::read(format!("Saved {} into the library, in {}.", who(job, &t), shown.join(", ")), json!({ "ids": ids, "folders": places })))
                 }
                 "save-job" => {
                     // A name another job in the Library holds is refused (JX16);
