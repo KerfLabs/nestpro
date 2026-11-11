@@ -256,8 +256,12 @@ pub struct App {
     /// whether the person chose to close anyway (jobtree.rs `quit_guard`).
     pub quit_ask: Option<Vec<String>>,
     pub quit_confirmed: bool,
-    /// The Library folder as it was when typing in its box began (settings).
-    pub lib_dir_typed_from: Option<String>,
+    /// The Library folder being typed in its box (settings), until the
+    /// typing is done.
+    pub lib_dir_edit: Option<String>,
+    /// A folder picked in Settings that holds no Library, while asking
+    /// whether to make a new Library there (LB12).
+    pub lib_new_ask: Option<String>,
     /// Original option: warn before changing a part that has technology.
     pub warn_tech: bool,
     /// "Use this answer for the rest" given in the technology question.
@@ -574,7 +578,8 @@ impl App {
             pending: None,
             quit_ask: None,
             quit_confirmed: false,
-            lib_dir_typed_from: None,
+            lib_dir_edit: None,
+            lib_new_ask: None,
             warn_tech: true,
             tech_answer_all: None,
             tech_all_box: false,
@@ -900,6 +905,17 @@ impl App {
         rows.sort_by(|a, b| b.0.cmp(&a.0));
         ui.label(RichText::new("Recent jobs").strong().color(th().text_strong));
         ui.label(RichText::new("Job files and Library jobs together, newest first").size(11.5).color(th().text_dim));
+        // The Library's jobs are missing because it can't be reached (LB11).
+        if let Some(e) = self.libui.error.clone() {
+            let (again, folder) = crate::libui::unreachable_note(ui, &format!("Library jobs aren't listed: {e}"));
+            if again {
+                self.lib_retry();
+            }
+            if folder {
+                self.open_settings(crate::settings_ui::Section::Folders);
+                ui.close();
+            }
+        }
         if rows.is_empty() {
             ui.label(RichText::new("None yet — jobs you save or open show up here.").size(12.0).color(th().text_dim));
         }
@@ -1718,6 +1734,12 @@ impl App {
         } else {
             format!("{} of {} parts nested — some are larger than the sheet.", placed, need)
         };
+        // From the stock, but the Library can't be reached: said so (LB11).
+        if !(self.group_nest && nest::part_groups(&self.parts).len() > 1) {
+            if let Some(n) = engine::stockflow::stock_unreachable_note(&self.stock_use()) {
+                self.status += &n;
+            }
+        }
         let mut lost = vec![];
         if lost_order > 0 {
             lost.push(format!("the hand-picked cut order on {lost_order} sheet(s)"));
@@ -2570,6 +2592,7 @@ impl eframe::App for App {
             self.open_settings(settings_ui::Section::General);
         }
         self.settings_window(&ctx);
+        self.new_library_window(&ctx);
         self.library_window(&ctx);
         self.import_window(&ctx);
         self.stock_window(&ctx);
@@ -3027,6 +3050,11 @@ fn main() -> eframe::Result {
             // --library-dir=<folder> / --lib-save: screenshots of a filled library.
             if let Some(d) = std::env::args().find_map(|a| a.strip_prefix("--library-dir=").map(str::to_string)) {
                 app.cfg.library_dir = d;
+            }
+            // --library-pick=<folder> (screenshots): that folder picked in
+            // Settings → Folders, asking first when it holds no Library (LB12).
+            if let Some(d) = std::env::args().find_map(|a| a.strip_prefix("--library-pick=").map(str::to_string)) {
+                app.pick_library_folder(d);
             }
             if std::env::args().any(|a| a == "--lib-save") {
                 app.save_job_to_library();

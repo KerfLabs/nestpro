@@ -125,6 +125,57 @@ pub struct Library {
     pub clock: Clock,
 }
 
+/// Said when the Library folder isn't there (LB11): the share, the server or
+/// the network is down, or the folder was moved. Names the folder. This PC's
+/// own default folder that was never made says so instead.
+pub fn unreachable(dir: &Path) -> String {
+    if dir == default_dir() {
+        format!("There's no Library on this PC yet ({}). Make one in Settings → Folders, or pick the shop's Library folder there.", dir.display())
+    } else {
+        format!("The Library on {} can't be reached. Check the network or the server.", dir.display())
+    }
+}
+
+/// Said when the folder is there but holds no Library (LB12).
+pub fn no_library(dir: &Path) -> String {
+    format!("{} holds no Library. Pick the Library's folder in Settings → Folders, or make a new Library there.", dir.display())
+}
+
+/// The folder holds a Library: its list, or its record or stock folders
+/// (LB12). A Library from before the list was kept still counts.
+pub fn holds_library(dir: &Path) -> bool {
+    dir.join(INDEX).is_file() || [Kind::Job.folder(), Kind::Product.folder(), crate::stock::FOLDER].iter().any(|f| dir.join(f).is_dir())
+}
+
+/// The Library in `dir` can be used: the folder is there (LB11) and holds a
+/// Library (LB12). Nothing is made either way.
+pub fn usable(dir: &Path) -> Result<(), String> {
+    if !dir.is_dir() {
+        return Err(unreachable(dir));
+    }
+    if !holds_library(dir) {
+        return Err(no_library(dir));
+    }
+    Ok(())
+}
+
+/// Make a new, empty Library in `dir`, and the folder if it isn't there
+/// (LB12). Only for a folder the user picked in Settings and confirmed; a
+/// folder that already holds a Library is left as it is.
+pub fn create(dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("A new Library can't be made in {} ({e}). Check the network or the server, or pick another folder.", dir.display()))?;
+    if holds_library(dir) {
+        return Ok(());
+    }
+    // An empty list records no save, so who and the clock don't matter here.
+    let lib = Library::at(dir, &Who::this_pc(), &Clock::pc());
+    let lock = lib.lock()?;
+    if !holds_library(dir) {
+        lib.write_index(&[], &lock)?;
+    }
+    Ok(())
+}
+
 impl Library {
     /// The Library in `dir`, as `who` going by `clock`, without setting
     /// anything up (reading).
@@ -132,10 +183,11 @@ impl Library {
         Library { dir: dir.to_path_buf(), who: who.clone(), clock: clock.clone() }
     }
 
-    /// Open (and set up, the first time) a library folder, as `who` going by
-    /// `clock`.
+    /// Open the Library in a folder, as `who` going by `clock`, setting up
+    /// its list if it was lost. A folder that isn't there, or holds no
+    /// Library, is refused, naming it, and nothing is made (LB11, LB12).
     pub fn open(dir: &Path, who: &Who, clock: &Clock) -> Result<Self, String> {
-        std::fs::create_dir_all(dir).map_err(|e| format!("can't use {}: {e}", dir.display()))?;
+        usable(dir)?;
         let lib = Library::at(dir, who, clock);
         if !dir.join(INDEX).exists() {
             let first = lib.scan(&Scanned::new());
@@ -505,6 +557,7 @@ mod library_tests {
     fn stores_products_and_jobs_like_record_folders() {
         let dir = std::env::temp_dir().join(format!("nestpro_lib_test_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
+        create(&dir).unwrap();
         let lib = Library::open(&dir, &Who::new("sam", "PROG-1"), &Clock::pc()).unwrap();
         let part = Part { name: "Bracket".into(), shape: Shape::LBracket, w: 120.0, h: 80.0, qty: 5, rotate: true, color: 1, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
         assert_eq!((auto_ref(Kind::Job, 1), auto_ref(Kind::Product, 1234)), ("JOB000001".to_string(), "SHP001234".to_string()));
@@ -545,9 +598,11 @@ mod library_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A new, empty Library of the test's own.
     fn scratch(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("nestpro_shared_{tag}_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
+        create(&dir).unwrap();
         dir
     }
 
@@ -581,6 +636,36 @@ mod library_tests {
         }
         assert_eq!(list.iter().filter(|e| e.kind == Kind::Job).count(), pcs * saves);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// LB11, LB12: a Library folder that isn't there (the share is down, or
+    /// it was never made) is never made by opening or saving; only making a
+    /// new Library (Settings, after asking) makes one.
+    #[test]
+    fn a_library_folder_that_isnt_there_is_never_made() {
+        let dir = scratch("not_there").join("Nesting");
+        let (who, clock) = (Who::new("sam", "PROG-1"), Clock::pc());
+        let refused = Library::open(&dir, &who, &clock).err().expect("a folder that isn't there was opened");
+        assert!(refused.contains(&dir.display().to_string()) && refused.contains("can't be reached"), "{refused}");
+        assert!(!dir.exists(), "opening made the Library folder");
+        // Made on purpose, it opens, empty.
+        create(&dir).unwrap();
+        let lib = Library::open(&dir, &who, &clock).unwrap();
+        assert!(lib.entries().is_empty());
+        lib.save_job(&job("Frames"), None).unwrap();
+        // The share goes away: saving is refused, naming the folder, and
+        // nothing is made in its place.
+        std::fs::remove_dir_all(&dir).unwrap();
+        let refused = lib.save_job(&job("Brackets"), None).err().expect("a save to a folder that isn't there was stored");
+        assert!(refused.contains(&dir.display().to_string()) && refused.contains("can't be reached"), "{refused}");
+        assert!(!dir.exists(), "saving made the Library folder again");
+        // A folder that's there but holds no Library is refused too, and left
+        // as it was.
+        std::fs::create_dir_all(&dir).unwrap();
+        let refused = Library::open(&dir, &who, &clock).err().expect("an empty folder was opened as a Library");
+        assert!(refused.contains(&dir.display().to_string()) && refused.contains("holds no Library"), "{refused}");
+        assert!(files(&dir).is_empty(), "opening set up a Library in an empty folder");
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
     }
 
     /// Every file under `dir`, as paths relative to it.

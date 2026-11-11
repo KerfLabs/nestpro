@@ -897,7 +897,11 @@ impl App {
         });
     }
 
-    fn settings_folders(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn settings_folders(&mut self, ui: &mut egui::Ui) {
+        // Looked for once, as the lists do; Try again looks again (LB11).
+        if !self.libui.loaded {
+            self.lib_refresh();
+        }
         ui.label(RichText::new("Folders").size(18.0).strong().color(th().text_strong));
         ui.add_space(8.0);
         card(ui, "Export folder", "Where Export CNC writes programs (a sub-folder per job). Empty = Documents\\Sheet Nesting.", |ui| {
@@ -916,28 +920,41 @@ impl App {
         ui.add_space(10.0);
         card(ui, "Library folder", "This app's own product and job database. Put it on a shared drive and everyone in the shop sees the same products and jobs. Empty = Documents\\Sheet Nesting\\Library.", |ui| {
             row(ui, "Folder", |ui| {
-                let r = ui.add(egui::TextEdit::singleline(&mut self.cfg.library_dir).desired_width(380.0).hint_text("Documents\\Sheet Nesting\\Library"));
-                // Typed: it counts as another folder once the typing is done.
-                if r.gained_focus() {
-                    self.lib_dir_typed_from = Some(self.cfg.library_dir.clone());
+                // Typed: it's another folder once the typing is done, never
+                // while half a name is in the box (LB12).
+                let mut text = self.lib_dir_edit.clone().unwrap_or_else(|| self.cfg.library_dir.clone());
+                let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(380.0).hint_text("Documents\\Sheet Nesting\\Library"));
+                if r.has_focus() || r.changed() {
+                    self.lib_dir_edit = Some(text);
                 }
-                if r.lost_focus() && self.lib_dir_typed_from.take().is_some_and(|d| d != self.cfg.library_dir) {
-                    self.library_folder_changed();
-                }
-                if r.changed() {
-                    self.libui.loaded = false;
+                if r.lost_focus() {
+                    if let Some(t) = self.lib_dir_edit.take() {
+                        self.pick_library_folder(t);
+                    }
                 }
                 if ui.button("Browse…").clicked() {
                     if let Some(d) = rfd::FileDialog::new().pick_folder() {
-                        self.cfg.library_dir = d.display().to_string();
-                        self.library_folder_changed();
+                        self.pick_library_folder(d.display().to_string());
                     }
                 }
-                if !self.cfg.library_dir.is_empty() && ui.small_button("✖").clicked() {
-                    self.cfg.library_dir.clear();
-                    self.library_folder_changed();
+                if !self.cfg.library_dir.is_empty() && ui.small_button("✖").on_hover_text("Back to Documents\\Sheet Nesting\\Library on this PC").clicked() {
+                    self.pick_library_folder(String::new());
                 }
             });
+            // The Library can't be reached or isn't there (LB11, LB12).
+            if let Some(e) = self.libui.error.clone() {
+                ui.add_space(4.0);
+                ui.label(RichText::new(format!("⚠ {e}")).size(11.5).color(th().warn_fg));
+                ui.horizontal(|ui| {
+                    if ui.small_button("Try again").clicked() {
+                        self.lib_retry();
+                    }
+                    // Asked first, as for any folder that holds no Library.
+                    if ui.small_button("Make a new Library here…").on_hover_text("Only for a new Library: the shop's own may just be out of reach").clicked() {
+                        self.lib_new_ask = Some(self.cfg.library_dir.clone());
+                    }
+                });
+            }
         });
         ui.add_space(10.0);
         card(ui, "Lantek Expert install (optional)", "Only used to import its database connection, machines and post files.", |ui| {

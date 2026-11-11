@@ -28,6 +28,9 @@ pub struct StockUi {
     pub show_options: bool,
     /// What the last "use" did (text, went well), shown under the buttons.
     pub note: Option<(String, bool)>,
+    /// Why the stock can't be listed: the Library can't be reached or holds
+    /// no Library (LB11, LB12). Shown instead of an empty list.
+    pub unreachable: Option<String>,
 }
 
 impl Default for StockUi {
@@ -45,6 +48,7 @@ impl Default for StockUi {
             msg: String::new(),
             show_options: false,
             note: None,
+            unreachable: None,
         }
     }
 }
@@ -222,7 +226,16 @@ impl App {
     }
 
     fn stock_reload(&mut self) {
-        match Stock::load(&self.library_dir()) {
+        let dir = self.library_dir();
+        self.stockui.loaded = true;
+        // Unreachable, not empty (LB11): nothing is read or made.
+        if let Err(e) = crate::library::usable(&dir) {
+            self.stockui.stock = Stock::default();
+            self.stockui.unreachable = Some(e);
+            return;
+        }
+        self.stockui.unreachable = None;
+        match Stock::load(&dir) {
             Ok(s) => {
                 self.stockui.stock = s;
                 self.stockui.msg.clear();
@@ -274,6 +287,18 @@ impl App {
                     stock_options(ui, &mut self.cfg.stock);
                 });
                 crate::ui_parts::fade_if_more(ui, &out);
+                return;
+            }
+            // The Library can't be reached: said so, not an empty list (LB11).
+            if let Some(e) = self.stockui.unreachable.clone() {
+                ui.add_space(12.0);
+                let (again, folder) = crate::libui::unreachable_note(ui, &e);
+                if again {
+                    action = Some(Box::new(|app: &mut App| app.stockui.loaded = false));
+                }
+                if folder {
+                    action = Some(Box::new(|app: &mut App| app.open_settings(crate::settings_ui::Section::Folders)));
+                }
                 return;
             }
             let su = &mut self.stockui;
@@ -831,6 +856,7 @@ mod tests {
     fn app_with_stock(tag: &str) -> (App, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!("nestpro-stockui-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
+        crate::library::create(&dir).unwrap();
         let mut a = App::new(None);
         a.cfg.library_dir = dir.display().to_string();
         a.cfg.stock = stock::StockSettings { remnants_on_save: true, ..Default::default() };
@@ -1115,7 +1141,6 @@ mod tests {
 /// folder, each with its own user and PC, going by one clock the test moves.
 #[cfg(test)]
 mod two_pcs {
-    use crate::library::Library;
     use crate::nest::{Part, Shape};
     use crate::shared::{Clock, Who};
     use crate::stock::{self, Item, Stock};
@@ -1135,7 +1160,7 @@ mod two_pcs {
     /// A Library whose sheet stock holds these 10 mm mild steel sheets
     /// (reference, length, width, how many).
     fn library_with(dir: &Path, sheets: &[(&str, f64, f64, i32)]) {
-        Library::open(dir, &Who::new("lee", "PROG-9"), &Clock::at(NOV_9_0920)).unwrap();
+        crate::library::create(dir).unwrap();
         let mut s = Stock::default();
         for (r, l, w, n) in sheets {
             s.add_sheet(Item::sheet(r, 0, 10.0, *l, *w, *n), true).unwrap();

@@ -414,6 +414,7 @@ mod jobtree_tests {
     fn open_jobs_remember_their_saved_copy() {
         let dir = std::env::temp_dir().join(format!("nestpro_lib_link_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
+        crate::library::create(&dir).unwrap();
         let mut a = App::new(None);
         a.cfg.library_dir = dir.display().to_string();
         a.open_job(0);
@@ -448,6 +449,7 @@ mod jobtree_tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut a = App::new(None);
+        crate::library::create(&dir.join("lib")).unwrap();
         a.cfg.library_dir = dir.join("lib").display().to_string();
         // The examples are nothing to lose.
         assert!((0..a.jobs.len()).all(|i| !a.job_unsaved(i)));
