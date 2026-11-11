@@ -441,7 +441,7 @@
   {
    "name": "a part with no cut order set by hand is cut on the sheet",
    "group": "part cut order",
-   "value": "as before: its marks first, then its holes in the drawing's order, the outline last",
+   "value": "as before: its marks first, then its holes in the machine's hole order (CO14; the drawing's order under None, as before), the outline last",
    "source": "CO8",
    "estimated": true
   },
@@ -2680,6 +2680,62 @@
    "group": "cut order",
    "value": "B699 = 0 (marks in their own pass, first)",
    "source": "CO29"
+  },
+  {
+   "name": "hole order settings read",
+   "group": "cut order",
+   "value": "B565 order mode (default 1, by proximity), B566 start corner (0), B567 direction (1, rows), B568 orthogonality tolerance (1.0 mm), B587 cut small holes first (off), B588 / B589 / B590 big-hole length, width and offset (0); a value the setting doesn't have keeps the default",
+   "source": "CO14",
+   "estimated": true
+  },
+  {
+   "name": "hole order None",
+   "group": "cut order",
+   "value": "the part's own contour order, as before the setting (not the original's rows)",
+   "source": "CO14",
+   "estimated": true
+  },
+  {
+   "name": "hole order minimum heat (mode 3)",
+   "group": "cut order",
+   "value": "the part's own contour order; the sheet's minimum-heat order isn't built",
+   "source": "CO14",
+   "estimated": true
+  },
+  {
+   "name": "hole order on the sheet",
+   "group": "cut order",
+   "value": "worked out where each copy sits, turned or mirrored; the head from where the sheet's last cut was, the sheet's origin before the first",
+   "source": "CO14",
+   "estimated": true
+  },
+  {
+   "name": "where a hole is measured to",
+   "group": "cut order",
+   "value": "the middle of its box, or where its cut starts when that is set by hand; the head stands there after cutting it",
+   "source": "CO14",
+   "estimated": true
+  },
+  {
+   "name": "proximity and big-hole tolerance",
+   "group": "cut order",
+   "value": "the machine's linear tolerance (A005, 0.01 mm by default)",
+   "source": "CO14",
+   "estimated": true
+  },
+  {
+   "name": "hole order in part-info and on the part screen",
+   "group": "cut order",
+   "value": "as drawn, the head starting at the part's lower left corner",
+   "source": "CO14",
+   "estimated": true
+  },
+  {
+   "name": "small holes next to a big hole",
+   "group": "cut order",
+   "value": "cut just before it, in the hole order mode among themselves; holes set by hand aren't moved",
+   "source": "CO15",
+   "estimated": true
   },
   {
    "name": "file name separator forbidden characters",

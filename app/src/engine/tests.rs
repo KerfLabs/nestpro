@@ -1871,6 +1871,29 @@ fn import_drawing_sets_layers_and_contours_in_one_call() {
 // A part's cut order set by hand (MAC-5, CO3–CO7).
 // ---------------------------------------------------------------------------
 
+/// While it lives, the test's thread works on a machine whose file holds
+/// `codes` (made up); then on the built-in machine again.
+struct OnMachine;
+
+fn on_machine(codes: &str) -> OnMachine {
+    crate::ct1::set_thread_active(Some(crate::ct1::MachineTech::from_text(codes)));
+    OnMachine
+}
+
+impl Drop for OnMachine {
+    fn drop(&mut self) {
+        crate::ct1::set_thread_active(None);
+    }
+}
+
+/// A machine that cuts the holes nobody ordered by hand in the part's own
+/// order (Order mode of the holes None, CO14), as every part was cut before
+/// the setting: for the tests of the order set by hand (CO3–CO10), which
+/// name the automatic holes in number order.
+fn holes_as_drawn() -> OnMachine {
+    on_machine("B565 0\n")
+}
+
 /// A part's cut order as part-info gives it: the contours in the order they
 /// are cut, and the ones set by hand.
 fn part_cut_order(s: &mut Session, part: usize) -> (Vec<u64>, Vec<u64>) {
@@ -1923,6 +1946,7 @@ fn contours_ordered_by_hand_are_cut_first_and_the_outline_last() {
 
 #[test]
 fn the_outline_is_always_cut_last_and_later_picks_go_in_before_it() {
+    let _drawn = holes_as_drawn();
     let d = dir("part_order_outline");
     let job = d.join("plate.snjob");
     let mut s = Session::new(Ctx::builtin());
@@ -1964,6 +1988,7 @@ fn plate_with_five_holes(d: &Path) -> PathBuf {
 
 #[test]
 fn bulk_commands_add_only_contours_not_yet_ordered_in_the_automatic_order() {
+    let _drawn = holes_as_drawn();
     let d = dir("part_order_bulk");
     let job = d.join("plate.snjob");
     let mut s = Session::new(Ctx::builtin());
@@ -2019,6 +2044,7 @@ fn bulk_commands_add_only_contours_not_yet_ordered_in_the_automatic_order() {
 
 #[test]
 fn undo_takes_back_the_last_command_and_clear_empties_the_order() {
+    let _drawn = holes_as_drawn();
     let d = dir("part_order_undo");
     let job = d.join("plate.snjob");
     let mut s = Session::new(Ctx::builtin());
@@ -2062,6 +2088,7 @@ fn undo_takes_back_the_last_command_and_clear_empties_the_order() {
 
 #[test]
 fn contours_set_to_another_state_leave_the_order_and_new_cuts_join_the_automatic_part() {
+    let _drawn = holes_as_drawn();
     let d = dir("part_order_tech");
     let job = d.join("plate.snjob");
     let mut s = Session::new(Ctx::builtin());
@@ -2244,6 +2271,7 @@ fn odd_cut_order_commands_are_refused_or_change_nothing() {
 
 #[test]
 fn a_part_saved_before_contour_states_takes_an_order_and_keeps_its_program() {
+    let _drawn = holes_as_drawn();
     let d = dir("part_order_old");
     let job = d.join("plate.snjob");
     let jp = job.to_str().unwrap();
@@ -2462,6 +2490,9 @@ fn programs(s: &mut Session) -> Vec<String> {
 /// in its window, and a sheet where the window is picked by hand; a part
 /// saved before contour states whose marks are listed open line first.
 fn no_order_jobs(d: &Path, blm: bool) -> Vec<(String, Vec<String>)> {
+    // Order mode of the holes None: the part's own order, as before the
+    // setting (CO14).
+    let drawn = holes_as_drawn();
     let mut out = vec![];
     let ctx = || {
         let mut c = Ctx::builtin();
@@ -2516,7 +2547,7 @@ fn no_order_jobs(d: &Path, blm: bool) -> Vec<(String, Vec<String>)> {
 
     // A 25 mm kerf with system compensation: both holes of a marked plate
     // can't be cut, so the outline is its first cut (KC18).
-    crate::ct1::set_thread_active(Some(crate::ct1::MachineTech::from_text("B116 ON\nB117 OFF\nB002 12.5\n")));
+    crate::ct1::set_thread_active(Some(crate::ct1::MachineTech::from_text("B565 0\nB116 ON\nB117 OFF\nB002 12.5\n")));
     let job = d.join("kerf.snjob");
     let mut s = Session::new(ctx());
     call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "mild steel", "thickness": 3, "force": true}));
@@ -2524,7 +2555,7 @@ fn no_order_jobs(d: &Path, blm: bool) -> Vec<(String, Vec<String>)> {
     call(&mut s, "place", None, json!({"part": 1, "x": 50, "y": 50}));
     call(&mut s, "place", None, json!({"part": 1, "x": 400, "y": 50, "angle": 180}));
     out.push(("kerf".to_string(), programs(&mut s)));
-    crate::ct1::set_thread_active(None);
+    drop(drawn);
     out
 }
 
@@ -2859,6 +2890,7 @@ fn a_mark_set_by_hand_between_two_holes_is_made_between_them() {
 
 #[test]
 fn a_technology_change_after_ordering_reaches_the_program() {
+    let _drawn = holes_as_drawn();
     let d = dir("sheet_order_tech");
     let mut s = ordered_plate_job(&d, false, "3, 1, 2", &[(50, 50, 270, true)]);
     // CO7 on the sheet: hole 1 set to No cut leaves the order and isn't cut.
@@ -2925,4 +2957,399 @@ fn a_part_saved_before_contour_states_is_cut_and_marked_in_its_hand_set_order() 
     let marks: Vec<bool> = paths.iter().filter(|p| p.mark).map(|p| p.size() > 100.0).collect();
     assert_eq!(marks, vec![true, false], "the square, then the line");
     let _ = std::fs::remove_dir_all(&d);
+}
+
+// ---------------------------------------------------------------------------
+// A part's holes ordered by the machine's settings (MAC-53, CO14, CO15).
+// ---------------------------------------------------------------------------
+
+/// Where DEMO-HOLES has its six Ø10 holes (contours 1–6); its 300 × 200
+/// outline is contour 7. Holes 3 and 6 sit 0.5 mm off their rows.
+const SCATTERED: [[f64; 2]; 6] = [[250.0, 150.0], [50.0, 50.0], [150.0, 150.5], [250.0, 50.0], [50.0, 150.0], [150.0, 49.5]];
+
+/// A made-up drawing: a 300 × 200 plate with the holes of `SCATTERED`.
+fn scattered_holes(d: &Path) -> PathBuf {
+    let sq = "0\nLWPOLYLINE\n8\n0\n90\n4\n70\n1\n10\n0\n20\n0\n10\n300\n20\n0\n10\n300\n20\n200\n10\n0\n20\n200\n";
+    let holes: String = SCATTERED.iter().map(|c| format!("0\nCIRCLE\n8\n0\n10\n{}\n20\n{}\n30\n0\n40\n5\n", c[0], c[1])).collect();
+    let p = d.join("DEMO-HOLES.dxf");
+    std::fs::write(&p, format!("0\nSECTION\n2\nENTITIES\n{sq}{holes}0\nENDSEC\n0\nEOF\n")).unwrap();
+    p
+}
+
+/// Where `place` puts a copy of a 300 × 200 part at (x, y), turned `angle`
+/// and mirrored or not.
+fn copy_at(x: f64, y: f64, angle: i64, mirror: bool) -> Placed {
+    let turns = (angle / 90).rem_euclid(4) as u8;
+    let (w, h) = if turns % 2 == 1 { (200.0, 300.0) } else { (300.0, 200.0) };
+    Placed { part: 0, x, y, w, h, turns, mirror }
+}
+
+/// A job with DEMO-HOLES on the machine the thread works on, written on the
+/// G-code post or the LC5, with a copy placed for each of `copies` (x, y,
+/// angle, mirrored, and "new" to start a new sheet or "" for the last one).
+fn scattered_job(d: &Path, blm: bool, copies: &[(f64, f64, i64, bool, &str)]) -> Session {
+    let mut ctx = Ctx::builtin();
+    ctx.blm.on = blm;
+    let mut s = Session::new(ctx);
+    call(&mut s, "new", Some(d.join("holes.snjob").to_str().unwrap()), json!({"w": 1500, "h": 1000, "material": "mild steel", "thickness": 3, "force": true}));
+    call(&mut s, "import-drawing", None, json!({"path": scattered_holes(d).to_str().unwrap(), "qty": copies.len()}));
+    call(&mut s, "edit-part", None, json!({"part": 1, "mirror": true}));
+    for &(x, y, angle, mirror, sheet) in copies {
+        let mut a = json!({"part": 1, "x": x, "y": y, "angle": angle, "mirror": mirror});
+        if !sheet.is_empty() {
+            a["sheet"] = json!(sheet);
+        }
+        call(&mut s, "place", None, a);
+    }
+    s
+}
+
+/// The contours of DEMO-HOLES that `paths` cut, by part-info's numbers: the
+/// biggest is the outline (7), each hole is known by where `pl` puts it.
+/// `local`: the paths are read from the copy's corner, as an LC5
+/// subprogram writes them, else from the sheet's origin.
+fn scattered_numbers(paths: &[ReadPath], pl: Placed, local: bool) -> Vec<u64> {
+    let outline = paths.iter().max_by(|a, b| a.size().total_cmp(&b.size())).unwrap();
+    let off = if local { [pl.x, pl.y] } else { [0.0, 0.0] };
+    paths
+        .iter()
+        .map(|p| {
+            if std::ptr::eq(p, outline) {
+                return 7;
+            }
+            let q = p.centre();
+            let d = |k: usize| {
+                let c = pl.map(SCATTERED[k]);
+                (c[0] - off[0] - q[0]).hypot(c[1] - off[1] - q[1])
+            };
+            let k = (0..6).min_by(|&a, &b| d(a).total_cmp(&d(b))).unwrap();
+            assert!(d(k) < 2.0, "a path at {q:?} isn't one of the holes");
+            k as u64 + 1
+        })
+        .collect()
+}
+
+/// Each copy's contours in the order sheet `sheet`'s program cuts them, copy
+/// by copy as the program reaches them: (placed part, part-info's numbers).
+/// `copies` are where the sheet's copies sit, in the order placed.
+fn scattered_program(s: &mut Session, sheet: usize, copies: &[Placed]) -> Vec<(usize, Vec<u64>)> {
+    let text = call(s, "program", None, json!({"sheet": sheet}))["data"].as_str().unwrap().to_string();
+    if text.contains("INITPART") {
+        // One subprogram per copy (BL37), here one copy per sheet.
+        let subs = lc5_paths(&text);
+        assert_eq!(subs.len(), copies.len(), "{text}");
+        return subs.iter().zip(copies).enumerate().map(|(k, (p, pl))| (k + 1, scattered_numbers(p, *pl, true))).collect();
+    }
+    iso_paths(&text).iter().map(|(part, paths)| (*part, scattered_numbers(paths, copies[*part - 1], false))).collect()
+}
+
+/// A copy turned 0°, 90°, 180°, 270° and mirrored, each on its own sheet at
+/// (20, 20), so the head comes to each from the sheet's origin.
+const TURNS: [(i64, bool); 5] = [(0, false), (90, false), (180, false), (270, false), (0, true)];
+
+/// The order every copy of `TURNS` is cut in, sheet by sheet.
+fn turned_orders(d: &Path, blm: bool) -> (Session, Vec<Vec<u64>>) {
+    let copies: Vec<(f64, f64, i64, bool, &str)> = TURNS.iter().enumerate().map(|(k, &(a, m))| (20.0, 20.0, a, m, if k == 0 { "" } else { "new" })).collect();
+    let mut s = scattered_job(d, blm, &copies);
+    let got = TURNS
+        .iter()
+        .enumerate()
+        .map(|(k, &(a, m))| {
+            let order = scattered_program(&mut s, k + 1, &[copy_at(20.0, 20.0, a, m)]);
+            assert_eq!(order.len(), 1);
+            order[0].1.clone()
+        })
+        .collect();
+    (s, got)
+}
+
+#[test]
+fn with_order_mode_none_a_parts_holes_keep_its_own_order_turned_or_not() {
+    let _m = on_machine("B565 0\n");
+    for blm in [false, true] {
+        let d = dir(&format!("holes_none_{blm}"));
+        let (mut s, got) = turned_orders(&d, blm);
+        // CO14: the part's own contour order, as before the setting.
+        assert_eq!(part_cut_order(&mut s, 1), (vec![1, 2, 3, 4, 5, 6, 7], vec![]));
+        for (order, turn) in got.iter().zip(TURNS) {
+            assert_eq!(order, &vec![1, 2, 3, 4, 5, 6, 7], "lc5 {blm}, {turn:?}");
+        }
+        verify_clean(&mut s);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+#[test]
+fn by_proximity_cuts_the_nearest_hole_next_where_each_copy_sits() {
+    // No machine file: the original's default, By proximity (CO20).
+    for blm in [false, true] {
+        let d = dir(&format!("holes_proximity_{blm}"));
+        let (mut s, got) = turned_orders(&d, blm);
+        // CO21 as drawn, the head at the drawing's origin (CO27): hole 2 at
+        // (50, 50), then 5 straight above it (hole 6 is as near, within the
+        // linear tolerance, but no nearer sideways, so the first met stays),
+        // 3, 1, 4 and 6.
+        assert_eq!(part_cut_order(&mut s, 1), (vec![2, 5, 3, 1, 4, 6, 7], vec![]));
+        // On the sheet, where each copy sits (CO14): turned 90° hole 5 is
+        // nearest the origin; from it holes 2 and 3 are 100 mm away within
+        // the tolerance, and 3 is nearer sideways, so it goes first.
+        let want: [Vec<u64>; 5] = [vec![2, 5, 3, 1, 4, 6, 7], vec![5, 3, 1, 4, 6, 2, 7], vec![1, 4, 6, 2, 5, 3, 7], vec![4, 6, 2, 5, 3, 1, 7], vec![4, 1, 3, 5, 2, 6, 7]];
+        for ((order, want), turn) in got.iter().zip(&want).zip(TURNS) {
+            assert_eq!(order, want, "lc5 {blm}, {turn:?}");
+        }
+        // Both posts write it, and the LC5 reads back as planned (BL39): the
+        // program call above would be refused otherwise.
+        verify_clean(&mut s);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+#[test]
+fn the_next_copy_on_a_sheet_starts_from_where_the_head_is_and_ties_keep_the_hole_met_first() {
+    let d = dir("holes_proximity_copies");
+    // Two copies side by side: the second starts from the first's middle,
+    // (170, 120), where its holes 2 and 5 are exactly as far and as far
+    // sideways: hole 2, met first, stays.
+    let mut s = scattered_job(&d, false, &[(20.0, 20.0, 0, false, ""), (400.0, 20.0, 0, false, "")]);
+    let copies = [copy_at(20.0, 20.0, 0, false), copy_at(400.0, 20.0, 0, false)];
+    assert_eq!(scattered_program(&mut s, 1, &copies), vec![(1, vec![2, 5, 3, 1, 4, 6, 7]), (2, vec![2, 5, 3, 1, 4, 6, 7])]);
+    verify_clean(&mut s);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn by_direction_cuts_rows_or_columns_from_the_start_corner_every_other_one_back() {
+    let d = dir("holes_direction");
+    // CO23, CO24 as drawn, from each start corner, in rows and in columns.
+    for (codes, want) in [
+        // Corner nearest the head (the drawing's origin): lower left. Rows
+        // bottom up, every other one back; hole 6 is 0.5 mm below its row
+        // and still in it.
+        ("B565 2\n", vec![2, 6, 4, 1, 3, 5, 7]),
+        ("B565 2\nB567 2\n", vec![2, 5, 3, 6, 4, 1, 7]),
+        ("B565 2\nB566 2\nB567 2\n", vec![4, 1, 3, 6, 2, 5, 7]),
+        ("B565 2\nB566 3\n", vec![1, 3, 5, 2, 6, 4, 7]),
+        ("B565 2\nB566 4\n", vec![5, 3, 1, 4, 6, 2, 7]),
+    ] {
+        let _m = on_machine(codes);
+        let mut s = scattered_job(&d, false, &[(20.0, 20.0, 0, false, "")]);
+        assert_eq!(part_cut_order(&mut s, 1).0, want, "{codes:?}");
+    }
+    // On the sheet each copy goes bottom up from its lower left corner,
+    // whichever way it is turned (CO14).
+    let _m = on_machine("B565 2\n");
+    for blm in [false, true] {
+        let (mut s, got) = turned_orders(&d, blm);
+        let want: [Vec<u64>; 5] = [vec![2, 6, 4, 1, 3, 5, 7], vec![5, 2, 6, 3, 1, 4, 7], vec![1, 3, 5, 2, 6, 4, 7], vec![4, 1, 3, 6, 2, 5, 7], vec![4, 6, 2, 5, 3, 1, 7]];
+        for ((order, want), turn) in got.iter().zip(&want).zip(TURNS) {
+            assert_eq!(order, want, "lc5 {blm}, {turn:?}");
+        }
+        verify_clean(&mut s);
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn the_start_corner_nearest_the_head_is_chosen_per_copy_and_a_tie_takes_the_lower_left() {
+    let d = dir("holes_direction_corners");
+    let _m = on_machine("B565 2\n");
+    // The copy high up on the left is cut first, from the origin: lower
+    // left. The head then stands at its middle (170, 700), nearest the
+    // other copy's upper left corner: rows from the top down.
+    let placed = [(20.0, 600.0, 0, false, ""), (400.0, 20.0, 0, false, "")];
+    let copies = [copy_at(20.0, 600.0, 0, false), copy_at(400.0, 20.0, 0, false)];
+    let mut s = scattered_job(&d, false, &placed);
+    assert_eq!(scattered_program(&mut s, 1, &copies), vec![(1, vec![2, 6, 4, 1, 3, 5, 7]), (2, vec![5, 3, 1, 4, 6, 2, 7])]);
+    // Start corner 1 fixes the lower left for both.
+    drop(_m);
+    let _m = on_machine("B565 2\nB566 1\n");
+    assert_eq!(scattered_program(&mut s, 1, &copies), vec![(1, vec![2, 6, 4, 1, 3, 5, 7]), (2, vec![2, 6, 4, 1, 3, 5, 7])]);
+    // A copy above the first: from (170, 120) its lower left and lower
+    // right corners are as near, and the lower left wins (lower right
+    // would cut 4, 6, 2 first).
+    drop(_m);
+    let _m = on_machine("B565 2\n");
+    let mut s = scattered_job(&d, false, &[(20.0, 20.0, 0, false, ""), (20.0, 300.0, 0, false, "")]);
+    let copies = [copy_at(20.0, 20.0, 0, false), copy_at(20.0, 300.0, 0, false)];
+    assert_eq!(scattered_program(&mut s, 1, &copies), vec![(1, vec![2, 6, 4, 1, 3, 5, 7]), (2, vec![2, 6, 4, 1, 3, 5, 7])]);
+    verify_clean(&mut s);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_hole_on_the_orthogonality_tolerances_edge_is_in_the_row() {
+    let d = dir("holes_direction_tolerance");
+    // Holes 3 and 6 are 0.5 mm off their rows: at 0.5 mm they are in them,
+    // at 0.49 mm each is a row of its own.
+    for (tol, want) in [("1", vec![2, 6, 4, 1, 3, 5, 7]), ("0.5", vec![2, 6, 4, 1, 3, 5, 7]), ("0.49", vec![6, 4, 2, 5, 1, 3, 7])] {
+        let _m = on_machine(&format!("B565 2\nB568 {tol}\n"));
+        let mut s = scattered_job(&d, false, &[(20.0, 20.0, 0, false, "")]);
+        assert_eq!(part_cut_order(&mut s, 1).0, want, "tolerance {tol}");
+        assert_eq!(scattered_program(&mut s, 1, &[copy_at(20.0, 20.0, 0, false)]), vec![(1, want)], "tolerance {tol}");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_hand_set_order_wins_for_the_holes_it_names_and_the_rest_follow_the_setting() {
+    let d = dir("holes_hand_set");
+    // By proximity (the default): hole 4 by hand, then the nearest from it.
+    let mut s = scattered_job(&d, false, &[(20.0, 20.0, 0, false, ""), (20.0, 20.0, 90, false, "new")]);
+    call(&mut s, "part-cut-order", None, json!({"part": 1, "mode": "add", "contours": "4"}));
+    assert_eq!(part_cut_order(&mut s, 1), (vec![4, 1, 3, 5, 2, 6, 7], vec![4]));
+    assert_eq!(scattered_program(&mut s, 1, &[copy_at(20.0, 20.0, 0, false)]), vec![(1, vec![4, 1, 3, 5, 2, 6, 7])]);
+    // Turned 90°: hole 4 still first, the rest by proximity where it sits.
+    assert_eq!(scattered_program(&mut s, 2, &[copy_at(20.0, 20.0, 90, false)]), vec![(1, vec![4, 6, 2, 5, 3, 1, 7])]);
+    // A bulk command adds the holes in the order part-info shows (CO5).
+    call(&mut s, "part-cut-order", None, json!({"part": 1, "mode": "all-cut"}));
+    assert_eq!(part_cut_order(&mut s, 1), (vec![4, 1, 3, 5, 2, 6, 7], vec![4, 1, 3, 5, 2, 6, 7]));
+    // Now set by hand, every copy keeps it, turned or not.
+    assert_eq!(scattered_program(&mut s, 2, &[copy_at(20.0, 20.0, 90, false)]), vec![(1, vec![4, 1, 3, 5, 2, 6, 7])]);
+    verify_clean(&mut s);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_hole_picked_in_manual_cutting_goes_first_and_the_rest_go_nearest_from_it() {
+    let d = dir("holes_manual_pick");
+    let mut s = scattered_job(&d, false, &[(20.0, 20.0, 0, false, "")]);
+    let copies = [copy_at(20.0, 20.0, 0, false)];
+    // Hole 3 picked on its right edge (175, 170.5): the head is there after
+    // it, nearest hole 1.
+    call(&mut s, "cut-order", None, json!({"mode": "pick", "sheet": 1, "x": 175, "y": 170.5, "tol": 1}));
+    assert_eq!(scattered_program(&mut s, 1, &copies), vec![(1, vec![3, 1, 4, 6, 2, 5, 7])]);
+    let _m = on_machine("B565 0\n");
+    assert_eq!(scattered_program(&mut s, 1, &copies), vec![(1, vec![3, 1, 2, 4, 5, 6, 7])]);
+    verify_clean(&mut s);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_frames_holes_follow_the_setting_and_the_part_in_its_window_still_goes_before_the_window() {
+    let d = dir("holes_frame");
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(d.join("frame.snjob").to_str().unwrap()), json!({"w": 1500, "h": 1000, "material": "mild steel", "thickness": 3}));
+    call(&mut s, "import-drawing", None, json!({"path": frame_with_window(&d).to_str().unwrap(), "qty": 1, "layers": "MARK=mark"}));
+    call(&mut s, "add-shape", None, json!({"shape": "plate-hole", "w": 150, "h": 80, "qty": 1, "name": "DEMO-INNER"}));
+    call(&mut s, "edit-part", None, json!({"part": 1, "mirror": true}));
+    // The frame mirrored: its Ø16 hole on the left (80, 150), the window
+    // (110–310, 90–210) holding the inner part. Its outline picked: it is
+    // cut whole, its holes nearest first from the origin.
+    call(&mut s, "place", None, json!({"part": 1, "x": 50, "y": 50, "mirror": true}));
+    call(&mut s, "place", None, json!({"part": 2, "x": 130, "y": 110}));
+    call(&mut s, "cut-order", None, json!({"mode": "pick", "sheet": 1, "x": 50, "y": 150, "tol": 1}));
+    // The frame's paths by size: outline 3, window 1, hole 2; its mark 4.
+    let frame = |p: &[ReadPath]| -> Vec<u64> { p.iter().map(|q| if q.mark { 4 } else if q.size() > 50_000.0 { 3 } else if q.size() > 10_000.0 { 1 } else { 2 }).collect() };
+    let runs = |s: &mut Session| -> (Vec<u64>, Vec<(usize, usize)>) {
+        let text = call(s, "program", None, json!({"sheet": 1}))["data"].as_str().unwrap().to_string();
+        let paths = iso_paths(&text);
+        let order = frame(&paths.iter().find(|x| x.0 == 1).unwrap().1);
+        let mut out: Vec<(usize, usize)> = vec![];
+        let mut part = 0;
+        for l in text.lines() {
+            if let Some(r) = l.strip_prefix("( PART ") {
+                part = r.split(' ').next().unwrap().parse().unwrap();
+            }
+            if l.contains("M07 ( PIERCE") || l.contains("M10 ( MARK ON )") {
+                match out.last_mut() {
+                    Some(o) if o.0 == part => o.1 += 1,
+                    _ => out.push((part, 1)),
+                }
+            }
+        }
+        (order, out)
+    };
+    // By proximity: the mark, the Ø16 hole, then the inner part whole
+    // (hole, outline) before the window, then the outline (CO2).
+    assert_eq!(runs(&mut s), (vec![4, 2, 1, 3], vec![(1, 2), (2, 2), (1, 2)]));
+    verify_clean(&mut s);
+    // None: the window first, after the part in it.
+    let _m = on_machine("B565 0\n");
+    assert_eq!(runs(&mut s), (vec![4, 1, 2, 3], vec![(2, 2), (1, 4)]));
+    verify_clean(&mut s);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// A made-up 500 × 200 plate: a 60 × 60 hole (contour 1) with Ø6 holes
+/// above (2) and below (7) it, a 60 × 40 hole (3) with a Ø6 hole beside it
+/// (4) and a 59.9 × 15 slot above it (6), a Ø6 hole between them (5); the
+/// outline is 8.
+fn plate_with_big_and_small_holes(d: &Path) -> PathBuf {
+    let rect = |x0: f64, y0: f64, x1: f64, y1: f64| format!("0\nLWPOLYLINE\n8\n0\n90\n4\n70\n1\n10\n{x0}\n20\n{y0}\n10\n{x1}\n20\n{y0}\n10\n{x1}\n20\n{y1}\n10\n{x0}\n20\n{y1}\n");
+    let small = |x: f64, y: f64| format!("0\nCIRCLE\n8\n0\n10\n{x}\n20\n{y}\n30\n0\n40\n3\n");
+    let body = [rect(0.0, 0.0, 500.0, 200.0), rect(40.0, 70.0, 100.0, 130.0), small(70.0, 150.0), rect(300.0, 80.0, 360.0, 120.0), small(380.0, 100.0), small(200.0, 100.0), rect(280.0, 130.0, 339.9, 145.0), small(70.0, 45.0)].concat();
+    let p = d.join("DEMO-SMALL.dxf");
+    std::fs::write(&p, format!("0\nSECTION\n2\nENTITIES\n{body}0\nENDSEC\n0\nEOF\n")).unwrap();
+    p
+}
+
+#[test]
+fn with_cut_small_holes_first_the_small_holes_next_to_a_big_hole_go_before_it() {
+    let d = dir("holes_small_first");
+    // Big: 60 mm along X or Y, so the 60 × 60 and 60 × 40 holes are big
+    // (exactly at the limit) and the 59.9 mm slot is small; a small hole
+    // within 25 mm of a big hole's box is next to it (CO25).
+    let limits = "B587 1\nB588 60\nB589 60\nB590 25\n";
+    let order = |codes: &str| {
+        let _m = on_machine(codes);
+        let mut s = Session::new(Ctx::builtin());
+        call(&mut s, "new", Some(d.join("small.snjob").to_str().unwrap()), json!({"w": 1500, "h": 1000, "material": "mild steel", "thickness": 3, "force": true}));
+        call(&mut s, "import-drawing", None, json!({"path": plate_with_big_and_small_holes(&d).to_str().unwrap(), "qty": 1}));
+        call(&mut s, "place", None, json!({"part": 1, "x": 20, "y": 20}));
+        let text = call(&mut s, "program", None, json!({"sheet": 1}))["data"].as_str().unwrap().to_string();
+        verify_clean(&mut s);
+        // The program's holes by size and place, as part-info numbers them.
+        let at = [[70.0, 100.0], [70.0, 150.0], [330.0, 100.0], [380.0, 100.0], [200.0, 100.0], [309.95, 137.5], [70.0, 45.0]];
+        let cut: Vec<u64> = iso_paths(&text)[0]
+            .1
+            .iter()
+            .map(|p| {
+                if p.size() > 50_000.0 {
+                    return 8;
+                }
+                let q = p.centre();
+                (0..7).min_by(|&a, &b| (at[a][0] + 20.0 - q[0]).hypot(at[a][1] + 20.0 - q[1]).total_cmp(&(at[b][0] + 20.0 - q[0]).hypot(at[b][1] + 20.0 - q[1]))).unwrap() as u64 + 1
+            })
+            .collect();
+        (part_cut_order(&mut s, 1), cut)
+    };
+    // Off (the default): the part's own order under None.
+    let none = vec![1, 2, 3, 4, 5, 6, 7, 8];
+    assert_eq!(order("B565 0\n"), ((none.clone(), vec![]), none.clone()));
+    // On, None: holes 2 and 7 before the big hole 1, hole 4 and the slot
+    // before the big hole 3; hole 5 is next to neither.
+    let want = vec![2, 7, 1, 4, 6, 3, 5, 8];
+    assert_eq!(order(&format!("B565 0\n{limits}")), ((want.clone(), vec![]), want));
+    // On, By proximity: the nearest hole each time, but a big hole only
+    // after the small ones next to it.
+    let want = vec![7, 2, 1, 5, 6, 4, 3, 8];
+    assert_eq!(order(&format!("B565 1\n{limits}")), ((want.clone(), vec![]), want));
+    // Limits at 0 (the original's defaults) make every hole big: no change.
+    assert_eq!(order("B565 0\nB587 1\n"), ((none.clone(), vec![]), none));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn the_machines_report_shows_how_the_machine_orders_a_parts_holes() {
+    let hole_order = |tech: Option<&str>| {
+        let mut ctx = Ctx::builtin();
+        if let Some(t) = tech {
+            ctx.tech = crate::ct1::MachineTech::from_text(t);
+        }
+        let mut s = Session::new(ctx);
+        call(&mut s, "machines", None, json!({}))["data"]["technology"]["hole_order"].clone()
+    };
+    // No machine file: the original's defaults (CO20).
+    let h = hole_order(None);
+    assert_eq!(h["mode"], json!("by proximity"), "{h}");
+    assert_eq!((h["mode_code"].clone(), h["start_corner"].clone(), h["direction"].clone()), (json!(1), json!("nearest the head"), json!("rows")), "{h}");
+    assert_eq!((h["orthogonality_tolerance_mm"].clone(), h["small_holes_first"].clone(), h["big_hole_min_length_mm"].clone()), (json!(1.0), json!(false), json!(0.0)), "{h}");
+    // A made-up machine file that sets them.
+    let h = hole_order(Some("# Demo laser\nB565 2\nB566 3\nB567 2\nB568 0.5\nB587 1\nB588 40\nB589 30\nB590 2.5\n"));
+    assert_eq!((h["mode"].clone(), h["start_corner"].clone(), h["direction"].clone(), h["orthogonality_tolerance_mm"].clone()), (json!("by direction"), json!("upper right"), json!("columns"), json!(0.5)), "{h}");
+    assert_eq!((h["small_holes_first"].clone(), h["big_hole_min_length_mm"].clone(), h["big_hole_min_width_mm"].clone(), h["big_hole_offset_mm"].clone()), (json!(true), json!(40.0), json!(30.0), json!(2.5)), "{h}");
+    // Minimum heat says what the app does with it.
+    let h = hole_order(Some("B565 3\n"));
+    assert_eq!(h["mode"], json!("minimum heat"));
+    assert!(h["cuts"].as_str().unwrap().contains("own contour order"), "{h}");
 }

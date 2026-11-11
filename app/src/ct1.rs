@@ -72,6 +72,9 @@ pub struct MachineTech {
     /// B114 / B115: run along X first (else along Y), and zig-zag.
     pub horizontal: bool,
     pub zigzag: bool,
+    /// B565–B568, B587–B590: how a part's holes are ordered when nobody has
+    /// ordered them by hand (CO20, CO14, CO15).
+    pub hole_order: HoleOrder,
     /// B134: test parts inside holes (nest small parts in the holes of big ones).
     pub parts_in_holes: bool,
     /// B076: smallest hole area offered to other parts, mm² (0 = any).
@@ -171,6 +174,7 @@ impl Default for MachineTech {
             start_bottom: true,
             horizontal: false,
             zigzag: false,
+            hole_order: HoleOrder::default(),
             parts_in_holes: true,
             min_hole_area: 0.0,
             group_parts: false,
@@ -755,6 +759,7 @@ impl MachineTech {
             start_bottom: d.start_bottom,
             horizontal: m.get("B114").map_or(d.horizontal, |v| v == "ON"),
             zigzag: m.get("B115").map_or(d.zigzag, |v| v == "ON"),
+            hole_order: HoleOrder::from_codes(m),
             parts_in_holes: m.get("B134").map_or(d.parts_in_holes, |v| v == "ON"),
             min_hole_area: f("B076", d.min_hole_area),
             group_parts: m.get("A785").map_or(d.group_parts, |v| v == "ON"),
@@ -1025,6 +1030,34 @@ mod ct1_tests {
     }
 
     #[test]
+    fn the_hole_order_settings_are_read_from_the_machine_file_with_the_originals_defaults() {
+        // CO20: with no file, and with a file that doesn't set them, By
+        // proximity from the corner nearest the head, rows, 1 mm, and Cut
+        // small holes first off with every limit 0.
+        let want = HoleOrder { mode: HoleMode::Proximity, corner: 0, columns: false, ortho_tol: 1.0, small_first: false, big_length: 0.0, big_width: 0.0, big_offset: 0.0, tol: crate::leads::LIN_TOL };
+        assert_eq!(MachineTech::default().hole_order, want);
+        assert_eq!(MachineTech::from_text("").hole_order, want);
+        assert_eq!(MachineTech::from_text("# Demo laser\nB244 7.0\n").hole_order, want);
+        // A made-up machine file that sets every one.
+        let demo = "# Demo laser\nA005 0.02\nB565 2 ; order mode of the holes\nB566 3\nB567 2\nB568 0.5\nB587 1\nB588 40.0\nB589 30.0\nB590 2.5\n";
+        let got = MachineTech::from_text(demo).hole_order;
+        assert_eq!(got, HoleOrder { mode: HoleMode::Direction, corner: 3, columns: true, ortho_tol: 0.5, small_first: true, big_length: 40.0, big_width: 30.0, big_offset: 2.5, tol: 0.02 });
+        // Each mode by its number, Cut small holes first written as ON too.
+        let mode = |v: &str| MachineTech::from_text(&format!("B565 {v}\n")).hole_order.mode;
+        assert_eq!([mode("0"), mode("1"), mode("2"), mode("3")], [HoleMode::None, HoleMode::Proximity, HoleMode::Direction, HoleMode::MinimumHeat]);
+        assert!(MachineTech::from_text("B587 ON\n").hole_order.small_first);
+        assert!(!MachineTech::from_text("B587 OFF\n").hole_order.small_first);
+        // A value the setting doesn't have keeps the default (MAC-61).
+        let odd = MachineTech::from_text("B565 7\nB566 9\nB567 5\nB568 -2\n").hole_order;
+        assert_eq!((odd.mode, odd.corner, odd.columns, odd.ortho_tol), (HoleMode::Proximity, 0, false, 1.0));
+        // The machine's own values: a material section doesn't change them.
+        let mut text = demo_sections_file();
+        text.insert_str(0, "B565 0\n");
+        let t = MachineTech::from_text(&text).for_job(&JobKeys::new("0010", 3.0));
+        assert_eq!((t.section, t.hole_order.mode), (Some(2), HoleMode::None));
+    }
+
+    #[test]
     fn the_installed_blm_file_matches_the_built_in_values() {
         let p = Path::new(r"C:\Lantek\Expert\MchFiles\PstAdi06.CT1");
         if let Some(t) = MachineTech::load(p) {
@@ -1068,4 +1101,114 @@ pub fn box_in_zone(b: [f64; 4], z: [f64; 4]) -> bool {
     }
     let inside = |x: f64, y: f64| x >= z[0] && x <= z[2] && y >= z[1] && y <= z[3];
     inside(b[0], b[1]) || inside(b[2], b[3]) || inside(b[0], b[3]) || inside(b[2], b[1])
+}
+
+/// Order mode of the holes (B565, CO20): how a part's holes are ordered when
+/// nobody has ordered them by hand.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HoleMode {
+    /// 0: the part's own contour order, as before the setting (CO14).
+    None,
+    /// 1: the nearest hole next (CO21), the original's default.
+    Proximity,
+    /// 2: in rows or columns from a start corner (CO23, CO24).
+    Direction,
+    /// 3: Minimum heat; a part's holes in its own contour order (CO24), the
+    /// sheet's heat order isn't built (MAC-53).
+    MinimumHeat,
+}
+
+impl HoleMode {
+    /// The setting's number in the machine file (B565).
+    pub fn code(self) -> u8 {
+        match self {
+            HoleMode::None => 0,
+            HoleMode::Proximity => 1,
+            HoleMode::Direction => 2,
+            HoleMode::MinimumHeat => 3,
+        }
+    }
+
+    /// For people and agents.
+    pub fn label(self) -> &'static str {
+        match self {
+            HoleMode::None => "none",
+            HoleMode::Proximity => "by proximity",
+            HoleMode::Direction => "by direction",
+            HoleMode::MinimumHeat => "minimum heat",
+        }
+    }
+}
+
+/// How a part's holes are ordered when nobody has ordered them by hand: the
+/// machine file's hole order settings (CO20) and the tolerance they are
+/// compared within.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HoleOrder {
+    /// B565: the order mode.
+    pub mode: HoleMode,
+    /// B566: the start corner of By direction: 0 the corner of the part's
+    /// box nearest the head, 1 lower left, 2 lower right, 3 upper right,
+    /// 4 upper left (CO23).
+    pub corner: u8,
+    /// B567: By direction cuts columns (2), else rows (1).
+    pub columns: bool,
+    /// B568: orthogonality tolerance, mm: holes whose start-side edges are
+    /// this close are in one row or column (CO23).
+    pub ortho_tol: f64,
+    /// B587: Cut small holes first (CO25).
+    pub small_first: bool,
+    /// B588 / B589: a big hole's minimum length along X and width along Y, mm.
+    pub big_length: f64,
+    pub big_width: f64,
+    /// B590: how far around a big hole a small hole counts as next to it, mm.
+    pub big_offset: f64,
+    /// A005: the machine's linear tolerance, mm, that By proximity's
+    /// distances and the big-hole test are compared within (CO21, CO25:
+    /// estimated, MAC-61).
+    pub tol: f64,
+}
+
+impl Default for HoleOrder {
+    /// The original's defaults (CO20).
+    fn default() -> Self {
+        HoleOrder { mode: HoleMode::Proximity, corner: 0, columns: false, ortho_tol: 1.0, small_first: false, big_length: 0.0, big_width: 0.0, big_offset: 0.0, tol: crate::leads::LIN_TOL }
+    }
+}
+
+impl HoleOrder {
+    /// The part's own contour order, whatever the file says: what every
+    /// part was cut in before the setting (CO14).
+    pub const NONE: HoleOrder = HoleOrder { mode: HoleMode::None, corner: 0, columns: false, ortho_tol: 1.0, small_first: false, big_length: 0.0, big_width: 0.0, big_offset: 0.0, tol: crate::leads::LIN_TOL };
+
+    /// The settings a machine file's codes give, with the original's
+    /// defaults (CO20). A value the setting doesn't have keeps its default
+    /// (MAC-61).
+    pub fn from_codes(m: &HashMap<String, String>) -> HoleOrder {
+        let d = HoleOrder::default();
+        let num = |k: &str| m.get(k).and_then(|v| v.trim().parse::<f64>().ok());
+        let mode = match num("B565") {
+            Some(v) if v == 0.0 => HoleMode::None,
+            Some(v) if v == 1.0 => HoleMode::Proximity,
+            Some(v) if v == 2.0 => HoleMode::Direction,
+            Some(v) if v == 3.0 => HoleMode::MinimumHeat,
+            _ => d.mode,
+        };
+        let corner = num("B566").filter(|v| v.fract() == 0.0 && (0.0..=4.0).contains(v)).map_or(d.corner, |v| v as u8);
+        let columns = num("B567").map_or(d.columns, |v| v == 2.0);
+        let ortho_tol = num("B568").filter(|v| *v >= 0.0).unwrap_or(d.ortho_tol);
+        let small_first = m.get("B587").map_or(d.small_first, |v| v.trim() == "ON" || v.trim().parse::<f64>().is_ok_and(|x| x != 0.0));
+        let len = |k: &str, def: f64| num(k).filter(|v| *v >= 0.0).unwrap_or(def);
+        HoleOrder {
+            mode,
+            corner,
+            columns,
+            ortho_tol,
+            small_first,
+            big_length: len("B588", d.big_length),
+            big_width: len("B589", d.big_width),
+            big_offset: num("B590").unwrap_or(d.big_offset),
+            tol: num("A005").filter(|v| *v > 0.0).unwrap_or(d.tol),
+        }
+    }
 }

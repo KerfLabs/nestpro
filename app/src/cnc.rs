@@ -2,7 +2,8 @@
 //! for one nested sheet. Speeds, pierce times and the time of every move come
 //! from the machine's files (`techtable`, `cuttime`).
 
-use crate::engine::cutorder::Step;
+use crate::ct1::HoleOrder;
+use crate::engine::cutorder::{HoleAt, Step};
 use crate::leads::LeadRec;
 use crate::nest::{perimeter, CutQuality, LeadType, Part, PartTech, Placed, SheetSpec, P};
 
@@ -702,11 +703,13 @@ pub fn nearest_contour(parts: &[Part], placed: &[Placed], p: P, tol: f64) -> Opt
 /// (rule MM3). A picked hole, or a hole pulled in by a picked outside, first
 /// cuts every part sitting in it, whole, so none drops with its scrap (CO2).
 /// Then the rest automatically. Each part's contours that aren't picked
-/// follow its own cut order (CO8, CO10): `steps` by part, from `part_steps`.
-pub fn cut_jobs(parts: &[Part], placed: &[Placed], steps: &[Vec<Step>], order: &[usize], manual: &[ManualCut]) -> Vec<CutJob> {
+/// follow its own cut order (CO8, CO10): the holes set by hand first (`hand`
+/// by part, from `hand_holes`), then the rest as the machine's hole order
+/// `holes` orders them where the copy sits (CO14, CO15), the outline last.
+pub fn cut_jobs(parts: &[Part], placed: &[Placed], hand: &[Vec<usize>], holes: &HoleOrder, order: &[usize], manual: &[ManualCut]) -> Vec<CutJob> {
     let mut jobs: Vec<CutJob> = vec![];
     let mut busy = vec![false; placed.len()];
-    let pick = Picks { parts, placed, steps, manual };
+    let pick = Picks { parts, placed, hand, holes, manual };
     for m in manual {
         if m.placed >= placed.len() || m.contour >= contour_count(parts, placed, m.placed) || job_done(&jobs, m.placed, m.contour) {
             continue;
@@ -722,7 +725,7 @@ pub fn cut_jobs(parts: &[Part], placed: &[Placed], steps: &[Vec<Step>], order: &
         }
     }
     for &i in order {
-        for ci in pick.cuts(i) {
+        for ci in pick.cuts(i, &jobs) {
             if !job_done(&jobs, i, ci) {
                 jobs.push((i, ci, None));
             }
@@ -734,11 +737,22 @@ pub fn cut_jobs(parts: &[Part], placed: &[Placed], steps: &[Vec<Step>], order: &
 /// Each part's cut order as the sheet makes it (CO8, CO9), by part number:
 /// worked out once for each part placed on the sheet.
 pub fn part_steps(parts: &[Part], placed: &[Placed]) -> Vec<Vec<Step>> {
-    let mut out = vec![vec![]; parts.len()];
+    by_part(parts, placed, crate::engine::cutorder::sheet_steps)
+}
+
+/// Each part's holes set by hand in its cut order (CO3), as the sheet
+/// numbers them, by part number.
+pub fn hand_holes(parts: &[Part], placed: &[Placed]) -> Vec<Vec<usize>> {
+    by_part(parts, placed, crate::engine::cutorder::sheet_hand_holes)
+}
+
+/// `f` of every part placed on the sheet, by part number, worked out once each.
+fn by_part<T: Clone + Default>(parts: &[Part], placed: &[Placed], f: fn(&Part) -> T) -> Vec<T> {
+    let mut out = vec![T::default(); parts.len()];
     let mut done = vec![false; parts.len()];
     for pl in placed {
         if !std::mem::replace(&mut done[pl.part], true) {
-            out[pl.part] = crate::engine::cutorder::sheet_steps(&parts[pl.part]);
+            out[pl.part] = f(&parts[pl.part]);
         }
     }
     out
@@ -757,33 +771,71 @@ fn job_done(jobs: &[CutJob], i: usize, ci: usize) -> bool {
 }
 
 /// What a sheet's cutting jobs are made from: its parts, where they sit,
-/// each part's cut order (`part_steps`) and the contours picked by hand.
+/// each part's holes set by hand (`hand_holes`), the machine's hole order
+/// and the contours picked by hand.
 struct Picks<'a> {
     parts: &'a [Part],
     placed: &'a [Placed],
-    steps: &'a [Vec<Step>],
+    hand: &'a [Vec<usize>],
+    holes: &'a HoleOrder,
     manual: &'a [ManualCut],
 }
 
 impl Picks<'_> {
     /// Placed part `i`'s contours (holes first, the outline last, as
-    /// `sheet_contours` numbers them) in its cut order (CO8): each once, the
-    /// outline last. One its order doesn't name goes in before the outline.
-    fn cuts(&self, i: usize) -> Vec<usize> {
-        let n = contour_count(self.parts, self.placed, i);
-        let mut seen = vec![false; n];
-        let mut out = vec![];
-        let named = self.steps[self.placed[i].part].iter().filter_map(|s| match *s {
-            Step::Cut(c) => Some(c),
-            Step::Mark(_) => None,
-        });
-        for c in named.chain(0..n).filter(|&c| c + 1 < n) {
-            if !std::mem::replace(&mut seen[c], true) {
-                out.push(c);
+    /// `sheet_contours` numbers them) in its cut order (CO8, CO14), each
+    /// once: the holes set by hand, then the others not yet cut (`jobs`) as
+    /// the machine's hole order takes them where the copy sits, from where
+    /// the head is, then the outline.
+    fn cuts(&self, i: usize, jobs: &[CutJob]) -> Vec<usize> {
+        let pl = &self.placed[i];
+        let list = sheet_contours(&self.parts[pl.part], pl);
+        let n = list.len();
+        let mut hand: Vec<usize> = vec![];
+        for &c in &self.hand[pl.part] {
+            if c + 1 < n && !hand.contains(&c) {
+                hand.push(c);
             }
         }
-        out.push(n - 1);
-        out
+        // The head after the holes set by hand, else where the sheet's last
+        // cut was (CO27; MAC-61).
+        let head = match hand.last() {
+            Some(&c) => self.point(i, c, &list[c].0),
+            None => self.head(jobs),
+        };
+        let rest: Vec<usize> = (0..n - 1).filter(|c| !hand.contains(c) && !job_done(jobs, i, *c)).collect();
+        let found: Vec<HoleAt> = rest.iter().map(|&c| HoleAt::new(&list[c].0, self.start(i, c))).collect();
+        let ordered = crate::engine::cutorder::hole_order(&found, pl.bbox4(), head, self.holes).into_iter().map(|k| rest[k]);
+        hand.into_iter().chain(ordered).chain([n - 1]).collect()
+    }
+
+    /// Where placed part `i`'s contour `ci` starts when that is set by hand,
+    /// on the sheet: picked in Manual cutting, else set on the part (a lead
+    /// moved by hand, a start picked on an element).
+    fn start(&self, i: usize, ci: usize) -> Option<P> {
+        let pl = &self.placed[i];
+        let picked = self.manual.iter().find(|m| m.placed == i && m.contour == ci).map(|m| m.start);
+        picked.or_else(|| crate::engine::cutorder::hand_start(&self.parts[pl.part], ci).map(|p| pl.map(p)))
+    }
+
+    /// The point of placed part `i`'s contour `ci` (`pts` on the sheet) the
+    /// head is taken to stand at once it is cut: where it starts when that
+    /// is set by hand, else the middle of its box (CO21; MAC-61).
+    fn point(&self, i: usize, ci: usize, pts: &[P]) -> P {
+        HoleAt::new(pts, self.start(i, ci)).at
+    }
+
+    /// Where the head is taken to be after `jobs`: at the point of the last
+    /// contour cut (`point`), or at the sheet's origin before the first.
+    fn head(&self, jobs: &[CutJob]) -> P {
+        match jobs.last() {
+            Some(&(_, _, Some((start, _)))) => start,
+            Some(&(j, cj, None)) => {
+                let pl = &self.placed[j];
+                self.point(j, cj, &sheet_contours(&self.parts[pl.part], pl)[cj].0)
+            }
+            None => [0.0, 0.0],
+        }
     }
 
     /// What is left of placed part `i`, in its cut order (CO8): each hole
@@ -792,7 +844,7 @@ impl Picks<'_> {
     fn cut_whole(&self, i: usize, jobs: &mut Vec<CutJob>, busy: &mut [bool]) {
         busy[i] = true;
         let n = contour_count(self.parts, self.placed, i);
-        for ci in self.cuts(i) {
+        for ci in self.cuts(i, jobs) {
             if job_done(jobs, i, ci) {
                 continue;
             }
@@ -957,7 +1009,7 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
     // Each part's cut order (CO8, CO9): the jobs follow it, and its marks
     // are made at their place in it.
     let steps = part_steps(parts, placed);
-    let jobs = cut_jobs(parts, placed, &steps, &order, manual);
+    let jobs = cut_jobs(parts, placed, &hand_holes(parts, placed), &mt.hole_order, &order, manual);
     let mut marked = vec![false; placed.len()];
     let auto_tech = auto_tech();
     let tol = mt.leads.lin_tol;
@@ -1929,7 +1981,7 @@ mod manual_tests {
         let (parts, placed, _) = setup();
         let outer = ManualCut { placed: 0, contour: 1, start: [10.0, 100.0], reverse: false };
         let small = ManualCut { placed: 1, contour: 0, start: [400.0, 30.0], reverse: true };
-        let jobs = cut_jobs(&parts, &placed, &part_steps(&parts, &placed), &[0, 1], &[small, outer, outer]);
+        let jobs = cut_jobs(&parts, &placed, &hand_holes(&parts, &placed), &HoleOrder::default(), &[0, 1], &[small, outer, outer]);
         let order: Vec<(usize, usize, bool)> = jobs.iter().map(|j| (j.0, j.1, j.2.is_some())).collect();
         // The small part, then the plate's hole (automatic, inserted), then its outside.
         assert_eq!(order, vec![(1, 0, true), (0, 0, false), (0, 1, true)]);
@@ -1954,7 +2006,7 @@ mod manual_tests {
         let outer = ManualCut { placed: 0, contour: 1, start: [10.0, 300.0], reverse: false };
         let hole = ManualCut { placed: 0, contour: 0, start: [430.0, 310.0], reverse: false };
         let inner = ManualCut { placed: 1, contour: 0, start: [285.0, 300.0], reverse: true };
-        let order = |m: &[ManualCut]| cut_jobs(&parts, &placed, &part_steps(&parts, &placed), &[1, 0, 2], m).iter().map(|j| (j.0, j.1, j.2.is_some())).collect::<Vec<_>>();
+        let order = |m: &[ManualCut]| cut_jobs(&parts, &placed, &hand_holes(&parts, &placed), &HoleOrder::default(), &[1, 0, 2], m).iter().map(|j| (j.0, j.1, j.2.is_some())).collect::<Vec<_>>();
         assert_eq!(order(&[outer, inner]), vec![(1, 0, true), (0, 0, false), (0, 1, true), (2, 0, false)]);
         assert_eq!(order(&[hole]), vec![(1, 0, false), (0, 0, true), (0, 1, false), (2, 0, false)]);
     }

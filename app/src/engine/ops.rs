@@ -325,7 +325,7 @@ pub static OPS: &[Op] = &[
     ] },
     // --- reference ---
     Op { name: "catalog", group: "Reference", kind: Kind::Global, help: "Choices the other operations take: shapes, materials, thicknesses, nesting levels, machine types, lead/joint types, qualities, text kinds and fields, layer roles.", args: &[] },
-    Op { name: "machines", group: "Reference", kind: Kind::Global, help: "The machines in Settings (read-only here): what each does (laser, plasma, punch…), output, post library, and the active machine's technology (CT1) values.", args: &[] },
+    Op { name: "machines", group: "Reference", kind: Kind::Global, help: "The machines in Settings (read-only here): what each does (laser, plasma, punch…), output, post library, and the active machine's technology (CT1) values, with how it orders a part's holes nobody ordered by hand (hole_order: none, by proximity or by direction with its start corner, rows or columns and tolerance, and cut small holes first with its size limits).", args: &[] },
 ];
 
 pub fn find(name: &str) -> Option<&'static Op> {
@@ -774,7 +774,9 @@ fn part_info(job: &JobFile, i: usize) -> Value {
     let list = contours::list(p);
     let numbers = dxf::cut_order(&list);
     let (tech, mt) = (p.tech.unwrap_or_default(), crate::ct1::for_spec(&job.spec));
-    // CO3: each contour's place in the cut order, and whether it was set by hand.
+    // CO3: each contour's place in the cut order, and whether it was set by
+    // hand; the holes not set by hand in the machine's hole order where the
+    // part is drawn (CO14).
     let order = cutorder::order(p);
     let contours: Vec<Value> = list
         .iter()
@@ -813,6 +815,8 @@ fn part_info(job: &JobFile, i: usize) -> Value {
         "cut_order": {
             "contours": order.iter().map(|o| o.0 + 1).collect::<Vec<_>>(),
             "by_hand": order.iter().filter(|o| o.1).map(|o| o.0 + 1).collect::<Vec<_>>(),
+            "holes": hole_order_json(&mt.hole_order),
+            "note": "The holes not set by hand follow the machine's hole order (machines shows it), here as the part is drawn with the head starting at its lower left corner; on a sheet each copy's holes are ordered again where it sits (turned, mirrored) from where the head is (program shows the order the machine gets).",
         },
         "elements": elems.iter().enumerate().map(|(k, e)| json!({
             "element": k + 1, "contour": numbers.get(e.contour).map_or(e.contour, |n| *n) + 1, "kind": e.kind.label().to_lowercase(), "length_mm": r1(e.length), "mid": [r1(e.midpoint()[0]), r1(e.midpoint()[1])],
@@ -961,6 +965,23 @@ fn compensation_report(job: &JobFile, a: &Args) -> Result<(String, Value), Strin
     Ok((msg, data))
 }
 
+/// The machine's hole order settings (CO20, CO14, CO15), in shop words.
+fn hole_order_json(h: &crate::ct1::HoleOrder) -> Value {
+    let corner = ["nearest the head", "lower left", "lower right", "upper right", "upper left"].get(h.corner as usize).copied().unwrap_or("nearest the head");
+    let how = match h.mode {
+        crate::ct1::HoleMode::None => "the part's own contour order, as drawn",
+        crate::ct1::HoleMode::Proximity => "the nearest hole next, from where the head is",
+        crate::ct1::HoleMode::Direction => "in rows or columns from the start corner, every other one back",
+        crate::ct1::HoleMode::MinimumHeat => "the part's own contour order (the sheet's minimum-heat order isn't built yet, FEATURES MAC-53)",
+    };
+    json!({
+        "mode": h.mode.label(), "mode_code": h.mode.code(), "cuts": how,
+        "start_corner": corner, "start_corner_code": h.corner, "direction": if h.columns { "columns" } else { "rows" },
+        "orthogonality_tolerance_mm": h.ortho_tol,
+        "small_holes_first": h.small_first, "big_hole_min_length_mm": h.big_length, "big_hole_min_width_mm": h.big_width, "big_hole_offset_mm": h.big_offset,
+    })
+}
+
 fn machines(ctx: &Ctx) -> Value {
     let t = &ctx.tech;
     json!({
@@ -972,6 +993,7 @@ fn machines(ctx: &Ctx) -> Value {
             "source": t.source.as_ref().map_or("built-in values".to_string(), |p| p.display().to_string()),
             "lead_in": t.lead_in, "lead_out": t.lead_out, "overlap": t.overlap, "position": t.zone, "hole_lead_in": t.hole_lead_in,
             "joint_gap": t.joint_gap, "joint_every": t.joint_every, "group_parts": t.group_parts, "zones": [t.zones_x, t.zones_y],
+            "hole_order": hole_order_json(&t.hole_order),
             "material_sections": t.file.sections.len(),
             "qualities": qualities_json(&t.qualities),
             "note": "These are the machine's own values; a job's material and thickness may pick a section of the file instead (machine-tech).",
