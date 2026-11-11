@@ -411,11 +411,13 @@ impl App {
             // Every contour in its state or quality colour (CS7).
             crate::cutpanel::paint_contour_colours(&painter, part, &mt, &to_s, 1.6, self.cut_panel.open);
         }
-        // Painting with the cut technology panel (CS6): clicks, boxes and
-        // sweeps paint contours instead of picking elements.
-        let painting = self.cut_panel.painting();
+        // Painting with the cut technology panel (CS6), or picking the cut
+        // order (CO11): clicks, boxes and sweeps take contours instead of
+        // picking elements.
+        let painting = self.cut_panel.painting() || self.order_pick.on.is_some();
         if painting && !space {
             self.cut_panel_canvas(ui, &resp, &painter, idx, &to_s, &to_w, (APERTURE_PX / s) as f64);
+            self.order_pick_canvas(ui, &resp, &painter, rect, idx, &to_s, &to_w, (APERTURE_PX / s) as f64);
         }
         // Escape leaves measuring / zoom window.
         if (self.dv.measure_on || self.dv.zoom_window) && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -672,11 +674,6 @@ impl App {
                         painter.circle_stroke(q, 2.6, Stroke::new(1.2, punch_col));
                     }
                 }
-                if self.dv.machining {
-                    let tag = Rect::from_center_size(to_s(pu.hits.first().copied().unwrap_or(c.points[0])) + Vec2::new(13.0, -13.0), Vec2::new(18.0, 16.0));
-                    painter.rect_filled(tag, CornerRadius::same(4), th().overlay);
-                    painter.text(tag.center(), Align2::CENTER_CENTER, format!("{}", k + 1), FontId::proportional(10.5), Color32::WHITE);
-                }
                 continue;
             }
             // System compensation: the beam's centre path, beside the part's edge (KC8).
@@ -779,10 +776,14 @@ impl App {
             let pierce = to_s(c.lead_in);
             painter.circle_filled(pierce, 4.0, Color32::WHITE);
             painter.circle_filled(pierce, 2.0, pierce_col);
-            // Cut order number beside the pierce point.
-            let tag = Rect::from_center_size(pierce + Vec2::new(13.0, -13.0), Vec2::new(18.0, 16.0));
-            painter.rect_filled(tag, CornerRadius::same(4), th().overlay);
-            painter.text(tag.center(), Align2::CENTER_CENTER, format!("{}", k + 1), FontId::proportional(10.5), Color32::WHITE);
+        }
+        // The cut order (CO13): each contour's number where it starts and
+        // the rapids between them, from the engine's order; while sweeping,
+        // as it would be were the sweep let go.
+        if self.dv.machining {
+            let preview = self.order_preview(idx);
+            let stops = crate::orderpick::stops(preview.as_ref().unwrap_or(&self.parts[idx]), &plan);
+            crate::orderpick::paint_order(&painter, &stops, &to_s);
         }
 
         // Simulation: the head follows the beam's path (pierce, lead-in,
@@ -884,6 +885,9 @@ impl App {
             painter.line_segment([Pos2::new(x, lg.y), Pos2::new(x + 18.0, lg.y)], Stroke::new(2.0, col));
             painter.text(Pos2::new(x + 24.0, lg.y), Align2::LEFT_CENTER, name, FontId::proportional(11.5), dim);
             x += 104.0;
+        }
+        if self.dv.machining {
+            crate::orderpick::legend(&painter, Pos2::new(x, lg.y), dim);
         }
         self.part_zoom_bar(ui, rect);
         // A lead end was dragged: that contour's lead takes it (LE2).

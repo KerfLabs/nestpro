@@ -13,6 +13,7 @@ mod filewatch;
 mod mcp;
 mod ct1;
 mod cutpanel;
+mod orderpick;
 mod joints;
 mod kerf;
 mod leads;
@@ -330,6 +331,8 @@ pub struct App {
     pub dv: drawing::DrawView,
     /// The cut technology panel on the part's drawing screen (CS6).
     pub cut_panel: cutpanel::CutPanel,
+    /// Picking a part's cut order on its drawing screen (CO11).
+    pub order_pick: orderpick::OrderPick,
     /// Simulation of the current sheet's program (Nesting → Simulation tab).
     pub ssim: Option<sheetsim::SheetSim>,
     /// Saved settings (connections, machines, materials, folders), what was
@@ -609,6 +612,7 @@ impl App {
             job_lib_id: None,
             dv: drawing::DrawView::default(),
             cut_panel: Default::default(),
+            order_pick: Default::default(),
             ssim: None,
             cfg: settings::AppSettings::load(),
             cfg_saved: settings::AppSettings::default(),
@@ -3375,6 +3379,54 @@ fn main() -> eframe::Result {
                 app.save_job_to(&dir.join("DEMO-002 base plates.snjob"));
                 app.save_job_to_library();
                 app.demo_open_menu = true;
+            }
+            // Screenshots of a part's cut order (CO11–CO13), part mm, on the
+            // part opened with --part: --order-pick turns Manual Contours on;
+            // --order-click=x,y;x,y, --order-box=x0,y0;x1,y1 and
+            // --order-sweep=x,y;x,y;… (sweeps apart with |) pick through the
+            // screen's own functions, in that order (--order-sweeping leaves
+            // the last sweep held); --order-menu shows the
+            // Contours menu open, --order-quality its quality list and
+            // --order-card=<manual|automatic|parts|all-marks|all-cut|quality>
+            // an item's hover card.
+            if let Some(i) = app.shown_part().filter(|_| app.workspace == Workspace::Part) {
+                let arg = |name: &str| std::env::args().find_map(|a| a.strip_prefix(name).map(str::to_string));
+                let flag = |name: &str| std::env::args().any(|a| a == name);
+                let pts = |s: &str| -> Vec<[f64; 2]> {
+                    s.split(';')
+                        .filter_map(|q| {
+                            let (x, y) = q.split_once(',')?;
+                            Some([x.trim().parse().ok()?, y.trim().parse().ok()?])
+                        })
+                        .collect()
+                };
+                if part_tab.as_deref() == Some("machining") {
+                    app.tab = Tab::Machining;
+                }
+                let (click, sweep, boxed) = (arg("--order-click="), arg("--order-sweep="), arg("--order-box="));
+                if flag("--order-pick") || click.is_some() || sweep.is_some() || boxed.is_some() {
+                    app.order_pick_start();
+                }
+                for q in click.as_deref().map(pts).unwrap_or_default() {
+                    app.order_click(i, q, 1.0);
+                }
+                if let Some(q) = boxed.as_deref().map(pts).filter(|q| q.len() == 2) {
+                    app.order_box(i, q[0], q[1]);
+                }
+                let sweeps: Vec<Vec<[f64; 2]>> = sweep.as_deref().map_or(vec![], |s| s.split('|').map(pts).collect());
+                for (k, q) in sweeps.iter().enumerate() {
+                    let Some((first, rest)) = q.split_first() else { continue };
+                    app.order_sweep_start(i, *first, 1.0);
+                    for &q in rest {
+                        app.order_sweep_to(q, 1.0);
+                    }
+                    if k + 1 < sweeps.len() || !flag("--order-sweeping") {
+                        app.order_sweep_end();
+                    }
+                }
+                app.order_pick.demo_quality = flag("--order-quality");
+                app.order_pick.demo_card = arg("--order-card=");
+                app.order_pick.demo_menu = flag("--order-menu") || app.order_pick.demo_quality || app.order_pick.demo_card.is_some();
             }
             // --tech-result (screenshots): Auto lead-ins run on one part type,
             // with its result card and "Apply to all".
