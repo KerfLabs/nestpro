@@ -4972,6 +4972,64 @@
   "source": "MECHANICS VP3"
  },
  {
+  "name": "hand-moved leads per part (contours)",
+  "group": "leads",
+  "value": 16,
+  "source": "MECHANICS LE1"
+ },
+ {
+  "name": "hand-moved lead kept as distance and angle from the contour",
+  "group": "leads",
+  "value": true,
+  "source": "MECHANICS LE1"
+ },
+ {
+  "name": "hand-moved lead shortest length",
+  "group": "leads",
+  "value": 1.0,
+  "unit": "mm",
+  "source": "MECHANICS LE2"
+ },
+ {
+  "name": "hand-moved lead angle clear of the contour",
+  "group": "leads",
+  "value": 1.0,
+  "unit": "deg",
+  "source": "MECHANICS LE2"
+ },
+ {
+  "name": "hand-moved lead length snap",
+  "group": "leads",
+  "value": 0.1,
+  "unit": "mm",
+  "source": "MECHANICS LE2"
+ },
+ {
+  "name": "hand-moved lead angle snap",
+  "group": "leads",
+  "value": 1.0,
+  "unit": "deg",
+  "source": "MECHANICS LE2"
+ },
+ {
+  "name": "hand-moved lead keeps its record's arc radius",
+  "group": "leads",
+  "value": true,
+  "source": "MECHANICS LE3"
+ },
+ {
+  "name": "hand-moved lead moved along its contour by the collision test",
+  "group": "leads",
+  "value": false,
+  "source": "MECHANICS LE5"
+ },
+ {
+  "name": "sheet edge is a lead obstacle for a part on its own",
+  "group": "leads",
+  "value": false,
+  "source": "MECHANICS LE7"
+ },
+ {
   "name": "area unit with inches",
   "group": "units",
   "value": "ft²",

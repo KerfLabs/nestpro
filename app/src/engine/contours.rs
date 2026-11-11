@@ -238,6 +238,10 @@ pub fn set_state(part: &mut Part, picks: &[usize], state: ContourState, same: bo
         };
         t.starts.iter_mut().for_each(follow);
         t.joint_picks.iter_mut().for_each(follow);
+        // So does a lead moved by hand (LE1).
+        for e in t.lead_edits.iter_mut() {
+            *e = e.and_then(|x| cut_moved.get(x.contour as usize).copied().flatten().map(|n| crate::nest::LeadEdit { contour: n as u8, ..x }));
+        }
     }
     Ok(StateChange { contours: chosen, cut_changed: before != after, cut_moved })
 }
