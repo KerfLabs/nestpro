@@ -1024,16 +1024,19 @@ mod library_tests {
     #[test]
     fn jobs_that_already_share_a_name_keep_saving_and_are_marked() {
         let dir = scratch("old_twins");
-        let lib = Library::open(&dir, &Who::new("sam", "PROG-1"), &Clock::at(NOV_9_0920)).unwrap();
-        // Written as an older version did, with no name check.
+        let (who, clock) = (Who::new("sam", "PROG-1"), Clock::at(NOV_9_0920));
+        // Written as an older version did, with no name check and before
+        // folders: the first open files them by their folder names (JX11).
+        let old = Library::at(&dir, &who, &clock);
         for (id, name, folder) in [(1, "DEMO-001 frames", "Acme"), (2, "demo-001 FRAMES", "W12"), (3, "DEMO-002 brackets", "W12")] {
             let mut j = job(name);
             j.week = folder.into();
-            let p = lib.path(Kind::Job, id);
+            let p = old.path(Kind::Job, id);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(&p, serde_json::to_string_pretty(&j).unwrap()).unwrap();
         }
-        lib.rebuild_index().unwrap();
+        old.rebuild_index().unwrap();
+        let lib = Library::open(&dir, &who, &clock).unwrap();
         let marked = |lib: &Library| {
             let list = lib.entries();
             let mut m: Vec<(u64, Vec<u64>)> = shared_job_names(&list).into_iter().map(|(id, o)| (id, o.iter().map(|e| e.id).collect())).collect();
