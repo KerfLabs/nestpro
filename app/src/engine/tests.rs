@@ -1887,7 +1887,7 @@ fn an_agent_moves_one_contours_lead_by_hand_and_puts_it_back() {
 
     // Swing the outline's lead-in round the corner and stretch it; shorten the hole's.
     let r = call(&mut s, "lead-edit", None, json!({"part": 1, "contour": 2, "in_length": 10, "in_angle": -45}));
-    assert!(r["message"].as_str().unwrap().contains("10.0 mm at -45°"), "{r}");
+    assert!(r["message"].as_str().unwrap().contains("10 mm at -45°"), "{r}");
     call(&mut s, "lead-edit", None, json!({"part": 1, "contour": 1, "in_length": 4}));
     let c = info(&mut s);
     assert_eq!((c[1]["lead_in"]["length_mm"].as_f64(), c[1]["lead_in"]["angle_deg"].as_f64(), &c[1]["lead_by_hand"]), (Some(10.0), Some(-45.0), &json!(true)), "{c}");
@@ -1933,7 +1933,7 @@ fn dragging_a_lead_end_in_the_part_view_moves_that_lead_only() {
     let hole0 = before.contours.iter().find(|c| c.contour == 0).unwrap().lead_path.clone();
     // Drag the outline's pierce (it starts at the bottom-left corner) out to the left.
     let to = [-6.0, 4.0];
-    let m = drag_lead_end(&mut parts, 0, &spec, 1, LeadEnd::In, to).unwrap();
+    let m = drag_lead_end(&mut parts, 0, &spec, 1, LeadEnd::In, to, crate::units::LenUnit::Mm).unwrap();
     assert!(m.contains("Contour 2's lead-in moved by hand"), "{m}");
     let t = parts[0].tech.unwrap();
     // The part keeps the machine's leads everywhere else (LE4).
@@ -1944,15 +1944,17 @@ fn dragging_a_lead_end_in_the_part_view_moves_that_lead_only() {
     assert!((c.lead_in[0] - to[0]).hypot(c.lead_in[1] - to[1]) < 0.15, "{:?}", c.lead_in);
     assert_eq!(after.contours.iter().find(|c| c.contour == 0).unwrap().lead_path, hole0);
     // Dragging the same point again changes nothing; dragging into the part keeps it in the scrap.
-    drag_lead_end(&mut parts, 0, &spec, 1, LeadEnd::In, to).unwrap();
+    drag_lead_end(&mut parts, 0, &spec, 1, LeadEnd::In, to, crate::units::LenUnit::Mm).unwrap();
     assert_eq!(parts[0].tech.unwrap(), t);
-    drag_lead_end(&mut parts, 0, &spec, 1, LeadEnd::In, [5.0, 8.0]).unwrap();
+    let m = drag_lead_end(&mut parts, 0, &spec, 1, LeadEnd::In, [5.0, 8.0], crate::units::LenUnit::Inch).unwrap();
+    // The window's message follows its unit (NST-16).
+    assert!(m.contains(" in at "), "{m}");
     let (o, _) = nest::placed_shape(&parts, &Placed { part: 0, x: 0.0, y: 0.0, w: 200.0, h: 150.0, turns: 0, mirror: false });
     let c = cnc::plan_part(&parts, 0, &spec).contours.into_iter().find(|c| c.contour == 1).unwrap();
     assert!(!nest::point_in_poly(&o, c.lead_in), "{:?}", c.lead_in);
     // The lead-out's end too; then double-click (reset) puts the contour back.
     let out = *c.lead_out_path.last().unwrap();
-    drag_lead_end(&mut parts, 0, &spec, 1, LeadEnd::Out, [out[0] - 2.0, out[1] - 3.0]).unwrap();
+    drag_lead_end(&mut parts, 0, &spec, 1, LeadEnd::Out, [out[0] - 2.0, out[1] - 3.0], crate::units::LenUnit::Mm).unwrap();
     assert!(parts[0].tech.unwrap().lead_edit(1).unwrap().lead_out.is_some());
     assert_eq!(reset_lead_edits(&mut parts[0], Some(1)), 1);
     assert_eq!(cnc::plan_part(&parts, 0, &spec).contours.iter().find(|c| c.contour == 1).unwrap().lead_path, before.contours.iter().find(|c| c.contour == 1).unwrap().lead_path);

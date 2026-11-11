@@ -719,9 +719,10 @@ pub fn contour_number(part: &Part, ci: usize) -> usize {
 }
 
 /// Drag the free end of contour `ci`'s lead-in (its pierce) or lead-out to
-/// `pointer`, part mm (LE2): the GUI's drag, frame by frame.
-pub fn drag_lead_end(parts: &mut [Part], idx: usize, spec: &SheetSpec, ci: usize, end: LeadEnd, pointer: P) -> Result<String, String> {
-    place_lead_end(parts, idx, spec, ci, end, |frame, open, _| Ok(crate::leads::hand_polar(frame, end == LeadEnd::In, open, pointer)))
+/// `pointer`, part mm (LE2): the GUI's drag, frame by frame. The message
+/// gives lengths in `unit`, the window's (NST-16).
+pub fn drag_lead_end(parts: &mut [Part], idx: usize, spec: &SheetSpec, ci: usize, end: LeadEnd, pointer: P, unit: crate::units::LenUnit) -> Result<String, String> {
+    place_lead_end(parts, idx, spec, ci, end, unit, |frame, open, _| Ok(crate::leads::hand_polar(frame, end == LeadEnd::In, open, pointer)))
 }
 
 /// Give contour `ci`'s lead-in pierce or lead-out end a length (mm) and/or
@@ -729,7 +730,7 @@ pub fn drag_lead_end(parts: &mut [Part], idx: usize, spec: &SheetSpec, ci: usize
 /// what isn't given stays as the lead is cut now.
 pub fn set_lead_end(parts: &mut [Part], idx: usize, spec: &SheetSpec, ci: usize, end: LeadEnd, len: Option<f64>, angle: Option<f64>) -> Result<String, String> {
     let no = contour_number(&parts[idx], ci);
-    place_lead_end(parts, idx, spec, ci, end, |_, open, now| {
+    place_lead_end(parts, idx, spec, ci, end, crate::units::LenUnit::Mm, |_, open, now| {
         let (lo, hi) = crate::leads::hand_angles(open);
         let what = end.label();
         let len = match (len, now) {
@@ -754,7 +755,7 @@ pub fn set_lead_end(parts: &mut [Part], idx: usize, spec: &SheetSpec, ci: usize,
     })
 }
 
-fn place_lead_end(parts: &mut [Part], idx: usize, spec: &SheetSpec, ci: usize, end: LeadEnd, pick: impl FnOnce((P, P, P), f64, Option<(f64, f64)>) -> Result<(f64, f64), String>) -> Result<String, String> {
+fn place_lead_end(parts: &mut [Part], idx: usize, spec: &SheetSpec, ci: usize, end: LeadEnd, unit: crate::units::LenUnit, pick: impl FnOnce((P, P, P), f64, Option<(f64, f64)>) -> Result<(f64, f64), String>) -> Result<String, String> {
     let part = parts.get(idx).ok_or("No such part.")?;
     let no = contour_number(part, ci);
     let plan = cnc::plan_part(parts, idx, spec);
@@ -795,8 +796,8 @@ fn place_lead_end(parts: &mut [Part], idx: usize, spec: &SheetSpec, ci: usize, e
     let plan = cnc::plan_part(parts, idx, spec);
     let cut = plan.contours.iter().find(|c| c.contour == ci).map(lead_ends);
     let got = cut.and_then(|x| if end == LeadEnd::In { x.lead_in } else { x.lead_out });
-    let short = got.filter(|g| g.0 < len - 0.05).map_or(String::new(), |g| format!(" — cut {:.1} mm: the rest would cross the part", g.0));
-    Ok(format!("Contour {no}'s {} moved by hand: {len:.1} mm at {ang:.0}° from the contour{short}.", end.label()))
+    let short = got.filter(|g| g.0 < len - 0.05).map_or(String::new(), |g| format!(" — cut {}: the rest would cross the part", unit.len(g.0, 1)));
+    Ok(format!("Contour {no}'s {} moved by hand: {} at {ang:.0}° from the contour{short}.", end.label(), unit.len(len, 1)))
 }
 
 /// Put contour `ci`'s lead (or, with `None`, every lead of the part) back to

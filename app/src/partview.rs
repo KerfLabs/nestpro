@@ -729,6 +729,7 @@ impl App {
             if c.punch.is_none() && !c.closing && !space && !painting {
                 use crate::engine::LeadEnd;
                 let ends = crate::engine::lead_ends(c);
+                let u = self.unit();
                 let free = [(LeadEnd::In, (c.lead_path.len() > 1).then(|| c.lead_path[0]), ends.lead_in, pierce_col), (LeadEnd::Out, (c.lead_out_path.len() > 1).then(|| c.lead_out_path[c.lead_out_path.len() - 1]), ends.lead_out, lead_out_col)];
                 for (end, at, now, col) in free {
                     let (Some(at), Some((len, ang))) = (at, now) else { continue };
@@ -738,8 +739,9 @@ impl App {
                         painter.circle_filled(h, 2.5, col);
                     }
                     let tip = format!(
-                        "{} {len:.1} mm at {ang:.0}° from the contour{}.\nDrag to swing or stretch this {}{}.",
+                        "{} {} at {ang:.0}° from the contour{}.\nDrag to swing or stretch this {}{}.",
                         if end == LeadEnd::In { "Lead-in" } else { "Lead-out" },
+                        u.len(len, 1),
                         if ends.hand { " (moved by hand)" } else { "" },
                         end.label(),
                         if ends.hand { "; double-click to put it back" } else { "" }
@@ -756,7 +758,7 @@ impl App {
                     if let (true, Some(pp)) = (hr.dragged(), hr.interact_pointer_pos()) {
                         lead_drag = Some((c.contour, end, to_w(pp)));
                         // The length and angle beside the pointer while dragging.
-                        let g = painter.layout_no_wrap(format!("{len:.1} mm · {ang:.0}°"), FontId::proportional(12.0), Color32::WHITE);
+                        let g = painter.layout_no_wrap(format!("{} · {ang:.0}°", u.len(len, 1)), FontId::proportional(12.0), Color32::WHITE);
                         let r = Rect::from_min_size(pp + Vec2::new(14.0, -26.0), g.size() + Vec2::new(10.0, 6.0));
                         painter.rect_filled(r, CornerRadius::same(5), th().overlay);
                         painter.galley(r.min + Vec2::new(5.0, 3.0), g, Color32::WHITE);
@@ -886,7 +888,8 @@ impl App {
         self.part_zoom_bar(ui, rect);
         // A lead end was dragged: that contour's lead takes it (LE2).
         if let Some((ci, end, p)) = lead_drag {
-            self.status = match crate::engine::drag_lead_end(&mut self.parts, idx, &self.spec, ci, end, p) {
+            let u = self.unit();
+            self.status = match crate::engine::drag_lead_end(&mut self.parts, idx, &self.spec, ci, end, p, u) {
                 Ok(m) => format!("{m} Double-click its end to put it back."),
                 Err(e) => e,
             };
