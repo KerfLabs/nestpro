@@ -2457,6 +2457,189 @@
    "source": "MECHANICS CZ4"
   },
   {
+   "name": "hole order mode key and default",
+   "group": "cut order",
+   "value": "machine file B565 = 1 (By proximity)",
+   "source": "CO20"
+  },
+  {
+   "name": "hole order mode numbers",
+   "group": "cut order",
+   "value": "0 None, 1 By proximity, 2 By direction, 3 Minimum heat",
+   "source": "CO20",
+   "estimated": true
+  },
+  {
+   "name": "hole order start corner default",
+   "group": "cut order",
+   "value": "B566 = 0 (part corner nearest the head)",
+   "source": "CO20"
+  },
+  {
+   "name": "hole order direction default",
+   "group": "cut order",
+   "value": "B567 = 1 (rows; 2 columns)",
+   "source": "CO20"
+  },
+  {
+   "name": "hole order orthogonality tolerance default",
+   "group": "cut order",
+   "value": 1.0,
+   "source": "CO20"
+  },
+  {
+   "name": "cut small holes first default",
+   "group": "cut order",
+   "value": false,
+   "source": "CO20"
+  },
+  {
+   "name": "big hole minimum length, width and offset defaults",
+   "group": "cut order",
+   "value": [0.0, 0.0, 0.0],
+   "source": "CO20"
+  },
+  {
+   "name": "By proximity distance point",
+   "group": "cut order",
+   "value": "middle of the hole's box while it is closed without a lead-in, else where its lead-in starts",
+   "source": "CO21"
+  },
+  {
+   "name": "By proximity comparison",
+   "group": "cut order",
+   "value": "a hole replaces the best when its distance is more than the linear tolerance below the best; within the tolerance only when its X distance is more than the tolerance below the best's (the best distance stays); else the hole met first stays",
+   "source": "CO21"
+  },
+  {
+   "name": "By proximity search order",
+   "group": "cut order",
+   "value": "outward from the head through zones over the part, then the part's contour order",
+   "source": "CO21",
+   "estimated": true
+  },
+  {
+   "name": "By proximity tolerance",
+   "group": "cut order",
+   "value": "the machine's linear tolerance",
+   "source": "CO21",
+   "estimated": true
+  },
+  {
+   "name": "By proximity path optimisation",
+   "group": "cut order",
+   "value": "not found",
+   "source": "CO22",
+   "estimated": true
+  },
+  {
+   "name": "By direction corner on a tie",
+   "group": "cut order",
+   "value": "lower left, lower right, upper right, upper left",
+   "source": "CO23"
+  },
+  {
+   "name": "By direction pick",
+   "group": "cut order",
+   "value": "row value = start-side edge nearest the start corner among holes left; candidates within the orthogonality tolerance of it on the same edge; pick the candidate nearest the start of the run",
+   "source": "CO23"
+  },
+  {
+   "name": "By direction equal edges",
+   "group": "cut order",
+   "value": "strictly better only: the hole met first stays",
+   "source": "CO23"
+  },
+  {
+   "name": "By direction met order",
+   "group": "cut order",
+   "value": "None: the part's contour order; By direction: bands from the start side, then the part's contour order",
+   "source": "CO23",
+   "estimated": true
+  },
+  {
+   "name": "By direction zig-zag",
+   "group": "cut order",
+   "value": true,
+   "source": "CO24"
+  },
+  {
+   "name": "By direction new row",
+   "group": "cut order",
+   "value": "the pick's start-side edge more than the tolerance from the previous hole's: reverse the run and pick again",
+   "source": "CO24"
+  },
+  {
+   "name": "hole order None on the part",
+   "group": "cut order",
+   "value": "rows from the start corner, every row the same way",
+   "source": "CO24",
+   "estimated": true
+  },
+  {
+   "name": "big hole",
+   "group": "cut order",
+   "value": "box along X reaches the minimum length or box along Y reaches the minimum width; short by no more than the tolerance still reaches",
+   "source": "CO25"
+  },
+  {
+   "name": "big hole tolerance",
+   "group": "cut order",
+   "value": "the sheet's linear tolerance",
+   "source": "CO25",
+   "estimated": true
+  },
+  {
+   "name": "small holes cut first",
+   "group": "cut order",
+   "value": "box in or overlapping the big hole's box grown by the offset",
+   "source": "CO25"
+  },
+  {
+   "name": "ordering the part's contours",
+   "group": "cut order",
+   "value": "contour directions only: holes by A014, outline by A015",
+   "source": "CO26"
+  },
+  {
+   "name": "first hole start point on the part",
+   "group": "cut order",
+   "value": "the part's FROM point, else the drawing's origin, in the drawing's frame",
+   "source": "CO27"
+  },
+  {
+   "name": "first hole start point on the sheet",
+   "group": "cut order",
+   "value": "the head after the previous part, in sheet coordinates",
+   "source": "CO27",
+   "estimated": true
+  },
+  {
+   "name": "sheet start corner defaults",
+   "group": "cut order",
+   "value": "start left on, start bottom on, horizontal on, zig-zag off",
+   "source": "CO27"
+  },
+  {
+   "name": "example program bottom-up with start bottom off",
+   "group": "cut order",
+   "value": "not found",
+   "source": "CO28",
+   "estimated": true
+  },
+  {
+   "name": "part automatic order",
+   "group": "cut order",
+   "value": "centre-punch dots, cycles, marking texts, marks, holes, outline",
+   "source": "CO29"
+  },
+  {
+   "name": "manage marks as cuts default",
+   "group": "cut order",
+   "value": "B699 = 0 (marks in their own pass, first)",
+   "source": "CO29"
+  },
+  {
    "name": "file name separator forbidden characters",
    "group": "import",
    "value": "<>:\"/\\|?*",
