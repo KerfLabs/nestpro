@@ -362,6 +362,76 @@
    "estimated": true
   },
   {
+   "name": "a part's cut order set by hand is stored as",
+   "group": "part cut order",
+   "value": "a list of contour numbers (CS1), command by command; contour numbers never change",
+   "source": "CO3",
+   "estimated": true
+  },
+  {
+   "name": "parts that take a cut order set by hand",
+   "group": "part cut order",
+   "value": ["imported (drawn) parts"],
+   "source": "CO3",
+   "estimated": true
+  },
+  {
+   "name": "the outline in a part's cut order",
+   "group": "part cut order",
+   "value": "always last; a command naming a contour after it is refused, later picks go in before it",
+   "source": "CO4",
+   "estimated": true
+  },
+  {
+   "name": "where marks can go in a part's cut order set by hand",
+   "group": "part cut order",
+   "value": "anywhere before the outline",
+   "source": "CO4",
+   "estimated": true
+  },
+  {
+   "name": "a part's cut order commands",
+   "group": "part cut order",
+   "value": ["contours by number, in the order given", "all marks", "all cut (the outline too)", "all of one cut quality", "undo", "clear"],
+   "source": "CO5",
+   "estimated": true
+  },
+  {
+   "name": "a part's automatic cut order",
+   "group": "part cut order",
+   "value": ["marks", "cut holes", "outline"],
+   "source": "CO5",
+   "estimated": true
+  },
+  {
+   "name": "contour states that have a place in a part's cut order",
+   "group": "part cut order",
+   "value": ["cut", "mark"],
+   "source": "CO5",
+   "estimated": true
+  },
+  {
+   "name": "a contour already in a part's cut order, named again",
+   "group": "part cut order",
+   "value": "skipped",
+   "source": "CO5",
+   "estimated": true
+  },
+  {
+   "name": "undo of a part's cut order",
+   "group": "part cut order",
+   "value": "takes back the last command",
+   "source": "CO6",
+   "estimated": true
+  },
+  {
+   "name": "a contour set to another state after ordering",
+   "group": "part cut order",
+   "value": "leaves the order set by hand; the automatic order places it again if it is cut or marked",
+   "source": "CO7",
+   "estimated": true
+  },
+  {
    "name": "import preview: cut technology panel",
    "group": "drawing import",
    "value": "the part's cut technology panel (CS6, CS7) on the part about to be imported, with the drawing's layer rows above its rows",

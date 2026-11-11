@@ -53,6 +53,13 @@ pub struct CustomGeo {
     /// their outline, holes and marks stay exactly as saved.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub contours: Vec<Contour>,
+    /// The cut order set by hand (CO3): the contours (numbers from 0, as
+    /// `contours` numbers them) each command added, command by command, in
+    /// the order added. The part cuts them first, the outline always last,
+    /// and the rest in the automatic order (`engine::cutorder`). Empty: no
+    /// order set by hand, as in every part saved before it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hand_order: Vec<Vec<usize>>,
 }
 
 /// What happens to one contour of a part (CS1, `GLOSSARY.md`).
@@ -1065,7 +1072,7 @@ pub fn build(d: &Drawing, roles: &BTreeMap<String, LayerRole>) -> Result<(Custom
             Some(crate::nest::PartText { text: text.clone(), at: [at[0] - ox, at[1] - oy], height: *height, angle: *angle, curve: 0.0, kind })
         })
         .collect();
-    let mut g = CustomGeo { outline: vec![], holes: vec![], fills: vec![], hole_fills: vec![], marks: vec![], texts, w: mx - ox, h: my - oy, contours };
+    let mut g = CustomGeo { outline: vec![], holes: vec![], fills: vec![], hole_fills: vec![], marks: vec![], texts, w: mx - ox, h: my - oy, contours, hand_order: vec![] };
     g.apply_states();
     Ok((g, report))
 }
