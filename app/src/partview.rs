@@ -697,6 +697,11 @@ impl App {
                     // Drag the lead-in's free end to edit the joint leads
                     // (J8: foot stays, angle 0–90°, length to the pointer).
                     // The lead-in leans forward, away from the gap (AM6).
+                    // Contour painting and cut-order picking keep the
+                    // canvas's drag, so a sweep never moves a joint's lead.
+                    if painting {
+                        continue;
+                    }
                     let h = to_s(back[0]);
                     let hr = ui.interact(Rect::from_center_size(h, Vec2::splat(14.0)), ui.scope_id().with(("joint_lead", k, jk)), Sense::drag());
                     if hr.hovered() || hr.dragged() {
