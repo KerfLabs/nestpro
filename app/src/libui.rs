@@ -102,7 +102,7 @@ impl App {
             l.check_job_name(&self.job_name, self.job_lib_id).map_err(|e| format!("{e}. Nothing was saved"))?;
             Ok((l, lock))
         });
-        let (lib, _lock) = match checked {
+        let (lib, lock) = match checked {
             Ok(c) => c,
             Err(e) => {
                 self.status = format!("Couldn't save to the library: {e}.");
@@ -112,6 +112,8 @@ impl App {
         let stock_note = self.stock_on_save();
         let j = self.current_jobfile();
         let r = lib.save_job(&j, self.job_lib_id);
+        // Let other PCs write while the lists are read again (LB2).
+        drop(lock);
         self.status = match r {
             Ok(id) => {
                 self.job_lib_id = Some(id);
@@ -347,7 +349,7 @@ impl App {
                         if e.tech {
                             chip(ui, "technology", th().accent_soft, th().accent_fg);
                         }
-                        if let Some(others) = twins.get(&e.id) {
+                        if let Some(others) = twins.get(&e.id).filter(|_| e.kind == Kind::Job) {
                             let which: Vec<String> = others.iter().map(|o| format!("{} '{}' ({})", crate::library::auto_ref(o.kind, o.id), o.name, if o.folder.trim().is_empty() { "no folder".to_string() } else { format!("folder {}", o.folder) })).collect();
                             chip(ui, "same name", th().warn_bg, th().warn_fg).on_hover_text(format!(
                                 "Another job in the Library has this name: {}.\nJob names are unique across the Library, whatever their capitals. These jobs were saved before that, so each still saves under its own name: open one, change its name and save it to the library.",
