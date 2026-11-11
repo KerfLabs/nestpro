@@ -2114,6 +2114,48 @@ fn an_agent_saves_its_library_job_over_its_record_unless_someone_saved_it_since(
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// LB10: an agent's job file that is a library job doesn't book stock: its
+/// sheets are booked when someone saves it in the window. Booked here too, a
+/// refused save would leave them taken twice. status still answers.
+#[test]
+fn an_agent_cant_book_stock_on_a_job_file_opened_from_the_library() {
+    let d = dir("agent_library_no_booking");
+    let mut ctx = stock_ctx(&d);
+    ctx.who = Who::new("sam", "PROG-2").as_agent();
+    let stock = crate::stock::Stock::file(&ctx.library_dir);
+    let mut s = Session::new(ctx);
+    let first = d.join("DEMO-7.snjob");
+    call(&mut s, "new", Some(first.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "S1", "w": 2000, "h": 1000, "thickness": 3, "qty": 3}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 300, "qty": 12, "name": "DEMO-P1"}));
+    call(&mut s, "nest", None, json!({}));
+    let id = call(&mut s, "library", None, json!({"mode": "save-job"}))["data"]["id"].as_u64().unwrap();
+    // Another job file opens DEMO-7 from the Library.
+    let opened = d.join("DEMO-7-agent.snjob");
+    call(&mut s, "new", Some(opened.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut s, "library", None, json!({"mode": "open", "id": id}));
+    let before = std::fs::read(&stock).unwrap();
+    let e = err(&mut s, "stock-book", json!({"mode": "book"}));
+    assert!(e.contains("DEMO-7") && e.contains("booked when someone saves it in the window"), "{e}");
+    assert_eq!(std::fs::read(&stock).unwrap(), before, "a refused booking changed the stock");
+    let e = err(&mut s, "stock-book", json!({"mode": "release"}));
+    assert!(e.contains("booked when someone saves it in the window"), "{e}");
+    assert_eq!(std::fs::read(&stock).unwrap(), before);
+    assert!(!jobfile::load(&opened).unwrap().booked);
+    // status still says what booking would take.
+    let st = call(&mut s, "stock-book", None, json!({"mode": "status"}));
+    assert_eq!(st["data"]["booked"], false, "{st}");
+    assert!(st["data"]["would_take"]["S1"].as_u64().unwrap() > 0, "{st}");
+    // The job file that saved it into the Library is that library job too.
+    let e = match s.call("stock-book", Some(first.to_str().unwrap()), &json!({"mode": "book"})) {
+        Ok(r) => panic!("booking the saved job file should be refused, gave {}", r.json),
+        Err(e) => e,
+    };
+    assert!(e.contains("booked when someone saves it in the window"), "{e}");
+    assert_eq!(std::fs::read(&stock).unwrap(), before);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 /// LB7, LB10: an agent's save-part goes through the same check: a library
 /// part the window saved since the agent added it is refused with who and
 /// when, and nothing is saved.

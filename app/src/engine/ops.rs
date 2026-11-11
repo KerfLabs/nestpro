@@ -189,7 +189,7 @@ pub static OPS: &[Op] = &[
     ] },
     Op { name: "export-part-dxf", group: "Parts", kind: Kind::Read, help: "Save a part as DXF (outline and holes on CUT, marking on MARK).", args: &[PART, r("out", Ty::Path, "DXF file to write")] },
     Op { name: "library", group: "Parts", kind: Kind::Write, help: "The product/job library: list it (each record with who last saved it and when: saved_by, e.g. \"sam on PROG-2 (agent)\", and saved_at in this PC's local time), open a library job into this job file, add a library product to the job, or save parts / the job into it (recorded as saved by this PC's user, marked (agent)). A job opened from the library, or saved into it, saves over its own record; a save over a job or library part someone else saved since this job file read it is refused, saying who and when (LB7, LB10).", args: &[
-        Arg { name: "mode", ty: Ty::Str, required: true, help: "What to do. open: this job file becomes the library job (its own changes are dropped; it leaves the stock alone until stock-book). save-job: over the job's own record, or a new record", choices: &["list", "open", "add", "save-part", "save-job"] },
+        Arg { name: "mode", ty: Ty::Str, required: true, help: "What to do. open: this job file becomes the library job (its own changes are dropped; it leaves the stock alone: its sheets are booked when someone saves it in the window). save-job: over the job's own record, or a new record", choices: &["list", "open", "add", "save-part", "save-job"] },
         a("find", Ty::Str, "list: text to look for"), a("id", Ty::Int, "add: the product's record number; open: the job's"), a("name", Ty::Str, "add: the product's name; open: the job's"),
         a("qty", Ty::Int, "add: quantity"), a("parts", Ty::Parts, "save-part: which parts"), a("folder", Ty::Str, "save-part: product folder/group"),
         a("copy", Ty::Bool, "save-job: save as a new job under the first free name (\"DEMO-7 (1)\") instead of over its record; the copy holds no stock of the original (default false)"),
@@ -304,7 +304,7 @@ pub static OPS: &[Op] = &[
         a("min_w", Ty::Num, "list: shortest length"), a("max_w", Ty::Num, "list: longest length"), a("min_h", Ty::Num, "list: narrowest width"), a("max_h", Ty::Num, "list: widest width"),
         a("show_zero", Ty::Bool, "list: also items at quantity 0"), a("remnants", Ty::Str, "list: \"only\", \"none\" or \"all\" (default)"),
     ] },
-    Op { name: "stock-book", group: "Stock", kind: Kind::Write, help: "Book the job against the stock, as the window does when it saves a job: take the sheets its nestings use out of stock and store the remnants its remnant lines leave (named <sheet>-<n>, or by refs=; below the minimum area they are scrap). A sheet whose remnant lines changed since gets its remnants made again, unless one of them has been used. Once booked, every later change keeps the stock in step. release gives the sheets back and takes its unused remnants out again.", args: &[
+    Op { name: "stock-book", group: "Stock", kind: Kind::Write, help: "Book the job against the stock, as the window does when it saves a job: take the sheets its nestings use out of stock and store the remnants its remnant lines leave (named <sheet>-<n>, or by refs=; below the minimum area they are scrap). A sheet whose remnant lines changed since gets its remnants made again, unless one of them has been used. Once booked, every later change keeps the stock in step. release gives the sheets back and takes its unused remnants out again. A job file that is a library job (opened from the Library, or saved into it) isn't booked or released here: its sheets are booked when someone saves it in the window (LB10).", args: &[
         Arg { name: "mode", ty: Ty::Str, required: true, help: "book, release or status", choices: &["book", "release", "status"] },
         a("refs", Ty::Str, "book: references for the new remnants, comma-separated, in the order status lists them (default: numbered <sheet>-<n>)"),
     ] },
@@ -1703,7 +1703,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                     };
                     // The job as saved now, linked to its record and revision
                     // (LB10). Its stock booking stays the record's: this file
-                    // leaves the stock alone until stock-book.
+                    // leaves the stock alone (stock-book refuses it).
                     let mut j = lib.load_job(id)?;
                     j.booked = false;
                     let saved = j.saved.as_ref().map(|s| format!(", saved by {} at {}", s.by.label(), ctx.clock.stamp(s.at))).unwrap_or_default();
@@ -1930,7 +1930,20 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
         }
         "stock-book" => {
             let file = Stock::file(&ctx.library_dir);
-            match a.need_str("mode")?.as_str() {
+            let mode = a.need_str("mode")?;
+            // A job file that is a library job (opened from the Library or
+            // saved into it) leaves the stock to the window, which books the
+            // job's sheets when someone saves it there (LB10). Booked here as
+            // well, a save refused because someone saved it since would leave
+            // them taken twice.
+            if let (Some(rec), "book" | "release") = (job.library, mode.as_str()) {
+                return Err(format!(
+                    "Job file '{}' is library job {} (opened from the Library or saved into it): its sheets are booked when someone saves it in the window, so stock-book mode={mode} is refused here. Nothing was changed in the stock. To take its sheets from stock, open the job in the window and save it there; stock-book mode=status shows what that would take.",
+                    job.name,
+                    crate::library::auto_ref(crate::library::Kind::Job, rec.id)
+                ));
+            }
+            match mode.as_str() {
                 "status" => {
                     let st = ctx.stock()?;
                     job.normalise_formats();

@@ -43,7 +43,8 @@ pub struct JobFile {
     pub stale: bool,
     /// The sheet stock follows this job: its sheets are taken (`held`) and its
     /// remnants stored. The window books a job on every save; an agent books
-    /// it with `stock-book` (until then its nestings leave the stock alone).
+    /// it with `stock-book` (until then its nestings leave the stock alone),
+    /// except a job file that is a library job, which the window books (LB10).
     #[serde(default)]
     pub booked: bool,
     /// The ERP/MES work the job came from (integrations::ErpJob), if any.

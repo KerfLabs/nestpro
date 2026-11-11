@@ -5052,6 +5052,12 @@
   "source": "MECHANICS LB10; estimated"
  },
  {
+  "name": "agents: stock on a library job",
+  "group": "shared library",
+  "value": "stock-book book and release refused on a job file opened from or saved into the Library (its sheets are booked when someone saves it in the window); status still answers",
+  "source": "MECHANICS LB10; estimated"
+ },
+ {
   "name": "warn when a job is in use (fresh install)",
   "group": "jobs in use",
   "value": false,
