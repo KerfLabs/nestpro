@@ -24,6 +24,24 @@ pub struct LibUi {
     pub part_search: String,
     /// Show library parts of every material and thickness, not only the job's.
     pub part_all: bool,
+    /// The Library's job folders (JX10), as last read.
+    pub tree: crate::folders::Tree,
+    /// A job or folder cut in the Library section, waiting for Paste (JX14).
+    pub cut: Option<LibItem>,
+    /// A Library folder whose name is being typed (New folder, Change name).
+    pub edit: Option<(u64, String)>,
+    /// Library folders to open out the next time the tree is drawn (where a
+    /// folder was made or something pasted; every folder for screenshots).
+    pub reveal: Vec<u64>,
+    pub reveal_all: bool,
+}
+
+/// A job or folder in the Library's tree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LibItem {
+    /// A saved job, by its record number.
+    Job(u64),
+    Folder(u64),
 }
 
 impl App {
@@ -46,6 +64,7 @@ impl App {
         match self.library() {
             Ok(l) => {
                 self.libui.entries = l.entries();
+                self.lib_reload_tree(&l);
                 self.libui.products = self.libui.entries.iter().filter(|e| e.kind == Kind::Product).filter_map(|e| l.load_product(e.id).ok().map(|pf| (e.clone(), pf.part))).collect();
                 self.libui.products.sort_by(|a, b| b.0.updated.cmp(&a.0.updated));
                 self.libui.loaded = true;
@@ -95,12 +114,18 @@ impl App {
         }
         let stock_note = self.stock_on_save();
         let j = self.current_jobfile();
-        let r = self.library().and_then(|l| l.save_job(&j, self.job_lib_id));
+        // A new record goes where the library job it came from is (JX15).
+        let folder = self.jobs.get(self.cur_job).and_then(|j| j.lib_folder);
+        let r = self.library().and_then(|l| l.save_job_in(&j, self.job_lib_id, folder));
         self.status = match r {
             Ok(id) => {
                 self.job_lib_id = Some(id);
                 self.mark_job_saved(self.cur_job);
                 self.lib_refresh();
+                let f = self.libui.tree.folder_of(id);
+                if let Some(j) = self.jobs.get_mut(self.cur_job) {
+                    j.lib_folder = Some(f);
+                }
                 format!("Saved job {} to the library as {} ({}).{stock_note}", self.job_name, crate::library::auto_ref(Kind::Job, id), self.library_dir().display())
             }
             Err(e) => format!("Couldn't save to the library: {e}"),
@@ -183,7 +208,14 @@ impl App {
         }
         let name = self.unique_job_name(&j.name).unwrap_or_else(|| j.name.clone());
         self.store_job();
-        self.jobs.push(crate::Job { week: if j.week.is_empty() { "Library".into() } else { j.week }, name, parts: j.parts, spec: j.spec.clone(), result: { let mut r = crate::nest::NestResult { sheets: j.sheets, formats: j.formats, method: j.method, tried: 0 }; r.normalise(&j.spec); r }, stale: j.stale, lib_id: Some(id), cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: j.held.clone(), erp: None, file: None, saved: None });
+        // In Open jobs it sits in a folder named like its Library folder, and
+        // a copy of it is saved into that Library folder (JX15).
+        if !self.libui.loaded {
+            self.lib_refresh();
+        }
+        let folder = self.libui.tree.folder_of(id);
+        let week = self.libui.tree.get(folder).map_or_else(|| "Library".to_string(), |f| f.name.clone());
+        self.jobs.push(crate::Job { week, name, parts: j.parts, spec: j.spec.clone(), result: { let mut r = crate::nest::NestResult { sheets: j.sheets, formats: j.formats, method: j.method, tried: 0 }; r.normalise(&j.spec); r }, stale: j.stale, lib_id: Some(id), cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: j.held.clone(), erp: None, file: None, saved: None, lib_folder: Some(folder) });
         let i = self.jobs.len() - 1;
         self.open_job(i);
         self.cut_lines = j.cut_lines;
@@ -288,7 +320,10 @@ impl App {
             ui.separator();
             let kind = if self.libui.tab == 0 { Kind::Job } else { Kind::Product };
             let needle = self.libui.search.to_lowercase();
-            let mut rows: Vec<&Entry> = self.libui.entries.iter().filter(|e| e.kind == kind && (needle.is_empty() || e.name.to_lowercase().contains(&needle) || e.folder.to_lowercase().contains(&needle))).collect();
+            // A job's folder is its place in the Library's job folders (JX10).
+            let tree = &self.libui.tree;
+            let folder = |e: &Entry| if e.kind == Kind::Job { tree.path(tree.folder_of(e.id)) } else { e.folder.clone() };
+            let mut rows: Vec<&Entry> = self.libui.entries.iter().filter(|e| e.kind == kind && (needle.is_empty() || e.name.to_lowercase().contains(&needle) || folder(e).to_lowercase().contains(&needle))).collect();
             rows.sort_by(|a, b| b.updated.cmp(&a.updated));
             if rows.is_empty() {
                 // Empty: say what the library is for and offer the next step.
@@ -328,7 +363,7 @@ impl App {
                         if e.tech {
                             chip(ui, "technology", th().accent_soft, th().accent_fg);
                         }
-                        ui.label(RichText::new(&e.folder).size(11.5).color(th().accent_fg));
+                        ui.label(RichText::new(folder(e)).size(11.5).color(th().accent_fg));
                         let mat = mats.get(e.material).copied().unwrap_or("");
                         let info = if e.kind == Kind::Job { format!("{mat} {} mm · {:.0}×{:.0} · {} products · {} sheets", e.thickness, e.w, e.h, e.count_a, e.count_b) } else { format!("{mat} {} mm · {:.0}×{:.0} · qty {}", e.thickness, e.w, e.h, e.count_a) };
                         ui.label(RichText::new(info).size(11.5).color(th().text_dim));
@@ -390,7 +425,8 @@ impl App {
         }
     }
 
-    /// The library's jobs in the Job Explorer, grouped by folder.
+    /// The library's jobs in the Job Explorer, in the Library's folder tree
+    /// (libtree.rs, JX10–JX15).
     pub fn library_job_tree(&mut self, ui: &mut egui::Ui) {
         if !self.libui.loaded {
             self.lib_refresh();
@@ -421,38 +457,9 @@ impl App {
             self.open_job_file(&p);
         }
         ui.add_space(4.0);
-        if jobs.is_empty() {
-            // One quiet line until the library has jobs.
-            ui.label(RichText::new("📚 Saved jobs (Library) — none yet").color(th().text_dim))
-                .on_hover_text(format!("Jobs saved on disk in {}.\nRight-click an open job → Save to library (or Jobs → Save to library) to keep it here; open it again any time.", self.library_dir().display()));
-            return;
+        if let Some(id) = self.library_folder_tree(ui, &jobs, &needle) {
+            open = Some(id);
         }
-        let lib_tip = format!("Saved jobs: kept on disk in {} — they stay after the app closes. Click one to open it (it joins Open jobs).", self.library_dir().display());
-        egui::CollapsingHeader::new(RichText::new(format!("📚 Saved jobs (Library) ({})", jobs.len())).strong()).id_salt("lib_jobs_root").default_open(true).show(ui, |ui| {
-            let mut folders: Vec<String> = jobs.iter().map(|e| e.folder.clone()).collect();
-            folders.sort_by_key(|f| f.to_lowercase());
-            folders.dedup();
-            for f in folders {
-                let items: Vec<&Entry> = jobs.iter().filter(|e| e.folder == f && (needle.is_empty() || e.name.to_lowercase().contains(&needle) || f.to_lowercase().contains(&needle))).collect();
-                if items.is_empty() {
-                    continue;
-                }
-                let title = if f.is_empty() { "(no folder)".to_string() } else { f.clone() };
-                egui::CollapsingHeader::new(format!("{title}  ({})", items.len())).id_salt(("libf", &f)).default_open(!needle.is_empty()).show(ui, |ui| {
-                    for e in items {
-                        let sel = self.job_lib_id == Some(e.id);
-                        let open_now = self.jobs.iter().any(|j| j.lib_id == Some(e.id)) || self.job_lib_id == Some(e.id);
-                        let label = format!("{}  ·  {} sh{}", e.name, e.count_b, if open_now { "  · open" } else { "" });
-                        // Who last saved it, and when (LB6).
-                        let saved = e.saved_note(&self.clock);
-                        let saved = if saved.is_empty() { String::new() } else { format!("\n{saved}") };
-                        if ui.selectable_label(sel, label).on_hover_text(format!("{} — {lib_tip}{saved}", crate::library::auto_ref(e.kind, e.id))).clicked() {
-                            open = Some(e.id);
-                        }
-                    }
-                });
-            }
-        });
         if let Some(id) = open {
             self.open_library_job(id);
         }

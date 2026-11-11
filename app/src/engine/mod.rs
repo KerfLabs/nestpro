@@ -8,6 +8,7 @@
 
 pub mod arrange;
 pub mod contours;
+pub mod folderops;
 pub mod imports;
 pub mod librarycheck;
 pub mod ops;
