@@ -81,10 +81,10 @@ pub struct Op {
 }
 
 impl Op {
-    /// Changes a file: the job, the sheet stock (`stock`) or a test Library
-    /// folder (`library-check`).
+    /// Changes a file: the job, the sheet stock (`stock`), the Library's job
+    /// folders (`job-folders`) or a test Library folder (`library-check`).
     pub fn writes(&self) -> bool {
-        matches!(self.kind, Kind::Write | Kind::Create) || matches!(self.name, "stock" | "library-check")
+        matches!(self.kind, Kind::Write | Kind::Create) || matches!(self.name, "stock" | "library-check" | "job-folders")
     }
 
     /// MCP tool name (underscores).
@@ -246,6 +246,12 @@ pub static OPS: &[Op] = &[
         c("type", LEADS, "auto: lead type (default machine = the machine's lead tables per contour class and quality; line = inclined)"), a("position", Ty::Int, "auto: keypad position 1-9 (1 bottom-left, 9 top-right; default 1)"),
     ] },
     Op { name: "lead-at", group: "Technology", kind: Kind::Write, help: "Start a contour on one element of a part (see part-info for element numbers): by the third of a line nearest `at`, else at its middle.", args: &[PART, r("element", Ty::Int, "Element number from part-info"), a("at", Ty::Points, "Pick point \"x,y\" in part mm (optional)")] },
+    Op { name: "lead-edit", group: "Technology", kind: Kind::Write, help: "Move one contour's lead by hand, as dragging its end in the Part view does: the lead-in's pierce and/or the lead-out's end, each as a length (mm, straight from where it meets the contour) and an angle from the contour into the scrap (lead-in: measured from the contour behind its start; lead-out: from the contour ahead; 90 = square off it). The contour keeps its start and lead type, and an arc lead keeps its arc into the contour; what you leave out stays as it is cut now (part-info lists each contour's lead_in / lead_out and the angles it can take). Every piece of the part type gets it. mode=reset puts the contour's lead back (without contour: every lead of the part).", args: &[
+        PART, a("contour", Ty::Int, "Contour number from part-info"),
+        a("in_length", Ty::Num, "Lead-in: mm from the start to the pierce"), a("in_angle", Ty::Num, "Lead-in: degrees from the contour behind the start, into the scrap"),
+        a("out_length", Ty::Num, "Lead-out: mm from where it leaves the contour to its end"), a("out_angle", Ty::Num, "Lead-out: degrees from the contour ahead, into the scrap"),
+        Arg { name: "mode", ty: Ty::Str, required: false, help: "set (default) or reset", choices: &["set", "reset"] },
+    ] },
     Op { name: "joints", group: "Technology", kind: Kind::Write, help: "Micro-joints: auto (one per the machine's maximum distance — 100 mm by default — on every contour, holes too, rounded up to an even number and centred on its line or arc, within the machine's fewest/most for the contour's size class) or delete.", args: &[
         Arg { name: "mode", ty: Ty::Str, required: true, help: "auto or delete", choices: &["auto", "delete"] }, PARTS,
         a("every", Ty::Num, "auto: one joint per this many mm of each contour (default: the machine's maximum distance for the part's quality)"),
@@ -294,7 +300,7 @@ pub static OPS: &[Op] = &[
     Op { name: "program", group: "Machining", kind: Kind::Read, help: "The CNC program of a sheet (the active machine's post), returned and optionally written to a file.", args: &[SHEET, a("out", Ty::Path, "Also write it here")] },
     Op { name: "export", group: "Machining", kind: Kind::Read, help: "Write every sheet's program (G-code, or BLM LC5 sets) and a CSV parts report into <folder>\\<job>. Never sends anything to the machine.", args: &[a("dir", Ty::Path, "Folder (default Settings → export folder, else Documents\\Sheet Nesting)")] },
     // --- stock ---
-    Op { name: "stock", group: "Stock", kind: Kind::Global, help: "The sheet stock (the Library folder's Sheets\\stock.json, shared with the window's Sheet stock): list sheets and remnants, create a sheet, add or remove quantity (0 deletes), lock or unlock, edit, delete, or read the Do All / Sheet Remnants options (rules; set in the window).", args: &[
+    Op { name: "stock", group: "Stock", kind: Kind::Global, help: "The sheet stock (the Library folder's Sheets\\stock.json, shared with the window's Sheet stock): list sheets and remnants (each with who changed it last and when: changed_by, changed_at in this PC's local time), create a sheet, add or remove quantity (0 deletes), lock or unlock, edit, delete, or read the Do All / Sheet Remnants options (rules; set in the window). Every change is recorded as this PC's user, marked (agent).", args: &[
         Arg { name: "mode", ty: Ty::Str, required: true, help: "What to do", choices: &["list", "create", "add", "remove", "block", "unblock", "edit", "delete", "rules"] },
         a("ref", Ty::Str, "Sheet reference (create: optional, else the next number; block/unblock: optional, else every listed sheet)"),
         a("material", Ty::Str, "list/create/block: material name or number"), a("thickness", Ty::Num, "list/create/block: thickness, mm"),
@@ -304,7 +310,7 @@ pub static OPS: &[Op] = &[
         a("min_w", Ty::Num, "list: shortest length"), a("max_w", Ty::Num, "list: longest length"), a("min_h", Ty::Num, "list: narrowest width"), a("max_h", Ty::Num, "list: widest width"),
         a("show_zero", Ty::Bool, "list: also items at quantity 0"), a("remnants", Ty::Str, "list: \"only\", \"none\" or \"all\" (default)"),
     ] },
-    Op { name: "stock-book", group: "Stock", kind: Kind::Write, help: "Book the job against the stock, as the window does when it saves a job: take the sheets its nestings use out of stock and store the remnants its remnant lines leave (named <sheet>-<n>, or by refs=; below the minimum area they are scrap). A sheet whose remnant lines changed since gets its remnants made again, unless one of them has been used. Once booked, every later change keeps the stock in step. release gives the sheets back and takes its unused remnants out again. A job file that is a library job (opened from the Library, or saved into it) isn't booked or released here: its sheets are booked when someone saves it in the window, and a booked job file saved into the Library (library mode=save-job) hands its booking to the record (LB10).", args: &[
+    Op { name: "stock-book", group: "Stock", kind: Kind::Write, help: "Book the job against the stock, as the window does when it saves a job: take the sheets its nestings use out of stock and store the remnants its remnant lines leave (named <sheet>-<n>, or by refs=; below the minimum area they are scrap). A sheet whose remnant lines changed since gets its remnants made again, unless one of them has been used. Once booked, every later change keeps the stock in step. When a sheet the job is nested on has gone (another PC or job took it), nothing is booked and the reply says who took it and when: nest again to use what's in stock now. release gives the sheets back and takes its unused remnants out again. A job file that is a library job (opened from the Library, or saved into it) isn't booked or released here: its sheets are booked when someone saves it in the window, and a booked job file saved into the Library (library mode=save-job) hands its booking to the record (LB10).", args: &[
         Arg { name: "mode", ty: Ty::Str, required: true, help: "book, release or status", choices: &["book", "release", "status"] },
         a("refs", Ty::Str, "book: references for the new remnants, comma-separated, in the order status lists them (default: numbered <sheet>-<n>)"),
     ] },
@@ -313,6 +319,13 @@ pub static OPS: &[Op] = &[
         r("folder", Ty::Path, "The test folder: empty or missing, or one the check made before (e.g. a folder next to the Library on the share). Never the Library itself"),
         a("minutes", Ty::Num, "How long to keep saving, minutes (default 1)"), a("rounds", Ty::Int, "Stop after this many rounds instead (each round: 2 job saves, 2 library part saves, 1 stock change)"),
         a("pc", Ty::Str, "Name to tag this run with (default: this PC's name)"),
+    ] },
+    Op { name: "job-folders", group: "Library", kind: Kind::Global, help: "The Library's job folders, the same on every PC that shares the Library (the Job Explorer's Library section): list the tree (each folder's path and #number, what it holds, and every saved job's folder), make a folder (new), change a folder's name (rename), delete an empty folder (delete), or move a saved job or a folder into another folder or to the top (move). Folder names are unique within their folder, without case (error 9); a folder never goes into itself or one of its own folders; a folder that still holds jobs or folders isn't deleted.", args: &[
+        Arg { name: "mode", ty: Ty::Str, required: true, help: "What to do", choices: &["list", "new", "rename", "delete", "move"] },
+        a("folder", Ty::Str, "The folder: its path from the top, names separated by / (\"Acme/2026-11\", without case), or #<number> from list. new: the folder to make it in (default: the top); rename, delete: the folder; move: the folder to move"),
+        a("name", Ty::Str, "new: the new folder's name (default \"New folder\", then \"New folder (1)\"…); rename: its new name"),
+        a("saved_job", Ty::Str, "move: the saved job to move: its reference (JOB000012) or record number from list, or its name when no other saved job has it"),
+        a("to", Ty::Str, "move: where to: a folder's path or #<number>, or \"/\" for the top of the Library"),
     ] },
     // --- looking at it ---
     Op { name: "render", group: "View", kind: Kind::Read, help: "Draw a sheet (parts, numbers, cut path, leads, joints, cut lines) or one part (numbered elements, leads, joints) to PNG or SVG.", args: &[
@@ -666,7 +679,7 @@ pub fn tech_json(t: &Option<PartTech>) -> Value {
             "corner_start": t.corner_start, "overlap": t.overlap, "micro_joints": t.micro_joints, "joint_width": t.joint_width,
             "joint_type": format!("{:?}", t.joint_type).to_lowercase(), "joint_every": t.joint_every, "joint_lead": t.joint_lead, "joint_lead_out": t.joint_lead_out.unwrap_or(t.joint_lead), "joint_angle": t.joint_angle,
             "loops": t.loops, "loop_size": t.loop_size, "quality": t.quality.map_or(json!("auto"), |q| json!(q.number())),
-            "leads_on_elements": t.starts.iter().flatten().count(), "joints_on_elements": t.joint_picks.iter().flatten().count(),
+            "leads_on_elements": t.starts.iter().flatten().count(), "leads_moved_by_hand": t.lead_edits.iter().flatten().count(), "joints_on_elements": t.joint_picks.iter().flatten().count(),
             "cut_ranges": t.cut_ranges.iter().filter(|c| c.on).map(|c| format!("{}-{}:{}", c.min_r, c.max_r, c.quality.number())).collect::<Vec<_>>(),
         }),
     }
@@ -764,7 +777,7 @@ fn part_info(job: &JobFile, i: usize) -> Value {
     let g = p.geometry();
     let elems = nest::elements_of(&g);
     let (w, h) = p.bbox();
-    let plan = cnc::plan(&job.parts, &[Placed { part: i, x: 0.0, y: 0.0, w, h, turns: 0, mirror: false }], &job.spec);
+    let plan = cnc::plan_part(&job.parts, i, &job.spec);
     // Every contour with its state (CS1); elements name the contour they're on
     // by the same numbers.
     let list = contours::list(p);
@@ -783,6 +796,14 @@ fn part_info(job: &JobFile, i: usize) -> Value {
                 v["quality"] = json!(q.number());
                 v["quality_name"] = json!(mt.qualities.label(q));
                 v["quality_from"] = json!(from.label());
+            }
+            // Its leads as cut (LE1): what lead-edit changes.
+            if let Some(pc) = numbers.iter().position(|&x| x == k).and_then(|ci| plan.contours.iter().find(|pc| pc.contour == ci)) {
+                let e = lead_ends(pc);
+                let end = |x: Option<(f64, f64)>, ang: (f64, f64)| x.map_or(Value::Null, |(l, a)| json!({"length_mm": r1(l), "angle_deg": r1(a) + 0.0, "angles_deg": [r1(ang.0), r1(ang.1)]}));
+                v["lead_in"] = end(e.lead_in, e.in_angles);
+                v["lead_out"] = end(e.lead_out, e.out_angles);
+                v["lead_by_hand"] = json!(e.hand);
             }
             v
         })
@@ -1132,6 +1153,7 @@ pub fn run_global(ctx: &Ctx, name: &str, args: &Value) -> Result<Outcome, String
         "stock" => stock_op(ctx, &a),
         "machines" => Ok(Outcome::read(format!("Active machine: {}.", ctx.cfg.machine().name), machines(ctx))),
         "import-xml" => import_xml(ctx, &a),
+        "job-folders" => super::folderops::run(ctx, &a),
         "library-check" => {
             let rounds = match a.int("rounds")? {
                 Some(n) if n < 1 => return Err(format!("rounds {n}: at least 1")),
@@ -1223,7 +1245,7 @@ fn library(ctx: &Ctx) -> Result<crate::library::Library, String> {
 /// The Library folder can be used, or the refusal naming it, what was left
 /// as it was (`kept`) and what to do instead (LB11, LB12, LB13). Nothing is
 /// made either way.
-fn reach_library(ctx: &Ctx, kept: &str) -> Result<(), String> {
+pub(super) fn reach_library(ctx: &Ctx, kept: &str) -> Result<(), String> {
     crate::library::usable(&ctx.library_dir).map_err(|e| format!("{e} {kept}: try again once it can be reached."))
 }
 
@@ -1295,11 +1317,13 @@ pub fn auto_remnant_lines(parts: &[Part], sheet: &[Placed], spec: &SheetSpec, ls
     (!lines.is_empty() && lines.iter().all(|l| cutoff::path_hits_part(parts, sheet, &l.pts).is_none())).then_some(lines)
 }
 
-fn stock_json(s: &crate::stock::Item) -> Value {
+fn stock_json(s: &crate::stock::Item, clock: &crate::shared::Clock) -> Value {
     json!({
         "ref": s.reference, "kind": s.kind.label(), "material": cnc::MATERIALS.get(s.material).copied().unwrap_or("?"), "thickness": s.thickness, "w": r1(s.length), "h": r1(s.width), "qty": s.qty,
         "priority": s.priority, "blocked": s.locked, "remnant": s.kind.is_remnant(), "area_m2": (s.area_m2() * 1000.0).round() / 1000.0,
         "origin": s.origin, "job": s.from_job, "irregular": s.outline.is_some(), "user": s.user_data, "created": s.created,
+        // Who changed it last, and when (SV9); null for a stock from before.
+        "changed_by": s.changed.as_ref().map(|c| c.by.label()), "changed_at": s.changed.as_ref().map(|c| clock.stamp(c.at)),
     })
 }
 
@@ -1317,8 +1341,7 @@ fn rules_json(st: &crate::stock::StockSettings) -> Value {
 }
 
 fn stock_op(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
-    let dir = ctx.library_dir.clone();
-    let file = Stock::file(&dir);
+    let file = Stock::file(&ctx.library_dir);
     let mat = match a.str("material") {
         Some(m) => Some(material_from(&m, &ctx.cfg)?),
         None => None,
@@ -1363,7 +1386,7 @@ fn stock_op(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
                 Some("all") | None => {}
                 Some(x) => return Err(format!("remnants '{x}': only, none or all")),
             }
-            let list: Vec<Value> = st.items.iter().filter(|it| matches(it) && crit.admits(it)).map(stock_json).collect();
+            let list: Vec<Value> = st.items.iter().filter(|it| matches(it) && crit.admits(it)).map(|it| stock_json(it, &ctx.clock)).collect();
             let n: i64 = st.items.iter().map(|s| s.qty.max(0) as i64).sum();
             return Ok(Outcome::read(format!("{} stock item(s) listed ({} sheet(s) and remnant(s) in stock in all). Stock file: {}", list.len(), n, file.display()), json!({ "sheets": list, "rules": rules_json(&ctx.cfg.stock) })));
         }
@@ -1377,7 +1400,7 @@ fn stock_op(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
     }
     // Every change re-reads the stock, changes it and saves it under the
     // Library's write lock, as the window does (LB1, STK-9).
-    let m = Stock::update(&dir, |st| match mode.as_str() {
+    let m = Stock::update(&ctx.library_at(), |st| match mode.as_str() {
         "create" => {
             let (Some(w), Some(h)) = (a.num("w")?, a.num("h")?) else { return Err("create needs w and h (mm)".into()) };
             if w <= 0.0 || h <= 0.0 {
@@ -1691,13 +1714,16 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             match a.need_str("mode")?.as_str() {
                 "list" => {
                     let find = a.str("find").unwrap_or_default().to_lowercase();
+                    // A job's folder is its place in the Library's job folders (JX10).
+                    let tree = crate::folders::load(&lib, crate::library::Kind::Job)?;
+                    let folder = |e: &crate::library::Entry| if e.kind == crate::library::Kind::Job { tree.path(tree.folder_of(e.id)) } else { e.folder.clone() };
                     let mut list: Vec<Value> = lib
                         .entries()
                         .into_iter()
-                        .filter(|e| find.is_empty() || e.name.to_lowercase().contains(&find) || e.folder.to_lowercase().contains(&find))
+                        .filter(|e| find.is_empty() || e.name.to_lowercase().contains(&find) || folder(e).to_lowercase().contains(&find))
                         // Who last saved it and when, in this PC's local time (LB6);
                         // no one for a record saved before saves recorded it.
-                        .map(|e| json!({"id": e.id, "kind": format!("{:?}", e.kind).to_lowercase(), "name": e.name, "folder": e.folder, "material": cnc::MATERIALS.get(e.material).copied().unwrap_or("?"), "thickness": e.thickness, "w": r1(e.w), "h": r1(e.h), "preprogrammed": e.tech, "saved_by": e.saved_by.as_ref().map(|w| w.label()), "saved_at": (e.updated > 0).then(|| ctx.clock.stamp(e.updated))}))
+                        .map(|e| json!({"id": e.id, "kind": format!("{:?}", e.kind).to_lowercase(), "name": e.name, "folder": folder(&e), "material": cnc::MATERIALS.get(e.material).copied().unwrap_or("?"), "thickness": e.thickness, "w": r1(e.w), "h": r1(e.h), "preprogrammed": e.tech, "saved_by": e.saved_by.as_ref().map(|w| w.label()), "saved_at": (e.updated > 0).then(|| ctx.clock.stamp(e.updated))}))
                         .collect();
                     // Jobs that share their name with another job (JX17:
                     // Libraries saved before names were unique): the others'
@@ -2031,13 +2057,20 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                         }
                     };
                     let note = job.book_stock_named(ctx, true, names.as_ref());
-                    let mut o = Outcome::msg(if note.is_empty() { "Booked: the stock already matches the job.".to_string() } else { format!("Booked: {note}.") });
+                    // Its sheets couldn't be taken (another PC took one, SV10):
+                    // said so, not "Booked".
+                    let booked = stockflow::sheets_used(&job.formats, job.sheets.len()) == job.held;
+                    let mut o = Outcome::msg(match (note.is_empty(), booked) {
+                        (true, _) => "Booked: the stock already matches the job.".to_string(),
+                        (false, true) => format!("Booked: {note}."),
+                        (false, false) => format!("Not booked: {note}."),
+                    });
                     o.files.push(file);
                     Ok(o)
                 }
                 "release" => {
                     job.normalise_formats();
-                    let (back, removed, kept) = stockflow::release(&ctx.library_dir, &mut job.formats, &mut job.held)?;
+                    let (back, removed, kept) = stockflow::release(&ctx.library_at(), &mut job.formats, &mut job.held)?;
                     job.booked = false;
                     let mut m = format!("Released: {back} sheet(s) given back to stock, {removed} remnant(s) taken out again.");
                     if !kept.is_empty() {
@@ -2276,6 +2309,42 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             }
             let pick = a.point("at")?;
             Ok(Outcome::msg(lead_on_element(&mut job.parts[i], e as usize - 1, pick)?))
+        }
+        "lead-edit" => {
+            let i = one_part(job, &a)?;
+            // part-info's contour numbers → the part's cut contours (CS1).
+            let order = dxf::cut_order(&contours::list(&job.parts[i]));
+            let ci = match a.int("contour")? {
+                None => None,
+                Some(k) => Some(order.iter().position(|&x| x as i64 == k - 1).ok_or_else(|| format!("Contour {k} isn't one the part cuts (contours {} are; see part-info).", order.iter().map(|x| (x + 1).to_string()).collect::<Vec<_>>().join(", ")))?),
+            };
+            let name = job.parts[i].name.clone();
+            match a.str("mode").as_deref().unwrap_or("set") {
+                "reset" => {
+                    let n = reset_lead_edits(&mut job.parts[i], ci);
+                    Ok(Outcome::msg(match (ci, n) {
+                        (_, 0) => format!("No lead of '{name}' was moved by hand{}.", ci.map_or(String::new(), |c| format!(" on contour {}", order[c] + 1))),
+                        (Some(c), _) => format!("Contour {}'s lead of '{name}' is back to its automatic place.", order[c] + 1),
+                        (None, n) => format!("{n} lead(s) of '{name}' back to their automatic place."),
+                    }))
+                }
+                "set" => {
+                    let ci = ci.ok_or("Name the contour (see part-info).")?;
+                    let (il, ia, ol, oa) = (a.num("in_length")?, a.num("in_angle")?, a.num("out_length")?, a.num("out_angle")?);
+                    if il.is_none() && ia.is_none() && ol.is_none() && oa.is_none() {
+                        return Err("Give in_length / in_angle for the lead-in, out_length / out_angle for the lead-out (or mode=reset).".into());
+                    }
+                    let mut msg = vec![];
+                    if il.is_some() || ia.is_some() {
+                        msg.push(set_lead_end(&mut job.parts, i, &job.spec, ci, LeadEnd::In, il, ia)?);
+                    }
+                    if ol.is_some() || oa.is_some() {
+                        msg.push(set_lead_end(&mut job.parts, i, &job.spec, ci, LeadEnd::Out, ol, oa)?);
+                    }
+                    Ok(Outcome::msg(msg.join(" ")))
+                }
+                m => Err(format!("lead-edit mode '{m}'? Use set or reset.")),
+            }
         }
         "joints" => match a.need_str("mode")?.as_str() {
             "auto" => {

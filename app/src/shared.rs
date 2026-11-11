@@ -166,6 +166,14 @@ impl Clock {
         if y == self.local(self.now()).0 { format!("{d} {month} {hh:02}:{mm:02}") } else { format!("{d} {month} {y} {hh:02}:{mm:02}") }
     }
 
+    /// "at 09:20" for a time today, else "on 9 Nov 09:20" (with the year
+    /// when it isn't this year), in local time (SV10).
+    pub fn when(&self, t: u64) -> String {
+        let (y, m, d, hh, mm) = self.local(t);
+        let now = self.local(self.now());
+        if (y, m, d) == (now.0, now.1, now.2) { format!("at {hh:02}:{mm:02}") } else { format!("on {}", self.shown(t)) }
+    }
+
     /// "2026-11-09 09:20" in local time (agents) (LB6).
     pub fn stamp(&self, t: u64) -> String {
         let (y, m, d, hh, mm) = self.local(t);

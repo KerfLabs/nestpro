@@ -45,6 +45,8 @@ mod jobfile;
 mod jobs;
 mod libui;
 mod library;
+mod folders;
+mod libtree;
 mod shared;
 mod region;
 mod remline;
@@ -185,6 +187,10 @@ pub struct Job {
     /// The job as last saved or opened (`job_sig`); None = never saved. It
     /// has unsaved changes when it no longer matches (jobtree.rs).
     pub saved: Option<u64>,
+    /// The Library folder a job saved into the Library for the first time
+    /// goes into (JX15): the folder of the library job it was opened or
+    /// copied from. None: by its folder's name.
+    pub lib_folder: Option<u64>,
 }
 
 pub struct App {
@@ -315,6 +321,9 @@ pub struct App {
     /// Earlier Part views (zoom, pan) for "Previous", and when the wheel last moved.
     pub part_view_hist: Vec<(f32, Vec2)>,
     pub part_view_last: f64,
+    /// Part view: the extent the view is framed on while a lead end is dragged
+    /// (part index, extent), so the part doesn't move under the pointer.
+    pub part_ext_lock: Option<(usize, [f64; 4])>,
     /// Follow Windows' light/dark setting (the original's default style takes
     /// the system colours).
     pub follow_system: bool,
@@ -470,7 +479,7 @@ fn demo_jobs(first: &App) -> Vec<Job> {
     let p = |name: &str, shape, w, h, qty, color| Part { name: name.into(), shape, w, h, qty, rotate: true, color, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
     let mk = |week: &str, name: &str, parts: Vec<Part>, spec: SheetSpec| {
         let result = nest::nest(&parts, &spec);
-        Job { week: week.into(), name: name.into(), parts, spec, result, stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None, saved: None, lib_read: Default::default() }
+        Job { week: week.into(), name: name.into(), parts, spec, result, stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None, saved: None, lib_read: Default::default(), lib_folder: None }
     };
     let mut steel5 = spec.clone();
     steel5.thickness = 5.0;
@@ -494,6 +503,7 @@ fn demo_jobs(first: &App) -> Vec<Job> {
             cam_changed: None,
             file: None,
             saved: None,
+            lib_folder: None,
             held: Default::default(),
             erp: None,
         },
@@ -610,6 +620,7 @@ impl App {
             part_zoom: 1.0,
             part_pan: Vec2::ZERO,
             part_view_hist: vec![],
+            part_ext_lock: None,
             part_view_last: 0.0,
             follow_system: false,
             options_open: false,
@@ -762,6 +773,7 @@ impl App {
             held: Default::default(),
             file: None,
             saved: None,
+            lib_folder: None,
             erp: None,
         });
         let i = self.jobs.len() - 1;
@@ -856,7 +868,7 @@ impl App {
         let name = self.unique_job_name(&j.name).unwrap_or_else(|| j.name.clone());
         self.store_job();
         let tried = 0;
-        self.jobs.push(Job { week: if j.week.is_empty() { "Opened jobs".into() } else { j.week }, name, parts: j.parts, spec: j.spec.clone(), result: { let mut r = nest::NestResult { sheets: j.sheets, formats: j.formats, method: j.method, tried }; r.normalise(&j.spec); r }, stale: j.stale, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: j.held.clone(), erp: None, file: None, saved: None, lib_read: Default::default() });
+        self.jobs.push(Job { week: if j.week.is_empty() { "Opened jobs".into() } else { j.week }, name, parts: j.parts, spec: j.spec.clone(), result: { let mut r = nest::NestResult { sheets: j.sheets, formats: j.formats, method: j.method, tried }; r.normalise(&j.spec); r }, stale: j.stale, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: j.held.clone(), erp: None, file: None, saved: None, lib_read: Default::default(), lib_folder: None });
         let i = self.jobs.len() - 1;
         self.open_job(i);
         self.cut_lines = j.cut_lines;
@@ -911,7 +923,9 @@ impl App {
             rows.push((t, name, folder, Src::File(p), exists));
         }
         for e in self.libui.entries.iter().filter(|e| e.kind == library::Kind::Job) {
-            let what = format!("{} · {} sheet(s){}", self.mat_thk(e.material, e.thickness), e.count_b, if e.folder.is_empty() { String::new() } else { format!(" · {}", e.folder) });
+            // Its folder as the Library's folder tree shows it (JX10).
+            let folder = self.libui.tree.path(self.libui.tree.folder_of(e.id));
+            let what = format!("{} · {} sheet(s){}", self.mat_thk(e.material, e.thickness), e.count_b, if folder.is_empty() { String::new() } else { format!(" · {folder}") });
             rows.push((e.updated, e.name.clone(), what, Src::Lib(e.id), true));
         }
         rows.sort_by(|a, b| b.0.cmp(&a.0));
@@ -1016,7 +1030,7 @@ impl App {
             return;
         };
         self.store_job();
-        self.jobs.push(Job { week, name, parts: vec![], spec: engine::with_prefs(&self.spec, &self.cfg), result: NestResult::default(), stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None, saved: None, lib_read: Default::default() });
+        self.jobs.push(Job { week, name, parts: vec![], spec: engine::with_prefs(&self.spec, &self.cfg), result: NestResult::default(), stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None, saved: None, lib_read: Default::default(), lib_folder: None });
         let i = self.jobs.len() - 1;
         self.open_job(i);
         self.status = format!("Created job {} — add products, then nest.", self.job_name);
@@ -2551,7 +2565,9 @@ impl App {
 
         // --- pop-up notices (bottom-right), fade out after a few seconds ---
         // Long messages (an export's folder, what a nesting removed) stay longer.
-        let life = |m: &str| (4.0 + m.len() as f64 / 40.0).min(9.0);
+        // --keep-notices (screenshots): they stay until the picture is taken.
+        let keep = self.shot.is_some() && std::env::args().any(|a| a == "--keep-notices");
+        let life = |m: &str| if keep { f64::INFINITY } else { (4.0 + m.len() as f64 / 40.0).min(9.0) };
         self.toasts.retain(|t| now - t.1 < life(&t.0));
         let mut y = rect.bottom() - 14.0;
         for (msg, t0) in self.toasts.iter().rev().take(3) {
@@ -2936,7 +2952,7 @@ fn main() -> eframe::Result {
             // Without the example jobs: one empty job (not for screenshots).
             if load_layout && !app.cfg.examples {
                 let spec = app.spec.clone();
-                app.jobs = vec![Job { week: String::new(), name: "New job".into(), parts: vec![], spec, result: nest::NestResult::default(), stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None, saved: None, lib_read: Default::default() }];
+                app.jobs = vec![Job { week: String::new(), name: "New job".into(), parts: vec![], spec, result: nest::NestResult::default(), stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None, saved: None, lib_read: Default::default(), lib_folder: None }];
                 app.cur_job = 0;
                 app.job_name = "New job".into();
                 app.parts.clear();
@@ -3081,6 +3097,13 @@ fn main() -> eframe::Result {
             if let Some(what) = std::env::args().find_map(|a| a.strip_prefix("--save-question=").map(str::to_string)) {
                 app.demo_save_question(&what);
             }
+            // --lib-tree-open: every Library folder opened out, and the Job
+            // Explorer the whole height (screenshots).
+            if std::env::args().any(|a| a == "--lib-tree-open") {
+                app.libui.reveal_all = true;
+                app.libui.loaded = false;
+                app.dock.close(Workspace::Jobs, dock::PaneId::JobSummary);
+            }
             // --library-pick=<folder> (screenshots): that folder picked in
             // Settings → Folders, asking first when it holds no Library (LB12).
             if let Some(d) = std::env::args().find_map(|a| a.strip_prefix("--library-pick=").map(str::to_string)) {
@@ -3089,6 +3112,11 @@ fn main() -> eframe::Result {
             if std::env::args().any(|a| a == "--lib-save") {
                 app.save_job_to_library();
                 app.add_products_to_library();
+            }
+            // --lib-save-job: the open job only, its save message left in the
+            // status line (screenshots of what a save says, SV10).
+            if std::env::args().any(|a| a == "--lib-save-job") {
+                app.save_job_to_library();
             }
             if want_lib {
                 app.workspace = Workspace::Jobs;
@@ -3167,7 +3195,7 @@ fn main() -> eframe::Result {
             // smaller one picked, so the window shows a real choice.
             if std::env::args().any(|a| a == "--stock-demo") {
                 let (m, t) = (app.spec.material, app.spec.thickness);
-                let _ = stock::Stock::update(&app.library_dir(), |s| {
+                let _ = stock::Stock::update(&app.library_at(), |s| {
                     s.add_sheet(stock::Item::sheet("DEMO-S1", m, t, 2000.0, 1000.0, 5), true)?;
                     let mut r = stock::Item::sheet("DEMO-R1", m, t, 1200.0, 1000.0, 1);
                     r.kind = stock::Kind::UserRemnant;
@@ -3179,7 +3207,7 @@ fn main() -> eframe::Result {
             // picked, so the window offers to switch the job to it (ST16).
             if std::env::args().any(|a| a == "--stock-other") {
                 let (m, t) = ((app.spec.material + 1) % cnc::MATERIALS.len(), app.spec.thickness);
-                let _ = stock::Stock::update(&app.library_dir(), |s| s.add_sheet(stock::Item::sheet("DEMO-SS1", m, t, 1486.0, 724.0, 1), true));
+                let _ = stock::Stock::update(&app.library_at(), |s| s.add_sheet(stock::Item::sheet("DEMO-SS1", m, t, 1486.0, 724.0, 1), true));
                 app.stockui.sel = Some("DEMO-SS1".into());
                 app.stockui.job_only = false;
             }

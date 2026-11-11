@@ -4723,6 +4723,48 @@
   "source": "MECHANICS SV8"
  },
  {
+  "name": "a stock change records",
+  "group": "shared library",
+  "value": "who made it (Windows user and PC name; an agent's change marked (agent)) and when (that PC's clock once the change holds the write lock), on the stock and on each item it made or changed",
+  "source": "MECHANICS SV9; estimated"
+ },
+ {
+  "name": "a stock change that takes sheets out also records",
+  "group": "shared library",
+  "value": "on each item it took from: who took them, how many, and when",
+  "source": "MECHANICS SV9; estimated"
+ },
+ {
+  "name": "where who changed a stock item is shown",
+  "group": "shared library",
+  "value": "hover text of the stock row's quantity (Changed by sam on PROG-1, 9 Nov 09:20 / Last taken: 1 by …); agents' stock list (changed_by, changed_at)",
+  "source": "MECHANICS SV9; estimated"
+ },
+ {
+  "name": "a save that finds a sheet gone says",
+  "group": "shared library",
+  "value": "sam on PROG-1 took the last 3000 × 1500 (S-1) at 09:20, so nothing was taken from stock (remnants not stored): nest again (Do All) to use what's in stock now",
+  "source": "MECHANICS SV10; estimated"
+ },
+ {
+  "name": "when it was taken, as said",
+  "group": "shared library",
+  "value": "at 09:20 (today); on 8 Nov 09:20 (another day)",
+  "source": "MECHANICS SV10; estimated"
+ },
+ {
+  "name": "an agent's stock-book that took nothing begins",
+  "group": "shared library",
+  "value": "Not booked:",
+  "source": "MECHANICS SV10; estimated"
+ },
+ {
+  "name": "Do All reads the stock",
+  "group": "shared library",
+  "value": "afresh on every run, just before it plans",
+  "source": "MECHANICS SV11; estimated"
+ },
+ {
   "name": "compact refused on a remnant with an outline",
   "group": "nesting",
   "value": true,
@@ -5037,7 +5079,7 @@
  {
   "name": "a refused job save and the stock",
   "group": "shared library",
-  "value": "takes no sheets, gives none back, stores no remnants: the check comes first, then the booking and the record under one hold of the write lock",
+  "value": "takes no sheets, gives none back, stores no remnants: the check comes first, then the booking, the record and a new record's folder (JX15) under one hold of the write lock",
   "source": "MECHANICS LB8; estimated"
  },
  {
@@ -5056,6 +5098,12 @@
   "name": "name of a copy",
   "group": "shared library",
   "value": "first free of NAME (1), NAME (2)… whatever its capitals",
+  "source": "MECHANICS LB9; estimated"
+ },
+ {
+  "name": "where a copy is filed",
+  "group": "shared library",
+  "value": "in the folder of the job it was copied from (JX15)",
   "source": "MECHANICS LB9; estimated"
  },
  {
@@ -5274,6 +5322,139 @@
   "group": "job explorer",
   "value": true,
   "source": "MECHANICS JX8, JX9"
+ },
+ {
+  "name": "job folder tree",
+  "group": "job explorer",
+  "value": "job-folders.json in the Library: each folder's number, name and parent (0 = the top), and each saved job's folder by number",
+  "source": "MECHANICS JX10; own design on DT8, DT9"
+ },
+ {
+  "name": "job folder numbers",
+  "group": "job explorer",
+  "value": "one more than the highest ever given; never given twice",
+  "source": "MECHANICS JX10; own design"
+ },
+ {
+  "name": "job folder changes",
+  "group": "job explorer",
+  "value": "made under the Library's write lock, the tree read again under it and written whole; refused, naming the folder, while the Library can't be reached or holds no Library (LB11, LB12)",
+  "source": "MECHANICS JX10; own design"
+ },
+ {
+  "name": "job folder names of a Library from before folders",
+  "group": "job explorer",
+  "value": "top-level folders holding the same jobs; names differing only in case are one folder, spelt as on the lowest-numbered job",
+  "estimated": true,
+  "source": "MECHANICS JX11"
+ },
+ {
+  "name": "folder name check on New folder, Change name and Move",
+  "group": "job explorer",
+  "value": "trimmed, not empty, not used in the same folder (without case): else error 9",
+  "source": "MECHANICS JX12"
+ },
+ {
+  "name": "move a folder into itself or one of its own folders",
+  "group": "job explorer",
+  "value": "refused",
+  "source": "MECHANICS JX12"
+ },
+ {
+  "name": "delete a job folder",
+  "group": "job explorer",
+  "value": "only when it holds no saved job and no folder",
+  "estimated": true,
+  "source": "MECHANICS JX13"
+ },
+ {
+  "name": "empty job folders",
+  "group": "job explorer",
+  "value": "kept until deleted",
+  "source": "MECHANICS JX13"
+ },
+ {
+  "name": "Library folder menu",
+  "group": "job explorer",
+  "value": "New > Folder, Cut, Paste, Delete, Change name, Refresh",
+  "source": "MECHANICS JX14"
+ },
+ {
+  "name": "Library tree order",
+  "group": "job explorer",
+  "value": "in each folder: its folders by name without case, then its jobs",
+  "source": "MECHANICS JX14"
+ },
+ {
+  "name": "job saved into the Library for the first time goes into",
+  "group": "job explorer",
+  "value": "the folder of the library job it came from, else the top-level folder named like its Open jobs folder (made if missing)",
+  "estimated": true,
+  "source": "MECHANICS JX15"
+ },
+ {
+  "name": "saving over a Library job moves it",
+  "group": "job explorer",
+  "value": false,
+  "source": "MECHANICS JX15"
+ },
+ {
+  "name": "hand-moved leads per part (contours)",
+  "group": "leads",
+  "value": 16,
+  "source": "MECHANICS LE1"
+ },
+ {
+  "name": "hand-moved lead kept as distance and angle from the contour",
+  "group": "leads",
+  "value": true,
+  "source": "MECHANICS LE1"
+ },
+ {
+  "name": "hand-moved lead shortest length",
+  "group": "leads",
+  "value": 1.0,
+  "unit": "mm",
+  "source": "MECHANICS LE2"
+ },
+ {
+  "name": "hand-moved lead angle clear of the contour",
+  "group": "leads",
+  "value": 1.0,
+  "unit": "deg",
+  "source": "MECHANICS LE2"
+ },
+ {
+  "name": "hand-moved lead length snap",
+  "group": "leads",
+  "value": 0.1,
+  "unit": "mm",
+  "source": "MECHANICS LE2"
+ },
+ {
+  "name": "hand-moved lead angle snap",
+  "group": "leads",
+  "value": 1.0,
+  "unit": "deg",
+  "source": "MECHANICS LE2"
+ },
+ {
+  "name": "hand-moved lead keeps its record's arc radius",
+  "group": "leads",
+  "value": true,
+  "source": "MECHANICS LE3"
+ },
+ {
+  "name": "hand-moved lead moved along its contour by the collision test",
+  "group": "leads",
+  "value": false,
+  "source": "MECHANICS LE5"
+ },
+ {
+  "name": "sheet edge is a lead obstacle for a part on its own",
+  "group": "leads",
+  "value": false,
+  "source": "MECHANICS LE7"
  },
  {
   "name": "area unit with inches",

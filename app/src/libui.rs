@@ -30,6 +30,16 @@ pub struct LibUi {
     /// Overwrite was chosen: the open job's next save replaces this save of
     /// its record, their stock booking included (LB9).
     pub overwrite: Option<Record>,
+    /// The Library's job folders (JX10), as last read.
+    pub tree: crate::folders::Tree,
+    /// A job or folder cut in the Library section, waiting for Paste (JX14).
+    pub cut: Option<LibItem>,
+    /// A Library folder whose name is being typed (New folder, Change name).
+    pub edit: Option<(u64, String)>,
+    /// Library folders to open out the next time the tree is drawn (where a
+    /// folder was made or something pasted; every folder for screenshots).
+    pub reveal: Vec<u64>,
+    pub reveal_all: bool,
     /// Why the Library can't be listed (LB11, LB12): its folder can't be
     /// reached or holds no Library. The lists say this instead of looking
     /// empty.
@@ -53,6 +63,14 @@ pub enum SaveQuestion {
     /// mine under a new name. `added`: the job's part was added from that
     /// library part (else it only has its name).
     Part { part: usize, changed: Changed, added: bool },
+}
+
+/// A job or folder in the Library's tree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LibItem {
+    /// A saved job, by its record number.
+    Job(u64),
+    Folder(u64),
 }
 
 /// The Library can't be listed (LB11, LB12): the message naming the folder,
@@ -179,6 +197,7 @@ impl App {
         match self.library() {
             Ok(l) => {
                 self.libui.entries = l.entries();
+                self.lib_reload_tree(&l);
                 self.libui.products = self.libui.entries.iter().filter(|e| e.kind == Kind::Product).filter_map(|e| l.load_product(e.id).ok().map(|pf| (e.clone(), pf.part))).collect();
                 self.libui.products.sort_by(|a, b| b.0.updated.cmp(&a.0.updated));
                 self.libui.error = None;
@@ -244,7 +263,13 @@ impl App {
         for j in &mut self.jobs {
             j.lib_id = None;
             j.lib_read = Default::default();
+            // Its folder's number is the old Library's too (JX15).
+            j.lib_folder = None;
         }
+        // A cut, or a name being typed, belongs to the old Library's tree.
+        self.libui.cut = None;
+        self.libui.edit = None;
+        self.libui.reveal.clear();
     }
 
     /// Where the open job saves to in the Library: over its record as it was
@@ -281,21 +306,23 @@ impl App {
             return;
         }
         crate::shared::pause("library reached");
-        // Under the Library's write lock (LB1), held until the job is stored:
-        // the revision (LB7), then the name, which no other job may hold
-        // (JX16), and only then the stock (LB8). A save refused for either
-        // reason takes nothing from stock, and no other PC saves in between.
-        // The lock is let go before the lists are read again (LB2).
+        // Under the Library's write lock (LB1), held until the job is stored
+        // and filed: the revision (LB7), then the name, which no other job may
+        // hold (JX16), then the stock (LB8), then the record, a new one going
+        // into the folder of the library job it was opened or copied from
+        // (JX15). A save refused for either reason takes nothing from stock,
+        // and no other PC saves in between. The lock is let go before the
+        // lists are read again (LB2).
         let mut stock_note = String::new();
-        let dir = self.library_dir();
         let name = self.job_name.clone();
-        let r = lib.save_job_with(to, &name, || {
+        let folder = self.jobs.get(self.cur_job).and_then(|j| j.lib_folder);
+        let r = lib.save_job_with(to, &name, folder, || {
             // Overwrite (LB9): their sheets go back to stock and their unused
             // remnants come out, then this job is booked as a new one. Done
             // once: saving again after a failure books only what changed.
             if let Some(o) = self.libui.overwrite.take().filter(|o| Some(o.id) == self.job_lib_id) {
                 let mut theirs = lib.load_job(o.id)?;
-                crate::engine::stockflow::release(&dir, &mut theirs.formats, &mut theirs.held)?;
+                crate::engine::stockflow::release(&lib, &mut theirs.formats, &mut theirs.held)?;
             }
             stock_note = self.stock_on_save();
             Ok(self.current_jobfile())
@@ -306,6 +333,10 @@ impl App {
                 self.lib_read.revision = rec.revision;
                 self.mark_job_saved(self.cur_job);
                 self.lib_refresh();
+                let f = self.libui.tree.folder_of(rec.id);
+                if let Some(j) = self.jobs.get_mut(self.cur_job) {
+                    j.lib_folder = Some(f);
+                }
                 self.status = format!("Saved job {} to the library as {} ({}).{stock_note}", self.job_name, crate::library::auto_ref(Kind::Job, rec.id), self.library_dir().display());
             }
             Err(Refused::Changed(c)) => self.ask_about_job(c),
@@ -332,7 +363,8 @@ impl App {
         };
         let cur = self.cur_job;
         let name = if self.jobs.iter().enumerate().any(|(k, o)| k != cur && o.name == j.name) { self.job_name.clone() } else { j.name.clone() };
-        self.jobs[cur] = job_from_library(c.id, name, j);
+        let place = self.lib_place(c.id);
+        self.jobs[cur] = job_from_library(c.id, name, j, place);
         self.cur_job = usize::MAX;
         self.open_job_forced(cur);
         self.mark_job_saved(cur);
@@ -536,6 +568,18 @@ impl App {
         self.lib_refresh();
     }
 
+    /// Where library job `id` sits: its folder in the Library's job folders
+    /// and the name of that folder, which its Open jobs folder takes; a copy
+    /// of it saved into the Library goes into that folder too (JX15).
+    fn lib_place(&mut self, id: u64) -> (u64, String) {
+        if !self.libui.loaded {
+            self.lib_refresh();
+        }
+        let folder = self.libui.tree.folder_of(id);
+        let week = self.libui.tree.get(folder).map_or_else(|| "Library".to_string(), |f| f.name.clone());
+        (folder, week)
+    }
+
     pub fn open_library_job(&mut self, id: u64) {
         let j = match self.library().and_then(|l| l.load_job(id)) {
             Ok(j) => j,
@@ -553,7 +597,8 @@ impl App {
         }
         let name = self.unique_job_name(&j.name).unwrap_or_else(|| j.name.clone());
         self.store_job();
-        self.jobs.push(job_from_library(id, name, j));
+        let place = self.lib_place(id);
+        self.jobs.push(job_from_library(id, name, j, place));
         let i = self.jobs.len() - 1;
         self.open_job(i);
         self.refresh();
@@ -668,7 +713,10 @@ impl App {
             ui.separator();
             let kind = if self.libui.tab == 0 { Kind::Job } else { Kind::Product };
             let needle = self.libui.search.to_lowercase();
-            let mut rows: Vec<&Entry> = self.libui.entries.iter().filter(|e| e.kind == kind && (needle.is_empty() || e.name.to_lowercase().contains(&needle) || e.folder.to_lowercase().contains(&needle))).collect();
+            // A job's folder is its place in the Library's job folders (JX10).
+            let tree = &self.libui.tree;
+            let folder = |e: &Entry| if e.kind == Kind::Job { tree.path(tree.folder_of(e.id)) } else { e.folder.clone() };
+            let mut rows: Vec<&Entry> = self.libui.entries.iter().filter(|e| e.kind == kind && (needle.is_empty() || e.name.to_lowercase().contains(&needle) || folder(e).to_lowercase().contains(&needle))).collect();
             rows.sort_by(|a, b| b.updated.cmp(&a.updated));
             // Jobs that share their name with another job: Libraries saved
             // before names were unique (JX17). Marked so one can be renamed.
@@ -713,13 +761,17 @@ impl App {
                             chip(ui, "technology", th().accent_soft, th().accent_fg);
                         }
                         if let Some(others) = twins.get(&e.id).filter(|_| e.kind == Kind::Job) {
-                            let which: Vec<String> = others.iter().map(|o| format!("{} '{}' ({})", crate::library::auto_ref(o.kind, o.id), o.name, if o.folder.trim().is_empty() { "no folder".to_string() } else { format!("folder {}", o.folder) })).collect();
+                            let which: Vec<String> = others.iter().map(|o| format!("{} '{}' ({})", crate::library::auto_ref(o.kind, o.id), o.name, {
+                                // Its folder as the tree shows it (JX10).
+                                let f = folder(o);
+                                if f.trim().is_empty() { "no folder".to_string() } else { format!("folder {f}") }
+                            })).collect();
                             chip(ui, "same name", th().warn_bg, th().warn_fg).on_hover_text(format!(
                                 "Another job in the Library has this name: {}.\nJob names are unique across the Library, whatever their capitals. These jobs were saved before that, so each still saves under its own name: open one, change its name and save it to the library.",
                                 which.join(", ")
                             ));
                         }
-                        ui.label(RichText::new(&e.folder).size(11.5).color(th().accent_fg));
+                        ui.label(RichText::new(folder(e)).size(11.5).color(th().accent_fg));
                         let mat = mats.get(e.material).copied().unwrap_or("");
                         let info = if e.kind == Kind::Job { format!("{mat} {} · {} · {} products · {} sheets", un.thickness(e.thickness), un.size(e.w, e.h, 0), e.count_a, e.count_b) } else { format!("{mat} {} · {} · qty {}", un.thickness(e.thickness), un.size(e.w, e.h, 0), e.count_a) };
                         ui.label(RichText::new(info).size(11.5).color(th().text_dim));
@@ -852,7 +904,8 @@ impl App {
         }
     }
 
-    /// The library's jobs in the Job Explorer, grouped by folder.
+    /// The library's jobs in the Job Explorer, in the Library's folder tree
+    /// (libtree.rs, JX10–JX15).
     pub fn library_job_tree(&mut self, ui: &mut egui::Ui) {
         if !self.libui.loaded {
             self.lib_refresh();
@@ -896,38 +949,9 @@ impl App {
             }
             return;
         }
-        if jobs.is_empty() {
-            // One quiet line until the library has jobs.
-            ui.label(RichText::new("📚 Saved jobs (Library) — none yet").color(th().text_dim))
-                .on_hover_text(format!("Jobs saved on disk in {}.\nRight-click an open job → Save to library (or Jobs → Save to library) to keep it here; open it again any time.", self.library_dir().display()));
-            return;
+        if let Some(id) = self.library_folder_tree(ui, &jobs, &needle) {
+            open = Some(id);
         }
-        let lib_tip = format!("Saved jobs: kept on disk in {} — they stay after the app closes. Click one to open it (it joins Open jobs).", self.library_dir().display());
-        egui::CollapsingHeader::new(RichText::new(format!("📚 Saved jobs (Library) ({})", jobs.len())).strong()).id_salt("lib_jobs_root").default_open(true).show(ui, |ui| {
-            let mut folders: Vec<String> = jobs.iter().map(|e| e.folder.clone()).collect();
-            folders.sort_by_key(|f| f.to_lowercase());
-            folders.dedup();
-            for f in folders {
-                let items: Vec<&Entry> = jobs.iter().filter(|e| e.folder == f && (needle.is_empty() || e.name.to_lowercase().contains(&needle) || f.to_lowercase().contains(&needle))).collect();
-                if items.is_empty() {
-                    continue;
-                }
-                let title = if f.is_empty() { "(no folder)".to_string() } else { f.clone() };
-                egui::CollapsingHeader::new(format!("{title}  ({})", items.len())).id_salt(("libf", &f)).default_open(!needle.is_empty()).show(ui, |ui| {
-                    for e in items {
-                        let sel = self.job_lib_id == Some(e.id);
-                        let open_now = self.jobs.iter().any(|j| j.lib_id == Some(e.id)) || self.job_lib_id == Some(e.id);
-                        let label = format!("{}  ·  {} sh{}", e.name, e.count_b, if open_now { "  · open" } else { "" });
-                        // Who last saved it, and when (LB6).
-                        let saved = e.saved_note(&self.clock);
-                        let saved = if saved.is_empty() { String::new() } else { format!("\n{saved}") };
-                        if ui.selectable_label(sel, label).on_hover_text(format!("{} — {lib_tip}{saved}", crate::library::auto_ref(e.kind, e.id))).clicked() {
-                            open = Some(e.id);
-                        }
-                    }
-                });
-            }
-        });
         if let Some(id) = open {
             self.open_library_job(id);
         }
@@ -1005,11 +1029,14 @@ fn part_changed(c: &Changed, added: bool, clock: &crate::shared::Clock) -> Strin
 
 /// An open job made from library job `id` as read (`j`), named `name`:
 /// linked to its record and the revisions read (LB7).
-fn job_from_library(id: u64, name: String, j: crate::jobfile::JobFile) -> crate::Job {
+/// `place`: its folder in the Library's job folders and that folder's name,
+/// the Open jobs folder it sits in (JX15).
+fn job_from_library(id: u64, name: String, j: crate::jobfile::JobFile, place: (u64, String)) -> crate::Job {
     let lib_read = LibRead { revision: j.library.map_or(0, |r| r.revision), parts: j.library_parts };
     let mut result = crate::nest::NestResult { sheets: j.sheets, formats: j.formats, method: j.method, tried: 0 };
     result.normalise(&j.spec);
-    crate::Job { week: if j.week.is_empty() { "Library".into() } else { j.week }, name, parts: j.parts, spec: j.spec, result, stale: j.stale, lib_id: Some(id), cut_lines: j.cut_lines, manual_cuts: j.manual_cuts, cam_changed: None, held: j.held, erp: j.erp, file: None, saved: None, lib_read }
+    let (folder, week) = place;
+    crate::Job { week, name, parts: j.parts, spec: j.spec, result, stale: j.stale, lib_id: Some(id), cut_lines: j.cut_lines, manual_cuts: j.manual_cuts, cam_changed: None, held: j.held, erp: j.erp, file: None, saved: None, lib_read, lib_folder: Some(folder) }
 }
 
 #[cfg(test)]
@@ -1266,6 +1293,65 @@ mod libui_tests {
         assert!(theirs.iter().all(|r| !now.contains(r)), "PROG-1's remnants are still in stock: {theirs:?} in {now:?}");
         assert_eq!(made(&prog2).len(), 1);
         assert!(now.contains(&made(&prog2)[0]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// LB9, JX15: DEMO-7 sits in folder Acme/2026-11. Each answer to PROG-2's
+    /// refused save leaves it there: Save mine as a copy files the copy next
+    /// to it, Overwrite saves over it where it is, and a job reloaded from
+    /// there saves over it where it is too.
+    #[test]
+    fn the_answers_keep_the_job_in_its_folder_and_file_the_copy_next_to_it() {
+        use crate::folders::TOP;
+        let dir = new_library("answer_folders");
+        let clock = Clock::at(NOV_9_0920);
+        let mut prog1 = demo7(&dir, &clock);
+        let id = prog1.job_lib_id.unwrap();
+        let acme = prog1.lib_new_folder(TOP).unwrap();
+        assert!(prog1.lib_rename_folder(acme, "Acme"), "{}", prog1.status);
+        let nov = prog1.lib_new_folder(acme).unwrap();
+        assert!(prog1.lib_rename_folder(nov, "2026-11"), "{}", prog1.status);
+        prog1.lib_cut(super::LibItem::Job(id));
+        assert!(prog1.lib_paste(nov), "{}", prog1.status);
+        let outline = |a: &mut App| {
+            a.lib_refresh();
+            // The jobs in Acme/2026-11 (the folder's own line left out).
+            a.library_outline().into_iter().filter(|l| l.starts_with("Acme/2026-11/") && !l.ends_with('/')).collect::<Vec<_>>()
+        };
+        // PROG-2 opens it from there; PROG-1 saves it; PROG-2's save is refused.
+        let mut prog2 = stock_window(&dir, "kim", "PROG-2", &clock);
+        let refused = |prog1: &mut App, prog2: &mut App| {
+            clock.advance(Duration::from_secs(60));
+            prog1.parts[0].qty += 1;
+            prog1.save_job_to_library();
+            assert!(prog1.libui.question.is_none(), "{}", prog1.status);
+            prog2.parts[0].qty += 2;
+            prog2.save_job_to_library();
+            assert!(matches!(prog2.libui.question, Some(SaveQuestion::Job(_))), "{}", prog2.status);
+        };
+        prog2.open_library_job(id);
+        refused(&mut prog1, &mut prog2);
+        // Save mine as a copy: next to theirs.
+        prog2.save_mine_as_copy();
+        assert_eq!(prog2.job_name, "DEMO-7 (1)", "{}", prog2.status);
+        assert_eq!(outline(&mut prog2), ["Acme/2026-11/DEMO-7", "Acme/2026-11/DEMO-7 (1)"]);
+        // Overwrite: over theirs, where it is.
+        prog2.open_library_job(id);
+        refused(&mut prog1, &mut prog2);
+        prog2.overwrite_theirs();
+        assert!(prog2.libui.question.is_none() && prog2.job_lib_id == Some(id), "{}", prog2.status);
+        assert_eq!(outline(&mut prog2), ["Acme/2026-11/DEMO-7", "Acme/2026-11/DEMO-7 (1)"]);
+        // Reload theirs (PROG-1, which still has DEMO-7 open): it sits in an
+        // Open jobs folder named like its Library folder, and its next save
+        // goes over it, where it is.
+        refused(&mut prog2, &mut prog1);
+        prog1.reload_theirs();
+        assert_eq!((prog1.job_lib_id, prog1.jobs[prog1.cur_job].week.as_str()), (Some(id), "2026-11"));
+        prog1.parts[0].qty += 1;
+        prog1.save_job_to_library();
+        assert!(prog1.libui.question.is_none() && prog1.job_lib_id == Some(id), "{}", prog1.status);
+        assert_eq!(outline(&mut prog1), ["Acme/2026-11/DEMO-7", "Acme/2026-11/DEMO-7 (1)"]);
+        assert_eq!(prog1.library().unwrap().entries().iter().filter(|e| e.kind == Kind::Job).count(), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1543,7 +1629,7 @@ mod libui_tests {
         a.stockui.open = true;
         a.stockui.sel = Some("S1".into());
         let _ = shown(&ctx, |c| a.stock_window(c));
-        crate::stock::Stock::update(&shop, |s| s.add_sheet(crate::stock::Item::sheet("SHOP-SHEET", 0, 3.0, 3000.0, 1500.0, 1), true)).unwrap();
+        crate::stock::Stock::update(&Library::at(&shop, &a.who, &a.clock), |s| s.add_sheet(crate::stock::Item::sheet("SHOP-SHEET", 0, 3.0, 3000.0, 1500.0, 1), true)).unwrap();
         a.pick_library_folder(shop.display().to_string());
         assert!(a.lib_new_ask.is_none());
         assert_eq!(a.cfg.library_dir, shop.display().to_string());

@@ -341,6 +341,8 @@ impl Library {
                 lib.write_index(&entries_of(lib.scan(&first)), &lock)?;
             }
         }
+        // A Library from before folders gets its job folders now (JX11).
+        crate::folders::ensure(&lib, Kind::Job)?;
         Ok(lib)
     }
 
@@ -566,33 +568,51 @@ impl Library {
         std::fs::metadata(self.path(kind, id)).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs())
     }
 
-    /// Who is saving, and now (LB5).
-    fn saved(&self) -> Saved {
+    /// Who is saving, and now (LB5). Taken once the write lock is held.
+    pub(crate) fn saved(&self) -> Saved {
         Saved { by: self.who.clone(), at: self.clock.now() }
     }
 
     /// Save a job, recording who saved it and when (LB5) and its revision
-    /// (LB7). Returns its record.
+    /// (LB7). Returns its record. A new record goes into the top-level
+    /// folder named like the job's folder (JX15).
     pub fn save_job(&self, job: &JobFile, to: SaveTo) -> Result<Record, Refused> {
-        self.save_job_with(to, &job.name, || Ok(job.clone()))
+        self.save_job_in(job, to, None)
+    }
+
+    /// `save_job`, a new record going into the folder `folder` while that is
+    /// still there (JX15).
+    pub fn save_job_in(&self, job: &JobFile, to: SaveTo, folder: Option<u64>) -> Result<Record, Refused> {
+        self.save_job_with(to, &job.name, folder, || Ok(job.clone()))
     }
 
     /// Save the job `job` makes, under the name `name`, while the write lock
     /// is held (LB1) and once nobody else has saved it since it was read
     /// (LB7) and no other job in the Library holds the name (JX16): the
     /// window books the stock in `job`, so a save refused for either reason
-    /// books nothing (LB8). Of two PCs saving one new name at the same
-    /// moment, one is stored and the other refused.
-    pub fn save_job_with(&self, to: SaveTo, name: &str, job: impl FnOnce() -> Result<JobFile, String>) -> Result<Record, Refused> {
+    /// books nothing (LB8). A new record then goes into the folder `folder`
+    /// while that is still there, else the top-level folder named like the
+    /// job's folder (JX15); saving over a record never moves it. All of it
+    /// is one hold of the write lock, so of two PCs saving one new name at
+    /// the same moment, one is stored and the other refused. A place in the
+    /// folder tree that can't be written leaves the job at the top, saved.
+    pub fn save_job_with(&self, to: SaveTo, name: &str, folder: Option<u64>, job: impl FnOnce() -> Result<JobFile, String>) -> Result<Record, Refused> {
+        let _lock = self.lock()?;
         let job = || {
             self.check_job_name(name, to.id())?;
             job()
         };
-        self.store(Kind::Job, to, job, |job, saved, rec| {
+        let mut week = String::new();
+        let rec = self.store(Kind::Job, to, job, |job, saved, rec| {
+            week = job.week.clone();
             let job = JobFile { saved: Some(saved), library: Some(rec), ..job };
             let text = serde_json::to_string_pretty(&job).map_err(|e| e.to_string())?;
             Ok((text, move |id| job_entry(id, &job, 0)))
-        })
+        })?;
+        if to.id().is_none() {
+            let _ = crate::folders::change(self, Kind::Job, |t, _| Ok(t.file_new(rec.id, folder, &week)));
+        }
+        Ok(rec)
     }
 
     /// May job `id` (None: a new record, as Save as makes) be saved as
@@ -607,7 +627,8 @@ impl Library {
         }
         let key = name_key(name);
         match list.iter().find(|e| e.kind == Kind::Job && Some(e.id) != id && name_key(&e.name) == key) {
-            Some(other) => Err(name_taken(other)),
+            // Its folder as the tree shows it (JX10), not the name written on it.
+            Some(other) => Err(name_taken(other, &crate::folders::load(self, Kind::Job).map_or_else(|_| other.folder.clone(), |t| t.path(t.folder_of(other.id))))),
             None => {
                 shared::pause("job name checked");
                 Ok(())
@@ -661,7 +682,12 @@ impl Library {
         let _ = std::fs::remove_file(self.path(kind, id));
         let mut all = self.entries();
         all.retain(|x| !(x.kind == kind && x.id == id));
-        self.write_index(&all, &lock)
+        self.write_index(&all, &lock)?;
+        // Its place in the folder tree goes with it (JX10).
+        if kind == Kind::Job {
+            let _ = crate::folders::change(self, kind, |t, _| t.put(id, crate::folders::TOP));
+        }
+        Ok(())
     }
 }
 
@@ -687,13 +713,14 @@ fn folder_words(folder: &str) -> String {
     if folder.trim().is_empty() { "with no folder".into() } else { format!("in folder {folder}") }
 }
 
-/// The refusal of a name `other` holds (JX16): which job, and its folder.
-fn name_taken(other: &Entry) -> String {
+/// The refusal of a name `other` holds (JX16): which job, and its folder
+/// (`folder`, its path in the folder tree).
+fn name_taken(other: &Entry, folder: &str) -> String {
     format!(
         "the job '{}' ({}) {} already has that name, and job names are unique across the Library, whatever their capitals: pick another name",
         other.name,
         auto_ref(Kind::Job, other.id),
-        folder_words(&other.folder)
+        folder_words(folder)
     )
 }
 
@@ -1133,6 +1160,8 @@ mod library_tests {
         assert_eq!(clock.shown(NOV_9_0920 - 365 * 86400), "9 Nov 2025 09:20");
         assert_eq!(clock.shown(1_798_761_540), "31 Dec 23:59");
         assert_eq!(clock.stamp(NOV_9_0920), "2026-11-09 09:20");
+        // SV10: "at 09:20" today, the day too on another day.
+        assert_eq!((clock.when(NOV_9_0920 + 60), clock.when(NOV_9_0920 - 86400)), ("at 09:21".to_string(), "on 8 Nov 09:20".to_string()));
         assert_eq!(Who::new("sam", "PROG-2").as_agent().label(), "sam on PROG-2 (agent)");
     }
 
@@ -1162,7 +1191,7 @@ mod library_tests {
         // LB8: what a save does before writing (the window books the stock
         // there) never runs for a refused save.
         let mut booked = false;
-        let r = prog2.save_job_with(SaveTo::Read(on2.library.unwrap()), &on2.name, || {
+        let r = prog2.save_job_with(SaveTo::Read(on2.library.unwrap()), &on2.name, None, || {
             booked = true;
             Ok(on2.clone())
         });
@@ -1257,16 +1286,19 @@ mod library_tests {
     #[test]
     fn jobs_that_already_share_a_name_keep_saving_and_are_marked() {
         let dir = scratch("old_twins");
-        let lib = Library::open(&dir, &Who::new("sam", "PROG-1"), &Clock::at(NOV_9_0920)).unwrap();
-        // Written as an older version did, with no name check.
+        let (who, clock) = (Who::new("sam", "PROG-1"), Clock::at(NOV_9_0920));
+        // Written as an older version did, with no name check and before
+        // folders: the first open files them by their folder names (JX11).
+        let old = Library::at(&dir, &who, &clock);
         for (id, name, folder) in [(1, "DEMO-001 frames", "Acme"), (2, "demo-001 FRAMES", "W12"), (3, "DEMO-002 brackets", "W12")] {
             let mut j = job(name);
             j.week = folder.into();
-            let p = lib.path(Kind::Job, id);
+            let p = old.path(Kind::Job, id);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::write(&p, serde_json::to_string_pretty(&j).unwrap()).unwrap();
         }
-        lib.rebuild_index().unwrap();
+        old.rebuild_index().unwrap();
+        let lib = Library::open(&dir, &who, &clock).unwrap();
         let marked = |lib: &Library| {
             let list = lib.entries();
             let mut m: Vec<(u64, Vec<u64>)> = shared_job_names(&list).into_iter().map(|(id, o)| (id, o.iter().map(|e| e.id).collect())).collect();

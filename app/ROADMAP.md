@@ -15,7 +15,7 @@ is **`FEATURES.md`** at the top of the repo; keep both in step.
 | Original | Rebuild | Pri |
 |---|---|---|
 | Job Explorer, Product List, Product view, Sheet list, Sheet View | Have (Jobs screen) | |
-| Save jobs to disk / database (New, Connect, Information) | Have — `.snjob` files and the Library (jobs and products on disk, a folder several PCs can share: every change under one write lock, MECHANICS LB1–LB3; `library-check` tests a shared folder from several PCs at once, LB4; a save over someone else's newer save asks first and takes nothing from stock, LB7–LB10; a Library that can't be reached is said so everywhere, naming its folder, and is never made by itself: a new one is made in Settings after asking, LB11–LB13); Lantek SQL database is read-only (Windows) | |
+| Save jobs to disk / database (New, Connect, Information) | Have — `.snjob` files and the Library (jobs and products on disk, a folder several PCs can share: every change under one write lock, MECHANICS LB1–LB3; `library-check` tests a shared folder from several PCs at once, LB4; a save over someone else's newer save asks first and takes nothing from stock, LB7–LB10; one job folder tree for every PC, with sub-folders, Cut and Paste, JX10–JX15; a Library that can't be reached is said so everywhere, naming its folder, and is never made by itself: a new one is made in Settings after asking, LB11–LB13); Lantek SQL database is read-only (Windows) | |
 | Parts from database, Import parts (DXF/DWG/MEC/IGES/GEO…) | Have — DXF, DWG, Lantek MEC (encrypted too), IGES, PDF, ESSI, DSTV, GEO (`formats/`), picked in an import window with a preview of the drawing (IM10); still missing HPGL, ISO programs, ME10, EPS and others (JOB-26) | |
 | Rectangles (quick rectangular parts) | Part — built-in shapes | |
 | Sheets stock manager (sizes, quantities, remnants) | Have — Sheet stock window: list/criteria, quantities, priority, locking, create, what the open job uses; nesting takes sheets from stock (best sheet format / combination searches, time limit) | |
@@ -53,7 +53,7 @@ is **`FEATURES.md`** at the top of the repo; keep both in step.
 
 | Original | Rebuild | Pri |
 |---|---|---|
-| Lead-in/outs: Automatic, Semi-automatic, Delete, 16 lead types, dynamic, custom, move point, lead-out like lead-in, bisector | Part — automatic leads from the machine's CT1 tables by contour class and quality (types 1–13, zones, corner rules, round-hole clipping, collision test; `leads.rs`, MECHANICS AL1–AL11); types 14–16, force placement, dynamic/custom leads missing | ★★ |
+| Lead-in/outs: Automatic, Semi-automatic, Delete, 16 lead types, dynamic, custom, move point, lead-out like lead-in, bisector | Part — automatic leads from the machine's CT1 tables by contour class and quality (types 1–13, zones, corner rules, round-hole clipping, collision test; `leads.rs`, MECHANICS AL1–AL11); one lead's free end dragged by hand in the Part view (MECHANICS LE1–LE7); moving a lead's start by drag (TEC-27), types 14–16, force placement, dynamic/custom leads missing | ★★ |
 | Micro-joints: Automatic, Semi-auto, 6 types, corner lead-in, nano-joints, move point, to geometry | Part — Lantek's automatic count (ceil P/F150, size-class min/max, even), holes too, centred on elements, corner joints straddle corners, joint leads (`joints.rs`, MECHANICS AM1–AM6); lead and joint tables per material × thickness section of the machine file (MTL7); per-class V records, zone modes, nano-joints missing | ★ |
 | Loops (2 types), Round angles | Part — loops | ★ |
 | **Bridges** (join parts so they cut as one) | Missing | ★★ |
@@ -95,7 +95,7 @@ is **`FEATURES.md`** at the top of the repo; keep both in step.
 | Feature | Rebuild | Pri |
 |---|---|---|
 | Headless engine shared by the window, CLI and MCP (`src/engine/`) | Have | |
-| Operations: job, parts (shapes, DXF + layer roles, library), sheet, nest, place/move/rotate/copy, technology (leads, element leads, joints, loops, cut quality, texts), cut order, remnants/cut lines, verify, program, export, sheet stock | Have — 52 operations (`nestpro ops`; `machine-tech` reports the machine-file section for the job; `library-check` is the two-PC test of a shared Library folder) | |
+| Operations: job, parts (shapes, DXF + layer roles, library), sheet, nest, place/move/rotate/copy, technology (leads, element leads, leads moved by hand, joints, loops, cut quality, texts), cut order, remnants/cut lines, verify, program, export, sheet stock | Have — 55 operations (`nestpro ops`; `machine-tech` reports the machine-file section for the job; `library-check` is the two-PC test of a shared Library folder; `job-folders` files Library jobs in folders) | |
 | Pictures for the agent (sheet/part PNG or SVG, numbered elements) | Have | |
 | Every ribbon command mapped to an operation, test-enforced (`nestpro ops --gui`) | Have | |
 | Window notices when an agent changed the open job file: reloads it, or asks when both changed | Have (`filewatch.rs`, once a second) | |

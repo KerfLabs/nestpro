@@ -347,6 +347,33 @@ pub struct PartTech {
     /// (files saved before it existed).
     #[serde(default)]
     pub joint_lead_out: Option<f64>,
+    /// Leads whose free end was moved by hand, one per contour (LE1–LE7).
+    #[serde(default)]
+    pub lead_edits: [Option<LeadEdit>; LEAD_EDITS],
+}
+
+/// How many contours of one part can have a lead moved by hand.
+pub const LEAD_EDITS: usize = 16;
+
+/// A lead moved by hand (LE1–LE3): the contour keeps its start and lead
+/// record, and the lead-in's pierce and/or the lead-out's end sit where they
+/// were dropped. Both are kept as a length from the contour and an angle
+/// measured from the contour, so they follow the part when it is turned or
+/// mirrored on a sheet.
+#[derive(Clone, Copy, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
+pub struct LeadEdit {
+    /// Contour index, as `starts` counts them (cut holes first, outline last).
+    pub contour: u8,
+    /// Where the contour starts (the lead's foot), part coordinates.
+    pub at: P,
+    /// The lead record (0–7, by contour class) the lead was built from.
+    pub rec: u8,
+    /// Lead-in: (straight distance from the start to the pierce, mm; angle in
+    /// degrees from the contour behind the start, turning into the scrap).
+    pub lead_in: Option<(f64, f64)>,
+    /// Lead-out: (straight distance from where the lead-out leaves the
+    /// contour to its end, mm; angle from the contour ahead, into the scrap).
+    pub lead_out: Option<(f64, f64)>,
 }
 
 /// One row of the automatic cut technology list (rule CT1): the technology
@@ -472,7 +499,28 @@ impl Default for PartTech {
             overlap: 0.0,
             joint_every: 0.0,
             joint_lead_out: None,
+            lead_edits: [None; LEAD_EDITS],
         }
+    }
+}
+
+impl PartTech {
+    /// Contour `ci`'s lead moved by hand, if any.
+    pub fn lead_edit(&self, ci: usize) -> Option<LeadEdit> {
+        self.lead_edits.iter().flatten().find(|e| e.contour as usize == ci).copied()
+    }
+
+    /// Put contour `ci`'s lead back to what the plan makes of it (LE6).
+    /// Returns whether there was one.
+    pub fn clear_lead_edit(&mut self, ci: usize) -> bool {
+        let mut found = false;
+        for e in self.lead_edits.iter_mut() {
+            if e.is_some_and(|x| x.contour as usize == ci) {
+                *e = None;
+                found = true;
+            }
+        }
+        found
     }
 }
 
@@ -742,6 +790,7 @@ impl PartTech {
             + u32::from(self.quality.is_some())
             + self.starts.iter().flatten().count() as u32
             + self.joint_picks.iter().flatten().count() as u32
+            + self.lead_edits.iter().flatten().count() as u32
     }
 }
 

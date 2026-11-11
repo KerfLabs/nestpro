@@ -760,10 +760,60 @@ fn rotate(v: P, deg: f64) -> P {
     [v[0] * c - v[1] * s, v[0] * s + v[1] * c]
 }
 
+/// Cutting direction and scrap normal at point `p` of the contour, `t_poly`
+/// being the polyline's direction there (a round contour uses its true tangent).
+fn frame_at(pts: &[P], inner: bool, circle: Option<(P, f64)>, p: P, t_poly: P) -> (P, P) {
+    if let Some((c, _)) = circle {
+        let u = norm([p[0] - c[0], p[1] - c[1]]);
+        let t = if signed_area2(pts) >= 0.0 { [-u[1], u[0]] } else { [u[1], -u[0]] };
+        (t, if inner { [-u[0], -u[1]] } else { u })
+    } else {
+        (t_poly, scrap_normal(pts, inner, t_poly))
+    }
+}
+
+/// Where the lead-in arrives: the contour's start, the cutting direction
+/// leaving it and the scrap normal there.
+pub fn in_frame(pts: &[P], inner: bool, circle: Option<(P, f64)>) -> (P, P, P) {
+    let (t, n) = frame_at(pts, inner, circle, pts[0], dir_at(pts, 0.0, false));
+    (pts[0], t, n)
+}
+
+/// Where the lead-out leaves: `ov` along the contour (the overlap; 0 = the
+/// start, arriving along the last side), the cutting direction arriving
+/// there and the scrap normal.
+pub fn out_frame(pts: &[P], inner: bool, circle: Option<(P, f64)>, ov: f64) -> (P, P, P) {
+    let o = point_at(pts, ov.max(0.0));
+    let (t, n) = frame_at(pts, inner, circle, o, dir_at(pts, ov.max(0.0), true));
+    (o, t, n)
+}
+
 /// Build the leads for a contour starting at its lead point (rules AL7–AL9:
 /// types 1–9, corner type 10, odd corner type 11, laser types 12/13). `circle` = a round contour's centre and radius: its leads use
 /// the true tangent there; `limit` = keep a round hole's lead short of its centre.
 pub fn build(pts: &[P], inner: bool, rec: &LeadRec, circle: Option<(P, f64)>, limit: bool, tol: f64) -> LeadGeo {
+    build_hand(pts, inner, rec, circle, limit, tol, Hand::default())
+}
+
+/// Lead ends placed by hand (LE1): (distance, angle) of the lead-in's pierce
+/// and of the lead-out's end; `None` = the record's own.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Hand {
+    pub lead_in: Option<(f64, f64)>,
+    pub lead_out: Option<(f64, f64)>,
+}
+
+impl Hand {
+    pub fn is_some(&self) -> bool {
+        self.lead_in.is_some() || self.lead_out.is_some()
+    }
+}
+
+/// `build`, with the lead-in's pierce and/or the lead-out's end where `hand`
+/// puts them (LE3): the lead keeps its record's arc into (or out of) the
+/// contour, so it still meets the contour tangentially, and runs straight to
+/// the point; other leads become a straight line.
+pub fn build_hand(pts: &[P], inner: bool, rec: &LeadRec, circle: Option<(P, f64)>, limit: bool, tol: f64, hand: Hand) -> LeadGeo {
     let mut r = *rec;
     // Types 14–16 (special round-hole leads) are not decoded: built as type 1.
     if (14..=16).contains(&r.kind) {
@@ -772,26 +822,26 @@ pub fn build(pts: &[P], inner: bool, rec: &LeadRec, circle: Option<(P, f64)>, li
     if let (true, true, Some((_, hr))) = (inner, limit, circle) {
         limit_to_centre(&mut r, hr);
     }
+    let mut geo = build_rec(pts, inner, &r, circle, tol);
+    let (arc_in, arc_out) = hand_arcs(&r, tol);
+    if let Some((len, a)) = hand.lead_in {
+        let (o, t, n) = in_frame(pts, inner, circle);
+        geo.lead_in = to_world(&hand_local_in(hand_local(len, a, true), arc_in, tol), o, t, n);
+    }
+    if let Some((len, a)) = hand.lead_out {
+        let (o, t, n) = out_frame(pts, inner, circle, geo.overlap);
+        let q = hand_local(len, a, false);
+        geo.lead_out = to_world(&mirror_out(hand_local_in([-q[0], q[1]], arc_out, tol)), o, t, n);
+    }
+    geo
+}
+
+fn build_rec(pts: &[P], inner: bool, r: &LeadRec, circle: Option<(P, f64)>, tol: f64) -> LeadGeo {
+    let r = *r;
     let start = pts[0];
     let per = crate::nest::perimeter(pts);
-    let ccw = signed_area2(pts) >= 0.0;
-    // Cutting direction and scrap normal at a point (true tangent on a circle).
-    let frame = |p: P, t_poly: P| -> (P, P) {
-        if let Some((c, _)) = circle {
-            let u = norm([p[0] - c[0], p[1] - c[1]]);
-            let t = if ccw { [-u[1], u[0]] } else { [u[1], -u[0]] };
-            (t, if inner { [-u[0], -u[1]] } else { u })
-        } else {
-            (t_poly, scrap_normal(pts, inner, t_poly))
-        }
-    };
-    let (t_first, n_first) = frame(start, dir_at(pts, 0.0, false));
-    let (t_last, n_last) = frame(start, dir_at(pts, 0.0, true));
-    let out_frame = |ov: f64| -> (P, P, P) {
-        let o = point_at(pts, ov);
-        let (t, n) = if ov < 1e-9 { (t_last, n_last) } else { frame(o, dir_at(pts, ov, true)) };
-        (o, t, n)
-    };
+    let (_, t_first, n_first) = in_frame(pts, inner, circle);
+    let (_, t_last, n_last) = out_frame(pts, inner, circle, 0.0);
     // No lead-out at or under 2·tol (AL8).
     let out_ok = |d: f64| d > 2.0 * tol;
     match r.kind {
@@ -823,7 +873,7 @@ pub fn build(pts: &[P], inner: bool, rec: &LeadRec, circle: Option<(P, f64)>, li
             let ov = r.overlap.clamp(0.0, per / 2.0);
             let lin = to_world(&local_laser_in(r.kind, r.d_in, r.a_in, r.r_in), start, t_first, n_first);
             let lout = if out_ok(r.r_out) || out_ok(r.d_out) {
-                let (o, t, n) = out_frame(ov);
+                let (o, t, n) = out_frame(pts, inner, circle, ov);
                 to_world(&mirror_out(local_laser_in(r.kind, r.d_out, r.a_out, r.r_out)), o, t, n)
             } else {
                 vec![]
@@ -836,7 +886,7 @@ pub fn build(pts: &[P], inner: bool, rec: &LeadRec, circle: Option<(P, f64)>, li
             let lin = if r.d_in > 0.0 { to_world(&local_lead_in(fi, r.d_in, r.a_in, r.r_in, tol), start, t_first, n_first) } else { vec![start] };
             let has_out = out_ok(r.d_out) && (fo != 2 || out_ok(r.r_out));
             let lout = if has_out {
-                let (o, t, n) = out_frame(ov);
+                let (o, t, n) = out_frame(pts, inner, circle, ov);
                 to_world(&mirror_out(local_lead_in(fo, r.d_out, r.a_out, r.r_out, tol)), o, t, n)
             } else {
                 vec![]
@@ -844,6 +894,170 @@ pub fn build(pts: &[P], inner: bool, rec: &LeadRec, circle: Option<(P, f64)>, li
             LeadGeo { lead_in: lin, lead_out: lout, overlap: ov }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Leads moved by hand (LE1–LE7)
+// ---------------------------------------------------------------------------
+
+/// Shortest lead a drag leaves, mm (our own: the same floor as a lead put on
+/// a picked element).
+pub const HAND_MIN_LEN: f64 = 1.0;
+/// A dragged end keeps this many degrees off the contour on either side
+/// (our own, as the joint lead drag keeps at least 1°, J8).
+pub const HAND_MIN_ANGLE: f64 = 1.0;
+/// A dragged end snaps to 0.1 mm and whole degrees (as the joint lead drag).
+pub const HAND_LEN_STEP: f64 = 0.1;
+pub const HAND_ANGLE_STEP: f64 = 1.0;
+
+/// A hand-placed end in the lead's local frame (x along the cut, y into the
+/// scrap): the lead-in's angle is measured from the contour behind the start,
+/// the lead-out's from the contour ahead (LE1).
+pub fn hand_local(len: f64, deg: f64, lead_in: bool) -> P {
+    let (s, c) = deg.to_radians().sin_cos();
+    [if lead_in { -len * c } else { len * c }, len * s]
+}
+
+/// The arc a record's lead-in and lead-out meet the contour with (types 12
+/// and 13, and the tangent-arc forms of 1–9): its radius, which a lead moved
+/// by hand keeps (LE3).
+fn hand_arcs(r: &LeadRec, tol: f64) -> (Option<f64>, Option<f64>) {
+    let (fi, fo) = r.forms();
+    let (a, b) = match r.kind {
+        12 | 13 => (Some(r.r_in), Some(r.r_out)),
+        1..=9 => ((fi == 2).then_some(r.r_in), (fo == 2).then_some(r.r_out)),
+        _ => (None, None),
+    };
+    (a.filter(|v| *v > tol), b.filter(|v| *v > tol))
+}
+
+/// A lead-in in the local frame from the pierce `q` to the origin, arriving
+/// along +x (LE3): with `arc`, a straight from q tangent to a circle of that
+/// radius (made smaller when q is closer than its top, so the arc runs from
+/// q itself) and the arc down to the start; without, a straight line.
+pub fn hand_local_in(q: P, arc: Option<f64>, tol: f64) -> Vec<P> {
+    let straight = vec![q, [0.0, 0.0]];
+    let Some(r) = arc else { return straight };
+    if q[1] <= tol {
+        return straight;
+    }
+    let r = r.min((q[0] * q[0] + q[1] * q[1]) / (2.0 * q[1]));
+    if r <= tol {
+        return straight;
+    }
+    // Arc centre (0, r): the tangent from q touches it where the radius makes
+    // acos(r / |q − c|) with the line to q, on the side the arc turns.
+    let w = [q[0], q[1] - r];
+    let l = (w[0] * w[0] + w[1] * w[1]).sqrt().max(r);
+    let pi = std::f64::consts::PI;
+    let f1 = 1.5 * pi;
+    let mut f0 = w[1].atan2(w[0]) + (r / l).clamp(-1.0, 1.0).acos();
+    while f0 > f1 {
+        f0 -= std::f64::consts::TAU;
+    }
+    while f0 <= f1 - std::f64::consts::TAU {
+        f0 += std::f64::consts::TAU;
+    }
+    let sweep = f1 - f0;
+    let steps = ((sweep / (0.5 * pi)) * ARC_STEPS as f64).ceil().max(1.0) as usize;
+    let mut v = vec![q];
+    for k in 0..=steps {
+        let f = f0 + sweep * k as f64 / steps as f64;
+        let p = if k == steps { [0.0, 0.0] } else { [r * f.cos(), r + r * f.sin()] };
+        if dist(p, *v.last().unwrap()) > 1e-9 {
+            v.push(p);
+        }
+    }
+    v
+}
+
+/// How wide the scrap side opens where a lead meets the contour, degrees
+/// (LE2): 180 on a smooth stretch or a round contour; at a corner (a turn of
+/// more than `ELEMENT_CORNER_DEG`) 360° less the material's angle there.
+/// `at_start` = the lead meets the contour at its start (a lead-in, or a
+/// lead-out without overlap).
+pub fn opening(pts: &[P], inner: bool, circle: Option<(P, f64)>, at_start: bool) -> f64 {
+    if circle.is_some() || !at_start || pts.len() < 3 {
+        return 180.0;
+    }
+    let open = 360.0 - material_angle(pts, 0, inner);
+    if (open - 180.0).abs() <= crate::nest::ELEMENT_CORNER_DEG {
+        180.0
+    } else {
+        open
+    }
+}
+
+/// The angles a hand-placed end may take where the scrap opens `open`
+/// degrees (LE2): from the far side of the opening (180° − open) up to the
+/// contour's other side (180°), less `HAND_MIN_ANGLE` at each.
+pub fn hand_angles(open: f64) -> (f64, f64) {
+    // A sliver of an opening keeps at least its bisector.
+    let mid = 180.0 - open / 2.0;
+    ((180.0 - open + HAND_MIN_ANGLE).min(mid), (180.0 - HAND_MIN_ANGLE).max(mid))
+}
+
+/// Point `p` as (distance, angle) in a lead's frame (o, t, n): the lead-in's
+/// angle from the contour behind `o`, the lead-out's from the contour ahead,
+/// positive into the scrap (LE1).
+pub fn polar_of(frame: (P, P, P), lead_in: bool, p: P) -> (f64, f64) {
+    let (o, t, n) = frame;
+    let v = [p[0] - o[0], p[1] - o[1]];
+    let along = (v[0] * t[0] + v[1] * t[1]) * if lead_in { -1.0 } else { 1.0 };
+    let across = v[0] * n[0] + v[1] * n[1];
+    ((along * along + across * across).sqrt(), across.atan2(along).to_degrees())
+}
+
+/// Where a lead end meets its contour on the **drawn** contour (before kerf
+/// compensation moves the path, KC8): its frame (point, cutting direction,
+/// scrap normal), how wide the scrap opens there (LE2), and the end as
+/// (distance, angle) (LE1) when the lead has one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LeadSpot {
+    pub frame: (P, P, P),
+    pub open: f64,
+    pub end: Option<(f64, f64)>,
+}
+
+impl Default for LeadSpot {
+    fn default() -> Self {
+        LeadSpot { frame: ([0.0, 0.0], [1.0, 0.0], [0.0, 1.0]), open: 180.0, end: None }
+    }
+}
+
+/// The lead-in's and lead-out's spots of leads `geo` built on `pts` (LE1, LE2).
+pub fn spots(pts: &[P], inner: bool, circle: Option<(P, f64)>, geo: &LeadGeo, tol: f64) -> [LeadSpot; 2] {
+    let fin = in_frame(pts, inner, circle);
+    let fout = out_frame(pts, inner, circle, geo.overlap);
+    [
+        LeadSpot { frame: fin, open: opening(pts, inner, circle, true), end: (geo.lead_in.len() >= 2).then(|| polar_of(fin, true, geo.lead_in[0])) },
+        LeadSpot { frame: fout, open: opening(pts, inner, circle, geo.overlap <= tol), end: (geo.lead_out.len() >= 2).then(|| polar_of(fout, false, geo.lead_out[geo.lead_out.len() - 1])) },
+    ]
+}
+
+/// A lead end dragged to `pointer` (LE2): its distance and angle from where
+/// the lead meets the contour, the angle held inside the scrap side's
+/// opening (a pointer past it takes the nearer side), the length at least
+/// `HAND_MIN_LEN`, both snapped to 0.1 mm and whole degrees.
+pub fn hand_polar(frame: (P, P, P), lead_in: bool, open: f64, pointer: P) -> (f64, f64) {
+    let (len, a) = polar_of(frame, lead_in, pointer);
+    hand_clamp(len, a, open)
+}
+
+/// Hold a (distance, angle) inside what a hand-placed end may take (LE2), snapped.
+pub fn hand_clamp(len: f64, a: f64, open: f64) -> (f64, f64) {
+    let (lo, hi) = hand_angles(open);
+    let mut a = a;
+    if a < lo || a > hi {
+        let gap = |x: f64, y: f64| {
+            let m = (x - y).rem_euclid(360.0);
+            m.min(360.0 - m)
+        };
+        a = if gap(a, lo) <= gap(a, hi) { lo } else { hi };
+    }
+    // Divided by the steps per unit, so 0.1 mm steps give 7.1, not 7.1000000000000005.
+    let snap = |v: f64, s: f64| (v / s).round() / (1.0 / s);
+    ((snap(len, HAND_LEN_STEP)).max(HAND_MIN_LEN), snap(a, HAND_ANGLE_STEP).clamp(lo, hi))
 }
 
 // ---------------------------------------------------------------------------
@@ -1098,6 +1312,72 @@ mod lead_tests {
         // Contour 1 at type 0: no lead at all.
         recs[5].kind = 0;
         assert!(place(&l, false, Class::General, None, &q, &recs, 1, [0.0, 0.0], LIN_TOL, ANG_TOL).is_none());
+    }
+
+    fn unit(a: P, b: P) -> P {
+        norm([b[0] - a[0], b[1] - a[1]])
+    }
+
+    #[test]
+    fn a_pierce_placed_by_hand_lands_where_it_was_dropped_and_arc_leads_keep_their_arc() {
+        // The bottom side of a 100 × 50 part, cut left to right from (50, 0); scrap below.
+        let pts = vec![[50.0, 0.0], [100.0, 0.0], [100.0, 50.0], [0.0, 50.0], [0.0, 0.0]];
+        let (s30, c30) = 30f64.to_radians().sin_cos();
+        let rec = LeadRec { overlap: 0.0, ..LeadRec::new(5, (3.0, 2.0), (45.0, 45.0), (1.0, 1.0)) };
+        let g = build_hand(&pts, false, &rec, None, false, LIN_TOL, Hand { lead_in: Some((10.0, 30.0)), lead_out: Some((4.0, 90.0)) });
+        // 10 mm at 30° behind the start, under the part; a straight line (LE3).
+        assert_eq!(g.lead_in.len(), 2);
+        assert!(dist(g.lead_in[0], [50.0 - 10.0 * c30, -10.0 * s30]) < 1e-9, "{:?}", g.lead_in);
+        assert!(dist(g.lead_out[g.lead_out.len() - 1], [50.0, -4.0]) < 1e-9, "{:?}", g.lead_out);
+
+        // Line + arc (type 13, R 3): the pierce is the drop, the arc keeps its
+        // radius and meets the contour along the cut, the straight meets the arc tangentially.
+        let rec = LeadRec { overlap: 0.0, ..LeadRec::new(13, (7.0, 5.0), (0.0, 0.0), (3.0, 2.0)) };
+        let g = build_hand(&pts, false, &rec, None, false, LIN_TOL, Hand { lead_in: Some((12.0, 60.0)), lead_out: None });
+        let v = &g.lead_in;
+        let n = v.len();
+        let (s60, c60) = 60f64.to_radians().sin_cos();
+        assert!(dist(v[0], [50.0 - 12.0 * c60, -12.0 * s60]) < 1e-9);
+        assert!(dist(v[n - 1], [50.0, 0.0]) < 1e-9);
+        assert!(v[1..].iter().all(|p| (dist(*p, [50.0, -3.0]) - 3.0).abs() < 1e-6), "{v:?}");
+        assert!(unit(v[n - 2], v[n - 1])[0] > 0.99, "arrives along the cut");
+        let (a, b) = (unit(v[0], v[1]), unit(v[1], v[2]));
+        assert!(a[0] * b[0] + a[1] * b[1] > 0.99, "tangent");
+
+        // Dropped inside the arc's circle: a smaller arc runs from the drop itself.
+        let g = build_hand(&pts, false, &rec, None, false, LIN_TOL, Hand { lead_in: Some((2.0, 80.0)), lead_out: None });
+        let (s80, c80) = 80f64.to_radians().sin_cos();
+        let r = 4.0 / (2.0 * 2.0 * s80);
+        assert!(dist(g.lead_in[0], [50.0 - 2.0 * c80, -2.0 * s80]) < 1e-9);
+        assert!(g.lead_in.iter().all(|p| (dist(*p, [50.0, -r]) - r).abs() < 1e-6), "{:?}", g.lead_in);
+    }
+
+    #[test]
+    fn a_dragged_end_stays_in_the_scrap_and_snaps() {
+        let pts = vec![[50.0, 0.0], [100.0, 0.0], [100.0, 50.0], [0.0, 50.0], [0.0, 0.0]];
+        let f = in_frame(&pts, false, None);
+        let open = opening(&pts, false, None, true);
+        assert_eq!(open, 180.0);
+        // Behind and under the start: √50 mm at 45°, snapped to 0.1 mm.
+        assert_eq!(hand_polar(f, true, open, [45.0, -5.0]), (7.1, 45.0));
+        // Into the part: held at the nearer edge of the scrap side (LE2).
+        assert_eq!(hand_polar(f, true, open, [40.0, 3.0]).1, 1.0);
+        assert_eq!(hand_polar(f, true, open, [60.0, 3.0]).1, 179.0);
+        // Never shorter than 1 mm.
+        assert_eq!(hand_polar(f, true, open, [50.0, -0.2]).0, HAND_MIN_LEN);
+        // The lead-out's angle counts from the contour ahead.
+        let fo = out_frame(&pts, false, None, 0.0);
+        assert_eq!(hand_polar(fo, false, open, [55.0, -5.0]), (7.1, 45.0));
+        // At a convex corner the scrap opens 270°: a lead-in may swing round
+        // past the first side's line, up the outside of the last side.
+        let r = rect(100.0, 50.0);
+        let open = opening(&r, false, None, true);
+        assert!((open - 270.0).abs() < 1e-9);
+        assert_eq!(hand_polar(in_frame(&r, false, None), true, open, [-5.0, 5.0]).1, -45.0);
+        assert_eq!(hand_angles(open), (-89.0, 179.0));
+        // A round contour is smooth: 180°.
+        let c = crate::nest::circle(50.0, 50.0, 10.0, 48);
+        assert_eq!(opening(&c, true, classify(&c, true).1, true), 180.0);
     }
 
     #[test]

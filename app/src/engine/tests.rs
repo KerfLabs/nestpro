@@ -650,7 +650,7 @@ fn agent_booking_names_and_remakes_remnants() {
     assert!(st.get("RACK-C-7").is_none() && st.get(&again[0]).is_some(), "replaced");
     assert_eq!(st.items.iter().filter(|x| x.kind.is_remnant()).count(), 1);
     // Once it's used, moving the line keeps it, and says so.
-    crate::stock::Stock::update(&lib, |s| s.take(&again[0], 1, false)).unwrap();
+    crate::stock::Stock::update(&crate::library::Library::at(&lib, &Who::new("kim", "PROG-2"), &Clock::pc()), |s| s.take(&again[0], 1, false)).unwrap();
     let r = call(&mut s, "remnant", None, json!({"mode": "line", "x": mx + 220.0}));
     assert!(r["message"].as_str().unwrap().contains("already in use"), "{r}");
     assert_eq!(jobfile::load(Path::new(jp)).unwrap().formats[0].made, again);
@@ -716,6 +716,52 @@ fn stock_only_never_invents_a_sheet_and_a_failed_booking_stores_no_remnants() {
     let r = call(&mut s, "stock-book", Some(jb), json!({"mode": "book"}));
     assert!(r["message"].as_str().unwrap().contains("remnants not stored"), "{r}");
     assert_eq!(remnants(&lib), 1, "no remnant of a sheet that wasn't taken");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SV10 for agents: two agents on two PCs nest on the last 2000 × 1000
+/// sheet. Sam's agent on PROG-1 books first; Kim's agent on PROG-2 books ten
+/// minutes later and is told who took the sheet and when. Nothing is taken
+/// for it, and nesting again books what's in stock now (SV11).
+#[test]
+fn an_agents_stock_book_names_who_took_the_last_sheet() {
+    let d = dir("stock_gone");
+    let clock = Clock::at(1_794_216_000); // 2026-11-09 09:20 UTC
+    let agent = |user: &str, pc: &str| {
+        let mut ctx = stock_ctx(&d);
+        ctx.who = Who::new(user, pc).as_agent();
+        ctx.clock = clock.clone();
+        Session::new(ctx)
+    };
+    let (mut prog1, mut prog2) = (agent("sam", "PROG-1"), agent("kim", "PROG-2"));
+    let lib = d.join("library");
+    let (ja, jb) = (d.join("DEMO-001 frames.snjob"), d.join("DEMO-002 brackets.snjob"));
+    let (ja, jb) = (ja.to_str().unwrap(), jb.to_str().unwrap());
+    call(&mut prog1, "stock", None, json!({"mode": "create", "ref": "LAST", "w": 2000, "h": 1000, "thickness": 3, "qty": 1}));
+    call(&mut prog2, "stock", None, json!({"mode": "create", "ref": "SMALL", "w": 1500, "h": 750, "thickness": 3, "qty": 2}));
+    for (s, jp) in [(&mut prog1, ja), (&mut prog2, jb)] {
+        call(s, "new", Some(jp), json!({"w": 2000, "h": 1000, "thickness": 3}));
+        call(s, "add-shape", None, json!({"shape": "rectangle", "w": 300, "h": 200, "qty": 4}));
+        call(s, "nest", None, json!({"stock": "only"}));
+        assert_eq!(jobfile::load(Path::new(jp)).unwrap().formats[0].stock_ref, "LAST");
+    }
+    call(&mut prog1, "stock-book", None, json!({"mode": "book"}));
+    clock.advance(std::time::Duration::from_secs(10 * 60));
+    let r = call(&mut prog2, "stock-book", None, json!({"mode": "book"}));
+    let m = r["message"].as_str().unwrap();
+    assert!(m.starts_with("Not booked: sam on PROG-1 (agent) took the last 2000 × 1000 (LAST) at 09:20"), "{r}");
+    assert!(m.contains("nest again"), "says what to do: {r}");
+    let st = crate::stock::Stock::load(&lib).unwrap();
+    assert_eq!((st.get("LAST").unwrap().qty, st.get("SMALL").unwrap().qty), (0, 2), "nothing taken for PROG-2");
+    // The stock says who changed it, and when (SV9).
+    let l = call(&mut prog2, "stock", None, json!({"mode": "list", "show_zero": true}));
+    let row = |r: &str| l["data"]["sheets"].as_array().unwrap().iter().find(|x| x["ref"] == r).cloned().unwrap();
+    assert_eq!((row("LAST")["changed_by"].as_str(), row("LAST")["changed_at"].as_str()), (Some("sam on PROG-1 (agent)"), Some("2026-11-09 09:20")), "{l}");
+    assert_eq!(row("SMALL")["changed_by"].as_str(), Some("kim on PROG-2 (agent)"), "{l}");
+    // Nesting again plans from the stock as it is now, and books it.
+    let r = call(&mut prog2, "nest", None, json!({"stock": "only"}));
+    assert!(jobfile::load(Path::new(jb)).unwrap().formats.iter().all(|f| f.stock_ref == "SMALL"), "{r}");
+    assert_eq!(crate::stock::Stock::load(&lib).unwrap().get("SMALL").unwrap().qty, 1, "{r}");
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -1158,7 +1204,7 @@ fn an_agents_stock_change_waits_for_another_pcs_change_and_both_count() {
     // read the stock (1 on the rack) and is about to store 6.
     let (read, go) = std::sync::mpsc::channel();
     let other = std::thread::spawn(move || {
-        crate::stock::Stock::update(&lib, |st| {
+        crate::stock::Stock::update(&crate::library::Library::at(&lib, &Who::new("kim", "PROG-2"), &Clock::pc()), |st| {
             read.send(()).unwrap();
             std::thread::sleep(std::time::Duration::from_millis(400));
             st.change_qty("S1", 5)
@@ -1315,14 +1361,28 @@ fn the_library_check_passes_on_a_test_folder_and_fails_on_a_half_written_record(
     // Run again on the folder it made: it checks the first run's records too.
     let r = call(&mut s, "library-check", None, json!({"folder": folder.to_str().unwrap(), "rounds": 3, "pc": "PROG-2"}));
     let report = r["message"].as_str().unwrap();
-    assert!(report.contains("PASS") && report.contains("Checked: 9 job(s), 9 library part(s) and 2 stock sheet(s) from 2 run(s) (PROG-1, PROG-2)"), "{report}");
+    // Each run's own folder and one folder a round (the spare ones are deleted again).
+    assert!(report.contains("PASS") && report.contains("Checked: 9 job(s), 9 library part(s), 2 stock sheet(s) and 11 job folder(s) from 2 run(s) (PROG-1, PROG-2)"), "{report}");
+    // Round 1: its own folder, then each round a folder made, renamed and a job
+    // moved in, a spare made and deleted; every second round a folder nested.
+    assert!(report.contains("3 stock change(s), 17 job folder change(s)"), "{report}");
     // A job record cut off halfway through, as a dropped connection would leave it.
     let lib = crate::library::Library::open(&folder, &Who::new("sam", "PROG-1"), &Clock::pc()).unwrap();
     let rec = lib.path(crate::library::Kind::Job, 2);
     let text = std::fs::read_to_string(&rec).unwrap();
     std::fs::write(&rec, &text[..text.len() / 2]).unwrap();
+    // Folder changes lost, as a PC writing the folders without the lock
+    // would lose them: a rename undone and a job's place dropped.
+    let file = folder.join(crate::folders::file_name(crate::library::Kind::Job));
+    let mut t = crate::folders::load(&lib, crate::library::Kind::Job).unwrap();
+    let renamed = t.folders.iter().position(|f| f.name.ends_with(" round 1 renamed")).unwrap();
+    t.folders[renamed].name = "DEMO-CHECK round 1".into();
+    t.placed.remove(&3);
+    std::fs::write(&file, serde_json::to_string(&t).unwrap()).unwrap();
     let e = err(&mut s, "library-check", json!({"folder": folder.to_str().unwrap(), "rounds": 1, "pc": "PROG-1"}));
     assert!(e.contains("FAIL") && e.contains("Job record 2") && e.contains("half-written"), "{e}");
+    assert!(e.contains("is 'DEMO-CHECK round 1' in") && e.contains("a folder change was lost"), "{e}");
+    assert!(e.contains("(record 3) is in the top of the Library where PROG-1 left it in 'DEMO-CHECK PROG-1"), "{e}");
 }
 
 /// A test folder the Library check made itself (one round, so it holds the
@@ -1373,6 +1433,14 @@ fn the_library_check_refuses_a_folder_it_cant_read_or_recognise() {
     let f = check_folder(&mut s, &d, "other files");
     std::fs::create_dir_all(f.join("Drawings")).unwrap();
     refused(&mut s, &f, "'Drawings'");
+    // A job folder the check didn't make, or folders that can't be read.
+    let f = check_folder(&mut s, &d, "real folder");
+    let lib = crate::library::Library::open(&f, &Who::new("sam", "PROG-1"), &Clock::pc()).unwrap();
+    crate::folders::change(&lib, crate::library::Kind::Job, |t, _| t.make(crate::folders::TOP, "Acme")).unwrap();
+    refused(&mut s, &f, "the job folder 'Acme'");
+    let f = check_folder(&mut s, &d, "damaged folders");
+    std::fs::write(f.join(crate::folders::file_name(crate::library::Kind::Job)), "{ half a tree").unwrap();
+    refused(&mut s, &f, "folder tree");
 }
 
 /// The 200 × 100 mm outline of the contour-state tests' made-up plates.
@@ -2330,5 +2398,224 @@ fn an_agents_save_part_is_refused_when_the_library_part_was_saved_since() {
     let e = err(&mut s, "library", json!({"mode": "save-part", "folder": "Acme"}));
     assert!(e.contains("DEMO-P1") && e.contains("kim on PROG-1 at 2026-11-09 09:30") && e.contains("Nothing was saved"), "{e}");
     assert_eq!(window.load_product(first).unwrap().part.w, 450.0);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// ---------------------------------------------------------------------------
+// The Library's job folders through the agents' `job-folders` (JX10–JX15).
+// ---------------------------------------------------------------------------
+
+/// LB11 for agents' folders: `job-folders` on a Library that can't be
+/// reached is refused naming its folder and saying what to do, as
+/// `library save-job` is, and nothing is made.
+#[test]
+fn agents_job_folders_are_refused_naming_the_folder_while_the_library_cant_be_reached() {
+    let d = dir("job_folders_unreachable");
+    let mut ctx = Ctx::builtin();
+    ctx.library_dir = d.join("Nesting");
+    let lib = ctx.library_dir.clone();
+    let mut s = Session::new(ctx);
+    let said = format!("The Library on {} can't be reached", lib.display());
+    for args in [
+        json!({"mode": "list"}),
+        json!({"mode": "new", "name": "Acme"}),
+        json!({"mode": "rename", "folder": "Acme", "name": "Acme Ltd"}),
+        json!({"mode": "delete", "folder": "Acme"}),
+        json!({"mode": "move", "saved_job": "JOB000001", "to": "Acme"}),
+    ] {
+        let e = err(&mut s, "job-folders", args.clone());
+        assert!(e.contains(&said), "{args}: {e}");
+        assert!(e.contains("try again once it can be reached"), "{args} doesn't say what to do: {e}");
+        assert!(!lib.exists(), "{args} made the Library folder");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn agents_make_rename_move_and_delete_job_folders_and_are_told_what_to_do_instead() {
+    let d = dir("job_folders");
+    let ctx = stock_ctx(&d);
+    let mut s = Session::new(ctx);
+    let jp = d.join("frames.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"name": "DEMO-001", "week": "W12"}));
+    // Saved into the Library, a job goes into the folder named like its week.
+    call(&mut s, "library", None, json!({"mode": "save-job"}));
+    call(&mut s, "job-folders", None, json!({"mode": "new", "name": "Acme"}));
+    let nov = call(&mut s, "job-folders", None, json!({"mode": "new", "folder": "acme", "name": "2026-11"}));
+    assert!(nov["message"].as_str().unwrap().contains("Acme/2026-11"), "{nov}");
+    // A name taken in the same folder, without case: the original's error 9.
+    let e = err(&mut s, "job-folders", json!({"mode": "new", "name": "ACME"}));
+    assert!(e.contains("already in the top of the Library") && e.contains("error 9"), "{e}");
+    // A saved job, by name, into a folder by its path.
+    let moved = call(&mut s, "job-folders", None, json!({"mode": "move", "saved_job": "demo-001", "to": "Acme/2026-11"}));
+    assert_eq!(moved["data"]["outline"], json!(["Acme/", "Acme/2026-11/", "Acme/2026-11/DEMO-001", "W12/"]), "{moved}");
+    // Refusals say what to do instead.
+    let e = err(&mut s, "job-folders", json!({"mode": "delete", "folder": "Acme"}));
+    assert!(e.contains("still holds 1 folder") && e.contains("Move or delete what's in it first"), "{e}");
+    let e = err(&mut s, "job-folders", json!({"mode": "move", "folder": "Acme", "to": "Acme/2026-11"}));
+    assert!(e.contains("can't go into itself or one of its own folders"), "{e}");
+    let e = err(&mut s, "job-folders", json!({"mode": "move", "folder": "Beta", "to": "/"}));
+    assert!(e.contains("no folder 'Beta'") && e.contains("job-folders mode=list"), "{e}");
+    let e = err(&mut s, "job-folders", json!({"mode": "move", "saved_job": "DEMO-404", "to": "/"}));
+    assert!(e.contains("JOB000012"), "{e}");
+    // Renaming a folder keeps what's in it; an empty one can be deleted.
+    call(&mut s, "job-folders", None, json!({"mode": "rename", "folder": "Acme", "name": "Acme Ltd"}));
+    call(&mut s, "job-folders", None, json!({"mode": "delete", "folder": "W12"}));
+    let l = call(&mut s, "job-folders", None, json!({"mode": "list"}));
+    assert_eq!(l["data"]["outline"], json!(["Acme Ltd/", "Acme Ltd/2026-11/", "Acme Ltd/2026-11/DEMO-001"]), "{l}");
+    assert_eq!(l["data"]["jobs"][0]["folder"], "Acme Ltd/2026-11", "{l}");
+    // By number too, and the job by its reference: to the top.
+    let id = l["data"]["folders"][1]["folder"].as_str().unwrap().to_string();
+    call(&mut s, "job-folders", None, json!({"mode": "move", "saved_job": "JOB000001", "to": "/"}));
+    call(&mut s, "job-folders", None, json!({"mode": "move", "folder": id, "to": "/"}));
+    let l = call(&mut s, "job-folders", None, json!({"mode": "list"}));
+    assert_eq!(l["data"]["outline"], json!(["2026-11/", "Acme Ltd/", "DEMO-001"]), "{l}");
+    // The library listing names a job's folder by its place in the tree.
+    call(&mut s, "job-folders", None, json!({"mode": "move", "saved_job": "DEMO-001", "to": "2026-11"}));
+    let l = call(&mut s, "library", None, json!({"mode": "list", "find": "2026"}));
+    assert_eq!((l["data"][0]["name"].as_str(), l["data"][0]["folder"].as_str()), (Some("DEMO-001"), Some("2026-11")), "{l}");
+}
+
+#[test]
+fn an_agent_moves_one_contours_lead_by_hand_and_puts_it_back() {
+    let d = dir("lead_edit");
+    let job = d.join("plate.snjob");
+    let jp = job.to_str().unwrap();
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(jp), json!({"w": 1500, "h": 1000, "material": "steel", "thickness": 5}));
+    call(&mut s, "add-shape", None, json!({"shape": "plate-hole", "w": 200, "h": 150, "qty": 3}));
+    call(&mut s, "leads", None, json!({"mode": "auto"}));
+    // part-info shows each contour's lead as cut (LE1): 1 = the hole, 2 = the outline.
+    let info = |s: &mut Session| call(s, "part-info", None, json!({"part": 1}))["data"]["contours"].clone();
+    let c = info(&mut s);
+    let outline = &c[1]["lead_in"];
+    assert!(outline["length_mm"].as_f64().unwrap() > 0.0, "{c}");
+    // Its start is a convex corner: the scrap opens 270°, so it can swing round it.
+    assert_eq!(outline["angles_deg"], json!([-89.0, 179.0]), "{c}");
+    assert_eq!(c[1]["lead_by_hand"], false);
+
+    // Swing the outline's lead-in round the corner and stretch it; shorten the hole's.
+    let r = call(&mut s, "lead-edit", None, json!({"part": 1, "contour": 2, "in_length": 10, "in_angle": -45}));
+    assert!(r["message"].as_str().unwrap().contains("10 mm at -45°"), "{r}");
+    call(&mut s, "lead-edit", None, json!({"part": 1, "contour": 1, "in_length": 4}));
+    let c = info(&mut s);
+    assert_eq!((c[1]["lead_in"]["length_mm"].as_f64(), c[1]["lead_in"]["angle_deg"].as_f64(), &c[1]["lead_by_hand"]), (Some(10.0), Some(-45.0), &json!(true)), "{c}");
+    assert_eq!(c[0]["lead_in"]["length_mm"].as_f64(), Some(4.0), "{c}");
+    let saved = jobfile::load(&job).unwrap().parts[0].tech.unwrap();
+    assert_eq!(saved.lead_edits.iter().flatten().count(), 2);
+
+    // Every piece on the sheet takes it, however the nester turned it; one
+    // that would reach the sheet's edge or a neighbour is only shortened (LE5).
+    call(&mut s, "nest", None, json!({"stock": "off"}));
+    let j = jobfile::load(&job).unwrap();
+    let plans = j.plans();
+    let outlines: Vec<&cnc::Contour> = plans[0].contours.iter().filter(|c| c.contour == 1).collect();
+    assert_eq!(outlines.len(), 3);
+    for c in outlines {
+        let e = lead_ends(c);
+        assert!(c.lead_hand, "{e:?}");
+        let (l, a) = e.lead_in.unwrap();
+        assert!(l > 0.0 && l < 10.0 + 1e-6 && (a + 45.0).abs() < 1e-6, "{e:?}");
+    }
+
+    // Refusals say what to do instead.
+    assert!(err(&mut s, "lead-edit", json!({"part": 1, "contour": 2, "in_angle": 200})).contains("can lean"));
+    assert!(err(&mut s, "lead-edit", json!({"part": 1, "contour": 2, "in_length": 0.4})).contains("at least 1 mm"));
+    assert!(err(&mut s, "lead-edit", json!({"part": 1, "contour": 7, "in_length": 5})).contains("isn't one the part cuts"));
+    assert!(err(&mut s, "lead-edit", json!({"part": 1, "contour": 2})).contains("in_length"));
+
+    // Back to automatic: one contour, then the rest.
+    let r = call(&mut s, "lead-edit", None, json!({"part": 1, "contour": 2, "mode": "reset"}));
+    assert!(r["message"].as_str().unwrap().contains("back"), "{r}");
+    let c = info(&mut s);
+    assert_eq!((&c[1]["lead_by_hand"], &c[0]["lead_by_hand"]), (&json!(false), &json!(true)));
+    call(&mut s, "leads", None, json!({"mode": "delete"}));
+    assert_eq!(jobfile::load(&job).unwrap().parts[0].tech.unwrap().lead_edits.iter().flatten().count(), 0);
+}
+
+#[test]
+fn dragging_a_lead_end_in_the_part_view_moves_that_lead_only() {
+    // A plate with a hole and no technology of its own: the machine's leads.
+    let mut parts = vec![Part { name: "P".into(), shape: Shape::PlateHole, w: 200.0, h: 150.0, qty: 1, rotate: false, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
+    let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
+    let before = cnc::plan_part(&parts, 0, &spec);
+    let hole0 = before.contours.iter().find(|c| c.contour == 0).unwrap().lead_path.clone();
+    // Drag the outline's pierce (it starts at the bottom-left corner) out to the left.
+    let to = [-6.0, 4.0];
+    let m = drag_lead_end(&mut parts, 0, &spec, 1, LeadEnd::In, to, crate::units::LenUnit::Mm).unwrap();
+    assert!(m.contains("Contour 2's lead-in moved by hand"), "{m}");
+    let t = parts[0].tech.unwrap();
+    // The part keeps the machine's leads everywhere else (LE4).
+    assert_eq!((t.lead_type, t.corner_start, t.lead_edits.iter().flatten().count()), (nest::LeadType::Machine, true, 1));
+    let after = cnc::plan_part(&parts, 0, &spec);
+    let c = after.contours.iter().find(|c| c.contour == 1).unwrap();
+    // The pierce lands under the pointer, within the 0.1 mm / 1° snap.
+    assert!((c.lead_in[0] - to[0]).hypot(c.lead_in[1] - to[1]) < 0.15, "{:?}", c.lead_in);
+    assert_eq!(after.contours.iter().find(|c| c.contour == 0).unwrap().lead_path, hole0);
+    // Dragging the same point again changes nothing; dragging into the part keeps it in the scrap.
+    drag_lead_end(&mut parts, 0, &spec, 1, LeadEnd::In, to, crate::units::LenUnit::Mm).unwrap();
+    assert_eq!(parts[0].tech.unwrap(), t);
+    let m = drag_lead_end(&mut parts, 0, &spec, 1, LeadEnd::In, [5.0, 8.0], crate::units::LenUnit::Inch).unwrap();
+    // The window's message follows its unit (NST-16).
+    assert!(m.contains(" in at "), "{m}");
+    let (o, _) = nest::placed_shape(&parts, &Placed { part: 0, x: 0.0, y: 0.0, w: 200.0, h: 150.0, turns: 0, mirror: false });
+    let c = cnc::plan_part(&parts, 0, &spec).contours.into_iter().find(|c| c.contour == 1).unwrap();
+    assert!(!nest::point_in_poly(&o, c.lead_in), "{:?}", c.lead_in);
+    // The lead-out's end too; then double-click (reset) puts the contour back.
+    let out = *c.lead_out_path.last().unwrap();
+    drag_lead_end(&mut parts, 0, &spec, 1, LeadEnd::Out, [out[0] - 2.0, out[1] - 3.0], crate::units::LenUnit::Mm).unwrap();
+    assert!(parts[0].tech.unwrap().lead_edit(1).unwrap().lead_out.is_some());
+    assert_eq!(reset_lead_edits(&mut parts[0], Some(1)), 1);
+    assert_eq!(cnc::plan_part(&parts, 0, &spec).contours.iter().find(|c| c.contour == 1).unwrap().lead_path, before.contours.iter().find(|c| c.contour == 1).unwrap().lead_path);
+}
+
+/// Each contour part-info gives a lead: (number, moved by hand).
+fn leads_by_hand(s: &mut Session, part: usize) -> Vec<(u64, bool)> {
+    let pi = call(s, "part-info", None, json!({"part": part}));
+    pi["data"]["contours"].as_array().unwrap().iter().filter_map(|c| c["lead_by_hand"].as_bool().map(|b| (c["contour"].as_u64().unwrap(), b))).collect()
+}
+
+#[test]
+fn a_moved_lead_stays_with_its_contour_when_the_cut_contours_change() {
+    let d = dir("lead_edit_states");
+    let job = d.join("plate.snjob");
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "steel", "thickness": 3}));
+    call(&mut s, "import-drawing", None, json!({"path": contour_plate(&d).to_str().unwrap(), "qty": 1}));
+    call(&mut s, "leads", None, json!({"mode": "auto"}));
+    let holes: Vec<u64> = contour_rows(&mut s, 1).into_iter().filter(|r| r.1 == "hole" && r.2 == "cut").map(|r| r.0).collect();
+    assert!(holes.len() >= 2, "{holes:?}");
+    let (a, b) = (holes[0], holes[1]);
+    call(&mut s, "lead-edit", None, json!({"part": 1, "contour": b, "in_length": 4}));
+    // An earlier hole stops being cut: the moved lead stays on its own hole (LE1, CS4).
+    call(&mut s, "contour-tech", None, json!({"part": 1, "contours": a.to_string(), "state": "mark"}));
+    let moved: Vec<u64> = leads_by_hand(&mut s, 1).into_iter().filter(|r| r.1).map(|r| r.0).collect();
+    assert_eq!(moved, vec![b]);
+    // Its own hole stops being cut: the moved lead goes with it, to no other contour.
+    call(&mut s, "contour-tech", None, json!({"part": 1, "contours": b.to_string(), "state": "mark"}));
+    assert!(leads_by_hand(&mut s, 1).iter().all(|r| !r.1));
+    assert_eq!(jobfile::load(&job).unwrap().parts[0].tech.unwrap().lead_edits.iter().flatten().count(), 0);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_moved_lead_reads_the_same_with_system_compensation() {
+    let d = dir("lead_edit_kerf");
+    let job = d.join("plate.snjob");
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "steel", "thickness": 3}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 200, "h": 100, "qty": 1}));
+    call(&mut s, "leads", None, json!({"mode": "auto"}));
+    call(&mut s, "compensation", None, json!({"control": "off", "system": "on"}));
+    // The lead is measured on the drawn contour, not the offset path (KC8, LE1).
+    let lead = |s: &mut Session| {
+        let c = call(s, "part-info", None, json!({"part": 1}))["data"]["contours"][0]["lead_in"].clone();
+        (c["length_mm"].as_f64().unwrap(), c["angle_deg"].as_f64().unwrap())
+    };
+    call(&mut s, "lead-edit", None, json!({"part": 1, "contour": 1, "in_length": 10, "in_angle": 90}));
+    assert_eq!(lead(&mut s), (10.0, 90.0));
+    // Only the length given: the angle stays.
+    call(&mut s, "lead-edit", None, json!({"part": 1, "contour": 1, "in_length": 12}));
+    assert_eq!(lead(&mut s), (12.0, 90.0));
     let _ = std::fs::remove_dir_all(&d);
 }

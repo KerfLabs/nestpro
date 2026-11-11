@@ -8,6 +8,7 @@
 
 pub mod arrange;
 pub mod contours;
+pub mod folderops;
 pub mod imports;
 pub mod librarycheck;
 pub mod ops;
@@ -145,6 +146,12 @@ impl Ctx {
         // Never the shop's real stock: an empty library of the test's own.
         c.library_dir = std::env::temp_dir().join(format!("nestpro_test_nolib_{}_{:?}", std::process::id(), std::thread::current().id()));
         c
+    }
+
+    /// The Library folder as this agent works on it (its user and clock),
+    /// without setting anything up: stock changes are signed with it (SV9).
+    pub fn library_at(&self) -> crate::library::Library {
+        crate::library::Library::at(&self.library_dir, &self.who, &self.clock)
     }
 
     /// The sheet stock (empty when there is none yet).
@@ -578,6 +585,7 @@ impl TechEdit {
                     // Machine-table leads ignore the lengths: back to a plain type.
                     x.lead_type = nest::LeadType::Line;
                     x.starts = [None; 8];
+                    x.lead_edits = [None; nest::LEAD_EDITS];
                 } else {
                     *t = Some(PartTech { lead_in: 0.0, lead_out: 0.0, ..Default::default() });
                 }
@@ -669,8 +677,153 @@ pub fn lead_on_element(part: &mut Part, elem: usize, pick: Option<P>) -> Result<
     if let Some(slot) = t.starts.iter_mut().find(|s| s.is_none()) {
         *slot = Some((ci as u8, at));
     }
+    // A new start replaces a lead moved by hand on that contour (LE6).
+    t.clear_lead_edit(ci);
     part.tech = Some(t);
     Ok(format!("Lead-in placed {where_} the {} ({len:.1} mm).", kind.label().to_lowercase()))
+}
+
+// ---------------------------------------------------------------------------
+// Leads moved by hand (LE1–LE7)
+// ---------------------------------------------------------------------------
+
+/// Which end of a contour's lead: the lead-in's pierce or the lead-out's end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LeadEnd {
+    In,
+    Out,
+}
+
+impl LeadEnd {
+    pub fn label(self) -> &'static str {
+        match self {
+            LeadEnd::In => "lead-in",
+            LeadEnd::Out => "lead-out",
+        }
+    }
+}
+
+/// A contour's leads as they are cut (LE1): each end as (distance, angle)
+/// from where it meets the contour, the angles it may be given, and whether
+/// it was placed by hand. `None` = the contour has no such lead.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LeadEnds {
+    pub lead_in: Option<(f64, f64)>,
+    pub lead_out: Option<(f64, f64)>,
+    pub in_angles: (f64, f64),
+    pub out_angles: (f64, f64),
+    pub hand: bool,
+}
+
+/// A planned contour's lead ends (LE1), measured on the drawn contour as the
+/// plan built them, so kerf compensation (KC8) doesn't change the numbers. A
+/// punched contour, or one that starts at its first micro-joint's lead-in
+/// (MJ5), has none of its own.
+pub fn lead_ends(c: &cnc::Contour) -> LeadEnds {
+    let own = c.punch.is_none() && !c.closing;
+    let [si, so] = c.lead_spots;
+    LeadEnds { lead_in: si.end.filter(|_| own), lead_out: so.end.filter(|_| own), in_angles: crate::leads::hand_angles(si.open), out_angles: crate::leads::hand_angles(so.open), hand: c.lead_hand }
+}
+
+/// The number part-info, the window and messages give contour `ci` (CS1).
+pub fn contour_number(part: &Part, ci: usize) -> usize {
+    dxf::cut_order(&contours::list(part)).get(ci).copied().unwrap_or(ci) + 1
+}
+
+/// Drag the free end of contour `ci`'s lead-in (its pierce) or lead-out to
+/// `pointer`, part mm (LE2): the GUI's drag, frame by frame. The message
+/// gives lengths in `unit`, the window's (NST-16).
+pub fn drag_lead_end(parts: &mut [Part], idx: usize, spec: &SheetSpec, ci: usize, end: LeadEnd, pointer: P, unit: crate::units::LenUnit) -> Result<String, String> {
+    place_lead_end(parts, idx, spec, ci, end, unit, |frame, open, _| Ok(crate::leads::hand_polar(frame, end == LeadEnd::In, open, pointer)))
+}
+
+/// Give contour `ci`'s lead-in pierce or lead-out end a length (mm) and/or
+/// an angle (degrees from the contour, into the scrap) by hand (LE1, LE2);
+/// what isn't given stays as the lead is cut now.
+pub fn set_lead_end(parts: &mut [Part], idx: usize, spec: &SheetSpec, ci: usize, end: LeadEnd, len: Option<f64>, angle: Option<f64>) -> Result<String, String> {
+    let no = contour_number(&parts[idx], ci);
+    place_lead_end(parts, idx, spec, ci, end, crate::units::LenUnit::Mm, |_, open, now| {
+        let (lo, hi) = crate::leads::hand_angles(open);
+        let what = end.label();
+        let len = match (len, now) {
+            (Some(l), _) => l,
+            (None, Some((l, _))) => l,
+            (None, None) => return Err(format!("Contour {no} has no {what} yet: give its length too.")),
+        };
+        if !len.is_finite() || len < crate::leads::HAND_MIN_LEN {
+            return Err(format!("A {what} moved by hand is at least {} mm long; {len} mm is too short. To cut without it, delete the leads (leads mode=delete).", crate::leads::HAND_MIN_LEN));
+        }
+        let a = match (angle, now) {
+            (Some(a), _) => {
+                if !(lo - 1e-9..=hi + 1e-9).contains(&a) {
+                    return Err(format!("The {what} on contour {no} can lean {lo:.0}° to {hi:.0}° from the contour (the scrap side; 90° = square off it). {a}° would put it into the part."));
+                }
+                a
+            }
+            (None, Some((_, a))) => a,
+            (None, None) => 90.0,
+        };
+        Ok(crate::leads::hand_clamp(len, a, open))
+    })
+}
+
+fn place_lead_end(parts: &mut [Part], idx: usize, spec: &SheetSpec, ci: usize, end: LeadEnd, unit: crate::units::LenUnit, pick: impl FnOnce((P, P, P), f64, Option<(f64, f64)>) -> Result<(f64, f64), String>) -> Result<String, String> {
+    let part = parts.get(idx).ok_or("No such part.")?;
+    let no = contour_number(part, ci);
+    let plan = cnc::plan_part(parts, idx, spec);
+    let Some(c) = plan.contours.iter().find(|c| c.contour == ci) else {
+        return Err(format!("Contour {no} isn't cut (see part-info for the cut contours), so it has no lead."));
+    };
+    if c.punch.is_some() {
+        return Err(format!("Contour {no} is punched on this machine: it has no leads."));
+    }
+    if c.closing {
+        return Err(format!("Contour {no} starts at its first micro-joint's lead-in: drag that joint's lead instead, or delete the joints first."));
+    }
+    // Measured on the drawn contour, not the offset path (KC8).
+    let spot = c.lead_spots[usize::from(end == LeadEnd::Out)];
+    let (len, ang) = pick(spot.frame, spot.open, spot.end)?;
+    // The lead's foot: the drawn contour's start.
+    let g = part.geometry();
+    let own = if ci < g.holes.len() { g.holes[ci].clone() } else { g.outline.clone() };
+    let mut t = part.tech.unwrap_or_else(cnc::auto_tech);
+    let mut e = t.lead_edit(ci).unwrap_or(nest::LeadEdit { contour: ci as u8, at: cnc::start_at_point(own, c.lead_spots[0].frame.0)[0], rec: c.lead_rec as u8, lead_in: None, lead_out: None });
+    match end {
+        LeadEnd::In => e.lead_in = Some((len, ang)),
+        LeadEnd::Out => e.lead_out = Some((len, ang)),
+    }
+    let slot = t.lead_edits.iter().position(|s| s.is_some_and(|x| x.contour as usize == ci)).or_else(|| t.lead_edits.iter().position(|s| s.is_none()));
+    let Some(k) = slot else {
+        return Err(format!("This part already has {} leads moved by hand — put one back first (double-click its end, or lead-edit mode=reset).", nest::LEAD_EDITS));
+    };
+    t.lead_edits[k] = Some(e);
+    // The lead now starts where it was moved; a start picked on an element gives way (LE6).
+    for s in t.starts.iter_mut() {
+        if s.is_some_and(|x| x.0 as usize == ci) {
+            *s = None;
+        }
+    }
+    parts[idx].tech = Some(t);
+    // Say what is cut now: a lead that would cross the part is shortened (LE5).
+    let plan = cnc::plan_part(parts, idx, spec);
+    let cut = plan.contours.iter().find(|c| c.contour == ci).map(lead_ends);
+    let got = cut.and_then(|x| if end == LeadEnd::In { x.lead_in } else { x.lead_out });
+    let short = got.filter(|g| g.0 < len - 0.05).map_or(String::new(), |g| format!(" — cut {}: the rest would cross the part", unit.len(g.0, 1)));
+    Ok(format!("Contour {no}'s {} moved by hand: {} at {ang:.0}° from the contour{short}.", end.label(), unit.len(len, 1)))
+}
+
+/// Put contour `ci`'s lead (or, with `None`, every lead of the part) back to
+/// what the plan makes of it (LE6). Returns how many were moved by hand.
+pub fn reset_lead_edits(part: &mut Part, ci: Option<usize>) -> usize {
+    let Some(t) = part.tech.as_mut() else { return 0 };
+    match ci {
+        Some(ci) => usize::from(t.clear_lead_edit(ci)),
+        None => {
+            let n = t.lead_edits.iter().flatten().count();
+            t.lead_edits = [None; nest::LEAD_EDITS];
+            n
+        }
+    }
 }
 
 /// A micro-joint in the middle of each element listed; returns how many fitted.
@@ -1086,7 +1239,7 @@ impl JobFile {
     pub fn book_stock_named(&mut self, ctx: &Ctx, force_lines: bool, names: Option<&BTreeMap<(usize, usize), String>>) -> String {
         self.normalise_formats();
         let (mut formats, mut held) = (std::mem::take(&mut self.formats), std::mem::take(&mut self.held));
-        let note = stockflow::on_save(&ctx.library_dir, &self.stock_sheets(&ctx.cfg), &mut formats, &mut held, &ctx.cfg.stock, force_lines, names);
+        let note = stockflow::on_save(&ctx.library_at(), &self.stock_sheets(&ctx.cfg), &mut formats, &mut held, &ctx.cfg.stock, force_lines, names);
         (self.formats, self.held) = (formats, held);
         self.booked = true;
         note

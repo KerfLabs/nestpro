@@ -202,12 +202,12 @@ impl Session {
                 f.made.retain(|r| !prev.formats.iter().any(|p| p.made.contains(r)));
             }
             if !gone.is_empty() {
-                stockflow::release(&self.ctx.library_dir, &mut gone, &mut Default::default())?;
+                stockflow::release(&self.ctx.library_at(), &mut gone, &mut Default::default())?;
             }
             prev.held = held;
             prev.book_stock(&self.ctx, true)
         } else if was_booked {
-            let (back, removed, _) = stockflow::release(&self.ctx.library_dir, &mut formats, &mut held)?;
+            let (back, removed, _) = stockflow::release(&self.ctx.library_at(), &mut formats, &mut held)?;
             prev.held.clear();
             format!("{back} sheet(s) given back to stock, {removed} remnant(s) taken out")
         } else {
