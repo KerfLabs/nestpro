@@ -189,7 +189,7 @@ pub static OPS: &[Op] = &[
     ] },
     Op { name: "export-part-dxf", group: "Parts", kind: Kind::Read, help: "Save a part as DXF (outline and holes on CUT, marking on MARK).", args: &[PART, r("out", Ty::Path, "DXF file to write")] },
     Op { name: "library", group: "Parts", kind: Kind::Write, help: "The product/job library: list it (each record with who last saved it and when: saved_by, e.g. \"sam on PROG-2 (agent)\", and saved_at in this PC's local time), add a library product to the job, or save parts / the job into it (recorded as saved by this PC's user, marked (agent)).", args: &[
-        Arg { name: "mode", ty: Ty::Str, required: true, help: "What to do", choices: &["list", "add", "save-part", "save-job"] },
+        Arg { name: "mode", ty: Ty::Str, required: true, help: "What to do. save-job: job names are unique across the Library, whatever their capitals; list marks old jobs that share a name (same_name_as)", choices: &["list", "add", "save-part", "save-job"] },
         a("find", Ty::Str, "list: text to look for"), a("id", Ty::Int, "add: the product's record number"), a("name", Ty::Str, "add: the product's name"),
         a("qty", Ty::Int, "add: quantity"), a("parts", Ty::Parts, "save-part: which parts"), a("folder", Ty::Str, "save-part: product folder/group"),
     ] },
@@ -1689,7 +1689,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             match a.need_str("mode")?.as_str() {
                 "list" => {
                     let find = a.str("find").unwrap_or_default().to_lowercase();
-                    let list: Vec<Value> = lib
+                    let mut list: Vec<Value> = lib
                         .entries()
                         .into_iter()
                         .filter(|e| find.is_empty() || e.name.to_lowercase().contains(&find) || e.folder.to_lowercase().contains(&find))
@@ -1697,6 +1697,16 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                         // no one for a record saved before saves recorded it.
                         .map(|e| json!({"id": e.id, "kind": format!("{:?}", e.kind).to_lowercase(), "name": e.name, "folder": e.folder, "material": cnc::MATERIALS.get(e.material).copied().unwrap_or("?"), "thickness": e.thickness, "w": r1(e.w), "h": r1(e.h), "preprogrammed": e.tech, "saved_by": e.saved_by.as_ref().map(|w| w.label()), "saved_at": (e.updated > 0).then(|| ctx.clock.stamp(e.updated))}))
                         .collect();
+                    // Jobs that share their name with another job (JX17:
+                    // Libraries saved before names were unique): the others'
+                    // numbers, so one can be renamed.
+                    let all = lib.entries();
+                    let twins = crate::library::shared_job_names(&all);
+                    for v in list.iter_mut().filter(|v| v["kind"] == "job") {
+                        if let Some(others) = v["id"].as_u64().and_then(|id| twins.get(&id)) {
+                            v["same_name_as"] = json!(others.iter().map(|e| e.id).collect::<Vec<_>>());
+                        }
+                    }
                     Ok(Outcome::read(format!("{} library record(s).", list.len()), json!(list)))
                 }
                 "add" => {
@@ -1731,6 +1741,9 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                     Ok(Outcome::read(format!("Saved {} into the library.", who(job, &t)), json!({ "ids": ids })))
                 }
                 "save-job" => {
+                    // A name another job in the Library holds is refused (JX16);
+                    // checked again under the write lock as it's saved.
+                    lib.check_job_name(&job.name, None).map_err(|e| format!("{e} (rename name=…), then save-job again. Nothing was saved"))?;
                     let id = lib.save_job(job, None)?;
                     Ok(Outcome::read(format!("Saved job '{}' into the library as record {id}.", job.name), json!({ "id": id })))
                 }

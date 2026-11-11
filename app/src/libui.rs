@@ -216,25 +216,51 @@ impl App {
         }
     }
 
+    /// Save to library refused because the Library can't be reached (LB11):
+    /// the lists say so, and the open job stays as it is, unsaved, and open
+    /// (LB13).
+    fn library_save_unreachable(&mut self, e: String) {
+        self.libui.error = Some(e.clone());
+        self.status = format!("Couldn't save to the library: {e} Nothing was saved to it; Save job keeps a copy in a file on this PC.");
+    }
+
     /// Save the open job into the library (over its record if it came from there).
     pub fn save_job_to_library(&mut self) {
         // A Library that can't be reached refuses the save before anything
-        // else happens: the open job stays as it is, unsaved, and open (LB11,
-        // LB13).
+        // else happens (LB11, LB13).
         let lib = match self.library() {
             Ok(l) => l,
-            Err(e) => {
-                self.libui.error = Some(e.clone());
-                self.status = format!("Couldn't save to the library: {e} Nothing was saved to it; Save job keeps a copy in a file on this PC.");
-                return;
-            }
+            Err(e) => return self.library_save_unreachable(e),
         };
         if !self.ready_to_save(crate::stockui::SaveTarget::Library) {
+            return;
+        }
+        crate::shared::pause("library reached");
+        // A name another job holds is refused before any sheet is taken from
+        // stock (JX16), and the check, the stock and the save are one change
+        // under the Library's write lock (LB1), so no other PC can save the
+        // name in between.
+        let lock = match lib.lock() {
+            Ok(l) => l,
+            // Gone since it was found: said the same way, with nothing taken
+            // or made (LB11, LB13).
+            Err(e) => match crate::library::usable(&lib.dir) {
+                Err(gone) => return self.library_save_unreachable(gone),
+                Ok(()) => {
+                    self.status = format!("Couldn't save to the library: {e}.");
+                    return;
+                }
+            },
+        };
+        if let Err(e) = lib.check_job_name(&self.job_name, self.job_lib_id) {
+            self.status = format!("Couldn't save to the library: {e}. Nothing was saved.");
             return;
         }
         let stock_note = self.stock_on_save();
         let j = self.current_jobfile();
         let r = lib.save_job(&j, self.job_lib_id);
+        // Let other PCs write while the lists are read again (LB2).
+        drop(lock);
         self.status = match r {
             Ok(id) => {
                 self.job_lib_id = Some(id);
@@ -444,6 +470,9 @@ impl App {
             let needle = self.libui.search.to_lowercase();
             let mut rows: Vec<&Entry> = self.libui.entries.iter().filter(|e| e.kind == kind && (needle.is_empty() || e.name.to_lowercase().contains(&needle) || e.folder.to_lowercase().contains(&needle))).collect();
             rows.sort_by(|a, b| b.updated.cmp(&a.updated));
+            // Jobs that share their name with another job: Libraries saved
+            // before names were unique (JX17). Marked so one can be renamed.
+            let twins = crate::library::shared_job_names(&self.libui.entries);
             if rows.is_empty() {
                 // Empty: say what the library is for and offer the next step.
                 ui.vertical_centered(|ui| {
@@ -481,6 +510,13 @@ impl App {
                         ui.label(RichText::new(&e.name).strong());
                         if e.tech {
                             chip(ui, "technology", th().accent_soft, th().accent_fg);
+                        }
+                        if let Some(others) = twins.get(&e.id).filter(|_| e.kind == Kind::Job) {
+                            let which: Vec<String> = others.iter().map(|o| format!("{} '{}' ({})", crate::library::auto_ref(o.kind, o.id), o.name, if o.folder.trim().is_empty() { "no folder".to_string() } else { format!("folder {}", o.folder) })).collect();
+                            chip(ui, "same name", th().warn_bg, th().warn_fg).on_hover_text(format!(
+                                "Another job in the Library has this name: {}.\nJob names are unique across the Library, whatever their capitals. These jobs were saved before that, so each still saves under its own name: open one, change its name and save it to the library.",
+                                which.join(", ")
+                            ));
                         }
                         ui.label(RichText::new(&e.folder).size(11.5).color(th().accent_fg));
                         let mat = mats.get(e.material).copied().unwrap_or("");
@@ -631,19 +667,22 @@ impl App {
 
 #[cfg(test)]
 mod libui_tests {
+    use crate::jobfile::JobFile;
     use crate::library::{self, Kind, Library};
+    use crate::nest::{Part, Shape};
     use crate::shared::{Clock, Who};
+    use crate::stock::{Item, Stock};
     use crate::ui_parts::shown_text;
     use crate::App;
     use eframe::egui;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::time::Duration;
 
     /// 2026-11-09 09:20 UTC: a test clock shows UTC.
     const NOV_9_0920: u64 = 1_794_216_000;
 
     /// A window on PC `pc`, working on the Library in `dir`.
-    fn window(dir: &std::path::Path, user: &str, pc: &str, clock: &Clock) -> App {
+    fn window(dir: &Path, user: &str, pc: &str, clock: &Clock) -> App {
         let mut a = App::new(None);
         a.cfg.library_dir = dir.display().to_string();
         a.who = Who::new(user, pc);
@@ -887,5 +926,178 @@ mod libui_tests {
         assert_eq!(crate::jobfile::load(&file).unwrap().parts[0].qty, a.parts[0].qty, "{}", a.status);
         assert!(!dir.exists(), "saving the file made the Library folder");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// `user`'s window on PC `pc`, working on the Library in `dir`, with the
+    /// open job named `name`: one kind of part, 10 mm, nested from a stock
+    /// of two 3000 × 1500 sheets ("S-1").
+    fn app_on(dir: &Path, name: &str, user: &str, pc: &str, clock: &Clock) -> App {
+        let mut a = window(dir, user, pc, clock);
+        a.cfg.stock = crate::stock::StockSettings::default();
+        a.job_name = name.into();
+        a.spec.material = 0;
+        a.spec.thickness = 10.0;
+        a.spec.w = 3000.0;
+        a.spec.h = 1500.0;
+        a.parts = vec![Part { name: "DEMO-P1".into(), shape: Shape::Rectangle, w: 300.0, h: 200.0, qty: 4, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
+        a.group_nest = false;
+        a.held.clear();
+        a
+    }
+
+    fn stock_of_two(dir: &Path) {
+        let mut s = Stock::default();
+        s.add_sheet(Item::sheet("S-1", 0, 10.0, 3000.0, 1500.0, 2), true).unwrap();
+        s.save(dir).unwrap();
+    }
+
+    /// A job kim saved on PROG-3 into the Library, in `folder`.
+    fn saved_elsewhere(dir: &Path, name: &str, folder: &str) -> u64 {
+        let mut j = JobFile::new_job(name, crate::nest::SheetSpec { w: 3000.0, h: 1500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 10.0, level: 3, machine: Default::default(), kerf: Default::default() });
+        j.week = folder.into();
+        Library::open(dir, &Who::new("kim", "PROG-3"), &Clock::at(NOV_9_0920)).unwrap().save_job(&j, None).unwrap()
+    }
+
+    /// JX16: saving the open job into the Library under a name another job
+    /// holds is refused before the job's sheets are taken from stock, so the
+    /// refused save takes nothing.
+    #[test]
+    fn a_save_refused_for_its_name_takes_nothing_from_stock() {
+        let dir = new_library("refused_stock");
+        stock_of_two(&dir);
+        saved_elsewhere(&dir, "DEMO-001 frames", "Acme");
+        let mut a = app_on(&dir, "DEMO-001 FRAMES", "sam", "PROG-1", &Clock::at(NOV_9_0920));
+        a.run_nesting();
+        assert_eq!(a.result.formats.first().map(|f| f.stock_ref.as_str()), Some("S-1"), "{}", a.status);
+        let before = std::fs::read_to_string(Stock::file(&dir)).unwrap();
+        a.save_job_to_library();
+        assert!(a.status.contains("folder Acme") && a.status.contains("Nothing was saved"), "{}", a.status);
+        assert_eq!(a.job_lib_id, None);
+        assert_eq!(std::fs::read_to_string(Stock::file(&dir)).unwrap(), before, "the refused save took sheets from stock");
+        assert!(a.held.is_empty(), "the job counts sheets as taken: {:?}", a.held);
+        // Under a name of its own it's saved, and takes its sheet.
+        assert!(a.rename_job(a.cur_job, "DEMO-002 frames"), "{}", a.status);
+        a.save_job_to_library();
+        assert!(a.job_lib_id.is_some(), "{}", a.status);
+        assert_eq!(Stock::load(&dir).unwrap().get("S-1").map(|s| s.qty), Some(1));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// LB11, LB13 with JX16: the Library goes away after Save to library
+    /// found it, before the write lock is taken for the name check. The save
+    /// is still refused with the message naming the folder, the lists say
+    /// so, nothing is taken from stock or stored, no folder is made, and the
+    /// open job is as it was, unsaved.
+    #[test]
+    fn a_library_that_goes_away_during_save_to_library_is_said_so_and_takes_nothing() {
+        let dir = new_library("gone_mid_save");
+        stock_of_two(&dir);
+        let mut a = app_on(&dir, "DEMO-001 frames", "sam", "PROG-1", &Clock::at(NOV_9_0920));
+        a.run_nesting();
+        assert_eq!(a.result.formats.first().map(|f| f.stock_ref.as_str()), Some("S-1"), "{}", a.status);
+        let stock = std::fs::read_to_string(Stock::file(&dir)).unwrap();
+        let job = serde_json::to_string(&a.current_jobfile()).unwrap();
+        assert!(a.job_unsaved(a.cur_job));
+        // The share drops (the folder is moved away) just after the save
+        // found the Library.
+        let away = dir.with_extension("away");
+        {
+            let (dir, away) = (dir.clone(), away.clone());
+            crate::shared::hooks::set(move |s| {
+                if s == "library reached" {
+                    std::fs::rename(&dir, &away).unwrap();
+                }
+            });
+        }
+        a.save_job_to_library();
+        crate::shared::hooks::clear();
+        let said = format!("The Library on {} can't be reached", dir.display());
+        assert!(a.status.contains(&said) && a.status.contains("Save job keeps a copy"), "{}", a.status);
+        assert!(a.libui.error.as_ref().is_some_and(|e| e.contains(&said)), "the lists don't say so: {:?}", a.libui.error);
+        assert_eq!(serde_json::to_string(&a.current_jobfile()).unwrap(), job, "the refused save changed the job");
+        assert!(a.held.is_empty(), "the job counts sheets as taken: {:?}", a.held);
+        assert_eq!(a.job_lib_id, None);
+        assert!(a.job_unsaved(a.cur_job), "a refused save marked the job saved");
+        assert!(!dir.exists(), "saving made the Library folder again");
+        assert_eq!(std::fs::read_to_string(Stock::file(&away)).unwrap(), stock, "the refused save took sheets from stock");
+        assert!(Library::open(&away, &a.who, &a.clock).unwrap().entries().is_empty(), "a job was stored");
+        let _ = std::fs::remove_dir_all(&away);
+    }
+
+    /// JX16 with two PCs: both save a new job under one name (in other
+    /// capitals) at the same moment. PROG-1 checks the name first and is
+    /// held up just after; PROG-2 saves meanwhile. One job is stored, the
+    /// other save is refused naming the first one's folder, and only the
+    /// stored one took a sheet from stock.
+    #[test]
+    fn two_pcs_saving_one_new_name_at_the_same_moment_store_one_and_refuse_the_other() {
+        use std::sync::mpsc::channel;
+        let dir = new_library("same_moment");
+        stock_of_two(&dir);
+        let clock = Clock::at(NOV_9_0920);
+        let (checked, checked_rx) = channel::<()>();
+        let prog1 = {
+            let (dir, clock) = (dir.clone(), clock.clone());
+            std::thread::spawn(move || {
+                let mut a = app_on(&dir, "DEMO-001 frames", "sam", "PROG-1", &clock);
+                a.jobs[a.cur_job].week = "Acme".into();
+                a.run_nesting();
+                let mut first = true;
+                crate::shared::hooks::set(move |s| {
+                    if s == "job name checked" && std::mem::take(&mut first) {
+                        let _ = checked.send(());
+                        std::thread::sleep(Duration::from_millis(500));
+                    }
+                });
+                a.save_job_to_library();
+                crate::shared::hooks::clear();
+                (a.job_lib_id, a.status)
+            })
+        };
+        let prog2 = {
+            let (dir, clock) = (dir.clone(), clock.clone());
+            std::thread::spawn(move || {
+                let mut a = app_on(&dir, "demo-001 FRAMES", "kim", "PROG-2", &clock);
+                a.jobs[a.cur_job].week = "W12".into();
+                a.run_nesting();
+                checked_rx.recv_timeout(Duration::from_secs(60)).expect("PROG-1 checked the name");
+                a.save_job_to_library();
+                (a.job_lib_id, a.status)
+            })
+        };
+        let (one, two) = (prog1.join().unwrap(), prog2.join().unwrap());
+        assert!(one.0.is_some(), "PROG-1: {}", one.1);
+        assert!(two.0.is_none() && two.1.contains("DEMO-001 frames") && two.1.contains("folder Acme"), "PROG-2: {}", two.1);
+        // The one stored is PROG-1's, signed by it (LB5).
+        let lib = Library::open(&dir, &Who::new("sam", "PROG-1"), &clock).unwrap();
+        let jobs: Vec<(String, Option<Who>)> = lib.entries().into_iter().filter(|e| e.kind == Kind::Job).map(|e| (e.name, e.saved_by)).collect();
+        assert_eq!(jobs, [("DEMO-001 frames".to_string(), Some(Who::new("sam", "PROG-1")))]);
+        assert_eq!(Stock::load(&dir).unwrap().get("S-1").map(|s| s.qty), Some(1), "the refused save took a sheet too");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// JX16: renaming a Library job in the Job Explorer to a name another
+    /// job in the Library holds is refused at once, naming that job's
+    /// folder. A free name is taken, and the record takes it on the next
+    /// save.
+    #[test]
+    fn renaming_a_library_job_to_a_name_another_job_holds_is_refused() {
+        let dir = new_library("rename");
+        saved_elsewhere(&dir, "DEMO-001 frames", "Acme");
+        let clock = Clock::at(NOV_9_0920);
+        let mut a = app_on(&dir, "DEMO-002 brackets", "sam", "PROG-1", &clock);
+        a.save_job_to_library();
+        let id = a.job_lib_id.expect("saved");
+        let i = a.cur_job;
+        assert!(!a.rename_job(i, "Demo-001 Frames"));
+        assert!(a.status.contains("DEMO-001 frames") && a.status.contains("folder Acme") && !a.status.contains("Nothing was saved"), "{}", a.status);
+        assert_eq!(a.job_name, "DEMO-002 brackets");
+        assert!(a.rename_job(i, "DEMO-003 brackets"), "{}", a.status);
+        a.save_job_to_library();
+        assert_eq!(a.job_lib_id, Some(id), "{}", a.status);
+        let mut names: Vec<String> = Library::open(&dir, &Who::new("sam", "PROG-1"), &clock).unwrap().entries().into_iter().map(|e| e.name).collect();
+        names.sort();
+        assert_eq!(names, ["DEMO-001 frames", "DEMO-003 brackets"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

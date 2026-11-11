@@ -375,13 +375,39 @@ impl Library {
     }
 
     /// Save a job (a new record, or over `id`), recording who saved it and
-    /// when (LB5). Returns its number.
+    /// when (LB5). Returns its number. Refused when another job in the
+    /// Library holds its name (JX16): the name is checked, and the job
+    /// signed and stored, under one hold of the write lock (LB1), so of two
+    /// PCs saving one new name at the same moment, one is stored and the
+    /// other refused.
     pub fn save_job(&self, job: &JobFile, id: Option<u64>) -> Result<u64, String> {
+        let _lock = self.lock()?;
+        self.check_job_name(&job.name, id).map_err(|e| format!("{e}. Nothing was saved"))?;
         self.store(Kind::Job, id, |saved| {
             let job = JobFile { saved: Some(saved), ..job.clone() };
             let text = serde_json::to_string_pretty(&job).map_err(|e| e.to_string())?;
             Ok((text, move |id| job_entry(id, &job, 0)))
         })
+    }
+
+    /// May job `id` (None: a new record, as Save as makes) be saved as
+    /// `name`? Not when another job holds the name (JX16); the refusal names
+    /// that job's folder. A job saved under its own name, unchanged, always
+    /// may, even when an older job shares it (JX17: Libraries from before
+    /// the rule).
+    pub fn check_job_name(&self, name: &str, id: Option<u64>) -> Result<(), String> {
+        let list = self.entries();
+        if id.is_some_and(|id| list.iter().any(|e| e.kind == Kind::Job && e.id == id && e.name == name)) {
+            return Ok(());
+        }
+        let key = name_key(name);
+        match list.iter().find(|e| e.kind == Kind::Job && Some(e.id) != id && name_key(&e.name) == key) {
+            Some(other) => Err(name_taken(other)),
+            None => {
+                shared::pause("job name checked");
+                Ok(())
+            }
+        }
     }
 
     pub fn load_job(&self, id: u64) -> Result<JobFile, String> {
@@ -430,6 +456,44 @@ type Scanned = std::collections::HashMap<(u8, u64), ((Option<std::time::SystemTi
 fn entries_of(s: Scanned) -> Vec<Entry> {
     let mut out: Vec<Entry> = s.into_values().map(|(_, e)| e).collect();
     out.sort_by_key(|e| (e.kind as u8, e.id));
+    out
+}
+
+/// What a job name is compared by: two names are one when they differ only
+/// in capitals or in spaces around them, as folder names are (JX17,
+/// estimated).
+fn name_key(name: &str) -> String {
+    name.trim().to_lowercase()
+}
+
+/// "with no folder", or "in folder W12".
+fn folder_words(folder: &str) -> String {
+    if folder.trim().is_empty() { "with no folder".into() } else { format!("in folder {folder}") }
+}
+
+/// The refusal of a name `other` holds (JX16): which job, and its folder.
+fn name_taken(other: &Entry) -> String {
+    format!(
+        "the job '{}' ({}) {} already has that name, and job names are unique across the Library, whatever their capitals: pick another name",
+        other.name,
+        auto_ref(Kind::Job, other.id),
+        folder_words(&other.folder)
+    )
+}
+
+/// The jobs whose name another job in the list also holds (JX17: Libraries
+/// saved before names were unique), each with the others holding its name.
+pub fn shared_job_names(entries: &[Entry]) -> std::collections::HashMap<u64, Vec<&Entry>> {
+    let mut by_name: std::collections::HashMap<String, Vec<&Entry>> = Default::default();
+    for e in entries.iter().filter(|e| e.kind == Kind::Job) {
+        by_name.entry(name_key(&e.name)).or_default().push(e);
+    }
+    let mut out = std::collections::HashMap::new();
+    for same in by_name.values().filter(|v| v.len() > 1) {
+        for e in same {
+            out.insert(e.id, same.iter().filter(|o| o.id != e.id).copied().collect());
+        }
+    }
     out
 }
 
@@ -882,6 +946,93 @@ mod library_tests {
         let mut names: Vec<String> = lib.entries().into_iter().map(|e| e.name).collect();
         names.sort();
         assert_eq!(names, ["Brackets", "Frames, second batch", "Gussets"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// JX16, JX17: no two jobs in the Library share a name, in any folder,
+    /// whatever its case. A new save, Save as (the job saved as a new
+    /// record) and a rename (saved over its own record under a new name) to
+    /// a name another job holds are refused, naming that job's folder, and
+    /// nothing is stored.
+    #[test]
+    fn job_names_are_unique_across_the_library_ignoring_case() {
+        let dir = scratch("unique_names");
+        // Sam on PROG-1 saved the frames job; Kim on PROG-2 works on the
+        // same Library.
+        let clock = Clock::at(NOV_9_0920);
+        let prog1 = Library::open(&dir, &Who::new("sam", "PROG-1"), &clock).unwrap();
+        let lib = Library::open(&dir, &Who::new("kim", "PROG-2"), &clock).unwrap();
+        let mut frames = job("DEMO-001 frames");
+        frames.week = "Acme".into();
+        let frames_id = prog1.save_job(&frames, None).unwrap();
+        let mut brackets = job("DEMO-002 brackets");
+        brackets.week = "W12".into();
+        let brackets_id = lib.save_job(&brackets, None).unwrap();
+        let stored = files(&dir);
+        // A new job under a name another job holds, in another folder and
+        // in other capitals.
+        let mut new = job("demo-001 FRAMES");
+        new.week = "W12".into();
+        let e = lib.save_job(&new, None).unwrap_err();
+        assert!(e.contains("DEMO-001 frames") && e.contains("folder Acme") && e.contains("Nothing was saved"), "{e}");
+        // Save as: the brackets job saved as a new record under that name.
+        let mut copy = brackets.clone();
+        copy.name = "DEMO-001 Frames".into();
+        let e = lib.save_job(&copy, None).unwrap_err();
+        assert!(e.contains("folder Acme"), "{e}");
+        // Rename: the brackets job saved over its own record under that name.
+        let e = lib.save_job(&copy, Some(brackets_id)).unwrap_err();
+        assert!(e.contains("folder Acme"), "{e}");
+        assert_eq!(files(&dir), stored, "a refused save stored something");
+        assert_eq!(lib.load_job(brackets_id).unwrap().name, "DEMO-002 brackets");
+        // Its own name in other capitals, or a free name: saved.
+        brackets.name = "DEMO-002 BRACKETS".into();
+        lib.save_job(&brackets, Some(brackets_id)).unwrap();
+        frames.name = "DEMO-003 frames".into();
+        lib.save_job(&frames, Some(frames_id)).unwrap();
+        // The old name is free once its job has another.
+        assert!(lib.save_job(&new, None).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// JX17: a Library saved before names were unique, where two jobs in
+    /// different folders share a name. Both keep saving under their own
+    /// name, and both are marked, each naming the other, until one is
+    /// renamed; neither may take the other's name.
+    #[test]
+    fn jobs_that_already_share_a_name_keep_saving_and_are_marked() {
+        let dir = scratch("old_twins");
+        let lib = Library::open(&dir, &Who::new("sam", "PROG-1"), &Clock::at(NOV_9_0920)).unwrap();
+        // Written as an older version did, with no name check.
+        for (id, name, folder) in [(1, "DEMO-001 frames", "Acme"), (2, "demo-001 FRAMES", "W12"), (3, "DEMO-002 brackets", "W12")] {
+            let mut j = job(name);
+            j.week = folder.into();
+            let p = lib.path(Kind::Job, id);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, serde_json::to_string_pretty(&j).unwrap()).unwrap();
+        }
+        lib.rebuild_index().unwrap();
+        let marked = |lib: &Library| {
+            let list = lib.entries();
+            let mut m: Vec<(u64, Vec<u64>)> = shared_job_names(&list).into_iter().map(|(id, o)| (id, o.iter().map(|e| e.id).collect())).collect();
+            m.sort();
+            m
+        };
+        assert_eq!(marked(&lib), vec![(1, vec![2]), (2, vec![1])]);
+        // Each keeps saving under its own name.
+        let mut first = lib.load_job(1).unwrap();
+        first.parts.clear();
+        lib.save_job(&first, Some(1)).unwrap();
+        lib.save_job(&lib.load_job(2).unwrap(), Some(2)).unwrap();
+        // Neither takes the other's spelling of the name.
+        let mut second = lib.load_job(2).unwrap();
+        second.name = "DEMO-001 frames".into();
+        let e = lib.save_job(&second, Some(2)).unwrap_err();
+        assert!(e.contains("folder Acme"), "{e}");
+        // Renamed, it's no longer marked.
+        second.name = "DEMO-004 frames, second batch".into();
+        lib.save_job(&second, Some(2)).unwrap();
+        assert_eq!(marked(&lib), vec![]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
