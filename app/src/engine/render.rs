@@ -323,8 +323,7 @@ pub fn part_scene(job: &JobFile, i: usize, width_px: u32, path: bool) -> Scene {
         }
     }
     if path {
-        let pl = Placed { part: i, x: 0.0, y: 0.0, w, h, turns: 0, mirror: false };
-        let plan = cnc::plan(&job.parts, &[pl], &job.spec);
+        let plan = cnc::plan_part(&job.parts, i, &job.spec);
         draw_plan(&mut sc, &plan, false);
     }
     for (k, e) in nest::elements_of(&g).iter().enumerate() {

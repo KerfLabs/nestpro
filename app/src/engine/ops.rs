@@ -244,6 +244,12 @@ pub static OPS: &[Op] = &[
         c("type", LEADS, "auto: lead type (default machine = the machine's lead tables per contour class and quality; line = inclined)"), a("position", Ty::Int, "auto: keypad position 1-9 (1 bottom-left, 9 top-right; default 1)"),
     ] },
     Op { name: "lead-at", group: "Technology", kind: Kind::Write, help: "Start a contour on one element of a part (see part-info for element numbers): by the third of a line nearest `at`, else at its middle.", args: &[PART, r("element", Ty::Int, "Element number from part-info"), a("at", Ty::Points, "Pick point \"x,y\" in part mm (optional)")] },
+    Op { name: "lead-edit", group: "Technology", kind: Kind::Write, help: "Move one contour's lead by hand, as dragging its end in the Part view does: the lead-in's pierce and/or the lead-out's end, each as a length (mm, straight from where it meets the contour) and an angle from the contour into the scrap (lead-in: measured from the contour behind its start; lead-out: from the contour ahead; 90 = square off it). The contour keeps its start and lead type, and an arc lead keeps its arc into the contour; what you leave out stays as it is cut now (part-info lists each contour's lead_in / lead_out and the angles it can take). Every piece of the part type gets it. mode=reset puts the contour's lead back (without contour: every lead of the part).", args: &[
+        PART, a("contour", Ty::Int, "Contour number from part-info"),
+        a("in_length", Ty::Num, "Lead-in: mm from the start to the pierce"), a("in_angle", Ty::Num, "Lead-in: degrees from the contour behind the start, into the scrap"),
+        a("out_length", Ty::Num, "Lead-out: mm from where it leaves the contour to its end"), a("out_angle", Ty::Num, "Lead-out: degrees from the contour ahead, into the scrap"),
+        Arg { name: "mode", ty: Ty::Str, required: false, help: "set (default) or reset", choices: &["set", "reset"] },
+    ] },
     Op { name: "joints", group: "Technology", kind: Kind::Write, help: "Micro-joints: auto (one per the machine's maximum distance — 100 mm by default — on every contour, holes too, rounded up to an even number and centred on its line or arc, within the machine's fewest/most for the contour's size class) or delete.", args: &[
         Arg { name: "mode", ty: Ty::Str, required: true, help: "auto or delete", choices: &["auto", "delete"] }, PARTS,
         a("every", Ty::Num, "auto: one joint per this many mm of each contour (default: the machine's maximum distance for the part's quality)"),
@@ -658,7 +664,7 @@ pub fn tech_json(t: &Option<PartTech>) -> Value {
             "corner_start": t.corner_start, "overlap": t.overlap, "micro_joints": t.micro_joints, "joint_width": t.joint_width,
             "joint_type": format!("{:?}", t.joint_type).to_lowercase(), "joint_every": t.joint_every, "joint_lead": t.joint_lead, "joint_lead_out": t.joint_lead_out.unwrap_or(t.joint_lead), "joint_angle": t.joint_angle,
             "loops": t.loops, "loop_size": t.loop_size, "quality": t.quality.map_or(json!("auto"), |q| json!(q.number())),
-            "leads_on_elements": t.starts.iter().flatten().count(), "joints_on_elements": t.joint_picks.iter().flatten().count(),
+            "leads_on_elements": t.starts.iter().flatten().count(), "leads_moved_by_hand": t.lead_edits.iter().flatten().count(), "joints_on_elements": t.joint_picks.iter().flatten().count(),
             "cut_ranges": t.cut_ranges.iter().filter(|c| c.on).map(|c| format!("{}-{}:{}", c.min_r, c.max_r, c.quality.number())).collect::<Vec<_>>(),
         }),
     }
@@ -756,7 +762,7 @@ fn part_info(job: &JobFile, i: usize) -> Value {
     let g = p.geometry();
     let elems = nest::elements_of(&g);
     let (w, h) = p.bbox();
-    let plan = cnc::plan(&job.parts, &[Placed { part: i, x: 0.0, y: 0.0, w, h, turns: 0, mirror: false }], &job.spec);
+    let plan = cnc::plan_part(&job.parts, i, &job.spec);
     // Every contour with its state (CS1); elements name the contour they're on
     // by the same numbers.
     let list = contours::list(p);
@@ -775,6 +781,14 @@ fn part_info(job: &JobFile, i: usize) -> Value {
                 v["quality"] = json!(q.number());
                 v["quality_name"] = json!(mt.qualities.label(q));
                 v["quality_from"] = json!(from.label());
+            }
+            // Its leads as cut (LE1): what lead-edit changes.
+            if let Some(pc) = numbers.iter().position(|&x| x == k).and_then(|ci| plan.contours.iter().find(|pc| pc.contour == ci)) {
+                let e = lead_ends(pc);
+                let end = |x: Option<(f64, f64)>, ang: (f64, f64)| x.map_or(Value::Null, |(l, a)| json!({"length_mm": r1(l), "angle_deg": r1(a) + 0.0, "angles_deg": [r1(ang.0), r1(ang.1)]}));
+                v["lead_in"] = end(e.lead_in, e.in_angles);
+                v["lead_out"] = end(e.lead_out, e.out_angles);
+                v["lead_by_hand"] = json!(e.hand);
             }
             v
         })
@@ -2102,6 +2116,42 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             }
             let pick = a.point("at")?;
             Ok(Outcome::msg(lead_on_element(&mut job.parts[i], e as usize - 1, pick)?))
+        }
+        "lead-edit" => {
+            let i = one_part(job, &a)?;
+            // part-info's contour numbers → the part's cut contours (CS1).
+            let order = dxf::cut_order(&contours::list(&job.parts[i]));
+            let ci = match a.int("contour")? {
+                None => None,
+                Some(k) => Some(order.iter().position(|&x| x as i64 == k - 1).ok_or_else(|| format!("Contour {k} isn't one the part cuts (contours {} are; see part-info).", order.iter().map(|x| (x + 1).to_string()).collect::<Vec<_>>().join(", ")))?),
+            };
+            let name = job.parts[i].name.clone();
+            match a.str("mode").as_deref().unwrap_or("set") {
+                "reset" => {
+                    let n = reset_lead_edits(&mut job.parts[i], ci);
+                    Ok(Outcome::msg(match (ci, n) {
+                        (_, 0) => format!("No lead of '{name}' was moved by hand{}.", ci.map_or(String::new(), |c| format!(" on contour {}", order[c] + 1))),
+                        (Some(c), _) => format!("Contour {}'s lead of '{name}' is back to its automatic place.", order[c] + 1),
+                        (None, n) => format!("{n} lead(s) of '{name}' back to their automatic place."),
+                    }))
+                }
+                "set" => {
+                    let ci = ci.ok_or("Name the contour (see part-info).")?;
+                    let (il, ia, ol, oa) = (a.num("in_length")?, a.num("in_angle")?, a.num("out_length")?, a.num("out_angle")?);
+                    if il.is_none() && ia.is_none() && ol.is_none() && oa.is_none() {
+                        return Err("Give in_length / in_angle for the lead-in, out_length / out_angle for the lead-out (or mode=reset).".into());
+                    }
+                    let mut msg = vec![];
+                    if il.is_some() || ia.is_some() {
+                        msg.push(set_lead_end(&mut job.parts, i, &job.spec, ci, LeadEnd::In, il, ia)?);
+                    }
+                    if ol.is_some() || oa.is_some() {
+                        msg.push(set_lead_end(&mut job.parts, i, &job.spec, ci, LeadEnd::Out, ol, oa)?);
+                    }
+                    Ok(Outcome::msg(msg.join(" ")))
+                }
+                m => Err(format!("lead-edit mode '{m}'? Use set or reset.")),
+            }
         }
         "joints" => match a.need_str("mode")?.as_str() {
             "auto" => {
