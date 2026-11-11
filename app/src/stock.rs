@@ -628,9 +628,12 @@ pub fn today() -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
+/// The stock's folder in the Library.
+pub const FOLDER: &str = "Sheets";
+
 impl Stock {
     pub fn file(library_dir: &Path) -> PathBuf {
-        library_dir.join("Sheets").join("stock.json")
+        library_dir.join(FOLDER).join("stock.json")
     }
 
     /// The stock in a library folder (empty if there's none yet).
@@ -660,7 +663,10 @@ impl Stock {
 
     /// Store this whole stock over what's there (a new or replaced stock).
     /// A change goes through `update`, which re-reads it first.
+    /// Refused, naming the folder, when the Library can't be reached or the
+    /// folder holds no Library: never a new stock file there (LB11, LB12).
     pub fn save(&self, library_dir: &Path) -> Result<(), String> {
+        crate::library::usable(library_dir)?;
         let lock = crate::shared::WriteLock::take(library_dir)?;
         self.store(library_dir, &lock)
     }
@@ -675,7 +681,9 @@ impl Stock {
     /// Re-read the stock, change it and save it, all under the Library's
     /// write lock (LB1), so two PCs (or the window and an agent) changing it
     /// at once both count (STK-9). Nothing is stored when `f` refuses.
+    /// Refused like `save` when the Library can't be reached (LB11, LB12).
     pub fn update<T>(library_dir: &Path, f: impl FnOnce(&mut Stock) -> Result<T, String>) -> Result<T, String> {
+        crate::library::usable(library_dir)?;
         let lock = crate::shared::WriteLock::take(library_dir)?;
         let mut s = Stock::load(library_dir)?;
         let out = f(&mut s)?;
@@ -1102,6 +1110,8 @@ mod tests {
     #[test]
     fn saves_and_loads() {
         let dir = std::env::temp_dir().join(format!("nestpro-stock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        crate::library::create(&dir).unwrap();
         let s = stock();
         s.save(&dir).unwrap();
         assert_eq!(Stock::load(&dir).unwrap(), s);
@@ -1114,6 +1124,7 @@ mod tests {
     fn two_pcs_changing_the_stock_at_once_both_count() {
         let dir = std::env::temp_dir().join(format!("nestpro-stock-two-pcs-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
+        crate::library::create(&dir).unwrap();
         let mut s = Stock::default();
         s.add_sheet(Item::sheet("S1", 0, 3.0, 2000.0, 1000.0, 1), true).unwrap();
         s.save(&dir).unwrap();

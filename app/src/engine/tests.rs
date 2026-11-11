@@ -327,6 +327,7 @@ fn an_order_comes_in_as_xml_and_a_machine_program_comes_back_as_a_job() {
 fn stock_ctx(d: &Path) -> Ctx {
     let mut c = Ctx::builtin();
     c.library_dir = d.join("library");
+    crate::library::create(&c.library_dir).unwrap();
     c.cfg.stock = crate::stock::StockSettings::default();
     c
 }
@@ -1190,6 +1191,52 @@ fn listing(dir: &Path) -> Vec<(String, u64)> {
     out
 }
 
+/// LB11, LB13: with the Library folder missing, every library and stock
+/// operation is refused, naming the folder and what to do instead; the job
+/// file is as it was, and no folder is made.
+#[test]
+fn agents_are_refused_naming_the_folder_while_the_library_cant_be_reached() {
+    let d = dir("unreachable");
+    let mut ctx = Ctx::builtin();
+    ctx.library_dir = d.join("Nesting");
+    let lib = ctx.library_dir.clone();
+    let mut s = Session::new(ctx);
+    let jp = d.join("DEMO-001.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 200, "h": 100, "qty": 2, "name": "DEMO-PLATE"}));
+    call(&mut s, "nest", None, json!({"stock": "off"}));
+    let job_before = std::fs::read_to_string(&jp).unwrap();
+    let said = format!("The Library on {} can't be reached", lib.display());
+    for (op, args) in [
+        ("library", json!({"mode": "list"})),
+        ("library", json!({"mode": "add", "name": "DEMO-PLATE"})),
+        ("library", json!({"mode": "save-part", "parts": "1"})),
+        ("library", json!({"mode": "save-job"})),
+        ("stock", json!({"mode": "list"})),
+        ("stock", json!({"mode": "create", "w": 2000, "h": 1000, "thickness": 3})),
+        ("stock", json!({"mode": "add", "ref": "S1"})),
+        ("stock-book", json!({"mode": "status"})),
+        ("stock-book", json!({"mode": "book"})),
+    ] {
+        let e = err(&mut s, op, args.clone());
+        assert!(e.contains(&said), "{op} {args}: {e}");
+        assert!(e.contains("try again once it can be reached"), "{op} {args} doesn't say what to do: {e}");
+        assert!(!lib.exists(), "{op} {args} made the Library folder");
+    }
+    assert_eq!(std::fs::read_to_string(&jp).unwrap(), job_before, "a refused operation changed the job file");
+    // Do All still nests on the job's sheet, and says the stock wasn't used.
+    let r = call(&mut s, "nest", None, json!({}));
+    let m = r["message"].as_str().unwrap();
+    assert!(m.contains("The sheet stock wasn't used") && m.contains(&said), "{m}");
+    assert!(!lib.exists(), "nesting made the Library folder");
+    // The two-PC check on a test folder whose share is down: said so, and
+    // nothing is made in its place.
+    let gone = d.join("Share").join("check");
+    let e = err(&mut s, "library-check", json!({"folder": gone.to_str().unwrap(), "rounds": 1}));
+    assert!(e.contains(&gone.display().to_string()) && e.contains("can't be reached"), "{e}");
+    assert!(!d.join("Share").exists(), "the check made the folders of a share that's down");
+}
+
 /// JX16 for agents: saving a job into the Library under a name another job
 /// holds (in another folder, in other capitals) is refused, naming that
 /// job's folder and saying what to do instead, and nothing is stored.
@@ -1234,6 +1281,7 @@ fn the_library_check_refuses_a_real_library() {
     // A Library with a real job in it.
     let real = d.join("Library");
     let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
+    crate::library::create(&real).unwrap();
     crate::library::Library::open(&real, &Who::new("sam", "PROG-1"), &Clock::pc()).unwrap().save_job(&JobFile::new_job("Frames", spec), None).unwrap();
     let before = listing(&real);
     let e = err(&mut s, "library-check", json!({"folder": real.to_str().unwrap(), "rounds": 2}));
@@ -1458,6 +1506,8 @@ fn contour_states_are_kept_in_jobs_and_products_and_old_jobs_open_as_before() {
     let ctx = || {
         let mut c = Ctx::builtin();
         c.cfg.library_dir = d.join("library").to_string_lossy().into_owned();
+        c.library_dir = d.join("library");
+        crate::library::create(&c.library_dir).unwrap();
         c
     };
     let mut s = Session::new(ctx());
@@ -1857,6 +1907,8 @@ fn hand_set_qualities_beat_the_parts_own_and_are_kept_in_jobs_and_products() {
         let mut c = Ctx::builtin();
         c.blm.on = true;
         c.cfg.library_dir = d.join("library").to_string_lossy().into_owned();
+        c.library_dir = d.join("library");
+        crate::library::create(&c.library_dir).unwrap();
         c
     };
     let mut s = Session::new(ctx());
