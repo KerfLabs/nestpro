@@ -17,8 +17,16 @@ pub fn cut_speed(material: usize, t: f64) -> f64 {
         [22000.0, 10000.0, 4500.0, 2000.0, 900.0, 600.0, 300.0],
         [25000.0, 12000.0, 6000.0, 2500.0, 1000.0, 700.0, 400.0],
     ];
-    let i = THICKNESSES.iter().position(|&x| (x - t).abs() < 1e-6).unwrap_or(2);
-    table[material.min(2)][i]
+    // A thickness between two in the list (any can be typed, TH1) is read
+    // in a straight line between them; outside the list, the nearest end.
+    let row = &table[material.min(2)];
+    let t = t.clamp(THICKNESSES[0], THICKNESSES[THICKNESSES.len() - 1]);
+    let i = THICKNESSES.iter().position(|&x| x >= t - 1e-9).unwrap_or(THICKNESSES.len() - 1);
+    if i == 0 || (THICKNESSES[i] - t).abs() < 1e-9 {
+        return row[i];
+    }
+    let f = (t - THICKNESSES[i - 1]) / (THICKNESSES[i] - THICKNESSES[i - 1]);
+    row[i - 1] + f * (row[i] - row[i - 1])
 }
 
 pub fn weight_kg(material: usize, area_mm2: f64, t: f64) -> f64 {
@@ -1537,6 +1545,17 @@ mod joint_tests {
         let pl = Placed { part: 0, x: 50.0, y: 50.0, w: 200.0, h: 100.0, turns: 0, mirror: false };
         let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
         plan(&parts, &[pl], &spec)
+    }
+
+    #[test]
+    fn fallback_speed_follows_any_thickness() {
+        // TH1: a typed thickness between two in the list is read between them.
+        assert_eq!(cut_speed(0, 3.0), 5000.0);
+        assert_eq!(cut_speed(0, 4.0), 4000.0);
+        assert_eq!(cut_speed(0, 0.5), 20000.0, "thinner than the list: its first value");
+        assert_eq!(cut_speed(0, 40.0), 800.0, "thicker: its last");
+        let quarter = cut_speed(0, 6.35);
+        assert!(quarter < 3000.0 && quarter > 1800.0, "{quarter}");
     }
 
     #[test]
