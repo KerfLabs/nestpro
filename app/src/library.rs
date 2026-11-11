@@ -371,8 +371,8 @@ impl Library {
         }
     }
 
-    /// Who is saving, and now (LB5).
-    fn saved(&self) -> Saved {
+    /// Who is saving, and now (LB5). Taken once the write lock is held.
+    pub(crate) fn saved(&self) -> Saved {
         Saved { by: self.who.clone(), at: self.clock.now() }
     }
 
@@ -939,6 +939,8 @@ mod library_tests {
         assert_eq!(clock.shown(NOV_9_0920 - 365 * 86400), "9 Nov 2025 09:20");
         assert_eq!(clock.shown(1_798_761_540), "31 Dec 23:59");
         assert_eq!(clock.stamp(NOV_9_0920), "2026-11-09 09:20");
+        // SV10: "at 09:20" today, the day too on another day.
+        assert_eq!((clock.when(NOV_9_0920 + 60), clock.when(NOV_9_0920 - 86400)), ("at 09:21".to_string(), "on 8 Nov 09:20".to_string()));
         assert_eq!(Who::new("sam", "PROG-2").as_agent().label(), "sam on PROG-2 (agent)");
     }
 

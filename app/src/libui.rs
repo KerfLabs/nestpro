@@ -897,7 +897,7 @@ mod libui_tests {
         a.stockui.open = true;
         a.stockui.sel = Some("S1".into());
         let _ = shown(&ctx, |c| a.stock_window(c));
-        crate::stock::Stock::update(&shop, |s| s.add_sheet(crate::stock::Item::sheet("SHOP-SHEET", 0, 3.0, 3000.0, 1500.0, 1), true)).unwrap();
+        crate::stock::Stock::update(&Library::at(&shop, &a.who, &a.clock), |s| s.add_sheet(crate::stock::Item::sheet("SHOP-SHEET", 0, 3.0, 3000.0, 1500.0, 1), true)).unwrap();
         a.pick_library_folder(shop.display().to_string());
         assert!(a.lib_new_ask.is_none());
         assert_eq!(a.cfg.library_dir, shop.display().to_string());

@@ -84,14 +84,20 @@ impl App {
         stockflow::JobSheets { name: &self.job_name, parts: &self.parts, spec: &self.spec, sheets: &self.result.sheets, cut_lines: &self.cut_lines, material_name: stockflow::material_name(&self.cfg, self.spec.material) }
     }
 
+    /// The Library folder as whoever works at this window, without setting
+    /// anything up: stock changes are signed with it (SV9).
+    pub fn library_at(&self) -> crate::library::Library {
+        crate::library::Library::at(&self.library_dir(), &self.who, &self.clock)
+    }
+
     /// Before a job is written: put new remnants in stock and settle what the
     /// job holds. Returns a note for the status line ("" when nothing changed).
     pub fn stock_on_save(&mut self) -> String {
         let names = self.remnant_names.take();
         self.result.normalise(&self.spec);
-        let dir = self.library_dir();
+        let lib = self.library_at();
         let (mut formats, mut held) = (std::mem::take(&mut self.result.formats), std::mem::take(&mut self.held));
-        let note = stockflow::on_save(&dir, &self.job_sheets(), &mut formats, &mut held, &self.cfg.stock, false, names.as_ref());
+        let note = stockflow::on_save(&lib, &self.job_sheets(), &mut formats, &mut held, &self.cfg.stock, false, names.as_ref());
         (self.result.formats, self.held) = (formats, held);
         self.stockui.loaded = false;
         if note.is_empty() { String::new() } else { format!(" — {note}.") }
@@ -102,8 +108,8 @@ impl App {
     /// when a sheet is given to a nesting, but here nestings live in memory
     /// until saved.
     pub fn reconcile_stock(&mut self) -> Result<String, String> {
-        let dir = self.library_dir();
-        stockflow::reconcile(&dir, &self.result.formats, self.result.sheets.len(), &mut self.held, self.cfg.stock.allow_no_stock)
+        let lib = self.library_at();
+        stockflow::reconcile(&lib, &self.result.formats, self.result.sheets.len(), &mut self.held, self.cfg.stock.allow_no_stock).map_err(|e| e.to_string())
     }
 
     /// Store the remnants of every sheet that has a remnant line (or, with
@@ -127,9 +133,9 @@ impl App {
     /// used (ST12; the status line says so).
     pub fn make_remnants_named(&mut self, names: Option<&BTreeMap<(usize, usize), String>>) -> Result<usize, String> {
         self.result.normalise(&self.spec);
-        let dir = self.library_dir();
+        let lib = self.library_at();
         let mut formats = std::mem::take(&mut self.result.formats);
-        let r = stockflow::make_remnants(&dir, &self.job_sheets(), &mut formats, &self.cfg.stock, false, names);
+        let r = stockflow::make_remnants(&lib, &self.job_sheets(), &mut formats, &self.cfg.stock, false, names);
         self.result.formats = formats;
         let m = r?;
         let k = m.kept_note();
@@ -264,7 +270,7 @@ impl App {
 
     /// Change the stock file and refresh the window; errors go to its message line.
     fn stock_change(&mut self, f: impl FnOnce(&mut Stock) -> Result<(), String>) {
-        match Stock::update(&self.library_dir(), |s| f(s)) {
+        match Stock::update(&self.library_at(), |s| f(s)) {
             Ok(()) => self.stock_reload(),
             Err(e) => self.stockui.msg = e,
         }
@@ -290,6 +296,7 @@ impl App {
             }
         }
         let held = self.held.clone();
+        let clock = self.clock.clone();
         egui::Window::new(RichText::new("Sheet stock").size(16.0).strong()).id(egui::Id::unique("sheet_stock")).pivot(egui::Align2::CENTER_TOP).default_pos(crate::ui_parts::dialog_pos(ctx)).open(&mut open).default_size([980.0, 560.0]).collapsible(false).show(ctx, |ui| {
             // Two tabs: the stock itself, and how automatic nesting uses it.
             ui.horizontal(|ui| {
@@ -370,8 +377,13 @@ impl App {
                         r |= cell(ui, RichText::new(u.num_dp(it.length, 0)));
                         r |= cell(ui, RichText::new(u.num_dp(it.width, 0)));
                         r |= cell(ui, RichText::new(u.area_num(it.area_m2() * 1e6)));
-                        r |= cell(ui, RichText::new(format!("{}", it.qty)).color(if it.qty > 0 { th().text } else { th().text_dim }));
-                        let r = r.on_hover_text("Click to pick; double-click to put it on the sheet you're looking at");
+                        let q = cell(ui, RichText::new(format!("{}", it.qty)).color(if it.qty > 0 { th().text } else { th().text_dim }));
+                        // On the quantity: who changed it last, and who took
+                        // the last ones (SV9), above the row's own hint.
+                        let who = if q.hovered() { it.changed_note(&clock) } else { String::new() };
+                        r |= q;
+                        let hint = "Click to pick; double-click to put it on the sheet you're looking at";
+                        let r = r.on_hover_text(if who.is_empty() { hint.to_string() } else { format!("{who}\n\n{hint}") });
                         if r.clicked() {
                             su.sel = Some(it.reference.clone());
                             su.note = None;
@@ -920,19 +932,19 @@ mod tests {
 
     #[test]
     fn use_and_renest_is_all_or_nothing() {
-        let (mut a, dir) = app_with_stock("renest");
+        let (mut a, _dir) = app_with_stock("renest");
         a.cfg.stock.use_stock = false;
         a.run_nesting();
         let before = a.result.sheets[0].clone();
         let fmt = a.result.format(0, &a.spec);
         // Far too small for the sheet's parts: nothing may change.
-        Stock::update(&dir, |s| s.add_sheet(Item::sheet("TINY", 0, 10.0, 400.0, 300.0, 1), true)).unwrap();
+        Stock::update(&a.library_at(), |s| s.add_sheet(Item::sheet("TINY", 0, 10.0, 400.0, 300.0, 1), true)).unwrap();
         a.use_stock_and_renest("TINY");
         assert_eq!(a.result.sheets[0], before, "parts untouched");
         assert_eq!(a.result.format(0, &a.spec).w, fmt.w, "sheet size untouched");
         assert!(a.status.starts_with("Nothing changed"), "{}", a.status);
         // Big enough: used and nested again.
-        Stock::update(&dir, |s| s.add_sheet(Item::sheet("BIG", 0, 10.0, 3000.0, 1500.0, 1), true)).unwrap();
+        Stock::update(&a.library_at(), |s| s.add_sheet(Item::sheet("BIG", 0, 10.0, 3000.0, 1500.0, 1), true)).unwrap();
         a.use_stock_and_renest("BIG");
         assert_eq!(a.result.formats[0].stock_ref, "BIG");
         assert!(a.result.sheets[0].iter().all(|p| a.fits_sheet(p, 0)));
@@ -942,9 +954,9 @@ mod tests {
     fn a_sheet_of_another_material_switches_the_job_to_it() {
         // ST16: picking a stainless 3 mm sheet for a mild steel 10 mm job
         // switches the job and puts the sheet on (nothing nested yet).
-        let (mut a, dir) = app_with_stock("switch");
+        let (mut a, _) = app_with_stock("switch");
         a.result = Default::default();
-        Stock::update(&dir, |s| s.add_sheet(Item::sheet("SS3", 1, 3.0, 1486.0, 724.0, 1), true)).unwrap();
+        Stock::update(&a.library_at(), |s| s.add_sheet(Item::sheet("SS3", 1, 3.0, 1486.0, 724.0, 1), true)).unwrap();
         a.use_stock_default("SS3");
         assert_eq!((a.spec.material, a.spec.thickness), (0, 10.0), "a plain double-click doesn't switch");
         assert!(a.stockui.note.as_ref().is_some_and(|(t, ok)| !ok && t.contains("Stainless steel")), "{:?}", a.stockui.note);
@@ -952,10 +964,10 @@ mod tests {
         assert_eq!((a.spec.material, a.spec.thickness), (1, 3.0));
         assert_eq!(a.result.formats[0].stock_ref, "SS3");
         // With parts nested the usual question comes first; nothing is used yet.
-        let (mut b, dir) = app_with_stock("switch-nested");
+        let (mut b, _) = app_with_stock("switch-nested");
         b.cfg.stock.use_stock = false;
         b.run_nesting();
-        Stock::update(&dir, |s| s.add_sheet(Item::sheet("SS3", 1, 3.0, 1486.0, 724.0, 1), true)).unwrap();
+        Stock::update(&b.library_at(), |s| s.add_sheet(Item::sheet("SS3", 1, 3.0, 1486.0, 724.0, 1), true)).unwrap();
         b.use_stock_switching("SS3");
         assert!(matches!(b.pending, Some(crate::Pending::NestedSpecChange { .. })));
         assert_eq!(b.spec.material, 0, "not switched until answered");
@@ -966,15 +978,15 @@ mod tests {
     fn double_click_on_a_stock_row_never_strands_parts() {
         // RN7: a double-click does what the main button does — when parts
         // would no longer fit it re-nests, all or nothing.
-        let (mut a, dir) = app_with_stock("dblclick");
+        let (mut a, _dir) = app_with_stock("dblclick");
         a.cfg.stock.use_stock = false;
         a.run_nesting();
         let before = a.result.sheets[0].clone();
-        Stock::update(&dir, |s| s.add_sheet(Item::sheet("TINY", 0, 10.0, 400.0, 300.0, 1), true)).unwrap();
+        Stock::update(&a.library_at(), |s| s.add_sheet(Item::sheet("TINY", 0, 10.0, 400.0, 300.0, 1), true)).unwrap();
         a.use_stock_default("TINY");
         assert_eq!(a.result.sheets[0], before, "parts untouched");
         assert!(a.stockui.note.as_ref().is_some_and(|(t, ok)| !ok && t.starts_with("Nothing changed")), "{:?}", a.stockui.note);
-        Stock::update(&dir, |s| s.add_sheet(Item::sheet("BIG", 0, 10.0, 3000.0, 1500.0, 1), true)).unwrap();
+        Stock::update(&a.library_at(), |s| s.add_sheet(Item::sheet("BIG", 0, 10.0, 3000.0, 1500.0, 1), true)).unwrap();
         a.use_stock_default("BIG");
         assert_eq!(a.result.formats[0].stock_ref, "BIG");
         assert!(a.result.sheets[0].iter().all(|p| a.fits_sheet(p, 0)));
@@ -1017,12 +1029,12 @@ mod tests {
         assert_eq!(s2.items.len(), s.items.len(), "replaced, not added");
         assert!(s2.get(&made[0]).is_none() && s2.get(&again[0]).is_some());
         // Once it's used, moving the line keeps it.
-        Stock::update(&dir, |s| s.take(&again[0], 1, false)).unwrap();
+        Stock::update(&a.library_at(), |s| s.take(&again[0], 1, false)).unwrap();
         a.cut_lines[last] = vec![crate::cutoff::CutLine { pts: vec![[mx + 200.0, 0.0], [mx + 200.0, 1500.0]], kind: crate::cutoff::CutKind::Remnant }];
         let note = a.stock_on_save();
         assert_eq!(a.result.formats[last].made, again);
         assert!(note.contains("already in use"), "{note}");
-        Stock::update(&dir, |s| {
+        Stock::update(&a.library_at(), |s| {
             s.give_back(&again[0], 1);
             Ok(())
         })
@@ -1199,6 +1211,117 @@ mod tests {
         a.cfg.stock.min_efficiency = 0.5;
         a.run_nesting();
         assert!(a.result.formats.iter().all(|f| f.stock_ref != "1-1"), "{:?}", a.result.formats);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Two PCs drawing on one sheet stock (STK-9): two windows on one Library
+/// folder, each with its own user and PC, going by one clock the test moves.
+#[cfg(test)]
+mod two_pcs {
+    use crate::nest::{Part, Shape};
+    use crate::shared::{Clock, Who};
+    use crate::stock::{self, Item, Stock};
+    use crate::App;
+    use std::path::{Path, PathBuf};
+    use std::time::Duration;
+
+    /// 2026-11-09 09:20 UTC: a test clock shows UTC.
+    const NOV_9_0920: u64 = 1_794_216_000;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("nestpro_two_pcs_stock_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    /// A Library whose sheet stock holds these 10 mm mild steel sheets
+    /// (reference, length, width, how many).
+    fn library_with(dir: &Path, sheets: &[(&str, f64, f64, i32)]) {
+        crate::library::create(dir).unwrap();
+        let mut s = Stock::default();
+        for (r, l, w, n) in sheets {
+            s.add_sheet(Item::sheet(r, 0, 10.0, *l, *w, *n), true).unwrap();
+        }
+        s.save(dir).unwrap();
+    }
+
+    /// `user`'s window on `pc`, on the Library in `dir`, with the open job
+    /// `job`: 10 mm mild steel, six 300 × 200 parts (one sheet's worth),
+    /// nested from the stock.
+    fn window(dir: &Path, user: &str, pc: &str, clock: &Clock, job: &str) -> App {
+        let mut a = App::new(None);
+        a.cfg.library_dir = dir.display().to_string();
+        a.who = Who::new(user, pc);
+        a.clock = clock.clone();
+        a.cfg.stock = stock::StockSettings::default();
+        a.job_name = job.into();
+        a.spec.material = 0;
+        a.spec.thickness = 10.0;
+        a.spec.w = 3000.0;
+        a.spec.h = 1500.0;
+        a.parts = vec![Part { name: "DEMO-P1".into(), shape: Shape::Rectangle, w: 300.0, h: 200.0, qty: 6, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
+        a.group_nest = false;
+        a.held.clear();
+        a
+    }
+
+    fn sheets(a: &App) -> Vec<String> {
+        a.result.formats.iter().take(a.result.sheets.len()).map(|f| f.stock_ref.clone()).collect()
+    }
+
+    /// SV10: both PCs plan on the last 3000 × 1500 sheet. Sam on PROG-1
+    /// saves first and takes it; Kim's save on PROG-2 ten minutes later says
+    /// who took it and when, takes nothing, and says what to do.
+    #[test]
+    fn a_save_that_finds_the_last_sheet_gone_says_who_took_it_and_when() {
+        let dir = scratch("last_sheet");
+        library_with(&dir, &[("S-1", 3000.0, 1500.0, 1)]);
+        let clock = Clock::at(NOV_9_0920);
+        let mut prog1 = window(&dir, "sam", "PROG-1", &clock, "DEMO-001 frames");
+        let mut prog2 = window(&dir, "kim", "PROG-2", &clock, "DEMO-002 brackets");
+        prog1.run_nesting();
+        prog2.run_nesting();
+        assert_eq!((sheets(&prog1), sheets(&prog2)), (vec!["S-1".to_string()], vec!["S-1".to_string()]));
+        prog1.save_job_to_library();
+        assert_eq!(Stock::load(&dir).unwrap().get("S-1").map(|s| s.qty), Some(0), "{}", prog1.status);
+        clock.advance(Duration::from_secs(10 * 60));
+        prog2.save_job_to_library();
+        assert!(prog2.job_lib_id.is_some(), "the job itself is saved: {}", prog2.status);
+        assert!(prog2.status.contains("sam on PROG-1 took the last 3000 × 1500 (S-1) at 09:20"), "{}", prog2.status);
+        assert!(prog2.status.contains("Do All"), "says what to do: {}", prog2.status);
+        assert!(!prog2.status.contains("stock not updated"), "{}", prog2.status);
+        // Nothing was taken for PROG-2's job: saving again retries (SV7).
+        assert!(prog2.held.is_empty(), "{:?}", prog2.held);
+        let s1 = Stock::load(&dir).unwrap().get("S-1").cloned().unwrap();
+        assert_eq!(s1.qty, 0);
+        // PROG-2's stock list says who changed the sheet and took it (SV9).
+        assert_eq!(s1.changed_note(&prog2.clock), "Changed by sam on PROG-1, 9 Nov 09:20\nLast taken: 1 by sam on PROG-1, 9 Nov 09:20");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// SV11: both PCs plan on the last 3000 × 1500 sheet; PROG-1 saves and
+    /// takes it. Do All on PROG-2 then plans from the stock as it is now (a
+    /// 2000 × 1000), and PROG-2's save takes that one without a word about
+    /// PROG-1.
+    #[test]
+    fn do_all_plans_from_the_stock_as_it_is_now() {
+        let dir = scratch("do_all");
+        library_with(&dir, &[("S-1", 3000.0, 1500.0, 1), ("S-2", 2000.0, 1000.0, 3)]);
+        let clock = Clock::at(NOV_9_0920);
+        let mut prog1 = window(&dir, "sam", "PROG-1", &clock, "DEMO-001 frames");
+        let mut prog2 = window(&dir, "kim", "PROG-2", &clock, "DEMO-002 brackets");
+        prog1.run_nesting();
+        prog2.run_nesting();
+        assert_eq!((sheets(&prog1), sheets(&prog2)), (vec!["S-1".to_string()], vec!["S-1".to_string()]), "largest first");
+        prog1.save_job_to_library();
+        clock.advance(Duration::from_secs(5 * 60));
+        prog2.run_nesting();
+        assert_eq!(sheets(&prog2), vec!["S-2".to_string()], "{}", prog2.status);
+        prog2.save_job_to_library();
+        assert!(!prog2.status.contains("PROG-1") && !prog2.status.contains("stock not updated"), "{}", prog2.status);
+        let s = Stock::load(&dir).unwrap();
+        assert_eq!((s.get("S-1").map(|i| i.qty), s.get("S-2").map(|i| i.qty)), (Some(0), Some(2)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
