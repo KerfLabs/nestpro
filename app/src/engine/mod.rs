@@ -39,6 +39,10 @@ pub struct Ctx {
     pub post: crate::post::PostConfig,
     pub blm: crate::blm::BlmSettings,
     pub tech: crate::ct1::MachineTech,
+    /// Who the agent works for (this PC's user, marked as an agent) and the
+    /// clock it goes by: what it saves to the Library records them (LB5).
+    pub who: crate::shared::Who,
+    pub clock: crate::shared::Clock,
 }
 
 /// The post library of a machine (built-in values when it has none or it can't be read).
@@ -127,7 +131,7 @@ impl Ctx {
         let tech = install_machine(&m, &cfg.lantek_dir);
         install_material_keys(&cfg);
         let library_dir = if cfg.library_dir.is_empty() { crate::library::default_dir() } else { PathBuf::from(&cfg.library_dir) };
-        Ctx { post: load_post(&m), blm: blm_base(&m), tech, library_dir, cfg }
+        Ctx { post: load_post(&m), blm: blm_base(&m), tech, library_dir, cfg, who: crate::shared::Who::this_pc().as_agent(), clock: crate::shared::Clock::pc() }
     }
 
     /// Built-in values only (tests).
@@ -1011,7 +1015,7 @@ pub fn drop_empty_sheets(sheets: &mut Vec<Vec<Placed>>, formats: &mut Vec<SheetF
 
 impl JobFile {
     pub fn new_job(name: &str, spec: SheetSpec) -> JobFile {
-        JobFile { format: jobfile::FORMAT.into(), version: jobfile::VERSION, name: name.into(), week: String::new(), parts: vec![], spec, sheets: vec![], formats: vec![], held: Default::default(), cut_lines: vec![], method: String::new(), manual_cuts: vec![], stale: false, booked: false, erp: None }
+        JobFile { format: jobfile::FORMAT.into(), version: jobfile::VERSION, name: name.into(), week: String::new(), parts: vec![], spec, sheets: vec![], formats: vec![], held: Default::default(), cut_lines: vec![], method: String::new(), manual_cuts: vec![], stale: false, booked: false, erp: None, saved: None }
     }
 
     pub fn plans(&self) -> Vec<SheetPlan> {

@@ -4980,6 +4980,30 @@
   "source": "MECHANICS LB4; own design"
  },
  {
+  "name": "a Library save records",
+  "group": "shared library",
+  "value": "who saved it (Windows user and PC name; an agent's save marked (agent)) and when (the saving PC's clock once the save holds the write lock), in the record and its line in the list",
+  "source": "MECHANICS LB5; estimated"
+ },
+ {
+  "name": "a Library record saved before saves recorded who",
+  "group": "shared library",
+  "value": "loads and lists as before, with no name",
+  "source": "MECHANICS LB5; estimated"
+ },
+ {
+  "name": "saved by, as shown",
+  "group": "shared library",
+  "value": "Saved by sam on PROG-2, 9 Nov 09:20 (local time; with the year when not this year)",
+  "source": "MECHANICS LB6; estimated"
+ },
+ {
+  "name": "where saved by is shown",
+  "group": "shared library",
+  "value": "Library window rows; Job Explorer's saved jobs and Add product's library parts on hover; agents' library list (saved_by, saved_at)",
+  "source": "MECHANICS LB6; estimated"
+ },
+ {
   "name": "warn when a job is in use (fresh install)",
   "group": "jobs in use",
   "value": false,

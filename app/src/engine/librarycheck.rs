@@ -117,7 +117,7 @@ pub fn refuse_real_library(folder: &Path, this_library: &Path) -> Result<(), Str
         return Err(real(format!("'Sheets/{n}'")));
     }
     // The list: readable, and only the check's own records.
-    let lib = Library { dir: folder.to_path_buf() };
+    let lib = Library::at(folder, &shared::Who::this_pc(), &shared::Clock::pc());
     if folder.join(crate::library::INDEX).exists() {
         let listed = lib.read_index().map_err(|e| unsure(format!("its list of records ({}) can't be read ({e})", crate::library::INDEX)))?;
         if let Some(e) = listed.iter().find(|e| !e.name.starts_with(TAG)) {
@@ -226,7 +226,9 @@ pub fn run(folder: &Path, this_library: &Path, opt: &Options) -> Result<Report, 
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(e) => return Err(format!("can't write in {}: {e}", folder.display())),
     }
-    let lib = Library::open(folder)?;
+    let pc = if opt.pc.trim().is_empty() { who.pc.clone() } else { opt.pc.trim().to_string() };
+    // Its saves record the run's user and the PC it's tagged with (LB5).
+    let lib = Library::open(folder, &shared::Who::new(&who.user, &pc), &shared::Clock::pc())?;
     let started = Instant::now();
     // The run's own tag: when it started, its process and a count, so no two
     // runs (on any PC, or one after another) share records or a stock sheet.
@@ -234,7 +236,6 @@ pub fn run(folder: &Path, this_library: &Path, opt: &Options) -> Result<Report, 
     let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
     let n = RUNS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let stamp = format!("{}-{}-{}", crate::stock::base36(ms), crate::stock::base36(u64::from(std::process::id())), crate::stock::base36(n));
-    let pc = if opt.pc.trim().is_empty() { who.pc.clone() } else { opt.pc.trim().to_string() };
     let mut log = Log {
         format: "nestpro-library-check-log".into(),
         run: format!("{}-{stamp}", shared::file_safe(&pc)),

@@ -324,6 +324,11 @@ pub struct App {
     pub importui: importui::ImportUi,
     pub stockui: stockui::StockUi,
     pub job_lib_id: Option<u64>,
+    /// Who is working at this window, and the clock it goes by: what it
+    /// saves to the Library records them (LB5). This PC's user and clock;
+    /// tests set their own to play two PCs.
+    pub who: shared::Who,
+    pub clock: shared::Clock,
     /// The Drawing module's view state (axes, colours, simulation, measuring…).
     pub dv: drawing::DrawView,
     /// The cut technology panel on the part's drawing screen (CS6).
@@ -604,6 +609,8 @@ impl App {
             importui: Default::default(),
             stockui: Default::default(),
             job_lib_id: None,
+            who: shared::Who::this_pc(),
+            clock: shared::Clock::pc(),
             dv: drawing::DrawView::default(),
             cut_panel: Default::default(),
             ssim: None,
@@ -803,6 +810,7 @@ impl App {
             // The window books the stock on every save (stock_on_save).
             booked: true,
             erp: self.erp_job.clone(),
+            saved: None,
         };
         match jobfile::save(path, &j) {
             Ok(()) => {
@@ -3025,6 +3033,10 @@ fn main() -> eframe::Result {
             if want_lib {
                 app.workspace = Workspace::Jobs;
                 app.libui.open = true;
+                // --library-products: on its products tab.
+                if std::env::args().any(|a| a == "--library-products") {
+                    app.libui.tab = 1;
+                }
             }
             // --import=<folder> [--import-pick=<file name>]: the Import drawings
             // window there, with that file picked and previewed (screenshots).
