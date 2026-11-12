@@ -64,11 +64,14 @@ impl Gathered {
 }
 
 /// The contours a box from `a` to `b` (part mm) adds (CO12): the cut and
-/// marked ones wholly inside it, in the automatic order among themselves;
-/// those already ordered by hand (`ordered`) are skipped.
-pub fn box_picks(list: &[Contour], a: P, b: P, ordered: &[usize]) -> Gathered {
+/// marked ones wholly inside it, in the order `shown` (the part's cut order
+/// as the part screen numbers it, `cutorder::order`: the automatic part with
+/// its holes in the machine's hole order, CO14); those already ordered by
+/// hand (`ordered`) are skipped, named in number order.
+pub fn box_picks(list: &[Contour], shown: &[usize], a: P, b: P, ordered: &[usize]) -> Gathered {
     let inside = cutpanel::contours_in_box(&drawn(list), a, b);
-    let (already, add) = cutorder::automatic_among(list, &inside).into_iter().partition(|k| ordered.contains(k));
+    let (mut already, add): (Vec<usize>, Vec<usize>) = shown.iter().copied().filter(|k| inside.contains(k)).partition(|k| ordered.contains(k));
+    already.sort_unstable();
     Gathered { add, already }
 }
 
@@ -422,7 +425,8 @@ impl App {
     /// themselves. True when the order changed.
     pub fn order_box(&mut self, part: usize, a: P, b: P) -> bool {
         let Some(p) = self.parts.get(part) else { return false };
-        let got = box_picks(&contours::list(p), a, b, &cutorder::hand(p));
+        let shown: Vec<usize> = cutorder::order(p).into_iter().map(|o| o.0).collect();
+        let got = box_picks(&contours::list(p), &shown, a, b, &cutorder::hand(p));
         if got.is_empty() {
             self.status = "No cut or marked contour lies wholly inside the box.".into();
             return false;
@@ -629,11 +633,14 @@ mod tests {
         // order, then the outline; never the No cut line.
         let mut holes_in_order = vec![h.big, h.low_left, h.low_right, h.top_left, h.top_right];
         holes_in_order.sort_unstable();
-        let all = box_picks(&list, [-5.0, -5.0], [330.0, 170.0], &[]);
+        // With no order set by hand and the holes as drawn (Order mode of
+        // the holes None, CO14), the automatic order is by number.
+        let auto = cutorder::automatic(&list);
+        let all = box_picks(&list, &auto, [-5.0, -5.0], [330.0, 170.0], &[]);
         assert_eq!(all.add, [vec![MARK], holes_in_order.clone(), vec![OUTLINE]].concat());
         // Drawn from the other corner, the same; with two holes already
         // ordered by hand, those are skipped and named.
-        let some = box_picks(&list, [330.0, 170.0], [-5.0, -5.0], &[h.top_right, h.big]);
+        let some = box_picks(&list, &auto, [330.0, 170.0], [-5.0, -5.0], &[h.top_right, h.big]);
         let mut rest: Vec<usize> = holes_in_order.iter().copied().filter(|&k| k != h.top_right && k != h.big).collect();
         rest.sort_unstable();
         assert_eq!(some.add, [vec![MARK], rest, vec![OUTLINE]].concat());
@@ -641,7 +648,7 @@ mod tests {
         // Round the four small holes only.
         let mut four = vec![h.low_left, h.low_right, h.top_left, h.top_right];
         four.sort_unstable();
-        assert_eq!(box_picks(&list, [235.0, 15.0], [305.0, 145.0], &[]).add, four);
+        assert_eq!(box_picks(&list, &auto, [235.0, 15.0], [305.0, 145.0], &[]).add, four);
     }
 
     #[test]
@@ -654,6 +661,21 @@ mod tests {
         let mut left_out = marked_plate();
         contours::set_state(&mut left_out, &[h.big], ContourState::LeaveOut, false).unwrap();
         assert_eq!(pick_at(&contours::list(&left_out), [70.0, 102.0], 1.0), None);
+    }
+
+    /// While it lives, the test's thread works on a machine whose file
+    /// holds `codes` (made up); then on the built-in machine again.
+    struct OnMachine;
+
+    fn on_machine(codes: &str) -> OnMachine {
+        crate::ct1::set_thread_active(Some(crate::ct1::MachineTech::from_text(codes)));
+        OnMachine
+    }
+
+    impl Drop for OnMachine {
+        fn drop(&mut self) {
+            crate::ct1::set_thread_active(None);
+        }
     }
 
     /// The window with the marked plate as its only part, opened on its
@@ -676,6 +698,29 @@ mod tests {
     /// The contours ordered by hand, in their order.
     fn by_hand(a: &App) -> Vec<usize> {
         shown(a).into_iter().filter(|s| s.1).map(|s| s.0).collect()
+    }
+
+    #[test]
+    fn a_box_adds_the_holes_in_the_order_the_part_screen_shows_them() {
+        // By proximity (the original's default, CO20): the drawing numbers
+        // the holes nearest-first from the part's lower left corner (CO14),
+        // not by contour number. A box round the whole part makes that
+        // order the one set by hand, as shown: nothing moves.
+        let _m = on_machine("B565 1\n");
+        let mut a = app();
+        let h = holes(&contours::list(&a.parts[0]));
+        let before: Vec<usize> = shown(&a).into_iter().map(|s| s.0).collect();
+        // The big hole (70, 80) first; from it the two left-hand small holes
+        // are as far, so the one first in the part's own order goes next
+        // (CO21), then round the other three.
+        let nearest = if h.low_left < h.top_left { vec![h.big, h.low_left, h.low_right, h.top_right, h.top_left] } else { vec![h.big, h.top_left, h.top_right, h.low_right, h.low_left] };
+        assert_eq!(before, [vec![MARK], nearest.clone(), vec![OUTLINE]].concat());
+        let mut by_number = nearest.clone();
+        by_number.sort_unstable();
+        assert_ne!(nearest, by_number, "nearest-first differs from the number order here");
+        a.order_pick_start();
+        assert!(a.order_box(0, [-5.0, -5.0], [330.0, 170.0]));
+        assert_eq!(by_hand(&a), before);
     }
 
     #[test]
@@ -796,6 +841,9 @@ mod tests {
 
     #[test]
     fn the_drawing_numbers_each_contour_where_it_starts_set_by_hand_first() {
+        // The holes nobody ordered by hand in the part's own order (Order
+        // mode of the holes None, CO14), so they are numbered by contour.
+        let _drawn = on_machine("B565 0\n");
         let mut a = app();
         let h = holes(&contours::list(&a.parts[0]));
         let mut holes_in_order = vec![h.big, h.low_left, h.low_right, h.top_left, h.top_right];
@@ -823,6 +871,9 @@ mod tests {
 
     #[test]
     fn the_screen_and_part_cut_order_set_the_same_order() {
+        // The holes nobody ordered by hand in the part's own order (Order
+        // mode of the holes None, CO14), so they are numbered by contour.
+        let _drawn = on_machine("B565 0\n");
         use crate::engine::{session::Session, Ctx};
         use serde_json::{json, Value};
         let d = std::env::temp_dir().join(format!("nestpro_orderpick_{}", std::process::id()));

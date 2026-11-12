@@ -17,10 +17,12 @@ use crate::nest::{Part, Placed, SheetSpec, P};
 /// one whose outline was clicked (its holes go first, MM2), or one sitting
 /// in a picked hole (CO2). A part with only some holes clicked isn't.
 pub fn picked(parts: &[Part], placed: &[Placed], manual: &[ManualCut]) -> Vec<bool> {
-    let steps = cnc::part_steps(parts, placed);
+    // Which parts the picks finish doesn't depend on the order of their
+    // holes, so the part's own order (CO14's None) is enough here.
+    let hand = cnc::hand_holes(parts, placed);
     let outline: Vec<usize> = placed.iter().map(|pl| parts[pl.part].geometry().holes.len()).collect();
     let mut done = vec![false; placed.len()];
-    for (i, ci, _) in cnc::cut_jobs(parts, placed, &steps, &[], manual) {
+    for (i, ci, _) in cnc::cut_jobs(parts, placed, &hand, &crate::ct1::HoleOrder::NONE, &[], manual) {
         if ci == outline[i] {
             done[i] = true;
         }

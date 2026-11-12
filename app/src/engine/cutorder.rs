@@ -4,11 +4,15 @@
 //! is a list of contour numbers (`dxf::CustomGeo::hand_order`), so contour
 //! numbers never change: leads, joints, picked starts and hand-set qualities
 //! keep pointing at the same contours.
+//!
+//! The holes nobody has ordered by hand follow the machine's hole order
+//! setting (CO14, CO15, `hole_order`): on the part screen and in `part-info`
+//! where the part is drawn, and on a sheet where each copy sits.
 
 use super::contours::Look;
-use crate::ct1::MachineTech;
+use crate::ct1::{HoleMode, HoleOrder, MachineTech};
 use crate::dxf::{self, Contour, ContourState};
-use crate::nest::{CutQuality, Part, Shape};
+use crate::nest::{CutQuality, Part, Shape, P};
 
 /// Whether a contour has a place in the cut order: it is cut or marked.
 fn in_order(c: &Contour) -> bool {
@@ -42,14 +46,6 @@ pub fn hand(part: &Part) -> Vec<usize> {
     all
 }
 
-/// Contours `ks` (numbers from 0) in the automatic order among themselves
-/// (CO5, CO12): how a box on the part screen adds the contours inside it.
-/// Those with no place in the order (No cut, Bend line, Leave out) are left
-/// out.
-pub fn automatic_among(list: &[Contour], ks: &[usize]) -> Vec<usize> {
-    automatic(list).into_iter().filter(|k| ks.contains(k)).collect()
-}
-
 /// Contours `picks` (numbers from 0) gathered by one sweep on the part
 /// screen, in the order passed (CO11): the outline, passed before another
 /// contour, can't take that place (CO4), so it is left out of the pick,
@@ -75,18 +71,223 @@ fn custom(part: &Part) -> Option<&dxf::CustomGeo> {
     }
 }
 
-/// A part's cut order (CO3, CO5): every contour cut or marked (numbers from
-/// 0), in the order the part cuts it, and whether it was set by hand. The
-/// order set by hand comes first, then the rest in the automatic order, and
-/// the outline always last.
+/// A part's cut order (CO3, CO5) on the active machine: every contour cut
+/// or marked (numbers from 0), in the order the part cuts it, and whether it
+/// was set by hand. See `order_with`.
 pub fn order(part: &Part) -> Vec<(usize, bool)> {
+    order_with(part, &crate::ct1::active().hole_order)
+}
+
+/// A part's cut order (CO3, CO5, CO14) where it is drawn, with the hole
+/// order setting `holes`: every contour cut or marked (numbers from 0), in
+/// the order the part cuts it, and whether it was set by hand. The order set
+/// by hand comes first, then the rest in the automatic order: the marks, the
+/// holes as `holes` orders them from where the head is (the drawing's origin,
+/// or the last hole set by hand, CO27), and the outline always last.
+pub fn order_with(part: &Part, holes: &HoleOrder) -> Vec<(usize, bool)> {
     let list = super::contours::list(part);
     let hand = hand(part);
     let o = dxf::outline_index(&list);
     let by_hand = hand.iter().filter(|&&k| Some(k) != o).map(|&k| (k, true));
-    let auto = automatic(&list).into_iter().filter(|k| !hand.contains(k) && Some(*k) != o).map(|k| (k, false));
+    let (marks, cuts): (Vec<usize>, Vec<usize>) = automatic(&list).into_iter().filter(|k| !hand.contains(k) && Some(*k) != o).partition(|&k| list[k].state == ContourState::Mark);
+    // Each hole where the part's drawing has it, from where its cut starts
+    // when that is set by hand (CO21).
+    let cut = dxf::cut_order(&list);
+    let at = |k: usize| HoleAt::new(&list[k].pts, cut.iter().position(|&c| c == k).and_then(|ci| hand_start(part, ci)));
+    let from = hand.iter().rev().find(|&&k| Some(k) != o && list[k].state == ContourState::Cut).map_or([0.0, 0.0], |&k| at(k).at);
+    let (w, h) = part.bbox();
+    let outline = o.map_or([0.0, 0.0, w, h], |k| bbox(&list[k].pts));
+    let found: Vec<HoleAt> = cuts.iter().map(|&k| at(k)).collect();
+    let cuts = hole_order(&found, outline, from, holes).into_iter().map(|j| cuts[j]);
+    let auto = marks.into_iter().chain(cuts).map(|k| (k, false));
     let outline = o.filter(|&k| in_order(&list[k])).map(|k| (k, hand.contains(&k)));
     by_hand.chain(auto).chain(outline).collect()
+}
+
+/// Where cut contour `ci` (holes first, the outline last, as the sheet
+/// numbers them) starts when that is set on the part by hand: a lead moved
+/// by hand, else a start picked on an element. Part coordinates.
+pub fn hand_start(part: &Part, ci: usize) -> Option<P> {
+    let tech = part.tech.as_ref()?;
+    tech.lead_edit(ci).map(|e| e.at).or_else(|| tech.starts.iter().flatten().find(|s| s.0 as usize == ci).map(|s| s.1))
+}
+
+/// The box of a contour: [x0, y0, x1, y1].
+fn bbox(pts: &[P]) -> [f64; 4] {
+    pts.iter().fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, p| [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])])
+}
+
+/// A hole to order, in the frame it is ordered in (the part's drawing, or
+/// the sheet where a copy sits): its box, and its point, which the head is
+/// measured to and stands at once the hole is cut (CO21): where its cut
+/// starts when that is set by hand, else the middle of its box (MAC-61).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HoleAt {
+    pub lo: P,
+    pub hi: P,
+    pub at: P,
+}
+
+impl HoleAt {
+    pub fn new(pts: &[P], start: Option<P>) -> HoleAt {
+        let b = bbox(pts);
+        HoleAt { lo: [b[0], b[1]], hi: [b[2], b[3]], at: start.unwrap_or([(b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0]) }
+    }
+
+    /// Big for Cut small holes first (CO25): its box reaches the minimum
+    /// length along X or the minimum width along Y, within the tolerance.
+    fn big(&self, s: &HoleOrder) -> bool {
+        self.hi[0] - self.lo[0] >= s.big_length - s.tol - SLACK || self.hi[1] - self.lo[1] >= s.big_width - s.tol - SLACK
+    }
+
+    /// Whether this hole's box lies in or overlaps `big`'s box grown by the
+    /// offset on every side (CO25).
+    fn next_to(&self, big: &HoleAt, s: &HoleOrder) -> bool {
+        let d = s.big_offset;
+        self.lo[0] <= big.hi[0] + d && self.hi[0] >= big.lo[0] - d && self.lo[1] <= big.hi[1] + d && self.hi[1] >= big.lo[1] - d
+    }
+}
+
+/// The order the machine's hole order setting `s` cuts `holes` in (CO14,
+/// CO15): `holes` in the part's own contour order, the head at `from`, the
+/// part's outline box `outline` ([x0, y0, x1, y1]), all in one frame. The
+/// holes' places in `holes`, in cut order.
+///
+/// None and Minimum heat keep the part's own order. By proximity takes the
+/// nearest hole next (CO21); By direction cuts rows or columns from a start
+/// corner, every other one back (CO23, CO24). With Cut small holes first,
+/// the small holes next to a big hole go just before it, in the same mode
+/// among themselves (CO25).
+pub fn hole_order(holes: &[HoleAt], outline: [f64; 4], from: P, s: &HoleOrder) -> Vec<usize> {
+    let mut left: Vec<usize> = (0..holes.len()).collect();
+    let mut out = Vec::with_capacity(holes.len());
+    let mut run = Run::new(holes, outline, from, s);
+    let mut head = from;
+    while !left.is_empty() {
+        let k = run.pick(holes, &left, head);
+        if s.small_first && holes[k].big(s) {
+            let small: Vec<usize> = left.iter().copied().filter(|&j| j != k && !holes[j].big(s) && holes[j].next_to(&holes[k], s)).collect();
+            if !small.is_empty() {
+                let found: Vec<HoleAt> = small.iter().map(|&j| holes[j]).collect();
+                for j in hole_order(&found, outline, head, &HoleOrder { small_first: false, ..*s }).into_iter().map(|j| small[j]) {
+                    left.retain(|&x| x != j);
+                    out.push(j);
+                }
+            }
+        }
+        left.retain(|&x| x != k);
+        head = holes[k].at;
+        out.push(k);
+    }
+    out
+}
+
+/// Slack for comparing lengths: a hole exactly on a tolerance's edge is
+/// within it, whatever the rounding of its points.
+const SLACK: f64 = 1e-9;
+
+/// One part's run through its holes in a hole order mode: By direction's
+/// start corner, which way the run goes and the edge of the last hole cut.
+struct Run {
+    mode: HoleMode,
+    tol: f64,
+    ortho: f64,
+    columns: bool,
+    /// The start corner is on the left (rows) or at the bottom (columns).
+    from_low: bool,
+    /// The start side's edge is the low one (bottom for rows, left for
+    /// columns): the start corner is at the bottom (rows) or on the left
+    /// (columns).
+    side_low: bool,
+    /// The run goes the way from the start corner (right, or up), not back.
+    forward: bool,
+    /// The start-side edge of the hole cut last (CO24).
+    last: f64,
+}
+
+impl Run {
+    fn new(holes: &[HoleAt], outline: [f64; 4], from: P, s: &HoleOrder) -> Run {
+        // CO23: the start corner, chosen once per part; corner 0 is the one
+        // nearest the head, on a tie lower left, lower right, upper right,
+        // upper left.
+        let corners = [[outline[0], outline[1]], [outline[2], outline[1]], [outline[2], outline[3]], [outline[0], outline[3]]];
+        let d = |c: P| (c[0] - from[0]).hypot(c[1] - from[1]);
+        let corner = match s.corner {
+            1..=4 => s.corner as usize - 1,
+            _ => (1..4).fold(0, |best, c| if d(corners[c]) < d(corners[best]) { c } else { best }),
+        };
+        let (left, bottom) = (corner == 0 || corner == 3, corner <= 1);
+        let (from_low, side_low) = if s.columns { (bottom, left) } else { (left, bottom) };
+        let mut run = Run { mode: s.mode, tol: s.tol, ortho: s.ortho_tol, columns: s.columns, from_low, side_low, forward: true, last: 0.0 };
+        // For the first hole, the extreme start-side edge over all the holes (CO24).
+        let edges = holes.iter().map(|h| run.side(h));
+        run.last = if side_low { edges.fold(f64::MAX, f64::min) } else { edges.fold(f64::MIN, f64::max) };
+        run
+    }
+
+    /// A hole's start-side edge: its bottom or top edge for rows, its left
+    /// or right edge for columns.
+    fn side(&self, h: &HoleAt) -> f64 {
+        let a = if self.columns { 0 } else { 1 };
+        if self.side_low { h.lo[a] } else { h.hi[a] }
+    }
+
+    /// The next hole to cut among `left` (places in `holes`, in the part's
+    /// own order), the head at `head`.
+    fn pick(&mut self, holes: &[HoleAt], left: &[usize], head: P) -> usize {
+        match self.mode {
+            HoleMode::None | HoleMode::MinimumHeat => left[0],
+            HoleMode::Proximity => self.nearest(holes, left, head),
+            HoleMode::Direction => {
+                let mut k = self.in_row(holes, left);
+                // CO24: a new row or column has begun, so the run turns back.
+                if (self.side(&holes[k]) - self.last).abs() > self.ortho + SLACK {
+                    self.forward = !self.forward;
+                    k = self.in_row(holes, left);
+                }
+                self.last = self.side(&holes[k]);
+                k
+            }
+        }
+    }
+
+    /// CO21: the nearest hole to the head. A hole replaces the best so far
+    /// when it is nearer by more than the tolerance; when the two are within
+    /// it, when it is nearer sideways (along X) by more than the tolerance.
+    fn nearest(&self, holes: &[HoleAt], left: &[usize], head: P) -> usize {
+        let dist = |k: usize| (holes[k].at[0] - head[0]).hypot(holes[k].at[1] - head[1]);
+        let side = |k: usize| (holes[k].at[0] - head[0]).abs();
+        let (mut best, mut bd, mut bs) = (left[0], dist(left[0]), side(left[0]));
+        for &k in &left[1..] {
+            let (d, sd) = (dist(k), side(k));
+            if d < bd - self.tol {
+                (best, bd, bs) = (k, d, sd);
+            } else if (d - bd).abs() <= self.tol && sd < bs - self.tol {
+                (best, bs) = (k, sd);
+            }
+        }
+        best
+    }
+
+    /// CO23 steps 1–3: the row (or column) nearest the start corner, then
+    /// the hole in it nearest the start of the run. Among equals the hole
+    /// met first stays.
+    fn in_row(&self, holes: &[HoleAt], left: &[usize]) -> usize {
+        let edges = left.iter().map(|&k| self.side(&holes[k]));
+        let row = if self.side_low { edges.fold(f64::MAX, f64::min) } else { edges.fold(f64::MIN, f64::max) };
+        let a = if self.columns { 1 } else { 0 };
+        // Running away from the start corner: the smallest low edge first;
+        // running back: the largest high edge first.
+        let ahead = self.forward == self.from_low;
+        let key = |k: usize| if ahead { holes[k].lo[a] } else { -holes[k].hi[a] };
+        let mut best: Option<usize> = None;
+        for &k in left.iter().filter(|&&k| (self.side(&holes[k]) - row).abs() <= self.ortho + SLACK) {
+            if best.is_none_or(|b| key(k) < key(b)) {
+                best = Some(k);
+            }
+        }
+        best.unwrap_or(left[0])
+    }
 }
 
 /// One step of a part's machining on a sheet, numbered as the sheet plan
@@ -105,7 +306,10 @@ pub enum Step {
 /// marks first, then the holes and the outline, all as the part's geometry
 /// lists them: what every sheet cut before an order set by hand reached it.
 /// That is the automatic order (CO5), and for a part saved before contour
-/// states it keeps its marks in the order they were saved in.
+/// states it keeps its marks in the order they were saved in. The holes not
+/// set by hand are listed in the part's own order: each copy on a sheet
+/// orders them by the machine's setting where it sits (CO14, `hole_order`),
+/// which doesn't move the marks, all made before them.
 pub fn sheet_steps(part: &Part) -> Vec<Step> {
     let marks = part.custom.as_ref().map_or(0, |g| g.marks.len());
     let geo = match custom(part) {
@@ -119,7 +323,18 @@ pub fn sheet_steps(part: &Part) -> Vec<Step> {
     let cut = dxf::cut_order(&list);
     let mark = geo.mark_numbers();
     let step = |k: usize| cut.iter().position(|&c| c == k).map(Step::Cut).or_else(|| mark.iter().position(|&m| m == k).map(Step::Mark));
-    order(part).into_iter().filter_map(|(k, _)| step(k)).collect()
+    order_with(part, &HoleOrder::NONE).into_iter().filter_map(|(k, _)| step(k)).collect()
+}
+
+/// The holes of part `part` set by hand in its cut order (CO3), in that
+/// order, as the sheet plan numbers its cut contours (holes first). The
+/// rest of its holes follow the machine's hole order on each sheet (CO14).
+pub fn sheet_hand_holes(part: &Part) -> Vec<usize> {
+    let Some(geo) = custom(part) else { return vec![] };
+    let list = geo.contour_list();
+    let cut = dxf::cut_order(&list);
+    let o = dxf::outline_index(&list);
+    hand(part).into_iter().filter(|&k| Some(k) != o).filter_map(|k| cut.iter().position(|&c| c == k)).collect()
 }
 
 /// A command on a part's cut order (CO3, CO5, CO6). Each one adds to the
@@ -232,8 +447,14 @@ pub fn apply(part: &mut Part, mt: &MachineTech, cmd: &Command) -> Result<Ordered
 /// and how it names them in shop words when it is a bulk command (CO5).
 fn picks(part: &Part, mt: &MachineTech, cmd: &Command) -> Result<(Vec<usize>, Option<String>), String> {
     let list = super::contours::list(part);
-    let auto = automatic(&list);
-    // A bulk command takes its contours in the automatic order.
+    // A bulk command takes the contours not yet ordered in the automatic
+    // order, the holes in the machine's hole order as the part is drawn
+    // (CO14); those already ordered come first, in number order, and are
+    // skipped.
+    let shown = order_with(part, &mt.hole_order);
+    let mut auto: Vec<usize> = shown.iter().filter(|o| o.1).map(|o| o.0).collect();
+    auto.sort_unstable();
+    auto.extend(shown.iter().filter(|o| !o.1).map(|o| o.0));
     let kind = |f: &dyn Fn(usize) -> bool| auto.iter().copied().filter(|&k| f(k)).collect::<Vec<usize>>();
     match cmd {
         Command::Contours(v) => match v.iter().find(|&&k| !in_order(&list[k])) {
