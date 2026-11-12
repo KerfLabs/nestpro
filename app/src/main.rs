@@ -41,10 +41,15 @@ mod textedit;
 mod dxf;
 mod formats;
 mod importui;
+mod inuseui;
 mod jobfile;
 mod jobs;
 mod libui;
 mod library;
+mod folders;
+mod libtree;
+mod refreshui;
+mod shared;
 mod region;
 mod remline;
 mod remmark;
@@ -145,7 +150,7 @@ pub enum Pending {
     ExportReview { problems: Vec<(usize, usize, usize)>, checks: Vec<(usize, usize)> },
 }
 
-/// Answers to "this part has technology" (the original's choices, rule T2).
+/// Answers to "this part has technology" (the original's choices, rule PT2).
 #[derive(Clone, Copy, PartialEq)]
 pub enum TechChoice {
     /// Keep the original with its technology and put the change on a copy.
@@ -165,6 +170,9 @@ pub struct Job {
     pub stale: bool,
     /// The job's record in the library when it has been saved there (or opened from it).
     pub lib_id: Option<u64>,
+    /// The revision of that record, and of each library part in the job, as
+    /// this window read or last saved them (LB7).
+    pub lib_read: libui::LibRead,
     /// Free cut lines / remnant lines and contours cut by hand, per sheet.
     pub cut_lines: Vec<Vec<cutoff::CutLine>>,
     pub manual_cuts: Vec<Vec<cnc::ManualCut>>,
@@ -181,6 +189,10 @@ pub struct Job {
     /// The job as last saved or opened (`job_sig`); None = never saved. It
     /// has unsaved changes when it no longer matches (jobtree.rs).
     pub saved: Option<u64>,
+    /// The Library folder a job saved into the Library for the first time
+    /// goes into (JX15): the folder of the library job it was opened or
+    /// copied from. None: by its folder's name.
+    pub lib_folder: Option<u64>,
 }
 
 pub struct App {
@@ -255,8 +267,12 @@ pub struct App {
     /// whether the person chose to close anyway (jobtree.rs `quit_guard`).
     pub quit_ask: Option<Vec<String>>,
     pub quit_confirmed: bool,
-    /// The Library folder as it was when typing in its box began (settings).
-    pub lib_dir_typed_from: Option<String>,
+    /// The Library folder being typed in its box (settings), until the
+    /// typing is done.
+    pub lib_dir_edit: Option<String>,
+    /// A folder picked in Settings that holds no Library, while asking
+    /// whether to make a new Library there (LB12).
+    pub lib_new_ask: Option<String>,
     /// Original option: warn before changing a part that has technology.
     pub warn_tech: bool,
     /// "Use this answer for the rest" given in the technology question.
@@ -326,6 +342,18 @@ pub struct App {
     pub importui: importui::ImportUi,
     pub stockui: stockui::StockUi,
     pub job_lib_id: Option<u64>,
+    /// What the open job read from the Library (LB7).
+    pub lib_read: libui::LibRead,
+    /// Jobs in use: this window's holds, other PCs' jobs in use, and what
+    /// opening one asks (CU5–CU11).
+    pub inuse: inuseui::InUseUi,
+    /// Who is working at this window, and the clock it goes by: what it
+    /// saves to the Library records them (LB5). This PC's user and clock;
+    /// tests set their own to play two PCs.
+    pub who: shared::Who,
+    pub clock: shared::Clock,
+    /// Lists and open jobs that update by themselves (JX8, LB14–LB16).
+    pub autorefresh: refreshui::AutoRefresh,
     /// The Drawing module's view state (axes, colours, simulation, measuring…).
     pub dv: drawing::DrawView,
     /// The cut technology panel on the part's drawing screen (CS6).
@@ -458,7 +486,7 @@ fn demo_jobs(first: &App) -> Vec<Job> {
     let p = |name: &str, shape, w, h, qty, color| Part { name: name.into(), shape, w, h, qty, rotate: true, color, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
     let mk = |week: &str, name: &str, parts: Vec<Part>, spec: SheetSpec| {
         let result = nest::nest(&parts, &spec);
-        Job { week: week.into(), name: name.into(), parts, spec, result, stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None, saved: None }
+        Job { week: week.into(), name: name.into(), parts, spec, result, stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None, saved: None, lib_read: Default::default(), lib_folder: None }
     };
     let mut steel5 = spec.clone();
     steel5.thickness = 5.0;
@@ -476,11 +504,13 @@ fn demo_jobs(first: &App) -> Vec<Job> {
             result: first.result.clone(),
             stale: false,
             lib_id: None,
+            lib_read: Default::default(),
             cut_lines: vec![],
             manual_cuts: vec![],
             cam_changed: None,
             file: None,
             saved: None,
+            lib_folder: None,
             held: Default::default(),
             erp: None,
         },
@@ -571,7 +601,8 @@ impl App {
             pending: None,
             quit_ask: None,
             quit_confirmed: false,
-            lib_dir_typed_from: None,
+            lib_dir_edit: None,
+            lib_new_ask: None,
             warn_tech: true,
             tech_answer_all: None,
             tech_all_box: false,
@@ -607,6 +638,11 @@ impl App {
             importui: Default::default(),
             stockui: Default::default(),
             job_lib_id: None,
+            lib_read: Default::default(),
+            inuse: Default::default(),
+            who: shared::Who::this_pc(),
+            clock: shared::Clock::pc(),
+            autorefresh: Default::default(),
             dv: drawing::DrawView::default(),
             cut_panel: Default::default(),
             ssim: None,
@@ -668,6 +704,7 @@ impl App {
             j.result = self.result.clone();
             j.stale = self.stale;
             j.lib_id = self.job_lib_id;
+            j.lib_read = self.lib_read.clone();
             j.cut_lines = self.cut_lines.clone();
             j.manual_cuts = self.manual_cuts.clone();
             j.cam_changed = self.cam_changed;
@@ -691,6 +728,7 @@ impl App {
         self.result = j.result;
         self.stale = j.stale;
         self.job_lib_id = j.lib_id;
+        self.lib_read = j.lib_read;
         // The job's own cut lines and hand-cut contours (not the previous job's).
         self.cut_lines = j.cut_lines;
         self.manual_cuts = j.manual_cuts;
@@ -707,9 +745,17 @@ impl App {
         self.sel_part = if self.parts.is_empty() { None } else { Some(0) };
         self.undo.clear();
         self.redo.clear();
+        // A question about the last job's library part goes with it (LB9):
+        // answered here, it would save this job's part of that name.
+        if matches!(self.libui.question, Some(crate::libui::SaveQuestion::Part { .. })) {
+            self.libui.question = None;
+        }
         self.jobs_reindexed();
         self.refresh();
         self.status = format!("Opened job {}.", self.job_name);
+        // The job in front is in use; the one left keeps its hold only with
+        // unsaved changes (CU5).
+        self.sync_holds();
     }
 
     /// Open a nesting from machine programs (.zip / .XML / .SPF, see
@@ -737,12 +783,14 @@ impl App {
             result: nest::NestResult { sheets: vec![pj.sheet], formats: vec![nest::SheetFormat::rect(spec.w, spec.h)], method: "opened from machine program".into(), tried: 0 },
             stale: false,
             lib_id: None,
+            lib_read: Default::default(),
             cut_lines: vec![],
             manual_cuts: vec![],
             cam_changed: None,
             held: Default::default(),
             file: None,
             saved: None,
+            lib_folder: None,
             erp: None,
         });
         let i = self.jobs.len() - 1;
@@ -783,11 +831,26 @@ impl App {
                 return;
             }
         }
-        if !self.ready_to_save(stockui::SaveTarget::File(path.to_path_buf())) {
+        // A Library job's sheets are booked when it's saved to the Library,
+        // after its revision check (LB8): saved to a file, it leaves the
+        // stock alone, and the file is a copy holding none of its sheets or
+        // remnants (as LB9's copy), so it never gives back what the record
+        // holds (LB13).
+        let library_job = self.job_lib_id.is_some();
+        if !library_job && !self.ready_to_save(stockui::SaveTarget::File(path.to_path_buf())) {
             return;
         }
-        let stock_note = self.stock_on_save();
+        let stock_note = if library_job {
+            self.result.normalise(&self.spec);
+            " — its sheets are booked when it's saved to the Library.".to_string()
+        } else {
+            self.stock_on_save()
+        };
         self.store_job();
+        let (mut formats, mut held) = (self.result.formats.clone(), self.held.clone());
+        if library_job {
+            engine::stockflow::forget_booking(&mut formats, &mut held);
+        }
         let week = self.jobs.get(self.cur_job).map_or(String::new(), |j| j.week.clone());
         let j = jobfile::JobFile {
             format: jobfile::FORMAT.into(),
@@ -797,19 +860,35 @@ impl App {
             parts: self.parts.clone(),
             spec: self.spec.clone(),
             sheets: self.result.sheets.clone(),
-            formats: self.result.formats.clone(),
-            held: self.held.clone(),
+            formats,
+            held,
             cut_lines: self.cut_lines.clone(),
             method: self.result.method.clone(),
             manual_cuts: self.manual_cuts.clone(),
             stale: self.stale,
-            // The window books the stock on every save (stock_on_save).
-            booked: true,
+            // The window books the stock on every save (stock_on_save), a
+            // Library job's only when saved to the Library.
+            booked: !library_job,
             erp: self.erp_job.clone(),
+            saved: None,
+            library: None,
+            // The library parts it read, and at which revision (LB7).
+            library_parts: self.lib_read.parts.clone(),
         };
         match jobfile::save(path, &j) {
             Ok(()) => {
-                self.link_job_file(path, &j);
+                if library_job {
+                    // The file is a copy (LB13): the window doesn't follow
+                    // it, or an agent's change to it, reloaded, would drop
+                    // the job's booking and the next Save to library would
+                    // take its sheets again. Nor does the job keep it as its
+                    // own file: Save asks where, as for any Library job.
+                    self.job_path = None;
+                    self.job_link = None;
+                    self.store_job();
+                } else {
+                    self.link_job_file(path, &j);
+                }
                 self.mark_job_saved(self.cur_job);
                 // An agent's one-step undo copy is from before this save: undoing
                 // to it would drop what was just saved.
@@ -834,7 +913,7 @@ impl App {
         let name = self.unique_job_name(&j.name).unwrap_or_else(|| j.name.clone());
         self.store_job();
         let tried = 0;
-        self.jobs.push(Job { week: if j.week.is_empty() { "Opened jobs".into() } else { j.week }, name, parts: j.parts, spec: j.spec.clone(), result: { let mut r = nest::NestResult { sheets: j.sheets, formats: j.formats, method: j.method, tried }; r.normalise(&j.spec); r }, stale: j.stale, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: j.held.clone(), erp: None, file: None, saved: None });
+        self.jobs.push(Job { week: if j.week.is_empty() { "Opened jobs".into() } else { j.week }, name, parts: j.parts, spec: j.spec.clone(), result: { let mut r = nest::NestResult { sheets: j.sheets, formats: j.formats, method: j.method, tried }; r.normalise(&j.spec); r }, stale: j.stale, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: j.held.clone(), erp: None, file: None, saved: None, lib_read: libui::LibRead { revision: 0, parts: j.library_parts }, lib_folder: None });
         let i = self.jobs.len() - 1;
         self.open_job(i);
         self.cut_lines = j.cut_lines;
@@ -889,12 +968,25 @@ impl App {
             rows.push((t, name, folder, Src::File(p), exists));
         }
         for e in self.libui.entries.iter().filter(|e| e.kind == library::Kind::Job) {
-            let what = format!("{} · {} sheet(s){}", self.mat_thk(e.material, e.thickness), e.count_b, if e.folder.is_empty() { String::new() } else { format!(" · {}", e.folder) });
+            // Its folder as the Library's folder tree shows it (JX10).
+            let folder = self.libui.tree.path(self.libui.tree.folder_of(e.id));
+            let what = format!("{} · {} sheet(s){}", self.mat_thk(e.material, e.thickness), e.count_b, if folder.is_empty() { String::new() } else { format!(" · {folder}") });
             rows.push((e.updated, e.name.clone(), what, Src::Lib(e.id), true));
         }
         rows.sort_by(|a, b| b.0.cmp(&a.0));
         ui.label(RichText::new("Recent jobs").strong().color(th().text_strong));
         ui.label(RichText::new("Job files and Library jobs together, newest first").size(11.5).color(th().text_dim));
+        // The Library's jobs are missing because it can't be reached (LB11).
+        if let Some(e) = self.libui.error.clone() {
+            let (again, folder) = crate::libui::unreachable_note(ui, &format!("Library jobs aren't listed: {e}"));
+            if again {
+                self.lib_retry();
+            }
+            if folder {
+                self.open_settings(crate::settings_ui::Section::Folders);
+                ui.close();
+            }
+        }
         if rows.is_empty() {
             ui.label(RichText::new("None yet — jobs you save or open show up here.").size(12.0).color(th().text_dim));
         }
@@ -938,6 +1030,13 @@ impl App {
                     }
                 });
                 ui.label(RichText::new(detail).size(11.5).color(th().text_dim));
+                // Another PC has it in use (CU10).
+                if let Some(n) = match src {
+                    Src::Lib(id) => self.in_use_note(*id),
+                    Src::File(_) => None,
+                } {
+                    crate::inuseui::in_use_chip(ui, &n);
+                }
                 ui.add_space(2.0);
             }
         });
@@ -983,7 +1082,7 @@ impl App {
             return;
         };
         self.store_job();
-        self.jobs.push(Job { week, name, parts: vec![], spec: engine::with_prefs(&self.spec, &self.cfg), result: NestResult::default(), stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None, saved: None });
+        self.jobs.push(Job { week, name, parts: vec![], spec: engine::with_prefs(&self.spec, &self.cfg), result: NestResult::default(), stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None, saved: None, lib_read: Default::default(), lib_folder: None });
         let i = self.jobs.len() - 1;
         self.open_job(i);
         self.status = format!("Created job {} — add products, then nest.", self.job_name);
@@ -1205,7 +1304,7 @@ impl App {
     /// Finish drawings that waited for the layer question.
     /// Save the selected part as DXF (outline and holes on CUT, marking on MARK),
     /// with a one-line text file of the same name beside it — the way the original
-    /// hands a part to its bending program (rule D1).
+    /// hands a part to its bending program (rule DF1).
     pub fn export_part_dxf(&mut self, idx: usize) {
         let Some(p) = self.parts.get(idx) else { return };
         let g = p.geometry();
@@ -1238,7 +1337,7 @@ impl App {
         self.checkpoint();
         match choice {
             TechChoice::EditCopy => {
-                // Original inserts a copy of the part (rule T2).
+                // Original inserts a copy of the part (rule PT2).
                 let mut copy = draft;
                 copy.tech = None;
                 let base = self.parts[idx].name.clone();
@@ -1262,7 +1361,7 @@ impl App {
     }
 
     /// Material/thickness change while parts are nested (original asks once:
-    /// keep the nestings, remove them and free their sheets, or cancel — rule T4).
+    /// keep the nestings, remove them and free their sheets, or cancel — rule PT4).
     pub fn apply_spec_change(&mut self, new_spec: SheetSpec, remove_nestings: bool) {
         self.checkpoint();
         self.spec = new_spec;
@@ -1709,6 +1808,12 @@ impl App {
         } else {
             format!("{} of {} parts nested — some are larger than the sheet.", placed, need)
         };
+        // From the stock, but the Library can't be reached: said so (LB11).
+        if !(self.group_nest && nest::part_groups(&self.parts).len() > 1) {
+            if let Some(n) = engine::stockflow::stock_unreachable_note(&self.stock_use()) {
+                self.status += &n;
+            }
+        }
         let mut lost = vec![];
         if lost_order > 0 {
             lost.push(format!("the hand-picked cut order on {lost_order} sheet(s)"));
@@ -2512,7 +2617,9 @@ impl App {
 
         // --- pop-up notices (bottom-right), fade out after a few seconds ---
         // Long messages (an export's folder, what a nesting removed) stay longer.
-        let life = |m: &str| (4.0 + m.len() as f64 / 40.0).min(9.0);
+        // --keep-notices (screenshots): they stay until the picture is taken.
+        let keep = self.shot.is_some() && std::env::args().any(|a| a == "--keep-notices");
+        let life = |m: &str| if keep { f64::INFINITY } else { (4.0 + m.len() as f64 / 40.0).min(9.0) };
         self.toasts.retain(|t| now - t.1 < life(&t.0));
         let mut y = rect.bottom() - 14.0;
         for (msg, t0) in self.toasts.iter().rev().take(3) {
@@ -2566,6 +2673,8 @@ impl eframe::App for App {
         }
         // An agent or script may change the open job's file (CLI / MCP).
         self.watch_job_file(&ctx);
+        // Other PCs' saves to the shared Library (JX8, LB14–LB16).
+        self.auto_refresh(&ctx);
         if ctx.input(|i| i.modifiers.command && !i.modifiers.shift && i.key_pressed(egui::Key::S)) {
             self.save_job(false);
         }
@@ -2579,6 +2688,7 @@ impl eframe::App for App {
             self.open_settings(settings_ui::Section::General);
         }
         self.settings_window(&ctx);
+        self.new_library_window(&ctx);
         self.library_window(&ctx);
         self.import_window(&ctx);
         self.stock_window(&ctx);
@@ -2589,6 +2699,15 @@ impl eframe::App for App {
         }
         self.erp_window(&ctx);
         self.naming_window(&ctx);
+        self.save_question_window(&ctx);
+        self.in_use_window(&ctx);
+        self.taken_over_window(&ctx);
+        // Holds on the jobs in use here, renewed about every 30 s (CU5, CU6).
+        // Not for screenshots, which never write to a Library by themselves.
+        if self.shot.is_none() {
+            self.hold_frame(&ctx);
+        }
+        self.reload_note_card(&ctx);
         self.db_browser(&ctx);
         self.nest_verify_window(&ctx);
         if self.follow_system {
@@ -2895,7 +3014,7 @@ fn main() -> eframe::Result {
             // Without the example jobs: one empty job (not for screenshots).
             if load_layout && !app.cfg.examples {
                 let spec = app.spec.clone();
-                app.jobs = vec![Job { week: String::new(), name: "New job".into(), parts: vec![], spec, result: nest::NestResult::default(), stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None, saved: None }];
+                app.jobs = vec![Job { week: String::new(), name: "New job".into(), parts: vec![], spec, result: nest::NestResult::default(), stale: false, lib_id: None, cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: Default::default(), erp: None, file: None, saved: None, lib_read: Default::default(), lib_folder: None }];
                 app.cur_job = 0;
                 app.job_name = "New job".into();
                 app.parts.clear();
@@ -3037,13 +3156,53 @@ fn main() -> eframe::Result {
             if let Some(d) = std::env::args().find_map(|a| a.strip_prefix("--library-dir=").map(str::to_string)) {
                 app.cfg.library_dir = d;
             }
+            if let Some(what) = std::env::args().find_map(|a| a.strip_prefix("--save-question=").map(str::to_string)) {
+                app.demo_save_question(&what);
+            }
+            // --in-use=note|ask|warning|taken (screenshots, with --library-dir=
+            // a new, empty folder): jobs in use on made-up PCs (CU8–CU10).
+            if let Some(what) = std::env::args().find_map(|a| a.strip_prefix("--in-use=").map(str::to_string)) {
+                app.demo_in_use(&what);
+            }
+            // --reload-note (screenshots, with --library-dir= a new, empty
+            // folder): an open library job another PC saved reloads by
+            // itself, with its note (LB15).
+            // --reload-note=ask: it has unsaved changes here, so it asks.
+            if let Some(a) = std::env::args().find(|a| a == "--reload-note" || a == "--reload-note=ask") {
+                app.demo_reload_note(a.ends_with("=ask"));
+            }
+            // --refresh-minutes=N (screenshots): the auto-refresh setting (JX8).
+            if let Some(m) = std::env::args().find_map(|a| a.strip_prefix("--refresh-minutes=").and_then(|v| v.parse::<i64>().ok())) {
+                app.cfg.refresh_minutes = engine::refresh::period(m);
+            }
+            // --lib-tree-open: every Library folder opened out, and the Job
+            // Explorer the whole height (screenshots).
+            if std::env::args().any(|a| a == "--lib-tree-open") {
+                app.libui.reveal_all = true;
+                app.libui.loaded = false;
+                app.dock.close(Workspace::Jobs, dock::PaneId::JobSummary);
+            }
+            // --library-pick=<folder> (screenshots): that folder picked in
+            // Settings → Folders, asking first when it holds no Library (LB12).
+            if let Some(d) = std::env::args().find_map(|a| a.strip_prefix("--library-pick=").map(str::to_string)) {
+                app.pick_library_folder(d);
+            }
             if std::env::args().any(|a| a == "--lib-save") {
                 app.save_job_to_library();
                 app.add_products_to_library();
             }
+            // --lib-save-job: the open job only, its save message left in the
+            // status line (screenshots of what a save says, SV10).
+            if std::env::args().any(|a| a == "--lib-save-job") {
+                app.save_job_to_library();
+            }
             if want_lib {
                 app.workspace = Workspace::Jobs;
                 app.libui.open = true;
+                // --library-products: on its products tab.
+                if std::env::args().any(|a| a == "--library-products") {
+                    app.libui.tab = 1;
+                }
             }
             // --import=<folder> [--import-pick=<file name>]: the Import drawings
             // window there, with that file picked and previewed (screenshots).
@@ -3114,7 +3273,7 @@ fn main() -> eframe::Result {
             // smaller one picked, so the window shows a real choice.
             if std::env::args().any(|a| a == "--stock-demo") {
                 let (m, t) = (app.spec.material, app.spec.thickness);
-                let _ = stock::Stock::update(&app.library_dir(), |s| {
+                let _ = stock::Stock::update(&app.library_at(), |s| {
                     s.add_sheet(stock::Item::sheet("DEMO-S1", m, t, 2000.0, 1000.0, 5), true)?;
                     let mut r = stock::Item::sheet("DEMO-R1", m, t, 1200.0, 1000.0, 1);
                     r.kind = stock::Kind::UserRemnant;
@@ -3126,7 +3285,7 @@ fn main() -> eframe::Result {
             // picked, so the window offers to switch the job to it (ST16).
             if std::env::args().any(|a| a == "--stock-other") {
                 let (m, t) = ((app.spec.material + 1) % cnc::MATERIALS.len(), app.spec.thickness);
-                let _ = stock::Stock::update(&app.library_dir(), |s| s.add_sheet(stock::Item::sheet("DEMO-SS1", m, t, 1486.0, 724.0, 1), true));
+                let _ = stock::Stock::update(&app.library_at(), |s| s.add_sheet(stock::Item::sheet("DEMO-SS1", m, t, 1486.0, 724.0, 1), true));
                 app.stockui.sel = Some("DEMO-SS1".into());
                 app.stockui.job_only = false;
             }

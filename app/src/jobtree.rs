@@ -141,6 +141,20 @@ impl App {
             self.status = format!("Can't rename to '{n}': empty, too long or already a job.");
             return false;
         }
+        // A Library job: no other job in the Library may hold the name
+        // (JX16). Checked again under the write lock when it's saved.
+        let lib_id = if i == self.cur_job { self.job_lib_id } else { self.jobs.get(i).and_then(|j| j.lib_id) };
+        if let Some((id, Ok(lib))) = lib_id.map(|id| (id, self.library())) {
+            // Not a job someone else has in use (CU11).
+            if let Err(u) = crate::engine::inuse::may_change(&lib, id) {
+                self.status = format!("Can't rename it: {} Try again when they've closed it.", u.said(&self.clock));
+                return false;
+            }
+            if let Err(e) = lib.check_job_name(n, Some(id)) {
+                self.status = format!("Can't rename to '{n}': {e}.");
+                return false;
+            }
+        }
         if i == self.cur_job {
             self.job_name = n.to_string();
         }
@@ -175,7 +189,7 @@ impl App {
         self.status = format!("Job {name} deleted.");
     }
 
-    fn open_job_forced(&mut self, i: usize) {
+    pub(crate) fn open_job_forced(&mut self, i: usize) {
         let j = self.jobs[i].clone();
         self.cur_job = i;
         self.job_name = j.name;
@@ -184,6 +198,7 @@ impl App {
         self.result = j.result;
         self.stale = j.stale;
         self.job_lib_id = j.lib_id;
+        self.lib_read = j.lib_read;
         self.cut_lines = j.cut_lines;
         self.manual_cuts = j.manual_cuts;
         self.cam_changed = j.cam_changed;
@@ -201,7 +216,14 @@ impl App {
         self.sel_part = if self.parts.is_empty() { None } else { Some(0) };
         self.undo.clear();
         self.redo.clear();
+        // A question about the closed or deleted job's library part goes
+        // with it (LB9), as in open_job.
+        if matches!(self.libui.question, Some(crate::libui::SaveQuestion::Part { .. })) {
+            self.libui.question = None;
+        }
         self.refresh();
+        // A closed job lets go of its hold; the job now in front takes one (CU5).
+        self.sync_holds();
     }
 
     /// Close a job: it leaves the open jobs; its saved copy stays in the library
@@ -276,6 +298,9 @@ impl App {
             stale: j.stale,
             booked: true,
             erp: j.erp.clone(),
+            saved: None,
+            library: None,
+            library_parts: Default::default(),
         }
     }
 
@@ -312,6 +337,9 @@ impl App {
             if !names.is_empty() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 self.quit_ask = Some(names);
+            } else {
+                // Quitting lets go of every hold (CU5).
+                self.release_holds_on_quit();
             }
         }
         let Some(names) = self.quit_ask.clone() else { return };
@@ -327,6 +355,7 @@ impl App {
                 if ui.button("Close without saving").clicked() {
                     self.quit_ask = None;
                     self.quit_confirmed = true;
+                    self.release_holds_on_quit();
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             });
@@ -402,6 +431,7 @@ mod jobtree_tests {
     fn open_jobs_remember_their_saved_copy() {
         let dir = std::env::temp_dir().join(format!("nestpro_lib_link_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
+        crate::library::create(&dir).unwrap();
         let mut a = App::new(None);
         a.cfg.library_dir = dir.display().to_string();
         a.open_job(0);
@@ -436,6 +466,7 @@ mod jobtree_tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut a = App::new(None);
+        crate::library::create(&dir.join("lib")).unwrap();
         a.cfg.library_dir = dir.join("lib").display().to_string();
         // The examples are nothing to lose.
         assert!((0..a.jobs.len()).all(|i| !a.job_unsaved(i)));

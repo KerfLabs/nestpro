@@ -8,9 +8,13 @@
 
 pub mod arrange;
 pub mod contours;
+pub mod folderops;
 pub mod imports;
+pub mod inuse;
+pub mod librarycheck;
 pub mod ops;
 pub mod readback;
+pub mod refresh;
 pub mod render;
 pub mod session;
 pub mod stockflow;
@@ -38,6 +42,13 @@ pub struct Ctx {
     pub post: crate::post::PostConfig,
     pub blm: crate::blm::BlmSettings,
     pub tech: crate::ct1::MachineTech,
+    /// Who the agent works for (this PC's user, marked as an agent) and the
+    /// clock it goes by: what it saves to the Library records them (LB5).
+    pub who: crate::shared::Who,
+    pub clock: crate::shared::Clock,
+    /// What this session has seen of the holds on jobs in use, to judge when
+    /// one is gone (CU7). Agents never hold a job (CU12).
+    pub watch: inuse::Watch,
 }
 
 /// The post library of a machine (built-in values when it has none or it can't be read).
@@ -126,7 +137,7 @@ impl Ctx {
         let tech = install_machine(&m, &cfg.lantek_dir);
         install_material_keys(&cfg);
         let library_dir = if cfg.library_dir.is_empty() { crate::library::default_dir() } else { PathBuf::from(&cfg.library_dir) };
-        Ctx { post: load_post(&m), blm: blm_base(&m), tech, library_dir, cfg }
+        Ctx { post: load_post(&m), blm: blm_base(&m), tech, library_dir, cfg, who: crate::shared::Who::this_pc().as_agent(), clock: crate::shared::Clock::pc(), watch: Default::default() }
     }
 
     /// Built-in values only (tests).
@@ -140,6 +151,12 @@ impl Ctx {
         // Never the shop's real stock: an empty library of the test's own.
         c.library_dir = std::env::temp_dir().join(format!("nestpro_test_nolib_{}_{:?}", std::process::id(), std::thread::current().id()));
         c
+    }
+
+    /// The Library folder as this agent works on it (its user and clock),
+    /// without setting anything up: stock changes are signed with it (SV9).
+    pub fn library_at(&self) -> crate::library::Library {
+        crate::library::Library::at(&self.library_dir, &self.who, &self.clock)
     }
 
     /// The sheet stock (empty when there is none yet).
@@ -323,7 +340,7 @@ pub fn insert_part(parts: &mut Vec<Part>, sheets: &mut [Vec<Placed>], idx: usize
 }
 
 /// Name for a copy of a part with technology: "Name (1)", "(2)"…
-/// (T2: the change goes on a copy so the original keeps its technology).
+/// (PT2: the change goes on a copy so the original keeps its technology).
 pub fn copy_name(parts: &[Part], base: &str) -> String {
     (1..10).map(|k| format!("{base} ({k})")).find(|n| !parts.iter().any(|p| &p.name == n)).unwrap_or_else(|| format!("{base} copy"))
 }
@@ -1156,7 +1173,7 @@ pub fn drop_empty_sheets(sheets: &mut Vec<Vec<Placed>>, formats: &mut Vec<SheetF
 
 impl JobFile {
     pub fn new_job(name: &str, spec: SheetSpec) -> JobFile {
-        JobFile { format: jobfile::FORMAT.into(), version: jobfile::VERSION, name: name.into(), week: String::new(), parts: vec![], spec, sheets: vec![], formats: vec![], held: Default::default(), cut_lines: vec![], method: String::new(), manual_cuts: vec![], stale: false, booked: false, erp: None }
+        JobFile { format: jobfile::FORMAT.into(), version: jobfile::VERSION, name: name.into(), week: String::new(), parts: vec![], spec, sheets: vec![], formats: vec![], held: Default::default(), cut_lines: vec![], method: String::new(), manual_cuts: vec![], stale: false, booked: false, erp: None, saved: None, library: None, library_parts: Default::default() }
     }
 
     pub fn plans(&self) -> Vec<SheetPlan> {
@@ -1227,7 +1244,7 @@ impl JobFile {
     pub fn book_stock_named(&mut self, ctx: &Ctx, force_lines: bool, names: Option<&BTreeMap<(usize, usize), String>>) -> String {
         self.normalise_formats();
         let (mut formats, mut held) = (std::mem::take(&mut self.formats), std::mem::take(&mut self.held));
-        let note = stockflow::on_save(&ctx.library_dir, &self.stock_sheets(&ctx.cfg), &mut formats, &mut held, &ctx.cfg.stock, force_lines, names);
+        let note = stockflow::on_save(&ctx.library_at(), &self.stock_sheets(&ctx.cfg), &mut formats, &mut held, &ctx.cfg.stock, force_lines, names);
         (self.formats, self.held) = (formats, held);
         self.booked = true;
         note

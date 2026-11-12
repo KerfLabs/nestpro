@@ -1,5 +1,5 @@
 //! The Nesting module's "Verify Machining" command for the current sheet or
-//! all sheets, with the "Check safe distance" test (MECHANICS V1–V3, VM1–VM6).
+//! all sheets, with the "Check safe distance" test (MECHANICS VR1–VR3, VM1–VM6).
 
 use crate::nest::{self, Part, Placed, P};
 use crate::theme::th;

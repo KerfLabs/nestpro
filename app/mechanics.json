@@ -193,31 +193,31 @@
    "name": "warn before changing a part with technology",
    "group": "part technology",
    "value": true,
-   "source": "MECHANICS T1 (Part technology); default estimate"
+   "source": "MECHANICS PT1 (Part technology); default estimate"
   },
   {
    "name": "tech edit choice: copy keeps original",
    "group": "part technology",
    "value": "copy",
-   "source": "MECHANICS T2 (Part technology)"
+   "source": "MECHANICS PT2 (Part technology)"
   },
   {
    "name": "tech edit choice: apply to all remaining",
    "group": "part technology",
    "value": true,
-   "source": "MECHANICS T2 (Part technology)"
+   "source": "MECHANICS PT2 (Part technology)"
   },
   {
    "name": "nested part material change: remove nestings frees sheets",
    "group": "part technology",
    "value": true,
-   "source": "MECHANICS T4 (Part technology)"
+   "source": "MECHANICS PT4 (Part technology)"
   },
   {
    "name": "nested part change question asked once per batch",
    "group": "part technology",
    "value": true,
-   "source": "MECHANICS T4 (Part technology)"
+   "source": "MECHANICS PT4 (Part technology)"
   },
   {
    "name": "automatic lead-in",
@@ -414,38 +414,38 @@
    "group": "dxf",
    "value": 0.01,
    "unit": "mm",
-   "source": "MECHANICS D4 (DXF drawings); role inferred"
+   "source": "MECHANICS DF4 (DXF drawings); role inferred"
   },
   {
    "name": "DXF arc smoothness (chord error)",
    "group": "dxf",
    "value": 0.1,
    "unit": "mm",
-   "source": "MECHANICS D4 (DXF drawings); role inferred"
+   "source": "MECHANICS DF4 (DXF drawings); role inferred"
   },
   {
    "name": "DXF default layer role",
    "group": "dxf",
    "value": "cut (code 13)",
-   "source": "MECHANICS D5 (DXF drawings)"
+   "source": "MECHANICS DF5 (DXF drawings)"
   },
   {
    "name": "DXF text font",
    "group": "dxf",
    "value": "arial",
-   "source": "MECHANICS D5 (DXF drawings)"
+   "source": "MECHANICS DF5 (DXF drawings)"
   },
   {
    "name": "part DXF export writes .txt beside .dxf",
    "group": "dxf",
    "value": true,
-   "source": "MECHANICS D1 (DXF drawings)"
+   "source": "MECHANICS DF1 (DXF drawings)"
   },
   {
    "name": "bend hand-off requires matching material and thickness",
    "group": "dxf",
    "value": true,
-   "source": "MECHANICS D2 (DXF drawings)"
+   "source": "MECHANICS DF2 (DXF drawings)"
   },
   {
    "name": "marking speed factor",
@@ -1575,13 +1575,13 @@
    "name": "Verify Machining can check all sheets of the subjob",
    "group": "verify",
    "value": true,
-   "source": "MECHANICS V1 (v44 new features)"
+   "source": "MECHANICS VR1 (v44 new features)"
   },
   {
    "name": "safe distance default: the separation of parts",
    "group": "verify",
    "value": "The separation of parts",
-   "source": "MECHANICS V2 (v44 new features)"
+   "source": "MECHANICS VR2 (v44 new features)"
   },
   {
    "name": "safe distance tolerance",
@@ -2024,19 +2024,19 @@
    "name": "records per storage sub-folder",
    "group": "storage",
    "value": 1000,
-   "source": "MECHANICS ST1 (How Lantek stores nestings)"
+   "source": "MECHANICS RD1 (How Lantek stores nestings)"
   },
   {
    "name": "nesting folder pattern",
    "group": "storage",
    "value": "Nestings\\<n/1000>\\<n>",
-   "source": "MECHANICS ST1 (How Lantek stores nestings)"
+   "source": "MECHANICS RD1 (How Lantek stores nestings)"
   },
   {
    "name": "nesting file types",
    "group": "storage",
    "value": ".chp .mec .ret .bmp .wmf .pdf .mcs Box1/Box2.wmf",
-   "source": "MECHANICS ST2 (How Lantek stores nestings)"
+   "source": "MECHANICS RD2 (How Lantek stores nestings)"
   },
   {
    "name": "job file extension",
@@ -2477,6 +2477,25 @@
    "source": "MECHANICS JX6"
   },
   {
+   "name": "job names unique across the Library, in every folder",
+   "group": "job explorer",
+   "value": true,
+   "source": "MECHANICS JX16"
+  },
+  {
+   "name": "job name compare ignores case and surrounding spaces",
+   "group": "job explorer",
+   "value": true,
+   "estimated": true,
+   "source": "MECHANICS JX17"
+  },
+  {
+   "name": "jobs already sharing a name keep saving under it, marked (rebuild)",
+   "group": "job explorer",
+   "value": true,
+   "source": "MECHANICS JX17"
+  },
+  {
    "name": "new folder default name",
    "group": "job explorer",
    "value": "New folder",
@@ -2858,7 +2877,7 @@
    "name": "linear tolerance (mm)",
    "group": "remnant line",
    "value": 0.01,
-   "source": "MECHANICS D4 (DXF drawings); assumed equal for the remnant engine (estimate)"
+   "source": "MECHANICS DF4 (DXF drawings); assumed equal for the remnant engine (estimate)"
   },
   {
    "name": "min X / min Y apply to",
@@ -4704,6 +4723,48 @@
   "source": "MECHANICS SV8"
  },
  {
+  "name": "a stock change records",
+  "group": "shared library",
+  "value": "who made it (Windows user and PC name; an agent's change marked (agent)) and when (that PC's clock once the change holds the write lock), on the stock and on each item it made or changed",
+  "source": "MECHANICS SV9; estimated"
+ },
+ {
+  "name": "a stock change that takes sheets out also records",
+  "group": "shared library",
+  "value": "on each item it took from: who took them, how many, and when",
+  "source": "MECHANICS SV9; estimated"
+ },
+ {
+  "name": "where who changed a stock item is shown",
+  "group": "shared library",
+  "value": "hover text of the stock row's quantity (Changed by sam on PROG-1, 9 Nov 09:20 / Last taken: 1 by …); agents' stock list (changed_by, changed_at)",
+  "source": "MECHANICS SV9; estimated"
+ },
+ {
+  "name": "a save that finds a sheet gone says",
+  "group": "shared library",
+  "value": "sam on PROG-1 took the last 3000 × 1500 (S-1) at 09:20, so nothing was taken from stock (remnants not stored): nest again (Do All) to use what's in stock now",
+  "source": "MECHANICS SV10; estimated"
+ },
+ {
+  "name": "when it was taken, as said",
+  "group": "shared library",
+  "value": "at 09:20 (today); on 8 Nov 09:20 (another day)",
+  "source": "MECHANICS SV10; estimated"
+ },
+ {
+  "name": "an agent's stock-book that took nothing begins",
+  "group": "shared library",
+  "value": "Not booked:",
+  "source": "MECHANICS SV10; estimated"
+ },
+ {
+  "name": "Do All reads the stock",
+  "group": "shared library",
+  "value": "afresh on every run, just before it plans",
+  "source": "MECHANICS SV11; estimated"
+ },
+ {
   "name": "compact refused on a remnant with an outline",
   "group": "nesting",
   "value": true,
@@ -4900,6 +4961,795 @@
   "group": "leads",
   "value": true,
   "source": "MECHANICS VP3"
+ },
+ {
+  "name": "write lock",
+  "group": "shared library",
+  "value": "library.lock in the Library folder, made with create-new; names user, PC, process and time",
+  "source": "MECHANICS LB1; own design"
+ },
+ {
+  "name": "changed only under the write lock",
+  "group": "shared library",
+  "value": "job and library part records, index.json, Sheets/stock.json (window, command line and MCP)",
+  "source": "MECHANICS LB1; own design"
+ },
+ {
+  "name": "longest wait for the write lock",
+  "group": "shared library",
+  "value": "120 s, then nothing is stored; the window's save waits in place",
+  "source": "MECHANICS LB1; own design"
+ },
+ {
+  "name": "write lock abandoned after",
+  "group": "shared library",
+  "value": "90 s unchanged, timed by the waiting PC's own clock",
+  "source": "MECHANICS LB2; own design"
+ },
+ {
+  "name": "lock checked just before a file is replaced",
+  "group": "shared library",
+  "value": "still this writer's lock, no takeover of it begun, and inside the writer's 30 s (checked again before each retry of the rename)",
+  "source": "MECHANICS LB2; own design"
+ },
+ {
+  "name": "a writer replaces files for",
+  "group": "shared library",
+  "value": "30 s after taking the lock (a third of the 90 s), by its own clocks; after that it replaces nothing and leaves the lock to be taken over",
+  "source": "MECHANICS LB2; own design"
+ },
+ {
+  "name": "taking over an abandoned lock",
+  "group": "shared library",
+  "value": "one PC only: create-new of library.lock.<token>.taken, check the lock is unchanged, rename its own lock over it; only the holder deletes library.lock",
+  "source": "MECHANICS LB2; own design"
+ },
+ {
+  "name": "a change sent in time can still land after a takeover",
+  "group": "shared library",
+  "value": "only if the share holds it back for more than 60 s (files on a share can't rule it out)",
+  "source": "MECHANICS LB2; estimated"
+ },
+ {
+  "name": "temporary file per writer",
+  "group": "shared library",
+  "value": "<file>.<PC>-<process>-<count>.tmp, then renamed over the file",
+  "source": "MECHANICS LB3; own design"
+ },
+ {
+  "name": "a Library save that fails stores",
+  "group": "shared library",
+  "value": "nothing: only while the lock is still this PC's, the record number is given back or the record saved over put back; a save whose record was written counts as done",
+  "source": "MECHANICS LB3; own design"
+ },
+ {
+  "name": "Library check records",
+  "group": "shared library",
+  "value": "DEMO-CHECK jobs and library parts, saved new and over again, and one stock sheet per run",
+  "source": "MECHANICS LB4; own design"
+ },
+ {
+  "name": "Library check folder",
+  "group": "shared library",
+  "value": "empty or missing, or marked library-check.json holding only its own readable list, stock and records (listed or not; a damaged one only if a run logged it) and nothing else; refuses this PC's Library",
+  "source": "MECHANICS LB4; own design"
+ },
+ {
+  "name": "Library check default length",
+  "group": "shared library",
+  "value": "1 minute",
+  "source": "MECHANICS LB4; own design"
+ },
+ {
+  "name": "a Library save records",
+  "group": "shared library",
+  "value": "who saved it (Windows user and PC name; an agent's save marked (agent)) and when (the saving PC's clock once the save holds the write lock), in the record and its line in the list",
+  "source": "MECHANICS LB5; estimated"
+ },
+ {
+  "name": "a Library record saved before saves recorded who",
+  "group": "shared library",
+  "value": "loads and lists as before, with no name",
+  "source": "MECHANICS LB5; estimated"
+ },
+ {
+  "name": "saved by, as shown",
+  "group": "shared library",
+  "value": "Saved by sam on PROG-2, 9 Nov 09:20 (local time; with the year when not this year)",
+  "source": "MECHANICS LB6; estimated"
+ },
+ {
+  "name": "where saved by is shown",
+  "group": "shared library",
+  "value": "Library window rows; Job Explorer's saved jobs and Add product's library parts on hover; agents' library list (saved_by, saved_at)",
+  "source": "MECHANICS LB6; estimated"
+ },
+ {
+  "name": "a Library save over a record",
+  "group": "shared library",
+  "value": "refused when the record's revision isn't the one read (opened, added or last saved), checked under the write lock; nothing is saved and the refusal names who saved it and when",
+  "source": "MECHANICS LB7; estimated"
+ },
+ {
+  "name": "a part not added from the Library, saved under a library part's name",
+  "group": "shared library",
+  "value": "counts as changed: asked like one someone else saved",
+  "source": "MECHANICS LB7; estimated"
+ },
+ {
+  "name": "a deleted record's number given to a new record",
+  "group": "shared library",
+  "value": false,
+  "source": "MECHANICS LB7; estimated"
+ },
+ {
+  "name": "a refused job save and the stock",
+  "group": "shared library",
+  "value": "takes no sheets, gives none back, stores no remnants: the check comes first, then the booking, the record and a new record's folder (JX15) under one hold of the write lock",
+  "source": "MECHANICS LB8; estimated"
+ },
+ {
+  "name": "a Library job saved to a file and the stock",
+  "group": "shared library",
+  "value": "left alone: booked at its next Save to library; the file is a copy holding none of its sheets or remnants, the window doesn't follow changes to it, and Save asks where each time",
+  "source": "MECHANICS LB8; estimated"
+ },
+ {
+  "name": "someone else saved the job: choices",
+  "group": "shared library",
+  "value": "Reload theirs; Save mine as a copy; Overwrite; Cancel",
+  "source": "MECHANICS LB9; estimated"
+ },
+ {
+  "name": "someone else saved the library part: choices",
+  "group": "shared library",
+  "value": "Keep theirs; Overwrite; Save mine under a new name",
+  "source": "MECHANICS LB9; estimated"
+ },
+ {
+  "name": "name of a copy",
+  "group": "shared library",
+  "value": "first free of NAME (1), NAME (2)… whatever its capitals",
+  "source": "MECHANICS LB9; estimated"
+ },
+ {
+  "name": "where a copy is filed",
+  "group": "shared library",
+  "value": "in the folder of the job it was copied from (JX15)",
+  "source": "MECHANICS LB9; estimated"
+ },
+ {
+  "name": "Overwrite and the stock",
+  "group": "shared library",
+  "value": "their sheets back to stock and their unused remnants out, then this job's booked",
+  "source": "MECHANICS LB9; estimated"
+ },
+ {
+  "name": "agents: library job saves",
+  "group": "shared library",
+  "value": "open links the job file to its record; save-job saves over it (twice = one record), refused with who, when and what to do (open again, or copy=true) when someone saved it since; never overwrites",
+  "source": "MECHANICS LB10; estimated"
+ },
+ {
+  "name": "agents: stock on a library job",
+  "group": "shared library",
+  "value": "stock-book book and release refused on a job file opened from or saved into the Library (its sheets are booked when someone saves it in the window); status still answers",
+  "source": "MECHANICS LB10; estimated"
+ },
+ {
+  "name": "agents: a booked job file saved into the Library",
+  "group": "shared library",
+  "value": "save-job hands the file's booking to the record (the record keeps its sheets and remnants) and the file stops following the stock (booked off), as one opened from the Library; later changes are booked when someone saves the job in the window",
+  "source": "MECHANICS LB10; estimated"
+ },
+ {
+  "name": "the Library can't be reached when",
+  "group": "shared library",
+  "value": "its folder isn't there (the share, the server or the network is down, or the folder was moved or renamed)",
+  "source": "MECHANICS LB11; estimated"
+ },
+ {
+  "name": "Library can't be reached: message",
+  "group": "shared library",
+  "value": "The Library on <folder> can't be reached. Check the network or the server.",
+  "source": "MECHANICS LB11; estimated"
+ },
+ {
+  "name": "lists while the Library can't be reached",
+  "group": "shared library",
+  "value": "the message naming the folder, with Try again and the Library folder setting, never an empty list; looked at again only on Try again or another folder",
+  "source": "MECHANICS LB11; estimated"
+ },
+ {
+  "name": "folders made while the Library can't be reached",
+  "group": "shared library",
+  "value": "none: no Library folder, sub-folder or write lock is made in a folder that isn't there",
+  "source": "MECHANICS LB11; estimated"
+ },
+ {
+  "name": "Do All while the Library can't be reached",
+  "group": "shared library",
+  "value": "nests on the job's sheet as with no stock for the job, and says the stock wasn't used",
+  "source": "MECHANICS LB11; estimated"
+ },
+ {
+  "name": "a folder holds a Library when it has",
+  "group": "shared library",
+  "value": "index.json, or a Jobs, Products or Sheets folder",
+  "source": "MECHANICS LB12; estimated"
+ },
+ {
+  "name": "a new Library is made",
+  "group": "shared library",
+  "value": "only in Settings → Folders, after asking about a picked folder that holds no Library",
+  "source": "MECHANICS LB12; estimated"
+ },
+ {
+  "name": "picking a folder that holds a Library",
+  "group": "shared library",
+  "value": "used at once, without asking",
+  "source": "MECHANICS LB12; estimated"
+ },
+ {
+  "name": "open jobs while the Library can't be reached",
+  "group": "shared library",
+  "value": "stay open with their changes and their Library link; Save job still saves to a file on this PC",
+  "source": "MECHANICS LB13; estimated"
+ },
+ {
+  "name": "switches to another Library on its own",
+  "group": "shared library",
+  "value": false,
+  "source": "MECHANICS LB13; estimated"
+ },
+ {
+  "name": "quick check while auto-refresh is on, seconds",
+  "group": "shared library",
+  "value": 5,
+  "source": "MECHANICS LB14; estimated"
+ },
+ {
+  "name": "what the quick check looks at",
+  "group": "shared library",
+  "value": "the date and size of the Library's list, its job and part folder trees and its sheet stock; nothing is read, no lock taken",
+  "source": "MECHANICS LB14; estimated"
+ },
+ {
+  "name": "a quick check also runs",
+  "group": "shared library",
+  "value": "at once when the window comes back to the front",
+  "source": "MECHANICS LB14; estimated"
+ },
+ {
+  "name": "what a look reads again",
+  "group": "shared library",
+  "value": "what changed: the Job Explorer's saved jobs, the Library window, Add product's library parts (only those whose line changed), with their job and part folder trees, and the Sheet stock",
+  "source": "MECHANICS LB14; estimated"
+ },
+ {
+  "name": "full reload",
+  "group": "shared library",
+  "value": "once per period (whole minutes, 1 to 1440): every list, every library part and every open Library job's record",
+  "source": "MECHANICS LB14; estimated"
+ },
+ {
+  "name": "a save landing during a look",
+  "group": "shared library",
+  "value": "shows at the next look (the dates are taken before reading)",
+  "source": "MECHANICS LB14; estimated"
+ },
+ {
+  "name": "refreshing writes to the Library",
+  "group": "shared library",
+  "value": false,
+  "source": "MECHANICS LB14; estimated"
+ },
+ {
+  "name": "with auto-refresh off",
+  "group": "shared library",
+  "value": "nothing reloads by itself; Refresh and this PC's own changes read the lists again",
+  "source": "MECHANICS LB14; estimated"
+ },
+ {
+  "name": "an open job someone else saved, unchanged here",
+  "group": "shared library",
+  "value": "reloads by itself as saved now (the stock untouched), with a note: \"Sam on PROG-2 saved this job at 09:20\"",
+  "source": "MECHANICS LB15; estimated"
+ },
+ {
+  "name": "an open job someone else saved, changed here",
+  "group": "shared library",
+  "value": "asks: Reload theirs, Keep mine, Save mine as a copy",
+  "source": "MECHANICS LB15; estimated"
+ },
+ {
+  "name": "Keep mine",
+  "group": "shared library",
+  "value": "keeps the changes, isn't asked again about that save, and the job's next save still asks (its remembered revision stays)",
+  "source": "MECHANICS LB15; estimated"
+ },
+ {
+  "name": "questions at once",
+  "group": "shared library",
+  "value": 1,
+  "source": "MECHANICS LB15; estimated"
+ },
+ {
+  "name": "an open job deleted on another PC",
+  "group": "shared library",
+  "value": "stays open with its changes and its link; said once; Save to library saves it again",
+  "source": "MECHANICS LB16; estimated"
+ },
+ {
+  "name": "an open job moved to another folder on another PC",
+  "group": "shared library",
+  "value": "isn't reloaded or asked about; shows in its new folder; saving it leaves it there",
+  "source": "MECHANICS LB16; estimated"
+ },
+ {
+  "name": "the Library can't be reached during a look",
+  "group": "shared library",
+  "value": "the lists say so in LB11's words, once; later looks are made in the background until it's back, then everything is read again",
+  "source": "MECHANICS LB16; estimated"
+ },
+ {
+  "name": "warn when a job is in use (fresh install)",
+  "group": "jobs in use",
+  "value": false,
+  "source": "MECHANICS CU1"
+ },
+ {
+  "name": "allow opening a job in use (fresh install)",
+  "group": "jobs in use",
+  "value": true,
+  "source": "MECHANICS CU1"
+ },
+ {
+  "name": "concurrency settings kept per PC",
+  "group": "jobs in use",
+  "value": true,
+  "source": "MECHANICS CU1"
+ },
+ {
+  "name": "warn off: no holds written or checked",
+  "group": "jobs in use",
+  "value": true,
+  "source": "MECHANICS CU1, CU3"
+ },
+ {
+  "name": "jobs held per user per PC",
+  "group": "jobs in use",
+  "value": 1,
+  "source": "MECHANICS CU2"
+ },
+ {
+  "name": "hold removed when the job is closed or the program quits",
+  "group": "jobs in use",
+  "value": true,
+  "source": "MECHANICS CU2"
+ },
+ {
+  "name": "holds removed when the job is deleted",
+  "group": "jobs in use",
+  "value": true,
+  "estimated": true,
+  "source": "MECHANICS CU2"
+ },
+ {
+  "name": "job in use opens read-only",
+  "group": "jobs in use",
+  "value": false,
+  "source": "MECHANICS CU3"
+ },
+ {
+  "name": "take over a job in use (original)",
+  "group": "jobs in use",
+  "value": false,
+  "source": "MECHANICS CU3"
+ },
+ {
+  "name": "hold expires (original)",
+  "group": "jobs in use",
+  "value": false,
+  "source": "MECHANICS CU4"
+ },
+ {
+  "name": "hold counts as gone when not renewed for (rebuild)",
+  "group": "jobs in use",
+  "value": 120,
+  "unit": "s",
+  "estimated": true,
+  "source": "MECHANICS CU4"
+ },
+ {
+  "name": "a job in use: the job in front and every job with unsaved changes",
+  "group": "jobs in use",
+  "value": true,
+  "estimated": true,
+  "source": "MECHANICS CU5"
+ },
+ {
+  "name": "holds per job in use",
+  "group": "jobs in use",
+  "value": 1,
+  "estimated": true,
+  "source": "MECHANICS CU5"
+ },
+ {
+  "name": "taking, renewing and letting go of a hold under the Library's write lock",
+  "group": "jobs in use",
+  "value": true,
+  "estimated": true,
+  "source": "MECHANICS CU5"
+ },
+ {
+  "name": "the same user on the same PC holds its own jobs (restart keeps holding)",
+  "group": "jobs in use",
+  "value": true,
+  "estimated": true,
+  "source": "MECHANICS CU5"
+ },
+ {
+  "name": "job files (not in the Library) are held",
+  "group": "jobs in use",
+  "value": false,
+  "estimated": true,
+  "source": "MECHANICS CU5"
+ },
+ {
+  "name": "hold renewed every",
+  "group": "jobs in use",
+  "value": 30,
+  "unit": "s",
+  "estimated": true,
+  "source": "MECHANICS CU6"
+ },
+ {
+  "name": "renewal that can't reach the Library said once, jobs stay open",
+  "group": "jobs in use",
+  "value": true,
+  "estimated": true,
+  "source": "MECHANICS CU6"
+ },
+ {
+  "name": "hold seen unchanged this long counts as gone (judged on the looking PC's own clock)",
+  "group": "jobs in use",
+  "value": 120,
+  "unit": "s",
+  "estimated": true,
+  "source": "MECHANICS CU7"
+ },
+ {
+  "name": "hold renewed longer ago than this by its PC's clock is gone at first sight",
+  "group": "jobs in use",
+  "value": 10,
+  "unit": "min",
+  "estimated": true,
+  "source": "MECHANICS CU7"
+ },
+ {
+  "name": "hold that can't be read counts as in use until unchanged for",
+  "group": "jobs in use",
+  "value": 120,
+  "unit": "s",
+  "estimated": true,
+  "source": "MECHANICS CU7"
+ },
+ {
+  "name": "allow on: Open anyway, Take over or Cancel",
+  "group": "jobs in use",
+  "value": true,
+  "estimated": true,
+  "source": "MECHANICS CU8"
+ },
+ {
+  "name": "allow off: Take over or Cancel",
+  "group": "jobs in use",
+  "value": true,
+  "estimated": true,
+  "source": "MECHANICS CU8"
+ },
+ {
+  "name": "take over a job in use (rebuild, after a warning)",
+  "group": "jobs in use",
+  "value": true,
+  "estimated": true,
+  "source": "MECHANICS CU9"
+ },
+ {
+  "name": "the PC that lost a hold is told at its next renewal and keeps its changes",
+  "group": "jobs in use",
+  "value": true,
+  "estimated": true,
+  "source": "MECHANICS CU9"
+ },
+ {
+  "name": "the PC a job was taken over from: saving over it asks Save mine as a copy or Take over",
+  "group": "jobs in use",
+  "value": true,
+  "estimated": true,
+  "source": "MECHANICS CU9"
+ },
+ {
+  "name": "a job opened anyway, or with warn off, saves as usual through the save check",
+  "group": "jobs in use",
+  "value": true,
+  "source": "MECHANICS CU3, CU11"
+ },
+ {
+  "name": "in-use notes looked at again when the auto-refresh reads the lists (background, no lock)",
+  "group": "jobs in use",
+  "value": true,
+  "estimated": true,
+  "source": "MECHANICS CU10"
+ },
+ {
+  "name": "in-use note shown in the Job Explorer, the Library window and the Open job menu",
+  "group": "jobs in use",
+  "value": true,
+  "estimated": true,
+  "source": "MECHANICS CU10"
+ },
+ {
+  "name": "delete, rename or move a job someone else has in use, or a folder holding one",
+  "group": "jobs in use",
+  "value": false,
+  "estimated": true,
+  "source": "MECHANICS CU11"
+ },
+ {
+  "name": "refusals apply whatever this PC's warn switch says",
+  "group": "jobs in use",
+  "value": true,
+  "estimated": true,
+  "source": "MECHANICS CU11"
+ },
+ {
+  "name": "agents take a hold",
+  "group": "jobs in use",
+  "value": false,
+  "estimated": true,
+  "source": "MECHANICS CU12"
+ },
+ {
+  "name": "agents change a job anyone holds",
+  "group": "jobs in use",
+  "value": false,
+  "estimated": true,
+  "source": "MECHANICS CU12"
+ },
+ {
+  "name": "opening a Library job takes its hold before it opens (the PC that loses a race is asked)",
+  "group": "jobs in use",
+  "value": true,
+  "estimated": true,
+  "source": "MECHANICS CU5"
+ },
+ {
+  "name": "holds taken and let go on switching, closing and saving done in the background",
+  "group": "jobs in use",
+  "value": true,
+  "estimated": true,
+  "source": "MECHANICS CU6"
+ },
+ {
+  "name": "longest wait on quitting for hold work under way, then for letting go",
+  "group": "jobs in use",
+  "value": 3,
+  "unit": "s",
+  "estimated": true,
+  "source": "MECHANICS CU6"
+ },
+ {
+  "name": "a takeover is kept after the hold is let go until the PC it was taken from is told",
+  "group": "jobs in use",
+  "value": true,
+  "estimated": true,
+  "source": "MECHANICS CU9"
+ },
+ {
+  "name": "a hold that can't be read now refuses delete, rename, move and agents' saves",
+  "group": "jobs in use",
+  "value": true,
+  "estimated": true,
+  "source": "MECHANICS CU11"
+ },
+ {
+  "name": "two-PC Library check takes, renews and lets go of holds",
+  "group": "jobs in use",
+  "value": true,
+  "estimated": true,
+  "source": "MECHANICS CU12"
+ },
+ {
+  "name": "auto-refresh on (fresh install)",
+  "group": "job explorer",
+  "value": false,
+  "source": "MECHANICS JX8"
+ },
+ {
+  "name": "auto-refresh only while the explorer is shown",
+  "group": "job explorer",
+  "value": true,
+  "source": "MECHANICS JX8"
+ },
+ {
+  "name": "auto-refresh period when first switched on",
+  "group": "job explorer",
+  "value": 1,
+  "unit": "min",
+  "source": "MECHANICS JX9"
+ },
+ {
+  "name": "auto-refresh shortest period",
+  "group": "job explorer",
+  "value": 1,
+  "unit": "min",
+  "source": "MECHANICS JX9"
+ },
+ {
+  "name": "auto-refresh longest period (rebuild)",
+  "group": "job explorer",
+  "value": 1440,
+  "unit": "min",
+  "estimated": true,
+  "source": "MECHANICS JX9"
+ },
+ {
+  "name": "warn when a job is in use (new install, rebuild)",
+  "group": "jobs in use",
+  "value": true,
+  "source": "MECHANICS CU1"
+ },
+ {
+  "name": "allow opening a job in use (new install, rebuild)",
+  "group": "jobs in use",
+  "value": true,
+  "source": "MECHANICS CU1"
+ },
+ {
+  "name": "auto-refresh on (new install, rebuild)",
+  "group": "job explorer",
+  "value": false,
+  "source": "MECHANICS JX8"
+ },
+ {
+  "name": "quick change check while auto-refresh is on (rebuild)",
+  "group": "job explorer",
+  "value": "every few seconds",
+  "source": "MECHANICS JX8"
+ },
+ {
+  "name": "auto-refresh period sets the full reload (rebuild)",
+  "group": "job explorer",
+  "value": true,
+  "source": "MECHANICS JX8, JX9"
+ },
+ {
+  "name": "job folder tree",
+  "group": "job explorer",
+  "value": "job-folders.json in the Library: each folder's number, name and parent (0 = the top), and each saved job's folder by number",
+  "source": "MECHANICS JX10; own design on DT8, DT9"
+ },
+ {
+  "name": "job folder numbers",
+  "group": "job explorer",
+  "value": "one more than the highest ever given; never given twice",
+  "source": "MECHANICS JX10; own design"
+ },
+ {
+  "name": "job folder changes",
+  "group": "job explorer",
+  "value": "made under the Library's write lock, the tree read again under it and written whole; refused, naming the folder, while the Library can't be reached or holds no Library (LB11, LB12)",
+  "source": "MECHANICS JX10; own design"
+ },
+ {
+  "name": "job folder names of a Library from before folders",
+  "group": "job explorer",
+  "value": "top-level folders holding the same jobs; names differing only in case are one folder, spelt as on the lowest-numbered job",
+  "estimated": true,
+  "source": "MECHANICS JX11"
+ },
+ {
+  "name": "folder name check on New folder, Change name and Move",
+  "group": "job explorer",
+  "value": "trimmed, not empty, not used in the same folder (without case): else error 9",
+  "source": "MECHANICS JX12"
+ },
+ {
+  "name": "move a folder into itself or one of its own folders",
+  "group": "job explorer",
+  "value": "refused",
+  "source": "MECHANICS JX12"
+ },
+ {
+  "name": "delete a job folder",
+  "group": "job explorer",
+  "value": "only when it holds no saved job and no folder",
+  "estimated": true,
+  "source": "MECHANICS JX13"
+ },
+ {
+  "name": "empty job folders",
+  "group": "job explorer",
+  "value": "kept until deleted",
+  "source": "MECHANICS JX13"
+ },
+ {
+  "name": "Library folder menu",
+  "group": "job explorer",
+  "value": "New > Folder, Cut, Paste, Delete, Change name, Refresh",
+  "source": "MECHANICS JX14"
+ },
+ {
+  "name": "Library tree order",
+  "group": "job explorer",
+  "value": "in each folder: its folders by name without case, then its jobs",
+  "source": "MECHANICS JX14"
+ },
+ {
+  "name": "job saved into the Library for the first time goes into",
+  "group": "job explorer",
+  "value": "the folder of the library job it came from, else the top-level folder named like its Open jobs folder (made if missing)",
+  "estimated": true,
+  "source": "MECHANICS JX15"
+ },
+ {
+  "name": "saving over a Library job moves it",
+  "group": "job explorer",
+  "value": false,
+  "source": "MECHANICS JX15"
+ },
+ {
+  "name": "part folder tree",
+  "group": "library",
+  "value": "part-folders.json in the Library, apart from the job folders: each folder's number, name and parent (0 = the top), and each library part's folder by number",
+  "source": "MECHANICS JX18; own design on DT8, DT9"
+ },
+ {
+  "name": "part folder changes",
+  "group": "library",
+  "value": "the job folders' rules (name check, never into itself, delete only when empty), under the Library's write lock; refused, naming the folder, while the Library can't be reached or holds no Library (LB11, LB12)",
+  "source": "MECHANICS JX18"
+ },
+ {
+  "name": "part folder names of a Library from before part folders",
+  "group": "library",
+  "value": "top-level part folders holding the same parts; names differing only in case are one folder, spelt as on the lowest-numbered part",
+  "estimated": true,
+  "source": "MECHANICS JX18"
+ },
+ {
+  "name": "library part saved into the Library for the first time goes into",
+  "group": "library",
+  "value": "the part folder named like its job's folder (the job's place in the job folders, else the folder of the library job it came from, else its Open jobs folder), each level made if missing",
+  "estimated": true,
+  "source": "MECHANICS JX19"
+ },
+ {
+  "name": "saving over a library part moves it",
+  "group": "library",
+  "value": false,
+  "source": "MECHANICS JX19"
+ },
+ {
+  "name": "a part saved under a new name (Save mine under a new name) goes into",
+  "group": "library",
+  "value": "the job's part folder, like any new part, in the same hold of the write lock as the revision check",
+  "estimated": true,
+  "source": "MECHANICS JX19"
+ },
+ {
+  "name": "part folder menu",
+  "group": "library",
+  "value": "New > Folder, Cut, Paste, Delete, Change name, Refresh; a part: Add to job, Cut, Delete from the library",
+  "source": "MECHANICS JX20"
+ },
+ {
+  "name": "Paste where it already is",
+  "group": "library",
+  "value": "moves nothing and says so",
+  "source": "MECHANICS JX20"
  },
  {
   "name": "hand-moved leads per part (contours)",

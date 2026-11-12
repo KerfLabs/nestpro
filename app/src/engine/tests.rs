@@ -3,6 +3,7 @@
 
 use super::session::{backup_path, Session};
 use super::*;
+use crate::shared::{Clock, Who};
 use serde_json::{json, Value};
 
 fn dir(name: &str) -> PathBuf {
@@ -326,6 +327,7 @@ fn an_order_comes_in_as_xml_and_a_machine_program_comes_back_as_a_job() {
 fn stock_ctx(d: &Path) -> Ctx {
     let mut c = Ctx::builtin();
     c.library_dir = d.join("library");
+    crate::library::create(&c.library_dir).unwrap();
     c.cfg.stock = crate::stock::StockSettings::default();
     c
 }
@@ -648,7 +650,7 @@ fn agent_booking_names_and_remakes_remnants() {
     assert!(st.get("RACK-C-7").is_none() && st.get(&again[0]).is_some(), "replaced");
     assert_eq!(st.items.iter().filter(|x| x.kind.is_remnant()).count(), 1);
     // Once it's used, moving the line keeps it, and says so.
-    crate::stock::Stock::update(&lib, |s| s.take(&again[0], 1, false)).unwrap();
+    crate::stock::Stock::update(&crate::library::Library::at(&lib, &Who::new("kim", "PROG-2"), &Clock::pc()), |s| s.take(&again[0], 1, false)).unwrap();
     let r = call(&mut s, "remnant", None, json!({"mode": "line", "x": mx + 220.0}));
     assert!(r["message"].as_str().unwrap().contains("already in use"), "{r}");
     assert_eq!(jobfile::load(Path::new(jp)).unwrap().formats[0].made, again);
@@ -714,6 +716,52 @@ fn stock_only_never_invents_a_sheet_and_a_failed_booking_stores_no_remnants() {
     let r = call(&mut s, "stock-book", Some(jb), json!({"mode": "book"}));
     assert!(r["message"].as_str().unwrap().contains("remnants not stored"), "{r}");
     assert_eq!(remnants(&lib), 1, "no remnant of a sheet that wasn't taken");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// SV10 for agents: two agents on two PCs nest on the last 2000 × 1000
+/// sheet. Sam's agent on PROG-1 books first; Kim's agent on PROG-2 books ten
+/// minutes later and is told who took the sheet and when. Nothing is taken
+/// for it, and nesting again books what's in stock now (SV11).
+#[test]
+fn an_agents_stock_book_names_who_took_the_last_sheet() {
+    let d = dir("stock_gone");
+    let clock = Clock::at(1_794_216_000); // 2026-11-09 09:20 UTC
+    let agent = |user: &str, pc: &str| {
+        let mut ctx = stock_ctx(&d);
+        ctx.who = Who::new(user, pc).as_agent();
+        ctx.clock = clock.clone();
+        Session::new(ctx)
+    };
+    let (mut prog1, mut prog2) = (agent("sam", "PROG-1"), agent("kim", "PROG-2"));
+    let lib = d.join("library");
+    let (ja, jb) = (d.join("DEMO-001 frames.snjob"), d.join("DEMO-002 brackets.snjob"));
+    let (ja, jb) = (ja.to_str().unwrap(), jb.to_str().unwrap());
+    call(&mut prog1, "stock", None, json!({"mode": "create", "ref": "LAST", "w": 2000, "h": 1000, "thickness": 3, "qty": 1}));
+    call(&mut prog2, "stock", None, json!({"mode": "create", "ref": "SMALL", "w": 1500, "h": 750, "thickness": 3, "qty": 2}));
+    for (s, jp) in [(&mut prog1, ja), (&mut prog2, jb)] {
+        call(s, "new", Some(jp), json!({"w": 2000, "h": 1000, "thickness": 3}));
+        call(s, "add-shape", None, json!({"shape": "rectangle", "w": 300, "h": 200, "qty": 4}));
+        call(s, "nest", None, json!({"stock": "only"}));
+        assert_eq!(jobfile::load(Path::new(jp)).unwrap().formats[0].stock_ref, "LAST");
+    }
+    call(&mut prog1, "stock-book", None, json!({"mode": "book"}));
+    clock.advance(std::time::Duration::from_secs(10 * 60));
+    let r = call(&mut prog2, "stock-book", None, json!({"mode": "book"}));
+    let m = r["message"].as_str().unwrap();
+    assert!(m.starts_with("Not booked: sam on PROG-1 (agent) took the last 2000 × 1000 (LAST) at 09:20"), "{r}");
+    assert!(m.contains("nest again"), "says what to do: {r}");
+    let st = crate::stock::Stock::load(&lib).unwrap();
+    assert_eq!((st.get("LAST").unwrap().qty, st.get("SMALL").unwrap().qty), (0, 2), "nothing taken for PROG-2");
+    // The stock says who changed it, and when (SV9).
+    let l = call(&mut prog2, "stock", None, json!({"mode": "list", "show_zero": true}));
+    let row = |r: &str| l["data"]["sheets"].as_array().unwrap().iter().find(|x| x["ref"] == r).cloned().unwrap();
+    assert_eq!((row("LAST")["changed_by"].as_str(), row("LAST")["changed_at"].as_str()), (Some("sam on PROG-1 (agent)"), Some("2026-11-09 09:20")), "{l}");
+    assert_eq!(row("SMALL")["changed_by"].as_str(), Some("kim on PROG-2 (agent)"), "{l}");
+    // Nesting again plans from the stock as it is now, and books it.
+    let r = call(&mut prog2, "nest", None, json!({"stock": "only"}));
+    assert!(jobfile::load(Path::new(jb)).unwrap().formats.iter().all(|f| f.stock_ref == "SMALL"), "{r}");
+    assert_eq!(crate::stock::Stock::load(&lib).unwrap().get("SMALL").unwrap().qty, 1, "{r}");
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -1145,6 +1193,284 @@ fn export_stops_on_a_part_drawn_wrong_or_a_pierce_off_the_sheet() {
     assert!(e.contains("part 'HOLES': holes 1 and 2 overlap") && e.contains("No program of this job is left"), "{e}");
 }
 
+#[test]
+fn an_agents_stock_change_waits_for_another_pcs_change_and_both_count() {
+    let d = dir("stock_locked");
+    let ctx = stock_ctx(&d);
+    let lib = ctx.library_dir.clone();
+    let mut s = Session::new(ctx);
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "S1", "w": 2000, "h": 1000, "thickness": 3, "qty": 1}));
+    // The window on another PC is in the middle of a stock change: it has
+    // read the stock (1 on the rack) and is about to store 6.
+    let (read, go) = std::sync::mpsc::channel();
+    let (waiting, agent_waits) = std::sync::mpsc::channel::<()>();
+    let other = std::thread::spawn(move || {
+        crate::stock::Stock::update(&crate::library::Library::at(&lib, &Who::new("kim", "PROG-2"), &Clock::pc()), |st| {
+            read.send(()).unwrap();
+            agent_waits.recv_timeout(std::time::Duration::from_secs(60)).expect("the agent waits for the lock");
+            st.change_qty("S1", 5)
+        })
+    });
+    go.recv().unwrap();
+    crate::shared::hooks::set(move |s| {
+        if s == "lock busy" {
+            let _ = waiting.send(());
+        }
+    });
+    let r = call(&mut s, "stock", None, json!({"mode": "add", "ref": "S1", "qty": 1}));
+    crate::shared::hooks::clear();
+    other.join().unwrap().unwrap();
+    // The agent's change waited for the other one and counted on top of it.
+    assert_eq!(r["message"], "'S1': 7 in stock.", "{r}");
+    let l = call(&mut s, "stock", None, json!({"mode": "list"}));
+    assert_eq!(l["data"]["sheets"][0]["qty"], 7, "{l}");
+}
+
+/// Every file under `dir` with its size, to see that nothing was touched.
+fn listing(dir: &Path) -> Vec<(String, u64)> {
+    let mut out = vec![];
+    let mut todo = vec![dir.to_path_buf()];
+    while let Some(d) = todo.pop() {
+        for f in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let m = f.metadata().unwrap();
+            if m.is_dir() {
+                todo.push(f.path());
+            } else {
+                out.push((f.path().strip_prefix(dir).unwrap().to_string_lossy().into_owned(), m.len()));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// LB11, LB13: with the Library folder missing, every library and stock
+/// operation is refused, naming the folder and what to do instead; the job
+/// file is as it was, and no folder is made.
+#[test]
+fn agents_are_refused_naming_the_folder_while_the_library_cant_be_reached() {
+    let d = dir("unreachable");
+    let mut ctx = Ctx::builtin();
+    ctx.library_dir = d.join("Nesting");
+    let lib = ctx.library_dir.clone();
+    let mut s = Session::new(ctx);
+    let jp = d.join("DEMO-001.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 200, "h": 100, "qty": 2, "name": "DEMO-PLATE"}));
+    call(&mut s, "nest", None, json!({"stock": "off"}));
+    let job_before = std::fs::read_to_string(&jp).unwrap();
+    let said = format!("The Library on {} can't be reached", lib.display());
+    for (op, args) in [
+        ("library", json!({"mode": "list"})),
+        ("library", json!({"mode": "add", "name": "DEMO-PLATE"})),
+        ("library", json!({"mode": "save-part", "parts": "1"})),
+        ("library", json!({"mode": "save-job"})),
+        ("stock", json!({"mode": "list"})),
+        ("stock", json!({"mode": "create", "w": 2000, "h": 1000, "thickness": 3})),
+        ("stock", json!({"mode": "add", "ref": "S1"})),
+        ("stock-book", json!({"mode": "status"})),
+        ("stock-book", json!({"mode": "book"})),
+    ] {
+        let e = err(&mut s, op, args.clone());
+        assert!(e.contains(&said), "{op} {args}: {e}");
+        assert!(e.contains("try again once it can be reached"), "{op} {args} doesn't say what to do: {e}");
+        assert!(!lib.exists(), "{op} {args} made the Library folder");
+    }
+    assert_eq!(std::fs::read_to_string(&jp).unwrap(), job_before, "a refused operation changed the job file");
+    // Do All still nests on the job's sheet, and says the stock wasn't used.
+    let r = call(&mut s, "nest", None, json!({}));
+    let m = r["message"].as_str().unwrap();
+    assert!(m.contains("The sheet stock wasn't used") && m.contains(&said), "{m}");
+    assert!(!lib.exists(), "nesting made the Library folder");
+    // The two-PC check on a test folder whose share is down: said so, and
+    // nothing is made in its place.
+    let gone = d.join("Share").join("check");
+    let e = err(&mut s, "library-check", json!({"folder": gone.to_str().unwrap(), "rounds": 1}));
+    assert!(e.contains(&gone.display().to_string()) && e.contains("can't be reached"), "{e}");
+    assert!(!d.join("Share").exists(), "the check made the folders of a share that's down");
+}
+
+/// JX16 for agents: saving a job into the Library under a name another job
+/// holds (in another folder, in other capitals) is refused, naming that
+/// job's folder and saying what to do instead, and nothing is stored.
+/// Renamed, it saves.
+#[test]
+fn an_agent_saving_into_the_library_under_a_name_another_job_holds_is_refused() {
+    let d = dir("unique_job_names");
+    let mut s = Session::new(stock_ctx(&d));
+    // A programmer saved DEMO-001 frames in folder Acme.
+    let spec = SheetSpec { w: 3000.0, h: 1500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
+    let mut theirs = JobFile::new_job("DEMO-001 frames", spec);
+    theirs.week = "Acme".into();
+    crate::library::Library::open(&s.ctx.library_dir, &Who::new("sam", "PROG-1"), &Clock::pc()).unwrap().save_job(&theirs, crate::library::SaveTo::New).unwrap();
+    let job = d.join("frames.snjob");
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 3000, "h": 1500, "material": "steel", "thickness": 3}));
+    call(&mut s, "rename", None, json!({"name": "demo-001 FRAMES", "week": "W12"}));
+    let e = err(&mut s, "library", json!({"mode": "save-job"}));
+    assert!(e.contains("'DEMO-001 frames'") && e.contains("folder Acme") && e.contains("Nothing was saved") && e.contains("rename"), "{e}");
+    let names = |s: &mut Session| call(s, "library", None, json!({"mode": "list"}))["data"].as_array().unwrap().iter().map(|e| e["name"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    assert_eq!(names(&mut s), ["DEMO-001 frames"]);
+    call(&mut s, "rename", None, json!({"name": "DEMO-002 frames"}));
+    call(&mut s, "library", None, json!({"mode": "save-job"}));
+    assert_eq!(names(&mut s), ["DEMO-001 frames", "DEMO-002 frames"]);
+    // A Library saved before names were unique: jobs 1 and 3 share a name.
+    // The list marks each with the other's number, as the window does
+    // (JX17); the others carry no mark.
+    let lib = crate::library::Library::open(&s.ctx.library_dir, &Who::new("sam", "PROG-1"), &Clock::pc()).unwrap();
+    let mut twin = theirs.clone();
+    twin.name = "demo-001 FRAMES".into();
+    std::fs::write(lib.path(crate::library::Kind::Job, 3), serde_json::to_string(&twin).unwrap()).unwrap();
+    lib.rebuild_index().unwrap();
+    let list = call(&mut s, "library", None, json!({"mode": "list"}))["data"].clone();
+    let marks: Vec<(u64, Value)> = list.as_array().unwrap().iter().map(|e| (e["id"].as_u64().unwrap(), e["same_name_as"].clone())).collect();
+    assert_eq!(marks, [(1, json!([3])), (2, Value::Null), (3, json!([1]))]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn the_library_check_refuses_a_real_library() {
+    let d = dir("check_refuses");
+    let mut s = Session::new(Ctx::builtin());
+    // A Library with a real job in it.
+    let real = d.join("Library");
+    let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
+    crate::library::create(&real).unwrap();
+    crate::library::Library::open(&real, &Who::new("sam", "PROG-1"), &Clock::pc()).unwrap().save_job(&JobFile::new_job("Frames", spec), crate::library::SaveTo::New).unwrap();
+    let before = listing(&real);
+    let e = err(&mut s, "library-check", json!({"folder": real.to_str().unwrap(), "rounds": 2}));
+    assert!(e.contains("real Library") && e.contains("empty"), "{e}");
+    assert_eq!(listing(&real), before, "the check touched a real Library");
+    // A folder with other files in it is refused the same way.
+    let other = d.join("Drawings");
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(other.join("bracket.dxf"), "0\nEOF\n").unwrap();
+    let e = err(&mut s, "library-check", json!({"folder": other.to_str().unwrap(), "rounds": 2}));
+    assert!(e.contains("real Library"), "{e}");
+    assert_eq!(listing(&other).len(), 1);
+    // So is this PC's own Library, even while it's still empty.
+    let own = s.ctx.library_dir.clone();
+    let _ = std::fs::remove_dir_all(&own);
+    std::fs::create_dir_all(&own).unwrap();
+    let e = err(&mut s, "library-check", json!({"folder": own.to_str().unwrap(), "rounds": 2}));
+    assert!(e.contains("this PC's Library"), "{e}");
+    assert!(listing(&own).is_empty());
+    let _ = std::fs::remove_dir_all(&own);
+}
+
+#[test]
+fn the_library_check_passes_on_a_test_folder_and_fails_on_a_half_written_record() {
+    let d = dir("check_runs");
+    let mut s = Session::new(Ctx::builtin());
+    let folder = d.join("check");
+    let r = call(&mut s, "library-check", None, json!({"folder": folder.to_str().unwrap(), "rounds": 6, "pc": "PROG-1"}));
+    let report = r["message"].as_str().unwrap();
+    assert!(report.contains("PASS") && report.contains("PROG-1") && report.contains("Checked: 6 job(s), 6 library part(s)"), "{report}");
+    // Run again on the folder it made: it checks the first run's records too.
+    let r = call(&mut s, "library-check", None, json!({"folder": folder.to_str().unwrap(), "rounds": 3, "pc": "PROG-2"}));
+    let report = r["message"].as_str().unwrap();
+    // Each run's own folder and one folder a round (the spare ones are deleted again).
+    assert!(report.contains("PASS") && report.contains("Checked: 9 job(s), 9 library part(s), 2 stock sheet(s) and 11 job folder(s) from 2 run(s) (PROG-1, PROG-2)"), "{report}");
+    // Round 1: its own folder, then each round a folder made, renamed and a job
+    // moved in, a spare made and deleted; every second round a folder nested.
+    assert!(report.contains("3 stock change(s), 17 job folder change(s)"), "{report}");
+    // Holds (CU12): taken on each round's job, renewed, and all let go.
+    assert!(report.contains("3 hold(s) taken"), "{report}");
+    assert_eq!(std::fs::read_dir(folder.join(crate::engine::inuse::FOLDER)).map_or(0, |d| d.count()), 0, "a finished run left a hold");
+    // A job record cut off halfway through, as a dropped connection would leave it.
+    let lib = crate::library::Library::open(&folder, &Who::new("sam", "PROG-1"), &Clock::pc()).unwrap();
+    let rec = lib.path(crate::library::Kind::Job, 2);
+    let text = std::fs::read_to_string(&rec).unwrap();
+    std::fs::write(&rec, &text[..text.len() / 2]).unwrap();
+    // Folder changes lost, as a PC writing the folders without the lock
+    // would lose them: a rename undone and a job's place dropped.
+    let file = folder.join(crate::folders::file_name(crate::library::Kind::Job));
+    let mut t = crate::folders::load(&lib, crate::library::Kind::Job).unwrap();
+    let renamed = t.folders.iter().position(|f| f.name.ends_with(" round 1 renamed")).unwrap();
+    t.folders[renamed].name = "DEMO-CHECK round 1".into();
+    t.placed.remove(&3);
+    std::fs::write(&file, serde_json::to_string(&t).unwrap()).unwrap();
+    // A library part's place in the part folders lost the same way.
+    let parts = folder.join(crate::folders::file_name(crate::library::Kind::Product));
+    let mut t = crate::folders::load(&lib, crate::library::Kind::Product).unwrap();
+    t.placed.remove(&2);
+    std::fs::write(&parts, serde_json::to_string(&t).unwrap()).unwrap();
+    // A hold PROG-1's finished run never let go of.
+    let left = crate::engine::inuse::Hold { format: crate::engine::inuse::FORMAT.into(), job: 4, name: "DEMO-CHECK left".into(), by: Who::new(&crate::shared::user_name(), "PROG-1"), since: 0, renewed: 0, beat: 1, taken_from: vec![] };
+    std::fs::write(crate::engine::inuse::path(&folder, 4), serde_json::to_string(&left).unwrap()).unwrap();
+    let e = err(&mut s, "library-check", json!({"folder": folder.to_str().unwrap(), "rounds": 1, "pc": "PROG-1"}));
+    assert!(e.contains("FAIL") && e.contains("Job record 2") && e.contains("half-written"), "{e}");
+    assert!(e.contains("is 'DEMO-CHECK round 1' in") && e.contains("a folder change was lost"), "{e}");
+    assert!(e.contains("(record 3) is in the top of the Library where PROG-1 left it in 'DEMO-CHECK PROG-1"), "{e}");
+    assert!(e.contains("(record 2) is in the top of the Library where PROG-1's save filed it in 'DEMO-CHECK': its place in the part folders was lost"), "{e}");
+    assert!(e.contains("A hold on 'DEMO-CHECK left' (Holds/4.json) was left by") && e.contains("whose run has finished"), "{e}");
+}
+
+/// A test folder the Library check made itself (one round, so it holds the
+/// check's own records, list, stock and log).
+fn check_folder(s: &mut Session, d: &Path, name: &str) -> PathBuf {
+    let f = d.join(name);
+    call(s, "library-check", None, json!({"folder": f.to_str().unwrap(), "rounds": 1}));
+    f
+}
+
+#[test]
+fn the_library_check_refuses_a_folder_it_cant_read_or_recognise() {
+    let d = dir("check_unsure");
+    let mut s = Session::new(Ctx::builtin());
+    let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
+    let refused = |s: &mut Session, f: &Path, why: &str| {
+        let before = listing(f);
+        let e = err(s, "library-check", json!({"folder": f.to_str().unwrap(), "rounds": 1}));
+        assert!(e.contains(why), "{e}");
+        assert_eq!(listing(f), before, "the check touched a folder it refused");
+    };
+    // A real job was saved into a folder the check made, and the list was
+    // lost since: the record itself gives it away.
+    let f = check_folder(&mut s, &d, "lost list");
+    crate::library::Library::open(&f, &Who::new("sam", "PROG-1"), &Clock::pc()).unwrap().save_job(&JobFile::new_job("Frames", spec.clone()), crate::library::SaveTo::New).unwrap();
+    std::fs::remove_file(f.join(crate::library::INDEX)).unwrap();
+    refused(&mut s, &f, "'Frames'");
+    // A real job's record is there but missing from the list.
+    let f = check_folder(&mut s, &d, "unlisted");
+    let lib = crate::library::Library::open(&f, &Who::new("sam", "PROG-1"), &Clock::pc()).unwrap();
+    let list = std::fs::read(f.join(crate::library::INDEX)).unwrap();
+    lib.save_job(&JobFile::new_job("Frames", spec.clone()), crate::library::SaveTo::New).unwrap();
+    std::fs::write(f.join(crate::library::INDEX), list).unwrap();
+    refused(&mut s, &f, "'Frames'");
+    // The list can't be read.
+    let f = check_folder(&mut s, &d, "damaged list");
+    std::fs::write(f.join(crate::library::INDEX), "{ half a list").unwrap();
+    refused(&mut s, &f, "can't be read");
+    // The stock can't be read.
+    let f = check_folder(&mut s, &d, "damaged stock");
+    std::fs::write(crate::stock::Stock::file(&f), "{ half a stock").unwrap();
+    refused(&mut s, &f, "can't be read");
+    // A record no run of the check saved, and that can't be read.
+    let f = check_folder(&mut s, &d, "unknown record");
+    std::fs::write(f.join("Jobs").join("0").join("99.snjob"), "{ \"name\": \"Fra").unwrap();
+    refused(&mut s, &f, "record 99");
+    // Something else the check doesn't make.
+    let f = check_folder(&mut s, &d, "other files");
+    std::fs::create_dir_all(f.join("Drawings")).unwrap();
+    refused(&mut s, &f, "'Drawings'");
+    // A job folder the check didn't make, or folders that can't be read.
+    let f = check_folder(&mut s, &d, "real folder");
+    let lib = crate::library::Library::open(&f, &Who::new("sam", "PROG-1"), &Clock::pc()).unwrap();
+    crate::folders::change(&lib, crate::library::Kind::Job, |t, _| t.make(crate::folders::TOP, "Acme")).unwrap();
+    refused(&mut s, &f, "the job folder 'Acme'");
+    let f = check_folder(&mut s, &d, "damaged folders");
+    std::fs::write(f.join(crate::folders::file_name(crate::library::Kind::Job)), "{ half a tree").unwrap();
+    refused(&mut s, &f, "folder tree");
+    // The same for the part folders (JX18).
+    let f = check_folder(&mut s, &d, "real part folder");
+    let lib = crate::library::Library::open(&f, &Who::new("sam", "PROG-1"), &Clock::pc()).unwrap();
+    crate::folders::change(&lib, crate::library::Kind::Product, |t, _| t.make(crate::folders::TOP, "Acme")).unwrap();
+    refused(&mut s, &f, "the part folder 'Acme'");
+    let f = check_folder(&mut s, &d, "damaged part folders");
+    std::fs::write(f.join(crate::folders::file_name(crate::library::Kind::Product)), "{ half a tree").unwrap();
+    refused(&mut s, &f, "part-folders.json");
+}
+
 /// The 200 × 100 mm outline of the contour-state tests' made-up plates.
 const DEMO_SQUARE: &str = "0\nLWPOLYLINE\n8\n0\n90\n4\n70\n1\n10\n0\n20\n0\n10\n200\n20\n0\n10\n200\n20\n100\n10\n0\n20\n100\n";
 
@@ -1276,6 +1602,8 @@ fn contour_states_are_kept_in_jobs_and_products_and_old_jobs_open_as_before() {
     let ctx = || {
         let mut c = Ctx::builtin();
         c.cfg.library_dir = d.join("library").to_string_lossy().into_owned();
+        c.library_dir = d.join("library");
+        crate::library::create(&c.library_dir).unwrap();
         c
     };
     let mut s = Session::new(ctx());
@@ -1675,6 +2003,8 @@ fn hand_set_qualities_beat_the_parts_own_and_are_kept_in_jobs_and_products() {
         let mut c = Ctx::builtin();
         c.blm.on = true;
         c.cfg.library_dir = d.join("library").to_string_lossy().into_owned();
+        c.library_dir = d.join("library");
+        crate::library::create(&c.library_dir).unwrap();
         c
     };
     let mut s = Session::new(ctx());
@@ -1867,6 +2197,490 @@ fn import_drawing_sets_layers_and_contours_in_one_call() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// LB5, LB6: an agent's Library saves record its user marked as an agent,
+/// and `library list` says who saved each record and when, the window's
+/// saves and records from before included.
+#[test]
+fn an_agents_library_saves_say_agent_and_the_list_says_who_and_when() {
+    let d = dir("saved_by_agent");
+    let clock = Clock::at(1_794_216_000); // 2026-11-09 09:20 UTC
+    let mut ctx = stock_ctx(&d);
+    ctx.who = Who::new("sam", "PROG-2").as_agent();
+    ctx.clock = clock.clone();
+    let lib = ctx.library_dir.clone();
+    let mut s = Session::new(ctx);
+    let jp = d.join("DEMO-001 frames.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 300, "qty": 2, "name": "DEMO-P1"}));
+    call(&mut s, "library", None, json!({"mode": "save-job"}));
+    clock.advance(std::time::Duration::from_secs(5 * 60));
+    call(&mut s, "library", None, json!({"mode": "save-part", "folder": "Acme"}));
+    // Kim saved a job in the window on PROG-1.
+    clock.advance(std::time::Duration::from_secs(60));
+    let spec = jobfile::load(&jp).unwrap().spec;
+    crate::library::Library::open(&lib, &Who::new("kim", "PROG-1"), &clock).unwrap().save_job(&JobFile::new_job("DEMO-002 brackets", spec), crate::library::SaveTo::New).unwrap();
+    let l = call(&mut s, "library", None, json!({"mode": "list"}));
+    let row = |name: &str| l["data"].as_array().unwrap().iter().find(|r| r["name"] == name).cloned().unwrap_or_else(|| panic!("{name} isn't listed: {l}"));
+    let (job, part, window) = (row("DEMO-001 frames"), row("DEMO-P1"), row("DEMO-002 brackets"));
+    assert_eq!((job["saved_by"].as_str(), job["saved_at"].as_str()), (Some("sam on PROG-2 (agent)"), Some("2026-11-09 09:20")), "{job}");
+    assert_eq!((part["saved_by"].as_str(), part["saved_at"].as_str()), (Some("sam on PROG-2 (agent)"), Some("2026-11-09 09:25")), "{part}");
+    assert_eq!((window["saved_by"].as_str(), window["saved_at"].as_str()), (Some("kim on PROG-1"), Some("2026-11-09 09:26")), "{window}");
+    // The record itself says so too.
+    let rec = crate::library::Library::open(&lib, &Who::new("kim", "PROG-1"), &clock).unwrap().load_job(job["id"].as_u64().unwrap()).unwrap();
+    assert_eq!(rec.saved.map(|s| s.by.label()).as_deref(), Some("sam on PROG-2 (agent)"));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// LB7, LB10: an agent opens library job DEMO-7 into its job file and saves
+/// it twice: one record. Once the window saved it since the agent read it,
+/// the agent's save is refused with who, when and what to do instead; save
+/// it as a copy, or open it again to take theirs.
+#[test]
+fn an_agent_saves_its_library_job_over_its_record_unless_someone_saved_it_since() {
+    use crate::library::{Library, SaveTo};
+    let d = dir("agent_changed_since");
+    let clock = Clock::at(1_794_216_000); // 2026-11-09 09:20 UTC
+    let mut ctx = stock_ctx(&d);
+    ctx.who = Who::new("sam", "PROG-2").as_agent();
+    ctx.clock = clock.clone();
+    let window = Library::open(&ctx.library_dir, &Who::new("kim", "PROG-1"), &clock).unwrap();
+    let mut s = Session::new(ctx);
+    let jp = d.join("DEMO-7.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    let spec = jobfile::load(&jp).unwrap().spec;
+    let id = window.save_job(&JobFile::new_job("DEMO-7", spec), SaveTo::New).unwrap().id;
+    // The agent opens it, adds a part and saves, twice: one record.
+    let r = call(&mut s, "library", None, json!({"mode": "open", "name": "DEMO-7"}));
+    assert!(r["message"].as_str().unwrap().contains("DEMO-7"), "{r}");
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 300, "qty": 2, "name": "DEMO-P1"}));
+    let r = call(&mut s, "library", None, json!({"mode": "save-job"}));
+    assert_eq!(r["data"]["id"].as_u64(), Some(id), "{r}");
+    clock.advance(std::time::Duration::from_secs(60));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 200, "h": 100, "qty": 1, "name": "DEMO-P2"}));
+    let r = call(&mut s, "library", None, json!({"mode": "save-job"}));
+    assert_eq!(r["data"]["id"].as_u64(), Some(id), "{r}");
+    let jobs = |s: &mut Session| {
+        let l = call(s, "library", None, json!({"mode": "list"}));
+        let mut v: Vec<String> = l["data"].as_array().unwrap().iter().filter(|r| r["kind"] == "job").map(|r| format!("{} ({})", r["name"].as_str().unwrap(), r["saved_by"].as_str().unwrap_or(""))).collect();
+        v.sort();
+        v
+    };
+    assert_eq!(jobs(&mut s), ["DEMO-7 (sam on PROG-2 (agent))"]);
+    // Kim saves it in the window; the agent changes its copy and saves.
+    clock.advance(std::time::Duration::from_secs(10 * 60));
+    let mut theirs = window.load_job(id).unwrap();
+    theirs.week = "W12".into();
+    window.save_job(&theirs, SaveTo::Read(theirs.library.unwrap())).unwrap();
+    let record = std::fs::read(window.path(crate::library::Kind::Job, id)).unwrap();
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 100, "h": 100, "qty": 1, "name": "DEMO-P3"}));
+    let e = err(&mut s, "library", json!({"mode": "save-job"}));
+    assert!(e.contains("kim on PROG-1 at 2026-11-09 09:31") && e.contains("Nothing was saved"), "{e}");
+    assert!(e.contains(&format!("mode=open id={id}")) && e.contains("copy=true"), "{e}");
+    assert_eq!(std::fs::read(window.path(crate::library::Kind::Job, id)).unwrap(), record, "a refused save wrote the record");
+    // Saved as a copy: a new job under a free name; theirs stays.
+    let r = call(&mut s, "library", None, json!({"mode": "save-job", "copy": true}));
+    let copy = r["data"]["id"].as_u64().unwrap();
+    assert_ne!(copy, id);
+    assert_eq!(jobfile::load(&jp).unwrap().name, "DEMO-7 (1)");
+    assert_eq!(jobs(&mut s), ["DEMO-7 (1) (sam on PROG-2 (agent))", "DEMO-7 (kim on PROG-1)"]);
+    assert_eq!(std::fs::read(window.path(crate::library::Kind::Job, id)).unwrap(), record);
+    // A job file holding stock it booked isn't replaced: that stock would be
+    // left taken with no job.
+    let mut booked = jobfile::load(&jp).unwrap();
+    booked.booked = true;
+    booked.held.insert("S1".into(), 1);
+    jobfile::save(&jp, &booked).unwrap();
+    let e = err(&mut s, "library", json!({"mode": "open", "id": id}));
+    assert!(e.contains("1 sheet(s)") && e.contains("stock-book mode=release"), "{e}");
+    booked.held.clear();
+    jobfile::save(&jp, &booked).unwrap();
+    // Opened again, the job file is theirs, and saves over their record.
+    call(&mut s, "library", None, json!({"mode": "open", "id": id}));
+    let j = jobfile::load(&jp).unwrap();
+    assert_eq!((j.name.as_str(), j.week.as_str(), j.parts.len()), ("DEMO-7", "W12", 2));
+    assert_eq!(call(&mut s, "library", None, json!({"mode": "save-job"}))["data"]["id"].as_u64(), Some(id));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// LB10: an agent's job file that is a library job doesn't book stock: its
+/// sheets are booked when someone saves it in the window. Booked here too, a
+/// refused save would leave them taken twice. status still answers.
+#[test]
+fn an_agent_cant_book_stock_on_a_job_file_opened_from_the_library() {
+    let d = dir("agent_library_no_booking");
+    let mut ctx = stock_ctx(&d);
+    ctx.who = Who::new("sam", "PROG-2").as_agent();
+    let stock = crate::stock::Stock::file(&ctx.library_dir);
+    let mut s = Session::new(ctx);
+    let first = d.join("DEMO-7.snjob");
+    call(&mut s, "new", Some(first.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "S1", "w": 2000, "h": 1000, "thickness": 3, "qty": 3}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 300, "qty": 12, "name": "DEMO-P1"}));
+    call(&mut s, "nest", None, json!({}));
+    let id = call(&mut s, "library", None, json!({"mode": "save-job"}))["data"]["id"].as_u64().unwrap();
+    // Another job file opens DEMO-7 from the Library.
+    let opened = d.join("DEMO-7-agent.snjob");
+    call(&mut s, "new", Some(opened.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut s, "library", None, json!({"mode": "open", "id": id}));
+    let before = std::fs::read(&stock).unwrap();
+    let e = err(&mut s, "stock-book", json!({"mode": "book"}));
+    assert!(e.contains("DEMO-7") && e.contains("booked when someone saves it in the window"), "{e}");
+    assert_eq!(std::fs::read(&stock).unwrap(), before, "a refused booking changed the stock");
+    let e = err(&mut s, "stock-book", json!({"mode": "release"}));
+    assert!(e.contains("booked when someone saves it in the window"), "{e}");
+    assert_eq!(std::fs::read(&stock).unwrap(), before);
+    assert!(!jobfile::load(&opened).unwrap().booked);
+    // status still says what booking would take.
+    let st = call(&mut s, "stock-book", None, json!({"mode": "status"}));
+    assert_eq!(st["data"]["booked"], false, "{st}");
+    assert!(st["data"]["would_take"]["S1"].as_u64().unwrap() > 0, "{st}");
+    // The job file that saved it into the Library is that library job too.
+    let e = match s.call("stock-book", Some(first.to_str().unwrap()), &json!({"mode": "book"})) {
+        Ok(r) => panic!("booking the saved job file should be refused, gave {}", r.json),
+        Err(e) => e,
+    };
+    assert!(e.contains("booked when someone saves it in the window"), "{e}");
+    assert_eq!(std::fs::read(&stock).unwrap(), before);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// LB10: an agent books its job file (1 sheet), then saves it into the
+/// Library: the record keeps that booking and the job file stops following
+/// the stock. Someone saves the job in the window, the agent's change nests
+/// it on 3 sheets and its save is refused: the stock still holds out only
+/// the 1 sheet the record holds, and the agent can take theirs.
+#[test]
+fn a_job_file_booked_before_its_save_into_the_library_leaves_the_stock_to_the_record() {
+    use crate::library::{Library, SaveTo};
+    let d = dir("agent_booked_then_saved");
+    let clock = Clock::at(1_794_216_000); // 2026-11-09 09:20 UTC
+    let mut ctx = stock_ctx(&d);
+    ctx.who = Who::new("sam", "PROG-2").as_agent();
+    ctx.clock = clock.clone();
+    let lib = ctx.library_dir.clone();
+    let window = Library::open(&lib, &Who::new("kim", "PROG-1"), &clock).unwrap();
+    let mut s = Session::new(ctx);
+    let jp = d.join("DEMO-7.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut s, "stock", None, json!({"mode": "create", "ref": "S1", "w": 2000, "h": 1000, "thickness": 3, "qty": 5}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 300, "qty": 4, "name": "DEMO-P1"}));
+    call(&mut s, "nest", None, json!({}));
+    call(&mut s, "stock-book", None, json!({"mode": "book"}));
+    let in_stock = || crate::stock::Stock::load(&lib).unwrap().get("S1").unwrap().qty;
+    assert_eq!(in_stock(), 4, "booking takes the 1 sheet");
+    // Saved into the Library: the record keeps the booking, the job file
+    // no longer follows the stock.
+    let r = call(&mut s, "library", None, json!({"mode": "save-job"}));
+    let id = r["data"]["id"].as_u64().unwrap();
+    assert!(r["message"].as_str().unwrap().contains("booked when someone saves it in the window"), "{r}");
+    assert_eq!(window.load_job(id).unwrap().held.get("S1"), Some(&1));
+    assert!(!jobfile::load(&jp).unwrap().booked);
+    // Kim saves DEMO-7 in the window; the agent's change nests it on 3
+    // sheets, and its save is refused.
+    clock.advance(std::time::Duration::from_secs(10 * 60));
+    let mut theirs = window.load_job(id).unwrap();
+    theirs.week = "W12".into();
+    window.save_job(&theirs, SaveTo::Read(theirs.library.unwrap())).unwrap();
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 1900, "h": 900, "qty": 2, "name": "DEMO-P2"}));
+    call(&mut s, "nest", None, json!({}));
+    assert_eq!(jobfile::load(&jp).unwrap().sheets.len(), 3);
+    let e = err(&mut s, "library", json!({"mode": "save-job"}));
+    assert!(e.contains("kim on PROG-1") && e.contains("Nothing was saved"), "{e}");
+    // The stock matches the record: 1 sheet out, not 3.
+    let held = window.load_job(id).unwrap().held;
+    assert_eq!(held.get("S1"), Some(&1));
+    assert_eq!(in_stock(), 4, "the stock holds out more sheets than the record");
+    // The agent takes theirs; the stock still matches.
+    call(&mut s, "library", None, json!({"mode": "open", "id": id}));
+    assert_eq!(jobfile::load(&jp).unwrap().week, "W12");
+    assert_eq!(in_stock(), 4);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// LB7, LB10: an agent's save-part goes through the same check: a library
+/// part the window saved since the agent added it is refused with who and
+/// when, and nothing is saved.
+#[test]
+fn an_agents_save_part_is_refused_when_the_library_part_was_saved_since() {
+    use crate::library::{Library, SaveTo};
+    let d = dir("agent_part_changed_since");
+    let clock = Clock::at(1_794_216_000); // 2026-11-09 09:20 UTC
+    let mut ctx = stock_ctx(&d);
+    ctx.who = Who::new("sam", "PROG-2").as_agent();
+    ctx.clock = clock.clone();
+    let window = Library::open(&ctx.library_dir, &Who::new("kim", "PROG-1"), &clock).unwrap();
+    let mut s = Session::new(ctx);
+    let jp = d.join("DEMO-8.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 300, "qty": 2, "name": "DEMO-P1"}));
+    // Saved by the agent, then saved again: over its own record.
+    let first = call(&mut s, "library", None, json!({"mode": "save-part", "folder": "Acme"}))["data"]["ids"][0].as_u64().unwrap();
+    let again = call(&mut s, "library", None, json!({"mode": "save-part", "folder": "Acme"}))["data"]["ids"][0].as_u64().unwrap();
+    assert_eq!(first, again);
+    // Kim saves DEMO-P1 in the window.
+    clock.advance(std::time::Duration::from_secs(10 * 60));
+    let pf = window.load_product(first).unwrap();
+    let mut p = pf.part.clone();
+    p.w = 450.0;
+    window.save_product(&p, "Acme", pf.material, pf.thickness, SaveTo::Read(crate::library::Record { id: first, revision: pf.revision })).unwrap();
+    let e = err(&mut s, "library", json!({"mode": "save-part", "folder": "Acme"}));
+    assert!(e.contains("DEMO-P1") && e.contains("kim on PROG-1 at 2026-11-09 09:30") && e.contains("Nothing was saved"), "{e}");
+    assert_eq!(window.load_product(first).unwrap().part.w, 450.0);
+    // Theirs added next to the job's own part: two parts of one reference
+    // are refused before anything is saved.
+    call(&mut s, "library", None, json!({"mode": "add", "id": first}));
+    let two = err(&mut s, "library", json!({"mode": "save-part", "folder": "Acme"}));
+    assert!(two.contains("Parts 1 and 2 are both 'DEMO-P1'") && two.contains("Nothing was saved"), "{two}");
+    assert_eq!(window.load_product(first).unwrap().part.w, 450.0);
+    // As the refusal says: the job's part out, theirs in, then it saves.
+    assert!(e.contains("remove-part part=1") && e.contains(&format!("library mode=add id={first}")), "{e}");
+    call(&mut s, "remove-part", None, json!({"part": 2}));
+    call(&mut s, "remove-part", None, json!({"part": 1}));
+    call(&mut s, "library", None, json!({"mode": "add", "id": first}));
+    call(&mut s, "library", None, json!({"mode": "save-part", "folder": "Acme"}));
+    assert_eq!(window.load_product(first).unwrap().part.w, 450.0);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// ---------------------------------------------------------------------------
+// The Library's job folders through the agents' `job-folders` (JX10–JX15).
+// ---------------------------------------------------------------------------
+
+/// LB11 for agents' folders: `job-folders` on a Library that can't be
+/// reached is refused naming its folder and saying what to do, as
+/// `library save-job` is, and nothing is made.
+#[test]
+fn agents_job_folders_are_refused_naming_the_folder_while_the_library_cant_be_reached() {
+    let d = dir("job_folders_unreachable");
+    let mut ctx = Ctx::builtin();
+    ctx.library_dir = d.join("Nesting");
+    let lib = ctx.library_dir.clone();
+    let mut s = Session::new(ctx);
+    let said = format!("The Library on {} can't be reached", lib.display());
+    for args in [
+        json!({"mode": "list"}),
+        json!({"mode": "new", "name": "Acme"}),
+        json!({"mode": "rename", "folder": "Acme", "name": "Acme Ltd"}),
+        json!({"mode": "delete", "folder": "Acme"}),
+        json!({"mode": "move", "saved_job": "JOB000001", "to": "Acme"}),
+    ] {
+        let e = err(&mut s, "job-folders", args.clone());
+        assert!(e.contains(&said), "{args}: {e}");
+        assert!(e.contains("try again once it can be reached"), "{args} doesn't say what to do: {e}");
+        assert!(!lib.exists(), "{args} made the Library folder");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_agents_copy_of_a_library_job_goes_into_its_folder() {
+    // LB9, LB10, JX15: save-job copy=true files the copy next to the job it
+    // was copied from, not by the job's folder name.
+    let d = dir("agent_copy_folder");
+    let mut s = Session::new(stock_ctx(&d));
+    let jp = d.join("frames.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"name": "DEMO-001", "week": "W12"}));
+    call(&mut s, "library", None, json!({"mode": "save-job"}));
+    call(&mut s, "job-folders", None, json!({"mode": "new", "name": "Acme"}));
+    call(&mut s, "job-folders", None, json!({"mode": "new", "folder": "Acme", "name": "2026-11"}));
+    call(&mut s, "job-folders", None, json!({"mode": "move", "saved_job": "DEMO-001", "to": "Acme/2026-11"}));
+    call(&mut s, "library", None, json!({"mode": "save-job", "copy": true}));
+    let l = call(&mut s, "job-folders", None, json!({"mode": "list"}));
+    assert_eq!(l["data"]["outline"], json!(["Acme/", "Acme/2026-11/", "Acme/2026-11/DEMO-001", "Acme/2026-11/DEMO-001 (1)", "W12/"]), "{l}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_agents_new_library_part_goes_where_its_library_job_is_now() {
+    // JX19: a library job moved to another folder since its file was made:
+    // its new parts go into the part folder named like where it is now, not
+    // by the folder name the file was made with.
+    let d = dir("agent_part_follows_job");
+    let mut s = Session::new(stock_ctx(&d));
+    let jp = d.join("frames.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"name": "DEMO-001", "week": "W12"}));
+    call(&mut s, "library", None, json!({"mode": "save-job"}));
+    call(&mut s, "job-folders", None, json!({"mode": "new", "name": "Acme"}));
+    call(&mut s, "job-folders", None, json!({"mode": "new", "folder": "Acme", "name": "2026-11"}));
+    call(&mut s, "job-folders", None, json!({"mode": "move", "saved_job": "DEMO-001", "to": "Acme/2026-11"}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 300, "h": 120, "qty": 4, "name": "DEMO-P1"}));
+    let saved = call(&mut s, "library", None, json!({"mode": "save-part", "parts": [1]}));
+    assert_eq!(saved["data"]["folders"], json!(["Acme/2026-11"]), "{saved}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_agents_copy_of_a_library_job_someone_deleted_goes_by_its_folder_name() {
+    // LB9, JX15: the job it was copied from is gone from the Library, so its
+    // folder isn't known: the copy goes into the folder its name says.
+    let d = dir("agent_copy_deleted");
+    let ctx = stock_ctx(&d);
+    let lib = crate::library::Library::open(&ctx.library_dir, &Who::new("kim", "PROG-1"), &ctx.clock).unwrap();
+    let mut s = Session::new(ctx);
+    let jp = d.join("frames.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"name": "DEMO-001", "week": "W12"}));
+    let id = call(&mut s, "library", None, json!({"mode": "save-job"}))["data"]["id"].as_u64().unwrap();
+    call(&mut s, "job-folders", None, json!({"mode": "new", "name": "Acme"}));
+    call(&mut s, "job-folders", None, json!({"mode": "move", "saved_job": "DEMO-001", "to": "Acme"}));
+    lib.delete(crate::library::Kind::Job, id).unwrap();
+    call(&mut s, "library", None, json!({"mode": "save-job", "copy": true}));
+    let l = call(&mut s, "job-folders", None, json!({"mode": "list"}));
+    let outline: Vec<String> = serde_json::from_value(l["data"]["outline"].clone()).unwrap();
+    assert!(outline.iter().any(|r| r.starts_with("W12/DEMO-001")), "{l}");
+    assert!(!outline.iter().any(|r| r.starts_with("Acme/DEMO")) && !outline.iter().any(|r| r.starts_with("DEMO")), "{l}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn agents_make_rename_move_and_delete_job_folders_and_are_told_what_to_do_instead() {
+    let d = dir("job_folders");
+    let ctx = stock_ctx(&d);
+    let mut s = Session::new(ctx);
+    let jp = d.join("frames.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"name": "DEMO-001", "week": "W12"}));
+    // Saved into the Library, a job goes into the folder named like its week.
+    call(&mut s, "library", None, json!({"mode": "save-job"}));
+    call(&mut s, "job-folders", None, json!({"mode": "new", "name": "Acme"}));
+    let nov = call(&mut s, "job-folders", None, json!({"mode": "new", "folder": "acme", "name": "2026-11"}));
+    assert!(nov["message"].as_str().unwrap().contains("Acme/2026-11"), "{nov}");
+    // A name taken in the same folder, without case: the original's error 9.
+    let e = err(&mut s, "job-folders", json!({"mode": "new", "name": "ACME"}));
+    assert!(e.contains("already in the top of the Library") && e.contains("error 9"), "{e}");
+    // A saved job, by name, into a folder by its path.
+    let moved = call(&mut s, "job-folders", None, json!({"mode": "move", "saved_job": "demo-001", "to": "Acme/2026-11"}));
+    assert_eq!(moved["data"]["outline"], json!(["Acme/", "Acme/2026-11/", "Acme/2026-11/DEMO-001", "W12/"]), "{moved}");
+    // Refusals say what to do instead.
+    let e = err(&mut s, "job-folders", json!({"mode": "delete", "folder": "Acme"}));
+    assert!(e.contains("still holds 1 folder") && e.contains("Move or delete what's in it first"), "{e}");
+    let e = err(&mut s, "job-folders", json!({"mode": "move", "folder": "Acme", "to": "Acme/2026-11"}));
+    assert!(e.contains("can't go into itself or one of its own folders"), "{e}");
+    let e = err(&mut s, "job-folders", json!({"mode": "move", "folder": "Beta", "to": "/"}));
+    assert!(e.contains("no folder 'Beta'") && e.contains("job-folders mode=list"), "{e}");
+    let e = err(&mut s, "job-folders", json!({"mode": "move", "saved_job": "DEMO-404", "to": "/"}));
+    assert!(e.contains("JOB000012"), "{e}");
+    // Renaming a folder keeps what's in it; an empty one can be deleted.
+    call(&mut s, "job-folders", None, json!({"mode": "rename", "folder": "Acme", "name": "Acme Ltd"}));
+    call(&mut s, "job-folders", None, json!({"mode": "delete", "folder": "W12"}));
+    let l = call(&mut s, "job-folders", None, json!({"mode": "list"}));
+    assert_eq!(l["data"]["outline"], json!(["Acme Ltd/", "Acme Ltd/2026-11/", "Acme Ltd/2026-11/DEMO-001"]), "{l}");
+    assert_eq!(l["data"]["jobs"][0]["folder"], "Acme Ltd/2026-11", "{l}");
+    // By number too, and the job by its reference: to the top.
+    let id = l["data"]["folders"][1]["folder"].as_str().unwrap().to_string();
+    call(&mut s, "job-folders", None, json!({"mode": "move", "saved_job": "JOB000001", "to": "/"}));
+    call(&mut s, "job-folders", None, json!({"mode": "move", "folder": id, "to": "/"}));
+    let l = call(&mut s, "job-folders", None, json!({"mode": "list"}));
+    assert_eq!(l["data"]["outline"], json!(["2026-11/", "Acme Ltd/", "DEMO-001"]), "{l}");
+    // The library listing names a job's folder by its place in the tree.
+    call(&mut s, "job-folders", None, json!({"mode": "move", "saved_job": "DEMO-001", "to": "2026-11"}));
+    let l = call(&mut s, "library", None, json!({"mode": "list", "find": "2026"}));
+    assert_eq!((l["data"][0]["name"].as_str(), l["data"][0]["folder"].as_str()), (Some("DEMO-001"), Some("2026-11")), "{l}");
+}
+
+// ---------------------------------------------------------------------------
+// The Library's part folders through the agents' `part-folders` (JX18–JX20).
+// ---------------------------------------------------------------------------
+
+/// JX19, JX20: an agent's new library parts go into the part folder named
+/// like the job's week (or the folder it names), made if missing; `library
+/// list` names each part's folder by its path; `part-folders` lists the tree
+/// and moves a part, with refusals that say what to do instead.
+#[test]
+fn agents_list_the_part_folders_and_move_a_library_part() {
+    let d = dir("part_folders");
+    let mut s = Session::new(stock_ctx(&d));
+    let jp = d.join("frames.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"name": "DEMO-001", "week": "Acme"}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 300, "h": 120, "qty": 4, "name": "DEMO-P1"}));
+    call(&mut s, "add-shape", None, json!({"shape": "disc", "w": 200, "qty": 2, "name": "DEMO-P2"}));
+    // Saved into the Library: filed in the part folder named like the job's week.
+    let saved = call(&mut s, "library", None, json!({"mode": "save-part", "parts": [1]}));
+    assert!(saved["message"].as_str().unwrap().contains("in part folder 'Acme'"), "{saved}");
+    // Or in the folder it names, several levels made.
+    let saved = call(&mut s, "library", None, json!({"mode": "save-part", "parts": [2], "folder": "Beta/2026-11"}));
+    assert_eq!(saved["data"]["folders"], json!(["Beta/2026-11"]), "{saved}");
+    let l = call(&mut s, "part-folders", None, json!({"mode": "list"}));
+    assert_eq!(l["data"]["outline"], json!(["Acme/", "Acme/DEMO-P1", "Beta/", "Beta/2026-11/", "Beta/2026-11/DEMO-P2"]), "{l}");
+    assert_eq!(l["data"]["parts"][0]["ref"], "SHP000001", "{l}");
+    assert_eq!(l["data"]["folders"][0]["parts"], 1, "{l}");
+    // The job folders are a tree of their own: none was made.
+    let jobs = call(&mut s, "job-folders", None, json!({"mode": "list"}));
+    assert_eq!(jobs["data"]["outline"], json!([]), "{jobs}");
+    // A part by its name into a folder by its path, then by its reference to the top.
+    let moved = call(&mut s, "part-folders", None, json!({"mode": "move", "library_part": "demo-p1", "to": "beta"}));
+    assert_eq!(moved["data"]["outline"], json!(["Acme/", "Beta/", "Beta/2026-11/", "Beta/2026-11/DEMO-P2", "Beta/DEMO-P1"]), "{moved}");
+    let again = call(&mut s, "part-folders", None, json!({"mode": "move", "library_part": "SHP000001", "to": "Beta"}));
+    assert!(again["message"].as_str().unwrap().contains("already in 'Beta': nothing moved"), "{again}");
+    // Saving a part over again never moves it.
+    call(&mut s, "edit-part", None, json!({"part": 1, "qty": 9}));
+    call(&mut s, "library", None, json!({"mode": "save-part", "parts": [1]}));
+    // `library list` names a part's folder by its path, and finds by it.
+    let found = call(&mut s, "library", None, json!({"mode": "list", "find": "2026-11"}));
+    assert_eq!(found["data"].as_array().unwrap().iter().map(|v| (v["name"].as_str().unwrap(), v["folder"].as_str().unwrap())).collect::<Vec<_>>(), [("DEMO-P2", "Beta/2026-11")], "{found}");
+    // Refusals say what to do instead.
+    let e = err(&mut s, "part-folders", json!({"mode": "delete", "folder": "Beta"}));
+    assert!(e.contains("'Beta' still holds 1 part and 1 folder") && e.contains("Move or delete what's in it first"), "{e}");
+    let e = err(&mut s, "part-folders", json!({"mode": "move", "library_part": "DEMO-404", "to": "/"}));
+    assert!(e.contains("No library part") && e.contains("part-folders mode=list") && e.contains("SHP000012"), "{e}");
+    let e = err(&mut s, "part-folders", json!({"mode": "move", "folder": "Gamma", "to": "/"}));
+    assert!(e.contains("no folder 'Gamma'") && e.contains("part-folders mode=list"), "{e}");
+    let e = err(&mut s, "part-folders", json!({"mode": "new", "name": "ACME"}));
+    assert!(e.contains("already in the top of the Library") && e.contains("error 9"), "{e}");
+    call(&mut s, "part-folders", None, json!({"mode": "move", "library_part": "SHP000001", "to": "Acme"}));
+    let l = call(&mut s, "part-folders", None, json!({"mode": "list"}));
+    assert_eq!(l["data"]["outline"], json!(["Acme/", "Acme/DEMO-P1", "Beta/", "Beta/2026-11/", "Beta/2026-11/DEMO-P2"]), "{l}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// JX19, LB7: a part saved into the Library stays saved when the part folder
+/// tree can't be read afterwards: the agent is told its folder can't be
+/// shown, and saving again goes over its own record instead of being refused
+/// as someone else's newer save.
+#[test]
+fn an_agents_saved_part_stays_saved_when_the_part_folders_cant_be_read() {
+    let d = dir("part_folders_damaged");
+    let ctx = stock_ctx(&d);
+    let tree = ctx.library_dir.join(crate::folders::file_name(crate::library::Kind::Product));
+    let mut s = Session::new(ctx);
+    let jp = d.join("frames.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"name": "DEMO-001", "week": "Acme"}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 300, "h": 120, "qty": 4, "name": "DEMO-P1"}));
+    let first = call(&mut s, "library", None, json!({"mode": "save-part", "parts": [1]}))["data"]["ids"][0].as_u64().unwrap();
+    std::fs::write(&tree, "{ damaged").unwrap();
+    call(&mut s, "edit-part", None, json!({"part": 1, "qty": 9}));
+    let saved = call(&mut s, "library", None, json!({"mode": "save-part", "parts": [1]}));
+    assert!(saved["message"].as_str().unwrap().contains("part folder can't be shown"), "{saved}");
+    assert_eq!(saved["data"]["ids"], json!([first]), "{saved}");
+    let again = call(&mut s, "library", None, json!({"mode": "save-part", "parts": [1]}));
+    assert_eq!(again["data"]["ids"], json!([first]), "{again}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// LB11 for agents' part folders: `part-folders` on a Library that can't be
+/// reached is refused naming its folder and saying what to do, and nothing
+/// is made.
+#[test]
+fn agents_part_folders_are_refused_naming_the_folder_while_the_library_cant_be_reached() {
+    let d = dir("part_folders_unreachable");
+    let mut ctx = Ctx::builtin();
+    ctx.library_dir = d.join("Nesting");
+    let lib = ctx.library_dir.clone();
+    let mut s = Session::new(ctx);
+    let said = format!("The Library on {} can't be reached", lib.display());
+    for args in [
+        json!({"mode": "list"}),
+        json!({"mode": "new", "name": "Acme"}),
+        json!({"mode": "rename", "folder": "Acme", "name": "Acme Ltd"}),
+        json!({"mode": "delete", "folder": "Acme"}),
+        json!({"mode": "move", "library_part": "SHP000001", "to": "Acme"}),
+    ] {
+        let e = err(&mut s, "part-folders", args.clone());
+        assert!(e.contains(&said) && e.contains("no part folder was made"), "{args}: {e}");
+        assert!(e.contains("try again once it can be reached"), "{args} doesn't say what to do: {e}");
+        assert!(!lib.exists(), "{args} made the Library folder");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 #[test]
 fn an_agent_moves_one_contours_lead_by_hand_and_puts_it_back() {
     let d = dir("lead_edit");
@@ -2008,5 +2822,109 @@ fn a_moved_lead_reads_the_same_with_system_compensation() {
     // Only the length given: the angle stays.
     call(&mut s, "lead-edit", None, json!({"part": 1, "contour": 1, "in_length": 12}));
     assert_eq!(lead(&mut s), (12.0, 90.0));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// Jobs in use (CU5–CU12) through the agents' operations.
+
+/// CU12: an agent never takes a hold. It reads a job someone has in use
+/// (`library list` says who and since when, `library open` works and says
+/// so), and is refused saving over it (also after renaming it), moving it,
+/// and renaming, moving or deleting a folder that holds it several folders
+/// down, each refusal naming who and since when and what to do instead. Its
+/// own user's window holding the job refuses it too. A copy is allowed, and
+/// once the job is free its save goes through.
+#[test]
+fn agents_are_refused_a_job_in_use_and_never_hold_one() {
+    use crate::engine::inuse;
+    use crate::library::{Kind, Library};
+    let d = dir("agents_in_use");
+    let clock = Clock::at(1_794_215_640); // 2026-11-09 09:14 UTC
+    let mut ctx = stock_ctx(&d);
+    ctx.who = Who::new("sam", "PROG-1").as_agent();
+    ctx.clock = clock.clone();
+    let lib = ctx.library_dir.clone();
+    let mut s = Session::new(ctx);
+    let jp = d.join("DEMO-7.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut s, "rename", None, json!({"name": "DEMO-7"}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 300, "qty": 2, "name": "DEMO-P1"}));
+    let id = call(&mut s, "library", None, json!({"mode": "save-job"}))["data"]["id"].as_u64().unwrap();
+    for (folder, name) in [("", "Acme"), ("Acme", "2026-11"), ("Acme/2026-11", "Week 46")] {
+        call(&mut s, "job-folders", None, json!({"mode": "new", "folder": folder, "name": name}));
+    }
+    call(&mut s, "job-folders", None, json!({"mode": "move", "saved_job": "DEMO-7", "to": "Acme/2026-11/Week 46"}));
+    assert!(!inuse::path(&lib, id).exists(), "an agent took a hold");
+    // Sam opens it in the window on PROG-2.
+    let window = Library::open(&lib, &Who::new("Sam", "PROG-2"), &clock).unwrap();
+    inuse::take(&window, id, "DEMO-7").unwrap();
+    clock.advance(std::time::Duration::from_secs(60));
+    // Reading is allowed.
+    let l = call(&mut s, "library", None, json!({"mode": "list"}));
+    let row = l["data"].as_array().unwrap().iter().find(|r| r["name"] == "DEMO-7").cloned().unwrap();
+    assert_eq!((row["in_use"].as_str(), row["in_use_since"].as_str()), (Some("Sam on PROG-2 since 09:14"), Some("2026-11-09 09:14")), "{row}");
+    let r = call(&mut s, "library", None, json!({"mode": "open", "id": id}));
+    assert!(r["message"].as_str().unwrap().contains("DEMO-7 is in use by Sam on PROG-2 since 09:14."), "{r}");
+    // Changing it is refused, naming who and since when.
+    let said = "DEMO-7 is in use by Sam on PROG-2 since 09:14. Try again later.";
+    let record = std::fs::read(window.path(Kind::Job, id)).unwrap();
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 200, "h": 100, "qty": 1, "name": "DEMO-P2"}));
+    let e = err(&mut s, "library", json!({"mode": "save-job"}));
+    assert!(e.contains(said) && e.contains("Nothing was saved") && e.contains("copy=true"), "{e}");
+    call(&mut s, "rename", None, json!({"name": "DEMO-7 frames"}));
+    let e = err(&mut s, "library", json!({"mode": "save-job"}));
+    assert!(e.contains("is in use by Sam on PROG-2 since 09:14. Try again later."), "{e}");
+    assert_eq!(std::fs::read(window.path(Kind::Job, id)).unwrap(), record, "a refused save wrote the record");
+    let e = err(&mut s, "job-folders", json!({"mode": "move", "saved_job": "DEMO-7", "to": "/"}));
+    assert!(e.starts_with("DEMO-7 is in use by Sam on PROG-2 since 09:14. It can't be moved while it's in use. Try again later. Nothing was changed."), "{e}");
+    let deep = "'Acme/2026-11/Week 46' holds DEMO-7, which is in use by Sam on PROG-2 since 09:14.";
+    let e = err(&mut s, "job-folders", json!({"mode": "rename", "folder": "Acme", "name": "Acme Ltd"}));
+    assert!(e.contains("'Acme' holds DEMO-7, which is in use by Sam on PROG-2 since 09:14.") && e.contains("Try again later"), "{e}");
+    let e = err(&mut s, "job-folders", json!({"mode": "move", "folder": "Acme/2026-11", "to": "/"}));
+    assert!(e.contains("'Acme/2026-11' holds DEMO-7, which is in use by Sam on PROG-2 since 09:14."), "{e}");
+    let e = err(&mut s, "job-folders", json!({"mode": "delete", "folder": "Acme/2026-11/Week 46"}));
+    assert!(e.contains(deep) && e.contains("only an empty folder can be deleted"), "{e}");
+    let l = call(&mut s, "job-folders", None, json!({"mode": "list"}));
+    assert!(l["data"]["outline"].as_array().unwrap().iter().any(|p| p == "Acme/2026-11/Week 46/DEMO-7"), "{l}");
+    // Its own user's window holding it refuses it as well.
+    inuse::release(&window, &[id]).unwrap();
+    inuse::take(&Library::open(&lib, &Who::new("sam", "PROG-1"), &clock).unwrap(), id, "DEMO-7").unwrap();
+    let e = err(&mut s, "job-folders", json!({"mode": "move", "saved_job": "DEMO-7", "to": "/"}));
+    assert!(e.contains("in use by sam on PROG-1 since 09:15"), "{e}");
+    // A copy is no change to it.
+    let copy = call(&mut s, "library", None, json!({"mode": "save-job", "copy": true}))["data"]["id"].as_u64().unwrap();
+    assert_ne!(copy, id);
+    // Free again: the agent's change goes through, and it holds nothing.
+    inuse::release(&Library::open(&lib, &Who::new("sam", "PROG-1"), &clock).unwrap(), &[id]).unwrap();
+    call(&mut s, "job-folders", None, json!({"mode": "move", "saved_job": "DEMO-7", "to": "/"}));
+    call(&mut s, "job-folders", None, json!({"mode": "rename", "folder": "Acme", "name": "Acme Ltd"}));
+    assert!(std::fs::read_dir(lib.join(inuse::FOLDER)).map_or(0, |d| d.count()) == 0, "a hold is left");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// LB16: agents never wait for a refresh. Every `library` read reads the
+/// Library as it is now, so a job another PC saved a moment ago is listed,
+/// and opened as saved now, at once.
+#[test]
+fn an_agent_sees_another_pcs_save_at_once() {
+    let d = dir("refresh_agent");
+    let clock = Clock::at(1_794_216_000);
+    let mut ctx = stock_ctx(&d);
+    ctx.who = Who::new("kim", "PROG-2").as_agent();
+    ctx.clock = clock.clone();
+    let lib = crate::library::Library::open(&ctx.library_dir, &Who::new("sam", "PROG-1"), &clock).unwrap();
+    let mut s = Session::new(ctx);
+    let jp = d.join("DEMO-7.snjob");
+    let jp = jp.to_str().unwrap();
+    call(&mut s, "new", Some(jp), json!({"w": 3000, "h": 1500, "thickness": 10}));
+    let names = |s: &mut Session| call(s, "library", None, json!({"mode": "list"}))["data"].as_array().unwrap().iter().map(|e| format!("{} ({})", e["name"].as_str().unwrap(), e["saved_by"].as_str().unwrap_or("-"))).collect::<Vec<_>>();
+    assert!(names(&mut s).is_empty());
+    let mut j = JobFile::new_job("DEMO-7", crate::nest::SheetSpec { w: 3000.0, h: 1500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 10.0, level: 3, machine: Default::default(), kerf: Default::default() });
+    let rec = lib.save_job(&j, crate::library::SaveTo::New).unwrap();
+    assert_eq!(names(&mut s), ["DEMO-7 (sam on PROG-1)"]);
+    j.parts = vec![crate::nest::Part { name: "DEMO-P1".into(), shape: crate::nest::Shape::Rectangle, w: 600.0, h: 400.0, qty: 4, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
+    lib.save_job(&j, crate::library::SaveTo::Read(rec)).unwrap();
+    call(&mut s, "library", None, json!({"mode": "open", "name": "DEMO-7"}));
+    assert_eq!(jobfile::load(Path::new(jp)).unwrap().parts.iter().map(|p| p.qty).collect::<Vec<_>>(), [4], "opened as saved now");
     let _ = std::fs::remove_dir_all(&d);
 }

@@ -11,8 +11,12 @@
 //! - Automatic nesting skips locked items and items with less stock than it
 //!   needs (SS4), can offer remnants first (SS5) and picks the next sheet by
 //!   size or priority (SS6).
+//! - Every change records who made it and when, on the stock and on each
+//!   item it changed, and a change that takes sheets out records who took
+//!   them (SV9), so a save that finds a sheet gone says who took it (SV10).
 
 use crate::nest::P;
+use crate::shared::{Clock, Saved, Who};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -243,6 +247,22 @@ pub struct Item {
     /// When it was added (YYYY-MM-DD).
     #[serde(default)]
     pub created: String,
+    /// Who changed it last, and when (SV9). None for a stock saved before
+    /// changes recorded it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changed: Option<Saved>,
+    /// Who last took some of it out, how many and when (SV9): what a save
+    /// that finds it gone names (SV10).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub taken: Option<Taken>,
+}
+
+/// Sheets taken out of one stock item by one change (SV9).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Taken {
+    pub by: Who,
+    pub at: u64,
+    pub count: i32,
 }
 
 impl Item {
@@ -268,6 +288,8 @@ impl Item {
             remnant_pct: 0.0,
             scrap_pct: 0.0,
             created: today(),
+            changed: None,
+            taken: None,
         }
     }
 
@@ -286,6 +308,35 @@ impl Item {
 
     fn same_format(&self, material: usize, thickness: f64, length: f64, width: f64) -> bool {
         self.material == material && (self.thickness - thickness).abs() <= TOL && (self.length - length).abs() <= TOL && (self.width - width).abs() <= TOL
+    }
+
+    /// "Changed by sam on PROG-1, 9 Nov 09:20", and on a second line who
+    /// last took some out ("Last taken: 1 by kim on PROG-2, 9 Nov 09:40")
+    /// (SV9); "" for a stock from before changes recorded it.
+    pub fn changed_note(&self, clock: &Clock) -> String {
+        let mut v = vec![];
+        if let Some(c) = &self.changed {
+            v.push(format!("Changed by {}, {}", c.by.label(), clock.shown(c.at)));
+        }
+        if let Some(t) = &self.taken {
+            v.push(format!("Last taken: {} by {}, {}", t.count, t.by.label(), clock.shown(t.at)));
+        }
+        v.join("\n")
+    }
+
+    /// Why `needed` more of it can't be taken, naming who took the last
+    /// ones and when (SV10): "sam on PROG-1 took the last 3000 × 1500 (S-1)
+    /// at 09:20". None when no change recorded who took it (SV9).
+    pub fn gone_note(&self, needed: i32, clock: &Clock) -> Option<String> {
+        let t = self.taken.as_ref()?;
+        let (who, when, size) = (t.by.label(), clock.when(t.at), format!("{:.0} × {:.0}", self.length, self.width));
+        Some(if self.qty > 0 {
+            format!("only {} of {size} ({}) left, {needed} needed: {who} took {} {when}", self.qty, self.reference, t.count)
+        } else if self.kind.is_remnant() {
+            format!("{who} took remnant {} ({size}) {when}", self.reference)
+        } else {
+            format!("{who} took the last {size} ({}) {when}", self.reference)
+        })
     }
 }
 
@@ -511,11 +562,14 @@ pub struct Stock {
     /// stock now (RN6); a remnant deleted by hand is never in here.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub replaced: std::collections::BTreeMap<String, Vec<String>>,
+    /// Who changed the stock last, and when (SV9).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changed: Option<Saved>,
 }
 
 impl Default for Stock {
     fn default() -> Self {
-        Stock { format: FORMAT.into(), version: VERSION, items: vec![], sheet_counter: 0, remnant_counter: 0, replaced: Default::default() }
+        Stock { format: FORMAT.into(), version: VERSION, items: vec![], sheet_counter: 0, remnant_counter: 0, replaced: Default::default(), changed: None }
     }
 }
 
@@ -628,9 +682,12 @@ pub fn today() -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
+/// The stock's folder in the Library.
+pub const FOLDER: &str = "Sheets";
+
 impl Stock {
     pub fn file(library_dir: &Path) -> PathBuf {
-        library_dir.join("Sheets").join("stock.json")
+        library_dir.join(FOLDER).join("stock.json")
     }
 
     /// The stock in a library folder (empty if there's none yet).
@@ -658,26 +715,59 @@ impl Stock {
         s
     }
 
-    /// Write atomically (temp file, then rename) so a shared folder never sees
-    /// half a file.
+    /// Store this whole stock over what's there (a new or replaced stock).
+    /// A change goes through `update`, which re-reads it first.
+    /// Refused, naming the folder, when the Library can't be reached or the
+    /// folder holds no Library: never a new stock file there (LB11, LB12).
     pub fn save(&self, library_dir: &Path) -> Result<(), String> {
-        let f = Self::file(library_dir);
-        if let Some(d) = f.parent() {
-            std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
-        }
-        let tmp = f.with_extension("json.tmp");
-        let text = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
-        std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
-        std::fs::rename(&tmp, &f).map_err(|e| e.to_string())
+        crate::library::usable(library_dir)?;
+        let lock = crate::shared::WriteLock::take(library_dir)?;
+        self.store(library_dir, &lock)
     }
 
-    /// Re-read the stock, change it and save it, so two users on a shared
-    /// folder don't overwrite each other's changes.
-    pub fn update<T>(library_dir: &Path, f: impl FnOnce(&mut Stock) -> Result<T, String>) -> Result<T, String> {
-        let mut s = Stock::load(library_dir)?;
+    /// Written through a temporary file of this writer's own and renamed into
+    /// place, so a shared folder never shows half a file (LB3).
+    fn store(&self, library_dir: &Path, lock: &crate::shared::WriteLock) -> Result<(), String> {
+        let text = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
+        crate::shared::write_file(&Self::file(library_dir), text.as_bytes(), Some(lock))
+    }
+
+    /// Re-read the stock, change it and save it, all under the Library's
+    /// write lock (LB1), so two PCs (or the window and an agent) changing it
+    /// at once both count (STK-9). Nothing is stored when `f` refuses.
+    /// Refused like `save` when the Library can't be reached (LB11, LB12).
+    /// The change is signed with `lib`'s user and PC, at the time it holds
+    /// the lock (SV9, as LB5).
+    pub fn update<T>(lib: &crate::library::Library, f: impl FnOnce(&mut Stock) -> Result<T, String>) -> Result<T, String> {
+        crate::library::usable(&lib.dir)?;
+        let lock = lib.lock()?;
+        let mut s = Stock::load(&lib.dir)?;
+        let before = s.clone();
         let out = f(&mut s)?;
-        s.save(library_dir)?;
+        s.sign(&before, &lib.saved());
+        s.store(&lib.dir, &lock)?;
         Ok(out)
+    }
+
+    /// Record who made a change and when (SV9): on the stock, and on each
+    /// item the change made or changed; an item it took sheets out of also
+    /// records how many. Nothing is signed when nothing changed.
+    fn sign(&mut self, before: &Stock, by: &Saved) {
+        if self == before {
+            return;
+        }
+        self.changed = Some(by.clone());
+        let old: std::collections::HashMap<&str, &Item> = before.items.iter().map(|i| (i.reference.as_str(), i)).collect();
+        for it in self.items.iter_mut() {
+            let was = old.get(it.reference.as_str()).copied();
+            if was == Some(&*it) {
+                continue;
+            }
+            if let Some(w) = was.filter(|w| it.qty < w.qty) {
+                it.taken = Some(Taken { by: by.by.clone(), at: by.at, count: w.qty - it.qty });
+            }
+            it.changed = Some(by.clone());
+        }
     }
 
     pub fn get(&self, reference: &str) -> Option<&Item> {
@@ -920,6 +1010,8 @@ impl Stock {
             remnant_pct: parent.remnant_pct,
             scrap_pct: parent.scrap_pct,
             created: today(),
+            changed: None,
+            taken: None,
         });
         reference
     }
@@ -933,6 +1025,11 @@ fn ref_order(a: &str, b: &str) -> std::cmp::Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Library in `dir`, as sam on PROG-1 changes it.
+    fn as_sam(dir: &Path) -> crate::library::Library {
+        crate::library::Library::at(dir, &Who::new("sam", "PROG-1"), &Clock::pc())
+    }
 
     fn stock() -> Stock {
         let mut s = Stock::default();
@@ -1099,11 +1196,108 @@ mod tests {
     #[test]
     fn saves_and_loads() {
         let dir = std::env::temp_dir().join(format!("nestpro-stock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        crate::library::create(&dir).unwrap();
         let s = stock();
         s.save(&dir).unwrap();
         assert_eq!(Stock::load(&dir).unwrap(), s);
-        let r = Stock::update(&dir, |s| Ok(s.add_sheet(Item::sheet("", 0, 10.0, 1.0, 1.0, 1), true)?)).unwrap();
+        let r = Stock::update(&as_sam(&dir), |s| Ok(s.add_sheet(Item::sheet("", 0, 10.0, 1.0, 1.0, 1), true)?)).unwrap();
         assert!(Stock::load(&dir).unwrap().get(&r).is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// SV9: a change records who made it and when, on the stock and on each
+    /// item it changed, not on the others; taking sheets out also records
+    /// how many. A change that waits for another PC's write lock is signed
+    /// when it is written (as LB5), and one that changes nothing isn't.
+    #[test]
+    fn every_stock_change_records_who_made_it_and_when() {
+        let dir = std::env::temp_dir().join(format!("nestpro-stock-signed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        crate::library::create(&dir).unwrap();
+        let clock = Clock::at(1_794_216_000); // 2026-11-09 09:20 UTC
+        let prog1 = crate::library::Library::at(&dir, &Who::new("sam", "PROG-1"), &clock);
+        Stock::update(&prog1, |s| {
+            s.add_sheet(Item::sheet("S-1", 0, 10.0, 3000.0, 1500.0, 3), true)?;
+            s.add_sheet(Item::sheet("S-2", 0, 10.0, 2000.0, 1000.0, 1), true)
+        })
+        .unwrap();
+        // PROG-1 holds the lock; PROG-2's change waits while 10 minutes pass.
+        let held = prog1.lock().unwrap();
+        let (d, c) = (dir.clone(), clock.clone());
+        let (waiting, waiting_rx) = std::sync::mpsc::channel::<()>();
+        let prog2 = std::thread::spawn(move || {
+            crate::shared::hooks::set(move |s| {
+                if s == "lock busy" {
+                    let _ = waiting.send(());
+                }
+            });
+            let r = Stock::update(&crate::library::Library::at(&d, &Who::new("kim", "PROG-2"), &c), |s| s.take("S-1", 2, false));
+            crate::shared::hooks::clear();
+            r
+        });
+        waiting_rx.recv_timeout(std::time::Duration::from_secs(60)).expect("PROG-2 waits for the lock");
+        clock.advance(std::time::Duration::from_secs(10 * 60));
+        drop(held);
+        prog2.join().unwrap().unwrap();
+        let s = Stock::load(&dir).unwrap();
+        let kim = Saved { by: Who::new("kim", "PROG-2"), at: 1_794_216_600 };
+        assert_eq!(s.changed, Some(kim.clone()));
+        let (s1, s2) = (s.get("S-1").unwrap(), s.get("S-2").unwrap());
+        assert_eq!((s1.changed.clone(), s1.taken.clone()), (Some(kim.clone()), Some(Taken { by: kim.by.clone(), at: kim.at, count: 2 })));
+        assert_eq!((s2.changed.as_ref().map(|c| c.by.label()), s2.taken.clone()), (Some("sam on PROG-1".to_string()), None), "S-2 wasn't changed");
+        assert_eq!(s1.changed_note(&clock), "Changed by kim on PROG-2, 9 Nov 09:30\nLast taken: 2 by kim on PROG-2, 9 Nov 09:30");
+        // Giving one back changes it but isn't a take; nothing changed: not signed.
+        clock.advance(std::time::Duration::from_secs(60));
+        Stock::update(&prog1, |s| Ok(s.give_back("S-1", 1))).unwrap();
+        Stock::update(&prog1, |_| Ok(())).unwrap();
+        let s1 = Stock::load(&dir).unwrap().get("S-1").cloned().unwrap();
+        assert_eq!((s1.changed.map(|c| (c.by.label(), c.at)), s1.taken.map(|t| t.by.label())), (Some(("sam on PROG-1".to_string(), 1_794_216_660)), Some("kim on PROG-2".to_string())));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// SV10: what a save that can't take what it needs says: who took the
+    /// last ones and when; with some left, how many and how many it needs.
+    #[test]
+    fn a_sheet_gone_names_who_took_it() {
+        let clock = Clock::at(1_794_216_000); // 2026-11-09 09:20 UTC
+        let mut it = Item::sheet("S-1", 0, 10.0, 3000.0, 1500.0, 0);
+        assert_eq!(it.gone_note(1, &clock), None, "no record of who took it: the plain refusal stands");
+        it.taken = Some(Taken { by: Who::new("sam", "PROG-1"), at: 1_794_216_000, count: 1 });
+        assert_eq!(it.gone_note(1, &clock).as_deref(), Some("sam on PROG-1 took the last 3000 × 1500 (S-1) at 09:20"));
+        it.qty = 1;
+        it.taken = Some(Taken { by: Who::new("sam", "PROG-1").as_agent(), at: 1_794_216_000 - 86400, count: 2 });
+        assert_eq!(it.gone_note(2, &clock).as_deref(), Some("only 1 of 3000 × 1500 (S-1) left, 2 needed: sam on PROG-1 (agent) took 2 on 8 Nov 09:20"));
+        let mut r = Item::sheet("S-1-1", 0, 10.0, 1200.0, 400.0, 0);
+        r.kind = Kind::NestRemnant;
+        r.taken = Some(Taken { by: Who::new("kim", "PROG-2"), at: 1_794_216_000, count: 1 });
+        assert_eq!(r.gone_note(1, &clock).as_deref(), Some("kim on PROG-2 took remnant S-1-1 (1200 × 400) at 09:20"));
+    }
+
+    #[test]
+    fn two_pcs_changing_the_stock_at_once_both_count() {
+        let dir = std::env::temp_dir().join(format!("nestpro-stock-two-pcs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        crate::library::create(&dir).unwrap();
+        let mut s = Stock::default();
+        s.add_sheet(Item::sheet("S1", 0, 3.0, 2000.0, 1000.0, 1), true).unwrap();
+        s.save(&dir).unwrap();
+        let (pcs, changes) = (2, 60);
+        let start = std::sync::Arc::new(std::sync::Barrier::new(pcs));
+        let runs: Vec<_> = (0..pcs)
+            .map(|_| {
+                let (dir, start) = (dir.clone(), start.clone());
+                std::thread::spawn(move || {
+                    start.wait();
+                    (0..changes).map(|_| Stock::update(&as_sam(&dir), |s| s.change_qty("S1", 1))).collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        for r in runs.into_iter().flat_map(|r| r.join().unwrap()) {
+            r.unwrap_or_else(|e| panic!("a stock change reported an error: {e}"));
+        }
+        // One on the rack to start with, plus every change from both PCs.
+        assert_eq!(Stock::load(&dir).unwrap().get("S1").unwrap().qty, 121);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

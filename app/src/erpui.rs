@@ -339,6 +339,7 @@ impl App {
             result: Default::default(),
             stale: true,
             lib_id: None,
+            lib_read: Default::default(),
             cut_lines: vec![],
             manual_cuts: vec![],
             cam_changed: None,
@@ -346,6 +347,7 @@ impl App {
             erp: Some(link),
             file: None,
             saved: None,
+            lib_folder: None,
         });
         let i = self.jobs.len() - 1;
         self.open_job(i);
