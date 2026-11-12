@@ -8,6 +8,7 @@
 
 pub mod arrange;
 pub mod contours;
+pub mod cutorder;
 pub mod folderops;
 pub mod imports;
 pub mod inuse;
@@ -17,6 +18,7 @@ pub mod readback;
 pub mod refresh;
 pub mod render;
 pub mod session;
+pub mod sheetpick;
 pub mod stockflow;
 
 use crate::cnc::{self, ManualCut, SheetPlan};
@@ -922,10 +924,10 @@ pub fn manual_pick(parts: &[Part], sheet: &[Placed], list: &mut Vec<ManualCut>, 
     let name = parts[sheet[i].part].name.clone();
     let holes = parts[sheet[i].part].geometry().holes.len();
     let what = if ci == holes { "outside".to_string() } else { format!("hole {}", ci + 1) };
-    if list.iter().any(|m| m.placed == i && m.contour == ci) {
+    if list.iter().any(|m| m.whole.is_none() && m.placed == i && m.contour == ci) {
         return Err(format!("The {what} of '{name}' (#{}) is already in the manual cut — undo the pick to change it.", i + 1));
     }
-    list.push(ManualCut { placed: i, contour: ci, start: q, reverse });
+    list.push(ManualCut { placed: i, contour: ci, start: q, reverse, whole: None });
     let note = if ci == holes && holes > 0 { " (its holes first)" } else { "" };
     Ok(format!("Manual cut {}: {what} of '{name}' (#{}){}{note}.", list.len(), i + 1, if reverse { ", reversed" } else { "" }))
 }

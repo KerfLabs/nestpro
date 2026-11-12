@@ -362,6 +362,195 @@
    "estimated": true
   },
   {
+   "name": "a part's cut order set by hand is stored as",
+   "group": "part cut order",
+   "value": "a list of contour numbers (CS1), command by command; contour numbers never change",
+   "source": "CO3",
+   "estimated": true
+  },
+  {
+   "name": "parts that take a cut order set by hand",
+   "group": "part cut order",
+   "value": ["imported (drawn) parts"],
+   "source": "CO3",
+   "estimated": true
+  },
+  {
+   "name": "the outline in a part's cut order",
+   "group": "part cut order",
+   "value": "always last; a command naming a contour after it is refused, later picks go in before it",
+   "source": "CO4",
+   "estimated": true
+  },
+  {
+   "name": "where marks can go in a part's cut order set by hand",
+   "group": "part cut order",
+   "value": "anywhere before the outline",
+   "source": "CO4",
+   "estimated": true
+  },
+  {
+   "name": "a part's cut order commands",
+   "group": "part cut order",
+   "value": ["contours by number, in the order given", "all marks", "all cut (the outline too)", "all of one cut quality", "undo", "clear"],
+   "source": "CO5",
+   "estimated": true
+  },
+  {
+   "name": "a part's automatic cut order",
+   "group": "part cut order",
+   "value": ["marks", "cut holes", "outline"],
+   "source": "CO5",
+   "estimated": true
+  },
+  {
+   "name": "contour states that have a place in a part's cut order",
+   "group": "part cut order",
+   "value": ["cut", "mark"],
+   "source": "CO5",
+   "estimated": true
+  },
+  {
+   "name": "a contour already in a part's cut order, named again",
+   "group": "part cut order",
+   "value": "skipped",
+   "source": "CO5",
+   "estimated": true
+  },
+  {
+   "name": "undo of a part's cut order",
+   "group": "part cut order",
+   "value": "takes back the last command",
+   "source": "CO6",
+   "estimated": true
+  },
+  {
+   "name": "a contour set to another state after ordering",
+   "group": "part cut order",
+   "value": "leaves the order set by hand; the automatic order places it again if it is cut or marked",
+   "source": "CO7",
+   "estimated": true
+  },
+  {
+   "name": "a sheet cuts each part",
+   "group": "part cut order",
+   "value": "in its cut order: the contours set by hand first, then the automatic order, the outline last; the order set by hand is the same on every sheet and copy, turned or mirrored, and the automatic holes are ordered where each copy sits (CO14)",
+   "source": "CO8",
+   "estimated": true
+  },
+  {
+   "name": "a part with no cut order set by hand is cut on the sheet",
+   "group": "part cut order",
+   "value": "as before: its marks first, then its holes in the machine's hole order (CO14; the drawing's order under None, as before), the outline last",
+   "source": "CO8",
+   "estimated": true
+  },
+  {
+   "name": "a mark on the sheet is made",
+   "group": "part cut order",
+   "value": "at its place in the part's cut order; with no order set by hand, before the part's first cut",
+   "source": "CO9",
+   "estimated": true
+  },
+  {
+   "name": "a part's marking texts are made",
+   "group": "part cut order",
+   "value": "with its first cut on the sheet (they have no place in the cut order)",
+   "source": "CO9",
+   "estimated": true
+  },
+  {
+   "name": "contours picked in a sheet's Manual cutting",
+   "group": "part cut order",
+   "value": "are cut first on that sheet; the rest of each part follows its own cut order, the outline last",
+   "source": "CO10",
+   "estimated": true
+  },
+  {
+   "name": "a mark when contours are picked on the sheet",
+   "group": "part cut order",
+   "value": "is made before the part's next cut once every cut ahead of it in the part's order is done",
+   "source": "CO10",
+   "estimated": true
+  },
+  {
+   "name": "contours picked on the sheet, on the LC5",
+   "group": "part cut order",
+   "value": "each part is one call, made where its outline is cut: a contour picked ahead of another part is cut with its own part there",
+   "source": "CO10",
+   "estimated": true
+  },
+  {
+   "name": "setting a part's cut order on the part screen",
+   "group": "part cut order",
+   "value": ["Machining → Contours → Manual Contours: click, sweep or box", "All Marks", "All Cut", "All Contours of one Quality"],
+   "source": "CO11",
+   "estimated": true
+  },
+  {
+   "name": "a sweep of a part's contours while picking the cut order",
+   "group": "part cut order",
+   "value": "adds each cut or marked contour in the order the pointer reaches it, each once, as one command when the button is let go; an outline passed before another contour is left out",
+   "source": "CO11",
+   "estimated": true
+  },
+  {
+   "name": "what picking a part's cut order sets",
+   "group": "part cut order",
+   "value": "the order only, never where a cut starts",
+   "source": "CO11",
+   "estimated": true
+  },
+  {
+   "name": "Ctrl+Z after a cut-order command on the part screen",
+   "group": "part cut order",
+   "value": "takes back that one command (a click, sweep, box or bulk command)",
+   "source": "CO11",
+   "estimated": true
+  },
+  {
+   "name": "Machine part (Automatic) on the part screen",
+   "group": "part cut order",
+   "value": "clears the part's cut order set by hand",
+   "source": "CO11",
+   "estimated": true
+  },
+  {
+   "name": "a box while picking a part's cut order",
+   "group": "part cut order",
+   "value": "adds the cut and marked contours wholly inside it, in the automatic order among themselves",
+   "source": "CO12",
+   "estimated": true
+  },
+  {
+   "name": "where the part screen numbers a contour of the cut order",
+   "group": "part cut order",
+   "value": "beside where it starts: a cut contour at its pierce, a mark at its first point",
+   "source": "CO13",
+   "estimated": true
+  },
+  {
+   "name": "rapids on the part screen",
+   "group": "part cut order",
+   "value": "dashed, from where one contour ends to where the next starts",
+   "source": "CO13",
+   "estimated": true
+  },
+  {
+   "name": "cut order numbers and rapids set by hand, part screen",
+   "group": "part cut order",
+   "value": "#22d3ee, solid",
+   "source": "CO13",
+   "estimated": true
+  },
+  {
+   "name": "automatic cut order numbers and rapids, part screen",
+   "group": "part cut order",
+   "value": "#8c909c, grey",
+   "source": "CO13",
+   "estimated": true
+  },
+  {
    "name": "import preview: cut technology panel",
    "group": "drawing import",
    "value": "the part's cut technology panel (CS6, CS7) on the part about to be imported, with the drawing's layer rows above its rows",
@@ -959,6 +1148,41 @@
    "group": "manual machining",
    "value": 8.0,
    "unit": "px",
+   "estimated": true
+  },
+  {
+   "name": "a sweep across parts on the sheet in Manual cutting",
+   "group": "manual machining",
+   "value": "takes whole parts in the order passed, each cut whole in its own cut order; parts the picks already cut whole are skipped",
+   "source": "MM8",
+   "estimated": true
+  },
+  {
+   "name": "a part passed by a sweep on the sheet",
+   "group": "manual machining",
+   "value": "the pointer comes within the pick aperture of one of its contours",
+   "source": "MM8",
+   "estimated": true
+  },
+  {
+   "name": "a part with some contours clicked, then swept",
+   "group": "manual machining",
+   "value": "taken: the rest of it cut whole at the sweep's place",
+   "source": "MM8",
+   "estimated": true
+  },
+  {
+   "name": "a box on the sheet in Manual cutting",
+   "group": "manual machining",
+   "value": "takes the parts wholly inside it, in the sheet's automatic order among themselves",
+   "source": "MM9",
+   "estimated": true
+  },
+  {
+   "name": "Undo pick after a sweep or a box",
+   "group": "manual machining",
+   "value": "takes back the whole sweep or box",
+   "source": "MM9",
    "estimated": true
   },
   {
@@ -2385,6 +2609,280 @@
    "group": "cut order",
    "value": "box overlaps zone and a box corner inside",
    "source": "MECHANICS CZ4"
+  },
+  {
+   "name": "hole order mode key and default",
+   "group": "cut order",
+   "value": "machine file B565 = 1 (By proximity)",
+   "source": "CO20"
+  },
+  {
+   "name": "hole order mode numbers",
+   "group": "cut order",
+   "value": "0 None, 1 By proximity, 2 By direction, 3 Minimum heat",
+   "source": "CO20",
+   "estimated": true
+  },
+  {
+   "name": "hole order start corner default",
+   "group": "cut order",
+   "value": "B566 = 0 (part corner nearest the head)",
+   "source": "CO20"
+  },
+  {
+   "name": "hole order direction default",
+   "group": "cut order",
+   "value": "B567 = 1 (rows; 2 columns)",
+   "source": "CO20"
+  },
+  {
+   "name": "hole order orthogonality tolerance default",
+   "group": "cut order",
+   "value": 1.0,
+   "source": "CO20"
+  },
+  {
+   "name": "cut small holes first default",
+   "group": "cut order",
+   "value": false,
+   "source": "CO20"
+  },
+  {
+   "name": "big hole minimum length, width and offset defaults",
+   "group": "cut order",
+   "value": [0.0, 0.0, 0.0],
+   "source": "CO20"
+  },
+  {
+   "name": "By proximity distance point",
+   "group": "cut order",
+   "value": "middle of the hole's box while it is closed without a lead-in, else where its lead-in starts",
+   "source": "CO21"
+  },
+  {
+   "name": "By proximity comparison",
+   "group": "cut order",
+   "value": "a hole replaces the best when its distance is more than the linear tolerance below the best; within the tolerance only when its X distance is more than the tolerance below the best's (the best distance stays); else the hole met first stays",
+   "source": "CO21"
+  },
+  {
+   "name": "By proximity search order",
+   "group": "cut order",
+   "value": "outward from the head through zones over the part, then the part's contour order",
+   "source": "CO21",
+   "estimated": true
+  },
+  {
+   "name": "By proximity tolerance",
+   "group": "cut order",
+   "value": "the machine's linear tolerance",
+   "source": "CO21",
+   "estimated": true
+  },
+  {
+   "name": "By proximity path optimisation",
+   "group": "cut order",
+   "value": "not found",
+   "source": "CO22",
+   "estimated": true
+  },
+  {
+   "name": "By direction corner on a tie",
+   "group": "cut order",
+   "value": "lower left, lower right, upper right, upper left",
+   "source": "CO23"
+  },
+  {
+   "name": "By direction pick",
+   "group": "cut order",
+   "value": "row value = start-side edge nearest the start corner among holes left; candidates within the orthogonality tolerance of it on the same edge; pick the candidate nearest the start of the run",
+   "source": "CO23"
+  },
+  {
+   "name": "By direction equal edges",
+   "group": "cut order",
+   "value": "strictly better only: the hole met first stays",
+   "source": "CO23"
+  },
+  {
+   "name": "By direction met order",
+   "group": "cut order",
+   "value": "None: the part's contour order; By direction: bands from the start side, then the part's contour order",
+   "source": "CO23",
+   "estimated": true
+  },
+  {
+   "name": "By direction zig-zag",
+   "group": "cut order",
+   "value": true,
+   "source": "CO24"
+  },
+  {
+   "name": "By direction new row",
+   "group": "cut order",
+   "value": "the pick's start-side edge more than the tolerance from the previous hole's: reverse the run and pick again",
+   "source": "CO24"
+  },
+  {
+   "name": "hole order None on the part",
+   "group": "cut order",
+   "value": "rows from the start corner, every row the same way",
+   "source": "CO24",
+   "estimated": true
+  },
+  {
+   "name": "big hole",
+   "group": "cut order",
+   "value": "box along X reaches the minimum length or box along Y reaches the minimum width; short by no more than the tolerance still reaches",
+   "source": "CO25"
+  },
+  {
+   "name": "big hole tolerance",
+   "group": "cut order",
+   "value": "the sheet's linear tolerance",
+   "source": "CO25",
+   "estimated": true
+  },
+  {
+   "name": "small holes cut first",
+   "group": "cut order",
+   "value": "box in or overlapping the big hole's box grown by the offset",
+   "source": "CO25"
+  },
+  {
+   "name": "ordering the part's contours",
+   "group": "cut order",
+   "value": "contour directions only: holes by A014, outline by A015",
+   "source": "CO26"
+  },
+  {
+   "name": "first hole start point on the part",
+   "group": "cut order",
+   "value": "the part's FROM point, else the drawing's origin, in the drawing's frame",
+   "source": "CO27"
+  },
+  {
+   "name": "first hole start point on the sheet",
+   "group": "cut order",
+   "value": "the head after the previous part, in sheet coordinates",
+   "source": "CO27",
+   "estimated": true
+  },
+  {
+   "name": "sheet start corner defaults",
+   "group": "cut order",
+   "value": "start left on, start bottom on, horizontal on, zig-zag off",
+   "source": "CO27"
+  },
+  {
+   "name": "example program bottom-up with start bottom off",
+   "group": "cut order",
+   "value": "not found",
+   "source": "CO28",
+   "estimated": true
+  },
+  {
+   "name": "part automatic order",
+   "group": "cut order",
+   "value": "centre-punch dots, cycles, marking texts, marks, holes, outline",
+   "source": "CO29"
+  },
+  {
+   "name": "manage marks as cuts default",
+   "group": "cut order",
+   "value": "B699 = 0 (marks in their own pass, first)",
+   "source": "CO29"
+  },
+  {
+   "name": "hole order settings read",
+   "group": "cut order",
+   "value": "B565 order mode (default 1, by proximity), B566 start corner (0), B567 direction (1, rows), B568 orthogonality tolerance (1.0 mm), B587 cut small holes first (off), B588 / B589 / B590 big-hole length, width and offset (0); a value the setting doesn't have keeps the default",
+   "source": "CO14",
+   "estimated": true
+  },
+  {
+   "name": "hole order None",
+   "group": "cut order",
+   "value": "the part's own contour order, as before the setting (not the original's rows)",
+   "source": "CO14",
+   "estimated": true
+  },
+  {
+   "name": "hole order minimum heat (mode 3)",
+   "group": "cut order",
+   "value": "the part's own contour order; the sheet's minimum-heat order isn't built",
+   "source": "CO14",
+   "estimated": true
+  },
+  {
+   "name": "hole order on the sheet",
+   "group": "cut order",
+   "value": "worked out where each copy sits, turned or mirrored, also for a part taken whole by a sweep or a box; the head from where the sheet's last cut was, the sheet's origin before the first",
+   "source": "CO14",
+   "estimated": true
+  },
+  {
+   "name": "where a hole is measured to",
+   "group": "cut order",
+   "value": "the middle of its box, or where its cut starts when that is set by hand; the head stands there after cutting it",
+   "source": "CO14",
+   "estimated": true
+  },
+  {
+   "name": "proximity and big-hole tolerance",
+   "group": "cut order",
+   "value": "the machine's linear tolerance (A005, 0.01 mm by default)",
+   "source": "CO14",
+   "estimated": true
+  },
+  {
+   "name": "hole order in part-info and on the part screen",
+   "group": "cut order",
+   "value": "as drawn, the head starting at the part's lower left corner",
+   "source": "CO14",
+   "estimated": true
+  },
+  {
+   "name": "small holes next to a big hole",
+   "group": "cut order",
+   "value": "cut just before it, in the hole order mode among themselves; holes set by hand aren't moved",
+   "source": "CO15",
+   "estimated": true
+  },
+  {
+   "name": "sheet order settings",
+   "group": "cut order",
+   "value": "Settings → Machines: start corner (lower left, lower right, upper left, upper right), columns or rows, zig-zag, cutting zones across and up (0 or 1 = one zone, at most 500); each starts as the machine file's (B110, B114, B115, B122 / B123), else lower left, columns, no zig-zag, 20 × 10",
+   "source": "CO16",
+   "estimated": true
+  },
+  {
+   "name": "sheet start corner shown",
+   "group": "cut order",
+   "value": "the bottom row first whatever the file's start bottom (B111) says (CZ6), with a note when it is off; an upper corner set in Settings starts the sheet at the top",
+   "source": "CO16",
+   "estimated": true
+  },
+  {
+   "name": "order settings changed per machine",
+   "group": "cut order",
+   "value": "kept in the app's settings with the machine (only the values changed), winning over the machine file and its material sections; a value set back to the file's isn't kept; a saved value the setting can't take (mode or corner number it doesn't have, more than 500 zones, negative length, unreadable) is left out on reading and the other changes kept; Use the machine file puts every sheet and hole order value back; settings saved before have none",
+   "source": "CO16",
+   "estimated": true
+  },
+  {
+   "name": "sheet order report",
+   "group": "cut order",
+   "value": "machines: sheet_order with each value in use, where it comes from (Settings → Machines, machine file, default) and the file's own; order_changes per machine; agents can't change settings",
+   "source": "CO16",
+   "estimated": true
+  },
+  {
+   "name": "hole order settings",
+   "group": "cut order",
+   "value": "Settings → Machines: order mode (None, By proximity, By direction; Minimum heat only when the file sets it), By direction's start corner, rows or columns and orthogonality tolerance, Cut small holes first with big-hole length, width and offset; each starts as the machine file's (B565–B568, B587–B590), else the original's default; the linear tolerance (A005) stays the file's",
+   "source": "CO17",
+   "estimated": true
   },
   {
    "name": "file name separator forbidden characters",

@@ -107,7 +107,7 @@ mod jobfile_tests {
         // The sheet is an L-shaped remnant from stock.
         let outline = crate::stock::Outline { outer: vec![[0.0, 0.0], [2000.0, 0.0], [2000.0, 1000.0], [800.0, 1000.0], [800.0, 400.0], [0.0, 400.0]], holes: vec![] };
         let formats = vec![crate::nest::SheetFormat { w: 2000.0, h: 1000.0, outline: Some(outline), stock_ref: "2-16".into(), remnant: true, made: vec![], made_from: 0 }];
-        let j = JobFile { format: FORMAT.into(), version: VERSION, name: "Frames".into(), week: "W12".into(), parts, spec, sheets, formats, held: Default::default(), cut_lines: cuts, method: "Modules".into(), manual_cuts: vec![vec![crate::cnc::ManualCut { placed: 0, contour: 0, start: [5.0, 5.0], reverse: true }]], stale: true, booked: false, erp: None, saved: None, library: None, library_parts: Default::default() };
+        let j = JobFile { format: FORMAT.into(), version: VERSION, name: "Frames".into(), week: "W12".into(), parts, spec, sheets, formats, held: Default::default(), cut_lines: cuts, method: "Modules".into(), manual_cuts: vec![vec![crate::cnc::ManualCut { placed: 0, contour: 0, start: [5.0, 5.0], reverse: true, whole: None }]], stale: true, booked: false, erp: None, saved: None, library: None, library_parts: Default::default() };
         let path = std::env::temp_dir().join("nestpro_test_job.snjob");
         save(&path, &j).unwrap();
         let k = load(&path).unwrap();

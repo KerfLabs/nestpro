@@ -132,6 +132,7 @@ const MACHINES: &[&str] = &["laser", "plasma", "oxyfuel", "waterjet", "laserpunc
 const LEADS: &[&str] = &["machine", "perpendicular", "line", "arc", "line-arc", "corner"];
 const JOINTS: &[&str] = &["gap", "leads", "leads-inclined", "corner"];
 const QUALITIES: &[&str] = &["auto", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"];
+const CUT_QUALITIES: &[&str] = &["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"];
 const TEXTS: &[&str] = &["mark", "special", "note"];
 const CONTOUR_STATES: &[&str] = &["cut", "mark", "no-cut", "bend-line", "leave-out"];
 
@@ -181,12 +182,17 @@ pub static OPS: &[Op] = &[
         a("rotate", Ty::Bool, "May turn 90°"), a("mirror", Ty::Bool, "May be mirrored"), a("group", Ty::Str, "Group"), c("tech", &["copy", "drop"], "Size change on a part with technology"),
     ] },
     Op { name: "remove-part", group: "Parts", kind: Kind::Write, help: "Take a part out of the job (its placed copies go too).", args: &[PART] },
-    Op { name: "part-info", group: "Parts", kind: Kind::Read, help: "A part's geometry and technology: size, area, cut length, every contour (numbered: holes first, the outline, then open lines; open or closed; its state: cut, mark, no-cut, bend-line or leave-out, set with contour-tech; cut contours with their cut quality by the machine's name, e.g. Slow (1), or Quality n when the machine names none, and where it comes from: by hand (contour-tech quality=), part size range, part, machine size band or default), every element (numbered, for lead-at / joint-at), texts, and Verify Part / Verify Machining results.", args: &[PART] },
+    Op { name: "part-info", group: "Parts", kind: Kind::Read, help: "A part's geometry and technology: size, area, cut length, every contour (numbered: holes first, the outline, then open lines; open or closed; its state: cut, mark, no-cut, bend-line or leave-out, set with contour-tech; cut contours with their cut quality by the machine's name, e.g. Slow (1), or Quality n when the machine names none, and where it comes from: by hand (contour-tech quality=), part size range, part, machine size band or default; each cut or marked contour's place in the cut order, cut_order from 1, and cut_order_by_hand when set with part-cut-order), the whole cut order (contours in the order cut, and those set by hand), every element (numbered, for lead-at / joint-at), texts, and Verify Part / Verify Machining results.", args: &[PART] },
     Op { name: "contour-tech", group: "Technology", kind: Kind::Write, help: "Set contours of an imported part (numbers from part-info: holes first, the outline, then open lines) to cut, mark (marked on the surface, open or closed), no-cut (kept on the part and shown, never machined), bend-line (a no-cut line in its own colour) or leave-out (not on the part), and/or give cut contours a cut quality by hand (1-12, which wins over the part's size ranges and quality and the machine's size bands; auto gives the choice back to them). same=true also sets every contour equal to one of them (same shape, moved; with only a quality, the equal contours that are cut). The outline is always cut, open lines can't be cut yet, and a mark always uses the machine's marking quality.", args: &[
         PART, r("contours", Ty::Str, "Contour numbers from part-info, e.g. \"5\", \"1,3\" or \"2-4\""),
         c("state", CONTOUR_STATES, "What the contours become (state, quality or both)"),
         c("quality", QUALITIES, "Cut quality set by hand on cut contours: the machine's quality 1-12, or auto = the part's size ranges and quality and the machine's size bands decide (state, quality or both)"),
         a("same", Ty::Bool, "Also every contour equal to one of them (default false)"),
+    ] },
+    Op { name: "part-cut-order", group: "Machining", kind: Kind::Write, help: "Set the order an imported part's contours are cut and marked in, by hand (part-info shows each contour's place, and which were set by hand). Each command adds to the end of the order: add (contours by number, in the order given), all-marks, all-cut, or all-quality (every cut contour at one cut quality); undo takes back the last command, clear empties the order. A contour already in the order is skipped, and a bulk command adds only contours not yet ordered, in the automatic order among themselves. Whatever isn't ordered by hand follows in the automatic order (marks, holes, outline). The outline is always cut last: naming a contour after it in one command is refused, and contours added later go in before it. Marks can go anywhere before the outline. A contour that is No cut, Bend line or Leave out has no place in the order; setting an ordered contour to another state with contour-tech takes it out of the order. Built-in shapes follow the automatic order.", args: &[
+        PART, Arg { name: "mode", ty: Ty::Str, required: true, help: "add, all-marks, all-cut, all-quality, undo or clear", choices: &["add", "all-marks", "all-cut", "all-quality", "undo", "clear"] },
+        a("contours", Ty::Str, "add: contour numbers from part-info in cut order, e.g. \"3,1,2\" or \"4-2\" (4, 3, 2)"),
+        c("quality", CUT_QUALITIES, "all-quality: the machine's cut quality 1-12, as part-info shows each contour's"),
     ] },
     Op { name: "export-part-dxf", group: "Parts", kind: Kind::Read, help: "Save a part as DXF (outline and holes on CUT, marking on MARK).", args: &[PART, r("out", Ty::Path, "DXF file to write")] },
     Op { name: "library", group: "Parts", kind: Kind::Write, help: "The product/job library: list it (each record with who last saved it and when: saved_by, e.g. \"sam on PROG-2 (agent)\", and saved_at in this PC's local time), open a library job into this job file, add a library product to the job, or save parts / the job into it (recorded as saved by this PC's user, marked (agent)). A job opened from the library, or saved into it, saves over its own record; a save over a job or library part someone else saved since this job file read it is refused, saying who and when (LB7, LB10).", args: &[
@@ -284,9 +290,12 @@ pub static OPS: &[Op] = &[
         a("text", Ty::Str, "add: the text"), a("height", Ty::Num, "add: capital height, mm (default 8)"), c("kind", TEXTS, "add: text kind (default special)"),
     ] },
     // --- machining ---
-    Op { name: "cut-order", group: "Machining", kind: Kind::Write, help: "Manual cutting order: pick the contour nearest x,y (cut first, from there), undo the last pick, or clear them (all automatic).", args: &[
-        Arg { name: "mode", ty: Ty::Str, required: true, help: "pick, undo or clear", choices: &["pick", "undo", "clear"] }, SHEET,
-        a("x", Ty::Num, "pick: X on the sheet, mm"), a("y", Ty::Num, "pick: Y, mm"), a("reverse", Ty::Bool, "pick: cut it the other way"), a("tol", Ty::Num, "pick: how near, mm (default 5)"),
+    Op { name: "cut-order", group: "Machining", kind: Kind::Write, help: "Manual cutting order: pick the contour nearest x,y (cut first, from there); take whole parts (parts: placed parts in the order given, the parts a sweep along points passes in the order it passes them, or the parts wholly inside a box in the automatic order; each cut whole in its own cut order, after the picks before it; parts the picks already finish are skipped); undo the last pick or the last parts command; or clear them (all automatic).", args: &[
+        Arg { name: "mode", ty: Ty::Str, required: true, help: "pick, parts, undo or clear", choices: &["pick", "parts", "undo", "clear"] }, SHEET,
+        a("x", Ty::Num, "pick: X on the sheet, mm"), a("y", Ty::Num, "pick: Y, mm"), a("reverse", Ty::Bool, "pick: cut it the other way"), a("tol", Ty::Num, "pick, parts with points: how near, mm (default 5)"),
+        a("items", Ty::Str, "parts: placed parts in the order to cut them, e.g. \"3,1,2\" (#n as in info/render; 4-2 is 4, 3, 2)"),
+        a("points", Ty::Points, "parts: a sweep \"x,y;x,y;…\" in sheet mm: the parts it passes within tol of their contours, in the order passed"),
+        a("box", Ty::Points, "parts: two opposite corners \"x,y;x,y\" in sheet mm: the parts wholly inside, in the sheet's automatic order"),
     ] },
     Op { name: "remnant", group: "Machining", kind: Kind::Write, help: "Cut off the remnant: auto (the automatic remnant line in the shape set in the Sheet Remnants options), exact (stepped around the parts), or a line at x= or y=. A new remnant line replaces the sheet's old one.", args: &[
         Arg { name: "mode", ty: Ty::Str, required: true, help: "auto, exact or line", choices: &["auto", "exact", "line"] }, SHEET,
@@ -342,7 +351,7 @@ pub static OPS: &[Op] = &[
     ] },
     // --- reference ---
     Op { name: "catalog", group: "Reference", kind: Kind::Global, help: "Choices the other operations take: shapes, materials, thicknesses, nesting levels, machine types, lead/joint types, qualities, text kinds and fields, layer roles.", args: &[] },
-    Op { name: "machines", group: "Reference", kind: Kind::Global, help: "The machines in Settings (read-only here): what each does (laser, plasma, punch…), output, post library, and the active machine's technology (CT1) values.", args: &[] },
+    Op { name: "machines", group: "Reference", kind: Kind::Global, help: "The machines in Settings (read-only here): what each does (laser, plasma, punch…), output, post library, the sheet and hole order changed for it in Settings → Machines (order_changes), and the active machine's technology (CT1) values, with how it orders the parts on a sheet (sheet_order: start corner, columns or rows, zig-zag, zones) and a part's holes nobody ordered by hand (hole_order: none, by proximity or by direction with its start corner, rows or columns and tolerance, and cut small holes first with its size limits); for each, where the value comes from (Settings → Machines, the machine file or the default) and what the machine file alone gives.", args: &[] },
 ];
 
 pub fn find(name: &str) -> Option<&'static Op> {
@@ -791,12 +800,20 @@ fn part_info(job: &JobFile, i: usize) -> Value {
     let list = contours::list(p);
     let numbers = dxf::cut_order(&list);
     let (tech, mt) = (p.tech.unwrap_or_default(), crate::ct1::for_spec(&job.spec));
+    // CO3: each contour's place in the cut order, and whether it was set by
+    // hand; the holes not set by hand in the machine's hole order where the
+    // part is drawn (CO14).
+    let order = cutorder::order(p);
     let contours: Vec<Value> = list
         .iter()
         .enumerate()
         .map(|(k, c)| {
             let shape = if c.closed { crate::machine::recognise(&c.pts).map(|s| s.label()) } else { None };
             let mut v = json!({"contour": k + 1, "kind": contours::kind(&list, k), "closed": c.closed, "state": c.state.key(), "length_mm": r1(c.length()), "standard_shape": shape});
+            if let Some(place) = order.iter().position(|o| o.0 == k) {
+                v["cut_order"] = json!(place + 1);
+                v["cut_order_by_hand"] = json!(order[place].1);
+            }
             // CQ1, CQ6: the cut quality each cut contour gets on this job's
             // machine, and why ("by hand" when set on the contour).
             if c.closed && c.state == dxf::ContourState::Cut {
@@ -821,6 +838,12 @@ fn part_info(job: &JobFile, i: usize) -> Value {
         "area_mm2": r1(p.net_area()), "cut_len_mm": r1(p.cut_length()),
         "rotations": { "turn_90": p.rotate, "plain": p.rots.plain, "mirrored": p.rots.mirrored },
         "contours": contours,
+        "cut_order": {
+            "contours": order.iter().map(|o| o.0 + 1).collect::<Vec<_>>(),
+            "by_hand": order.iter().filter(|o| o.1).map(|o| o.0 + 1).collect::<Vec<_>>(),
+            "holes": hole_order_json(&mt.hole_order),
+            "note": "The holes not set by hand follow the machine's hole order (machines shows it), here as the part is drawn with the head starting at its lower left corner; on a sheet each copy's holes are ordered again where it sits (turned, mirrored) from where the head is (program shows the order the machine gets).",
+        },
         "elements": elems.iter().enumerate().map(|(k, e)| json!({
             "element": k + 1, "contour": numbers.get(e.contour).map_or(e.contour, |n| *n) + 1, "kind": e.kind.label().to_lowercase(), "length_mm": r1(e.length), "mid": [r1(e.midpoint()[0]), r1(e.midpoint()[1])],
         })).collect::<Vec<_>>(),
@@ -968,23 +991,112 @@ fn compensation_report(job: &JobFile, a: &Args) -> Result<(String, Value), Strin
     Ok((msg, data))
 }
 
+/// The machine's hole order settings (CO20, CO14, CO15), in shop words.
+fn hole_order_json(h: &crate::ct1::HoleOrder) -> Value {
+    let corner = ["nearest the head", "lower left", "lower right", "upper right", "upper left"].get(h.corner as usize).copied().unwrap_or("nearest the head");
+    let how = match h.mode {
+        crate::ct1::HoleMode::None => "the part's own contour order, as drawn",
+        crate::ct1::HoleMode::Proximity => "the nearest hole next, from where the head is",
+        crate::ct1::HoleMode::Direction => "in rows or columns from the start corner, every other one back",
+        crate::ct1::HoleMode::MinimumHeat => "the part's own contour order (the sheet's minimum-heat order isn't built yet, FEATURES MAC-53)",
+    };
+    json!({
+        "mode": h.mode.label(), "mode_code": h.mode.code(), "cuts": how,
+        "start_corner": corner, "start_corner_code": h.corner, "direction": if h.columns { "columns" } else { "rows" },
+        "orthogonality_tolerance_mm": h.ortho_tol,
+        "small_holes_first": h.small_first, "big_hole_min_length_mm": h.big_length, "big_hole_min_width_mm": h.big_width, "big_hole_offset_mm": h.big_offset,
+    })
+}
+
+/// Where an order setting in use comes from (CO16, CO17): a change made in
+/// Settings → Machines, the machine file (it sets one of `codes`), or the
+/// default. `changed` reads `MachineTech::order_changes`, which holds only
+/// the changes used (`OrderChanges::valid`), so a saved value the setting
+/// can't take is reported as the file's, as it is cut.
+fn order_from(t: &crate::ct1::MachineTech, changed: bool, codes: &[&str]) -> &'static str {
+    if changed {
+        "Settings → Machines"
+    } else if codes.iter().any(|c| t.file.globals.contains_key(*c)) {
+        "machine file"
+    } else {
+        "default"
+    }
+}
+
+/// The sheet's order in shop words (CZ1–CZ6).
+fn sheet_order_words(o: &crate::ct1::SheetOrder) -> String {
+    let zones = if o.zones_x <= 1 && o.zones_y <= 1 { "one zone over the whole sheet".to_string() } else { format!("{} × {} zones", o.zones_x.max(1), o.zones_y.max(1)) };
+    let (each, back) = if o.zigzag { ("the first", ", every other one back") } else { ("each", "") };
+    let way = match (o.horizontal, o.start_left, o.start_bottom) {
+        (true, l, b) => format!("rows from the {}, {each} from the {}{back}", if b { "bottom up" } else { "top down" }, if l { "left" } else { "right" }),
+        (false, l, b) => format!("columns from the {}, {each} from the {}{back}", if l { "left" } else { "right" }, if b { "bottom up" } else { "top down" }),
+    };
+    format!("{zones}, {way}; in each zone the nearest part next")
+}
+
+/// The sheet's order in use, where each value comes from, and what the
+/// machine file alone gives (CO16).
+fn sheet_order_json(t: &crate::ct1::MachineTech) -> Value {
+    let (o, f, c) = (&t.sheet_order, t.file_order().sheet, &t.order_changes);
+    let values = |o: &crate::ct1::SheetOrder| json!({"start_corner": o.corner_label(), "direction": if o.horizontal { "rows" } else { "columns" }, "zigzag": o.zigzag, "zones": [o.zones_x, o.zones_y]});
+    let mut v = values(o);
+    v["cuts"] = json!(sheet_order_words(o));
+    v["from"] = json!({
+        "start_corner": order_from(t, c.start_left.is_some() || c.start_bottom.is_some(), &["B110"]),
+        "direction": order_from(t, c.rows.is_some(), &["B114"]),
+        "zigzag": order_from(t, c.zigzag.is_some(), &["B115"]),
+        "zones": order_from(t, c.zones_x.is_some() || c.zones_y.is_some(), &["B122", "B123"]),
+    });
+    v["machine_file"] = values(&f);
+    if t.file_says_top() {
+        v["note"] = json!("The machine file's start bottom is off, but the sheet is cut from the bottom row up, as programs from the machine are (MECHANICS CZ6, CO28). A top corner can be set in Settings → Machines.");
+    }
+    v
+}
+
+/// The hole order in use, where each value comes from, and what the
+/// machine file alone gives (CO17).
+fn hole_order_report(t: &crate::ct1::MachineTech) -> Value {
+    let c = &t.order_changes;
+    let mut v = hole_order_json(&t.hole_order);
+    v["from"] = json!({
+        "mode": order_from(t, c.hole_mode.is_some(), &["B565"]),
+        "start_corner": order_from(t, c.hole_start_corner.is_some(), &["B566"]),
+        "direction": order_from(t, c.hole_columns.is_some(), &["B567"]),
+        "orthogonality_tolerance_mm": order_from(t, c.orthogonality_tolerance.is_some(), &["B568"]),
+        "small_holes_first": order_from(t, c.small_holes_first.is_some(), &["B587"]),
+        "big_hole_min_length_mm": order_from(t, c.big_hole_min_length.is_some(), &["B588"]),
+        "big_hole_min_width_mm": order_from(t, c.big_hole_min_width.is_some(), &["B589"]),
+        "big_hole_offset_mm": order_from(t, c.big_hole_offset.is_some(), &["B590"]),
+    });
+    let mut file = hole_order_json(&t.file_order().holes);
+    if let Some(m) = file.as_object_mut() {
+        m.remove("cuts");
+    }
+    v["machine_file"] = file;
+    v
+}
+
 fn machines(ctx: &Ctx) -> Value {
     let t = &ctx.tech;
     json!({
         "active": ctx.cfg.active_machine + 1,
         "machines": ctx.cfg.machines.iter().enumerate().map(|(i, m)| json!({
             "machine": i + 1, "name": m.name, "does": m.kind.key(), "output": m.output.key(), "post_lib": m.post_lib, "blm_ps1": m.blm_ps1, "blm_cf1": m.blm_cf1, "gas": m.gas_name,
+            "order_changes": m.order.valid(),
         })).collect::<Vec<_>>(),
         "technology": {
             "source": t.source.as_ref().map_or("built-in values".to_string(), |p| p.display().to_string()),
             "lead_in": t.lead_in, "lead_out": t.lead_out, "overlap": t.overlap, "position": t.zone, "hole_lead_in": t.hole_lead_in,
-            "joint_gap": t.joint_gap, "joint_every": t.joint_every, "group_parts": t.group_parts, "zones": [t.zones_x, t.zones_y],
+            "joint_gap": t.joint_gap, "joint_every": t.joint_every, "group_parts": t.group_parts, "zones": [t.sheet_order.zones_x, t.sheet_order.zones_y],
+            "sheet_order": sheet_order_json(t),
+            "hole_order": hole_order_report(t),
             "material_sections": t.file.sections.len(),
             "qualities": qualities_json(&t.qualities),
             "note": "These are the machine's own values; a job's material and thickness may pick a section of the file instead (machine-tech).",
         },
         "post": { "extension": ctx.post.file_name("JOB", 1) },
-        "note": "Settings are changed in the app (Settings window), not by agents. A job is put on a machine's process with set-sheet machine=<does> (MK1).",
+        "note": "Settings are changed in the app (Settings window), not by agents. The sheet and hole order are changed per machine in Settings → Machines, and a change wins over the machine file (order_changes; each value's `from` says where it comes from). A job is put on a machine's process with set-sheet machine=<does> (MK1).",
     })
 }
 
@@ -1702,6 +1814,32 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             let mut o = Outcome::msg(done.message);
             o.data = data;
             Ok(o)
+        }
+        "part-cut-order" => {
+            let i = one_part(job, &a)?;
+            let part = &mut job.parts[i];
+            cutorder::check(part)?;
+            let cmd = match a.need_str("mode")?.as_str() {
+                "add" => cutorder::Command::Contours(contours::parse_in_order(&a.need_str("contours")?, contours::list(part).len())?),
+                "all-marks" => cutorder::Command::AllMarks,
+                "all-cut" => cutorder::Command::AllCut,
+                "undo" => cutorder::Command::Undo,
+                "clear" => cutorder::Command::Clear,
+                "all-quality" => {
+                    let q = a.need_str("quality")?;
+                    cutorder::Command::Quality(numbered_quality(&q).ok_or_else(|| format!("quality '{}': give one of the machine's cut qualities, 1 to 12 (part-info shows each contour's).", q.trim()))?)
+                }
+                m => return Err(format!("part-cut-order mode '{m}': give add, all-marks, all-cut, all-quality, undo or clear.")),
+            };
+            // One engine function for agents and the part screen's Contours menu (CO3).
+            let done = cutorder::apply(part, &crate::ct1::for_spec(&job.spec), &cmd)?;
+            let one = |v: &[usize]| v.iter().map(|k| k + 1).collect::<Vec<_>>();
+            Ok(Outcome {
+                message: format!("Part {} '{}': {}", i + 1, part.name, done.message),
+                data: json!({"added": one(&done.added), "skipped": one(&done.skipped)}),
+                changed: done.changed,
+                files: vec![],
+            })
         }
         "export-part-dxf" => {
             let i = one_part(job, &a)?;
@@ -2599,15 +2737,26 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                     let (parts, sheet) = (job.parts.clone(), job.sheets[s].clone());
                     Ok(Outcome::msg(manual_pick(&parts, &sheet, job.manual_mut(s), [x, y], tol, rev)?))
                 }
-                "undo" => match job.manual_mut(s).pop() {
-                    Some(_) => Ok(Outcome::msg("Last manual pick removed.")),
-                    None => Err("No manual picks on this sheet.".into()),
-                },
+                "parts" => {
+                    let (parts, sheet) = (job.parts.clone(), job.sheets[s].clone());
+                    let done = sheetpick::picked(&parts, &sheet, job.manual_mut(s));
+                    let got = match (a.str("items"), a.points("points")?, a.points("box")?) {
+                        (Some(list), None, None) => sheetpick::listed(&done, &arrange::parse_items_in_order(&list, sheet.len())?),
+                        (None, Some(path), None) if !path.is_empty() => sheetpick::sweep(&parts, &sheet, &done, &path, a.num("tol")?.unwrap_or(5.0)),
+                        (None, None, Some(b)) if b.len() == 2 => sheetpick::boxed(&parts, &sheet, &job.spec_at(s), &done, b[0], b[1]),
+                        _ => return Err("parts takes whole parts by one of: items=\"3,1,2\" (placed parts in the order to cut them), points=\"x,y;x,y;…\" (a sweep: the parts it passes, in that order) or box=\"x,y;x,y\" (two corners: the parts wholly inside).".into()),
+                    };
+                    // One engine function for agents and the sheet's sweep and box (MM8, MM9).
+                    let message = sheetpick::take(&parts, &sheet, job.manual_mut(s), &got)?;
+                    let one = |v: &[usize]| v.iter().map(|k| k + 1).collect::<Vec<_>>();
+                    Ok(Outcome { message, data: json!({"added": one(&got.add), "skipped": one(&got.skipped)}), changed: true, files: vec![] })
+                }
+                "undo" => sheetpick::undo(job.manual_mut(s)).map(Outcome::msg).ok_or_else(|| "No manual picks on this sheet.".to_string()),
                 "clear" => {
                     job.manual_mut(s).clear();
                     Ok(Outcome::msg("Manual cuts cleared — the whole sheet is cut automatically."))
                 }
-                m => Err(format!("cut-order mode '{m}'?")),
+                m => Err(format!("cut-order mode '{m}': give pick, parts, undo or clear.")),
             }
         }
         "remnant" => {
@@ -2742,7 +2891,8 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
     }
 }
 
-/// Every ribbon command of the GUI, as "Ribbon group/Button label", and what
+/// Every ribbon command of the GUI, as "Ribbon group/Button label" (a
+/// command in a button's menu as "Ribbon group/Item label"), and what
 /// does the same for an agent: an operation name, or `view:` (only changes
 /// what the screen shows), `gui:` (a window or picker an agent doesn't need,
 /// with what to use instead), or `todo: [ID]` (not yet reachable by an agent;
@@ -2850,11 +3000,11 @@ pub const GUI_MAP: &[(&str, &str)] = &[
     ("Measure/Orthogonal", "view:"),
     ("Macros/Macros", "todo: [NST-7] macros (greyed out in the app too)"),
     ("Help/Coming\nsoon", "view: list of unbuilt commands"),
-    ("Machining/Machine\npart", "part-info"),
+    ("Machining/Machine\npart", "part-cut-order"),
     ("Machining/Clear\nmachining", "view: the part's machining is only shown or hidden"),
     ("Machining/Clear cut\norder", "view: the hand-picked order is cleared and the path hidden"),
     ("Standard shapes/Recognise\nshapes", "part-info"),
-    ("Contours/Contours", "part-info"),
+    ("Contours/Contours", "part-cut-order"),
     ("Contours/Cycles", "todo: [MAC-11] punch/milling cycles (greyed out in the app too)"),
     ("Settings/Options", "todo: [MAC-1] the Feed rates dialog and postprocessor words (greyed out in the app too); the speeds themselves come from the machine's files: machine-tech shows them"),
     ("Compensation/Kerf", "compensation"),
@@ -2873,6 +3023,12 @@ pub const GUI_MAP: &[(&str, &str)] = &[
     ("Utilities/Contours", "todo: [DRW-4] contour utilities (greyed out in the app too)"),
     ("Utilities/Compare", "todo: [DRW-4] compare parts (greyed out in the app too)"),
     ("Utilities/Lifting", "todo: [DRW-4] lifting (greyed out in the app too)"),
+    ("Contours/Manual Contours", "part-cut-order"),
+    ("Contours/Automatic Contours", "part-info"),
+    ("Contours/Parts", "part-info"),
+    ("Contours/All Marks", "part-cut-order"),
+    ("Contours/All Cut", "part-cut-order"),
+    ("Contours/All Contours of one Quality", "part-cut-order"),
 ];
 
 #[cfg(test)]
@@ -2893,7 +3049,7 @@ mod parity {
                 if let Some(g) = quoted_after(line, "ribbon_group(ui, ") {
                     group = g;
                 }
-                for call in ["ribbon_button(ui, Icon::", "ribbon_button_ex(ui, Icon::", "dropdown(ui, Icon::", "ribbon_small(ui, Icon::"] {
+                for call in ["ribbon_button(ui, Icon::", "ribbon_button_ex(ui, Icon::", "dropdown(ui, Icon::", "ribbon_small(ui, Icon::", "menu_item(ui, Icon::"] {
                     if let Some(rest) = line.split_once(call).map(|x| x.1) {
                         if let Some(label) = rest.split_once(", \"").and_then(|(_, l)| l.split_once('"')).map(|x| x.0.replace("\\n", "\n")) {
                             out.push((format!("{group}/{label}"), file.clone()));

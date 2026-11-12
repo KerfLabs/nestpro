@@ -55,6 +55,9 @@ while IFS=$'\t' read -r -d '' added _ path; do
   fi
   [ "$added" = - ] && continue
   [ -f "$path" ] || continue
+  # Kept byte for byte (`-text` in .gitattributes, such as recorded machine
+  # programs): their endings are whatever the program wrote.
+  case "$(git check-attr text -- "$path")" in *': unset') continue ;; esac
   GIT_INDEX_FILE=$idx git add -- "$path" 2>/dev/null
   GIT_INDEX_FILE=$idx git cat-file blob ":$path" > "$tmp"
   now=$(style "$tmp")

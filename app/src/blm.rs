@@ -15,7 +15,7 @@
 //!
 //! Lines end in CR LF. See MECHANICS.md "BLM LC5 programs".
 
-use crate::cnc::SheetPlan;
+use crate::cnc::{Made, SheetPlan};
 use crate::nest::{Part, Placed, SheetSpec, P};
 use std::fmt::Write as _;
 
@@ -436,19 +436,26 @@ pub fn subprogram(name: &str, plan: &SheetPlan, part_no: usize, origin: P) -> St
     let mut s = String::from(";M01\r\nR16=chk_pret\r\nCICLA:\r\nINITPART(1)\r\n");
     let _ = write!(s, ";{name}\r\n");
     let mut first = true;
-    for (_, pts) in plan.marks.iter().filter(|m| m.0 == part_no) {
-        let p: Vec<P> = pts.iter().map(|&q| rel(q)).collect();
-        write_path(&mut s, &p, false, &[], "", first, PathKind::Mark);
-        first = false;
-    }
-    for c in plan.contours.iter().filter(|c| c.part_no == part_no && c.punch.is_none()) {
-        let p: Vec<P> = c.points.iter().map(|&q| rel(q)).collect();
-        let lead: Vec<P> = c.lead_path.iter().map(|&q| rel(q)).collect();
-        // The side from the contour's real direction (KC2): a mirrored part
-        // or a clockwise drawing gets the other word. The LC5 post writes no
-        // corrector number.
-        let comp = c.comp.word().map_or(String::new(), |(side, _)| format!(" {}", side.word()));
-        write_path(&mut s, &p, true, &lead, &comp, first, PathKind::of(plan, c));
+    // Its marks and contours in its cut order (CO9): with no order set by
+    // hand, the marks first.
+    for made in plan.part_order(part_no) {
+        match made {
+            Made::Mark(j) => {
+                let p: Vec<P> = plan.marks[j].1.iter().map(|&q| rel(q)).collect();
+                write_path(&mut s, &p, false, &[], "", first, PathKind::Mark);
+            }
+            Made::Contour(k) if plan.contours[k].punch.is_none() => {
+                let c = &plan.contours[k];
+                let p: Vec<P> = c.points.iter().map(|&q| rel(q)).collect();
+                let lead: Vec<P> = c.lead_path.iter().map(|&q| rel(q)).collect();
+                // The side from the contour's real direction (KC2): a mirrored part
+                // or a clockwise drawing gets the other word. The LC5 post writes no
+                // corrector number.
+                let comp = c.comp.word().map_or(String::new(), |(side, _)| format!(" {}", side.word()));
+                write_path(&mut s, &p, true, &lead, &comp, first, PathKind::of(plan, c));
+            }
+            Made::Contour(_) => continue,
+        }
         first = false;
     }
     s.push_str("ENDGEO\r\nIF R16==1\r\n\t  STOPRE\r\n\t  R16=0\r\n   GOTOB CICLA\r\nENDIF\r\nENDPART\r\nRET\r\n");
@@ -1049,12 +1056,12 @@ mod blm_tests {
         // cuts the empty hole, the part in the other hole, then the rest of the
         // frame; the frame's call (all of it) must still follow the part.
         let r = |x0: f64, y0: f64, x1: f64, y1: f64| vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
-        let g = crate::dxf::CustomGeo { w: 400.0, h: 200.0, outline: r(0.0, 0.0, 400.0, 200.0), holes: vec![r(20.0, 20.0, 180.0, 180.0), r(220.0, 20.0, 380.0, 180.0)], fills: vec![], hole_fills: vec![], marks: vec![], texts: vec![], contours: vec![] };
+        let g = crate::dxf::CustomGeo { w: 400.0, h: 200.0, outline: r(0.0, 0.0, 400.0, 200.0), holes: vec![r(20.0, 20.0, 180.0, 180.0), r(220.0, 20.0, 380.0, 180.0)], fills: vec![], hole_fills: vec![], marks: vec![], texts: vec![], contours: vec![], hand_order: vec![] };
         let p = |name: &str, shape, w, h, custom| Part { name: name.into(), shape, w, h, qty: 1, rotate: false, color: 0, tech: None, custom, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
         let parts = vec![p("FRAME", Shape::Custom, 400.0, 200.0, Some(std::sync::Arc::new(g))), p("TAB", Shape::Rectangle, 50.0, 50.0, None)];
         let sheet = vec![Placed { part: 0, x: 10.0, y: 10.0, w: 400.0, h: 200.0, turns: 0, mirror: false }, Placed { part: 1, x: 285.0, y: 85.0, w: 50.0, h: 50.0, turns: 0, mirror: false }];
         let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
-        let picks = [crate::cnc::ManualCut { placed: 0, contour: 0, start: [30.0, 100.0], reverse: false }, crate::cnc::ManualCut { placed: 0, contour: 2, start: [10.0, 100.0], reverse: false }];
+        let picks = [crate::cnc::ManualCut { placed: 0, contour: 0, start: [30.0, 100.0], reverse: false, whole: None }, crate::cnc::ManualCut { placed: 0, contour: 2, start: [10.0, 100.0], reverse: false, whole: None }];
         let plan = crate::cnc::plan_manual(&parts, &sheet, &spec, &picks);
         let s = sheet_set(1, &parts, &sheet, &spec, &plan, &[], &BlmSettings::for_spec(&spec, "LC5", "J-1"));
         let main = &s.spf[0].1;

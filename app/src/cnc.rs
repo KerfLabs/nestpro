@@ -2,6 +2,8 @@
 //! for one nested sheet. Speeds, pierce times and the time of every move come
 //! from the machine's files (`techtable`, `cuttime`).
 
+use crate::ct1::HoleOrder;
+use crate::engine::cutorder::{HoleAt, Step};
 use crate::leads::LeadRec;
 use crate::nest::{perimeter, CutQuality, LeadType, Part, PartTech, Placed, SheetSpec, P};
 
@@ -508,6 +510,45 @@ pub struct SheetPlan {
     pub timing: Timing,
 }
 
+/// One thing a part's program makes (CO9): a marking line (its place in
+/// `SheetPlan::marks`) or a contour (its place in `SheetPlan::contours`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Made {
+    Mark(usize),
+    Contour(usize),
+}
+
+impl SheetPlan {
+    /// The marking lines of part `part_no` (from 1) the plan makes before
+    /// its contour `k` (`mark_before`) and not yet `written`, in plan order;
+    /// they count as written now (CO9).
+    pub fn marks_due(&self, part_no: usize, k: usize, written: &mut [bool]) -> Vec<usize> {
+        let mut out = vec![];
+        for (j, m) in self.marks.iter().enumerate() {
+            if m.0 == part_no && !written[j] && self.mark_before.get(j).is_none_or(|&b| b <= k) {
+                written[j] = true;
+                out.push(j);
+            }
+        }
+        out
+    }
+
+    /// What part `part_no` (from 1) makes, in program order (CO9): each
+    /// marking line before the contour the plan makes it before, any left
+    /// after its last contour. A part's own program (the LC5 subprogram)
+    /// writes it in this order.
+    pub fn part_order(&self, part_no: usize) -> Vec<Made> {
+        let mut written = vec![false; self.marks.len()];
+        let mut out = vec![];
+        for k in (0..self.contours.len()).filter(|&k| self.contours[k].part_no == part_no) {
+            out.extend(self.marks_due(part_no, k, &mut written).into_iter().map(Made::Mark));
+            out.push(Made::Contour(k));
+        }
+        out.extend(self.marks_due(part_no, usize::MAX, &mut written).into_iter().map(Made::Mark));
+        out
+    }
+}
+
 /// How a sheet's machining is timed (MECHANICS "Machining time and speeds"):
 /// its speeds (the machine's technology table or default speeds, CTM8–CTM10)
 /// and the machine's time settings (accelerations, corners, head, CTM2–CTM12).
@@ -610,8 +651,9 @@ fn norm(v: P) -> P {
     [v[0] / l, v[1] / l]
 }
 
-/// Order parts nearest-first from the machine origin; inside each part cut the
-/// holes first and the outer contour last so the part never drops early.
+/// Order parts nearest-first from the machine origin; inside each part cut its
+/// contours in its cut order (CO8), the holes before the outer contour so the
+/// part never drops early.
 pub fn plan(parts: &[Part], placed: &[Placed], spec: &SheetSpec) -> SheetPlan {
     plan_manual(parts, placed, spec, &[])
 }
@@ -625,6 +667,13 @@ pub struct ManualCut {
     pub contour: usize,
     pub start: P,
     pub reverse: bool,
+    /// A part taken whole by a sweep or a box (MM8, MM9): that command's
+    /// number on the sheet (1, 2…), so undo takes the command back together.
+    /// The part is cut whole there, in its own cut order; `contour` is its
+    /// outline when it was taken and `start` its corner, and neither sets
+    /// where a cut starts. `None` for one contour picked by a click (MM4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub whole: Option<u32>,
 }
 
 /// Contours of a placed part on the sheet: holes first, then the outer contour.
@@ -660,32 +709,69 @@ pub fn nearest_contour(parts: &[Part], placed: &[Placed], p: P, tol: f64) -> Opt
 /// the outside so the part doesn't drop). A contour is cut once
 /// (rule MM3). A picked hole, or a hole pulled in by a picked outside, first
 /// cuts every part sitting in it, whole, so none drops with its scrap (CO2).
-/// Then the rest automatically.
-pub fn cut_jobs(parts: &[Part], placed: &[Placed], order: &[usize], manual: &[ManualCut]) -> Vec<CutJob> {
+/// A part taken whole by a sweep or a box is cut whole at its place among
+/// the picks (MM8, MM9). Then the rest automatically. Each part's contours
+/// that aren't picked follow its own cut order (CO8, CO10): the holes set
+/// by hand first (`hand` by part, from `hand_holes`), then the rest as the
+/// machine's hole order `holes` orders them where the copy sits, from where
+/// the head is (CO14, CO15), the outline last. A part cut whole, picked by
+/// its outline or taken by a sweep or a box, orders its holes the same way.
+pub fn cut_jobs(parts: &[Part], placed: &[Placed], hand: &[Vec<usize>], holes: &HoleOrder, order: &[usize], manual: &[ManualCut]) -> Vec<CutJob> {
     let mut jobs: Vec<CutJob> = vec![];
     let mut busy = vec![false; placed.len()];
+    let pick = Picks { parts, placed, hand, holes, manual };
     for m in manual {
+        if m.whole.is_some() && m.placed < placed.len() {
+            // MM8, MM9: a part taken whole is cut here, what is left of it,
+            // in its own cut order, each hole after the parts sitting in it.
+            pick.cut_whole(m.placed, &mut jobs, &mut busy);
+            continue;
+        }
         if m.placed >= placed.len() || m.contour >= contour_count(parts, placed, m.placed) || job_done(&jobs, m.placed, m.contour) {
             continue;
         }
         if m.contour + 1 == contour_count(parts, placed, m.placed) {
             // The outside: the whole part, holes first (MM2).
-            cut_whole(parts, placed, manual, m.placed, &mut jobs, &mut busy);
+            pick.cut_whole(m.placed, &mut jobs, &mut busy);
         } else {
             busy[m.placed] = true;
-            pull_in(parts, placed, manual, m.placed, m.contour, &mut jobs, &mut busy);
+            pick.pull_in(m.placed, m.contour, &mut jobs, &mut busy);
             busy[m.placed] = false;
             jobs.push((m.placed, m.contour, Some((m.start, m.reverse))));
         }
     }
     for &i in order {
-        for ci in 0..contour_count(parts, placed, i) {
+        for ci in pick.cuts(i, &jobs) {
             if !job_done(&jobs, i, ci) {
                 jobs.push((i, ci, None));
             }
         }
     }
     jobs
+}
+
+/// Each part's cut order as the sheet makes it (CO8, CO9), by part number:
+/// worked out once for each part placed on the sheet.
+pub fn part_steps(parts: &[Part], placed: &[Placed]) -> Vec<Vec<Step>> {
+    by_part(parts, placed, crate::engine::cutorder::sheet_steps)
+}
+
+/// Each part's holes set by hand in its cut order (CO3), as the sheet
+/// numbers them, by part number.
+pub fn hand_holes(parts: &[Part], placed: &[Placed]) -> Vec<Vec<usize>> {
+    by_part(parts, placed, crate::engine::cutorder::sheet_hand_holes)
+}
+
+/// `f` of every part placed on the sheet, by part number, worked out once each.
+fn by_part<T: Clone + Default>(parts: &[Part], placed: &[Placed], f: fn(&Part) -> T) -> Vec<T> {
+    let mut out = vec![T::default(); parts.len()];
+    let mut done = vec![false; parts.len()];
+    for pl in placed {
+        if !std::mem::replace(&mut done[pl.part], true) {
+            out[pl.part] = f(&parts[pl.part]);
+        }
+    }
+    out
 }
 
 /// One cut: placed part, contour (holes first, outside last), and for a
@@ -700,40 +786,113 @@ fn job_done(jobs: &[CutJob], i: usize, ci: usize) -> bool {
     jobs.iter().any(|j| j.0 == i && j.1 == ci)
 }
 
-/// What is left of placed part `i`: each hole after the parts sitting in it,
-/// then the outside. A contour picked by hand keeps its start and direction.
-fn cut_whole(parts: &[Part], placed: &[Placed], manual: &[ManualCut], i: usize, jobs: &mut Vec<CutJob>, busy: &mut [bool]) {
-    busy[i] = true;
-    let n = contour_count(parts, placed, i);
-    for ci in 0..n {
-        if job_done(jobs, i, ci) {
-            continue;
-        }
-        if ci + 1 < n {
-            pull_in(parts, placed, manual, i, ci, jobs, busy);
-        }
-        let pick = manual.iter().find(|m| m.placed == i && m.contour == ci).map(|m| (m.start, m.reverse));
-        jobs.push((i, ci, pick));
-    }
-    busy[i] = false;
+/// What a sheet's cutting jobs are made from: its parts, where they sit,
+/// each part's holes set by hand (`hand_holes`), the machine's hole order
+/// and the contours picked by hand.
+struct Picks<'a> {
+    parts: &'a [Part],
+    placed: &'a [Placed],
+    hand: &'a [Vec<usize>],
+    holes: &'a HoleOrder,
+    manual: &'a [ManualCut],
 }
 
-/// CO2: every part sitting in hole `h` of placed part `i` is cut whole before
-/// that hole, or it drops with the hole's scrap uncut. `busy` marks the parts
-/// being cut, so parts moved over each other by hand can't loop.
-fn pull_in(parts: &[Part], placed: &[Placed], manual: &[ManualCut], i: usize, h: usize, jobs: &mut Vec<CutJob>, busy: &mut [bool]) {
-    let hole = sheet_contours(&parts[placed[i].part], &placed[i]).swap_remove(h).0;
-    let lo = hole.iter().fold([f64::MAX; 2], |a, p| [a[0].min(p[0]), a[1].min(p[1])]);
-    let hi = hole.iter().fold([f64::MIN; 2], |a, p| [a[0].max(p[0]), a[1].max(p[1])]);
-    for (j, pl) in placed.iter().enumerate() {
-        if j == i || busy[j] {
-            continue;
+impl Picks<'_> {
+    /// Placed part `i`'s holes not yet cut (`jobs`), then its outline (as
+    /// `sheet_contours` numbers them), in its cut order (CO8, CO14), each
+    /// once: the holes set by hand, then the others as the machine's hole
+    /// order takes them where the copy sits, from where the head is.
+    fn cuts(&self, i: usize, jobs: &[CutJob]) -> Vec<usize> {
+        let pl = &self.placed[i];
+        let list = sheet_contours(&self.parts[pl.part], pl);
+        let n = list.len();
+        // The holes set by hand still to cut: one the sheet has cut already
+        // (picked in Manual cutting) has no place left in the part's run.
+        let mut hand: Vec<usize> = vec![];
+        for &c in &self.hand[pl.part] {
+            if c + 1 < n && !hand.contains(&c) && !job_done(jobs, i, c) {
+                hand.push(c);
+            }
         }
-        // Parts never overlap, so one point of the outline in the hole puts the part in it.
-        let Some(&first) = parts[pl.part].geometry().outline.first() else { continue };
-        let q = pl.map(first);
-        if q[0] >= lo[0] && q[0] <= hi[0] && q[1] >= lo[1] && q[1] <= hi[1] && crate::nest::point_in_poly(&hole, q) {
-            cut_whole(parts, placed, manual, j, jobs, busy);
+        // The head after those holes, else where the sheet's last cut was
+        // (CO14, CO27; MAC-61).
+        let head = match hand.last() {
+            Some(&c) => self.point(i, c, &list[c].0),
+            None => self.head(jobs),
+        };
+        let rest: Vec<usize> = (0..n - 1).filter(|c| !hand.contains(c) && !job_done(jobs, i, *c)).collect();
+        let found: Vec<HoleAt> = rest.iter().map(|&c| HoleAt::new(&list[c].0, self.start(i, c))).collect();
+        let ordered = crate::engine::cutorder::hole_order(&found, pl.bbox4(), head, self.holes).into_iter().map(|k| rest[k]);
+        hand.into_iter().chain(ordered).chain([n - 1]).collect()
+    }
+
+    /// Where placed part `i`'s contour `ci` starts when that is set by hand,
+    /// on the sheet: picked in Manual cutting (a part taken whole by a sweep
+    /// or a box sets no start, MM8), else set on the part (a lead moved by
+    /// hand, a start picked on an element).
+    fn start(&self, i: usize, ci: usize) -> Option<P> {
+        let pl = &self.placed[i];
+        let picked = self.manual.iter().find(|m| m.whole.is_none() && m.placed == i && m.contour == ci).map(|m| m.start);
+        picked.or_else(|| crate::engine::cutorder::hand_start(&self.parts[pl.part], ci).map(|p| pl.map(p)))
+    }
+
+    /// The point of placed part `i`'s contour `ci` (`pts` on the sheet) the
+    /// head is taken to stand at once it is cut: where it starts when that
+    /// is set by hand, else the middle of its box (CO21; MAC-61).
+    fn point(&self, i: usize, ci: usize, pts: &[P]) -> P {
+        HoleAt::new(pts, self.start(i, ci)).at
+    }
+
+    /// Where the head is taken to be after `jobs`: at the point of the last
+    /// contour cut (`point`), or at the sheet's origin before the first.
+    fn head(&self, jobs: &[CutJob]) -> P {
+        match jobs.last() {
+            Some(&(_, _, Some((start, _)))) => start,
+            Some(&(j, cj, None)) => {
+                let pl = &self.placed[j];
+                self.point(j, cj, &sheet_contours(&self.parts[pl.part], pl)[cj].0)
+            }
+            None => [0.0, 0.0],
+        }
+    }
+
+    /// What is left of placed part `i`, in its cut order (CO8): each hole
+    /// after the parts sitting in it, then the outside. A contour picked by
+    /// hand keeps its start and direction.
+    fn cut_whole(&self, i: usize, jobs: &mut Vec<CutJob>, busy: &mut [bool]) {
+        busy[i] = true;
+        let n = contour_count(self.parts, self.placed, i);
+        for ci in self.cuts(i, jobs) {
+            if job_done(jobs, i, ci) {
+                continue;
+            }
+            if ci + 1 < n {
+                self.pull_in(i, ci, jobs, busy);
+            }
+            let pick = self.manual.iter().find(|m| m.whole.is_none() && m.placed == i && m.contour == ci).map(|m| (m.start, m.reverse));
+            jobs.push((i, ci, pick));
+        }
+        busy[i] = false;
+    }
+
+    /// CO2: every part sitting in hole `h` of placed part `i` is cut whole before
+    /// that hole, or it drops with the hole's scrap uncut. `busy` marks the parts
+    /// being cut, so parts moved over each other by hand can't loop.
+    fn pull_in(&self, i: usize, h: usize, jobs: &mut Vec<CutJob>, busy: &mut [bool]) {
+        let (parts, placed) = (self.parts, self.placed);
+        let hole = sheet_contours(&parts[placed[i].part], &placed[i]).swap_remove(h).0;
+        let lo = hole.iter().fold([f64::MAX; 2], |a, p| [a[0].min(p[0]), a[1].min(p[1])]);
+        let hi = hole.iter().fold([f64::MIN; 2], |a, p| [a[0].max(p[0]), a[1].max(p[1])]);
+        for (j, pl) in placed.iter().enumerate() {
+            if j == i || busy[j] {
+                continue;
+            }
+            // Parts never overlap, so one point of the outline in the hole puts the part in it.
+            let Some(&first) = parts[pl.part].geometry().outline.first() else { continue };
+            let q = pl.map(first);
+            if q[0] >= lo[0] && q[0] <= hi[0] && q[1] >= lo[1] && q[1] <= hi[1] && crate::nest::point_in_poly(&hole, q) {
+                self.cut_whole(j, jobs, busy);
+            }
         }
     }
 }
@@ -795,8 +954,34 @@ pub fn contour_quality(tech: &PartTech, mt: &crate::ct1::MachineTech, pts: &[P],
     }
 }
 
-/// Like `plan`, with some contours cut by hand first.
-pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: &[ManualCut]) -> SheetPlan {
+/// The marks of a part (by their place in its drawing's `marks`) to make
+/// before its next cut (CO9), following its cut order `steps`: those before
+/// the first of its cuts not yet `cut`, and before its outline (`last`)
+/// every one left. Each is given once: `made` keeps which are.
+fn marks_to_make(steps: &[Step], cut: &[bool], made: &mut [bool], last: bool) -> Vec<usize> {
+    let upto = steps.iter().position(|s| matches!(*s, Step::Cut(c) if !cut.get(c).copied().unwrap_or(true))).unwrap_or(steps.len());
+    let mut due: Vec<usize> = steps[..upto]
+        .iter()
+        .filter_map(|s| match *s {
+            Step::Mark(m) => Some(m),
+            Step::Cut(_) => None,
+        })
+        .collect();
+    if last {
+        due.extend(0..made.len());
+    }
+    due.retain(|&m| m < made.len() && !std::mem::replace(&mut made[m], true));
+    due
+}
+
+/// The sheet's automatic part order (CO1, CZ4, CZ5): zone by zone, nearest
+/// first, parts sitting in another part's hole before it. A box in Manual
+/// cutting takes its parts in this order among themselves (MM9).
+pub fn sheet_order(placed: &[Placed], spec: &SheetSpec) -> Vec<usize> {
+    auto_order(placed, spec, &crate::ct1::for_spec(spec))
+}
+
+fn auto_order(placed: &[Placed], spec: &SheetSpec, mt: &crate::ct1::MachineTech) -> Vec<usize> {
     let mut left: Vec<usize> = (0..placed.len()).collect();
     let mut order = Vec::new();
     let mut at: P = [0.0, 0.0];
@@ -810,9 +995,7 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
     let inside_other = |i: usize| depth(i) > 0;
     // Zone by zone (rules CZ4, CZ5): the parts of each zone, nearest first,
     // with parts sitting in another part's hole before the rest.
-    // The machine's tables for this sheet's material and thickness (MTL1–MTL7).
-    let mt = crate::ct1::for_spec(spec);
-    let zones = crate::ct1::zones(spec.w, spec.h, &mt);
+    let zones = crate::ct1::zones(spec.w, spec.h, &mt.sheet_order);
     let mut zi = 0;
     while !left.is_empty() {
         while zi < zones.len() && !left.iter().any(|&i| crate::ct1::box_in_zone(placed[i].bbox4(), zones[zi])) {
@@ -834,6 +1017,14 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
         at = [placed[i].x + placed[i].w, placed[i].y];
         order.push(i);
     }
+    order
+}
+
+/// Like `plan`, with some contours cut by hand first.
+pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: &[ManualCut]) -> SheetPlan {
+    // The machine's tables for this sheet's material and thickness (MTL1–MTL7).
+    let mt = crate::ct1::for_spec(spec);
+    let order = auto_order(placed, spec, &mt);
 
     // Speeds and time settings for this sheet (CTM1–CTM16, TT1–TT10).
     let timing = Timing::for_spec(spec, &mt);
@@ -845,7 +1036,10 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
     let mut mark_len = 0.0;
     let mut mark_before: Vec<usize> = vec![];
     let mut pos: P = [0.0, 0.0];
-    let jobs = cut_jobs(parts, placed, &order, manual);
+    // Each part's cut order (CO8, CO9): the jobs follow it, and its marks
+    // are made at their place in it.
+    let steps = part_steps(parts, placed);
+    let jobs = cut_jobs(parts, placed, &hand_holes(parts, placed), &mt.hole_order, &order, manual);
     let mut marked = vec![false; placed.len()];
     let auto_tech = auto_tech();
     let tol = mt.leads.lin_tol;
@@ -855,6 +1049,9 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
     let mut kerf_issues: Vec<(usize, bool, String)> = vec![];
     // Every placed part's contours (holes first, outline last), for the leads' collision test.
     let obst: Vec<([f64; 4], Vec<(Vec<P>, bool)>)> = placed.iter().map(|pl| (pl.bbox4(), sheet_contours(&parts[pl.part], pl))).collect();
+    // Per placed part: which of its contours are cut and its marks made.
+    let mut cut_done: Vec<Vec<bool>> = obst.iter().map(|o| vec![false; o.1.len()]).collect();
+    let mut mark_done: Vec<Vec<bool>> = placed.iter().map(|pl| vec![false; parts[pl.part].custom.as_ref().map_or(0, |g| g.marks.len())]).collect();
     // Each part's qualities set by hand, by cut contour (CQ6).
     let hand: Vec<Vec<Option<CutQuality>>> = parts.iter().map(Part::cut_qualities).collect();
     for (i, ci, man) in jobs {
@@ -870,11 +1067,13 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
         let qn = cq.number();
         let feed = timing.feed(cq);
         let lq = mt.leads.quality(qn);
-        // Marking first, while the part is still held by the sheet.
-        if !marked[i] {
-            marked[i] = true;
+        // The part's marks due before this cut (CO9): with no order set by
+        // hand, all of them before its first cut, while the part is still
+        // held by the sheet.
+        let due = marks_to_make(&steps[pl.part], &cut_done[i], &mut mark_done[i], ci + 1 == cut_done[i].len());
+        cut_done[i][ci] = true;
         if let Some(c) = &part.custom {
-            for m in &c.marks {
+            for m in due.iter().map(|&m| &c.marks[m]) {
                 let pts: Vec<P> = m.iter().map(|&p| pl.map(p)).collect();
                 if pts.len() < 2 {
                     continue;
@@ -890,21 +1089,23 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
             }
         }
         // Marking and special texts are marked with the marking technology;
-        // notes are not machined (rule T1).
-        let material = crate::cnc::MATERIALS.get(spec.material).copied().unwrap_or("");
-        for t in part.texts.iter().filter(|t| t.kind.machined()) {
-            let txt = t.resolved(part, material, spec.thickness, i + 1);
-            for pts in t.sheet_strokes(&txt, pl, crate::nest::TEXT_ANGLE_STEP) {
-                rapid_len += dist(pos, pts[0]);
-                let l: f64 = pts.windows(2).map(|w| dist(w[0], w[1])).sum();
-                mark_len += l;
-                times.rapid += timing.rapid(pos, pts[0]);
-                times += timing.mark(&pts);
-                pos = *pts.last().unwrap();
-                mark_before.push(contours.len());
-                marks.push((i + 1, pts));
+        // notes are not machined (rule T1). They have no place in the cut
+        // order: they are made with the part's first cut (CO9).
+        if !std::mem::replace(&mut marked[i], true) {
+            let material = crate::cnc::MATERIALS.get(spec.material).copied().unwrap_or("");
+            for t in part.texts.iter().filter(|t| t.kind.machined()) {
+                let txt = t.resolved(part, material, spec.thickness, i + 1);
+                for pts in t.sheet_strokes(&txt, pl, crate::nest::TEXT_ANGLE_STEP) {
+                    rapid_len += dist(pos, pts[0]);
+                    let l: f64 = pts.windows(2).map(|w| dist(w[0], w[1])).sum();
+                    mark_len += l;
+                    times.rapid += timing.rapid(pos, pts[0]);
+                    times += timing.mark(&pts);
+                    pos = *pts.last().unwrap();
+                    mark_before.push(contours.len());
+                    marks.push((i + 1, pts));
+                }
             }
-        }
         }
         {
             // A manual pick sets the start and direction; then a lead moved by
@@ -1280,8 +1481,8 @@ fn program_mm(sheet_no: usize, parts: &[Part], placed: &[Placed], spec: &SheetSp
         format!("G0 {off}X{:.2} Y{:.2}", p[0], p[1])
     };
     let mut last_part = 0;
-    let mut marked: Vec<usize> = vec![];
-    for c in &plan.contours {
+    let mut written = vec![false; plan.marks.len()];
+    for (k, c) in plan.contours.iter().enumerate() {
         if c.manual {
             let _ = writeln!(s, "( MANUAL CUT )");
         }
@@ -1289,17 +1490,18 @@ fn program_mm(sheet_no: usize, parts: &[Part], placed: &[Placed], spec: &SheetSp
             let pl = &placed[c.part_no - 1];
             let _ = writeln!(s, "( PART {} : {}{} )", c.part_no, parts[pl.part].name, match (pl.angle(), pl.mirror) { (0, false) => String::new(), (a, m) => format!(" ROT{a}{}", if m { " MIRROR" } else { "" }) });
             last_part = c.part_no;
-            let first_visit = !marked.contains(&c.part_no);
-            marked.push(c.part_no);
-            for (_, m) in plan.marks.iter().filter(|m| m.0 == c.part_no && first_visit) {
-                line(&mut s, g0(&mut active, m[0]));
-                line(&mut s, "M10 ( MARK ON )".into());
-                for (k, q) in m.iter().skip(1).enumerate() {
-                    let f = if k == 0 { feed_word(&mut last_f, plan.timing.speeds.mark) } else { String::new() };
-                    line(&mut s, format!("G1 X{:.2} Y{:.2}{f}", q[0], q[1]));
-                }
-                line(&mut s, "M11 ( MARK OFF )".into());
+        }
+        // The part's marks made before this contour (CO9): with no order set
+        // by hand, all of them at its first contour.
+        for j in plan.marks_due(c.part_no, k, &mut written) {
+            let m = &plan.marks[j].1;
+            line(&mut s, g0(&mut active, m[0]));
+            line(&mut s, "M10 ( MARK ON )".into());
+            for (n, q) in m.iter().skip(1).enumerate() {
+                let f = if n == 0 { feed_word(&mut last_f, plan.timing.speeds.mark) } else { String::new() };
+                line(&mut s, format!("G1 X{:.2} Y{:.2}{f}", q[0], q[1]));
             }
+            line(&mut s, "M11 ( MARK OFF )".into());
         }
         if let Some(p) = &c.punch {
             // One hit per standard shape, a row of hits when nibbling.
@@ -1807,9 +2009,9 @@ mod manual_tests {
     #[test]
     fn manual_picks_go_first_holes_before_the_outside_and_once_only() {
         let (parts, placed, _) = setup();
-        let outer = ManualCut { placed: 0, contour: 1, start: [10.0, 100.0], reverse: false };
-        let small = ManualCut { placed: 1, contour: 0, start: [400.0, 30.0], reverse: true };
-        let jobs = cut_jobs(&parts, &placed, &[0, 1], &[small, outer, outer]);
+        let outer = ManualCut { placed: 0, contour: 1, start: [10.0, 100.0], reverse: false, whole: None };
+        let small = ManualCut { placed: 1, contour: 0, start: [400.0, 30.0], reverse: true, whole: None };
+        let jobs = cut_jobs(&parts, &placed, &hand_holes(&parts, &placed), &HoleOrder::default(), &[0, 1], &[small, outer, outer]);
         let order: Vec<(usize, usize, bool)> = jobs.iter().map(|j| (j.0, j.1, j.2.is_some())).collect();
         // The small part, then the plate's hole (automatic, inserted), then its outside.
         assert_eq!(order, vec![(1, 0, true), (0, 0, false), (0, 1, true)]);
@@ -1831,10 +2033,10 @@ mod manual_tests {
         // CO2: picking the plate's outside or its hole cuts the part sitting
         // in the hole first, and a pick on that part keeps its start.
         let (parts, placed, _) = frame();
-        let outer = ManualCut { placed: 0, contour: 1, start: [10.0, 300.0], reverse: false };
-        let hole = ManualCut { placed: 0, contour: 0, start: [430.0, 310.0], reverse: false };
-        let inner = ManualCut { placed: 1, contour: 0, start: [285.0, 300.0], reverse: true };
-        let order = |m: &[ManualCut]| cut_jobs(&parts, &placed, &[1, 0, 2], m).iter().map(|j| (j.0, j.1, j.2.is_some())).collect::<Vec<_>>();
+        let outer = ManualCut { placed: 0, contour: 1, start: [10.0, 300.0], reverse: false, whole: None };
+        let hole = ManualCut { placed: 0, contour: 0, start: [430.0, 310.0], reverse: false, whole: None };
+        let inner = ManualCut { placed: 1, contour: 0, start: [285.0, 300.0], reverse: true, whole: None };
+        let order = |m: &[ManualCut]| cut_jobs(&parts, &placed, &hand_holes(&parts, &placed), &HoleOrder::default(), &[1, 0, 2], m).iter().map(|j| (j.0, j.1, j.2.is_some())).collect::<Vec<_>>();
         assert_eq!(order(&[outer, inner]), vec![(1, 0, true), (0, 0, false), (0, 1, true), (2, 0, false)]);
         assert_eq!(order(&[hole]), vec![(1, 0, false), (0, 0, true), (0, 1, false), (2, 0, false)]);
     }
@@ -1843,7 +2045,7 @@ mod manual_tests {
     fn verify_flags_a_part_cut_after_the_hole_it_sits_in() {
         let (parts, placed, spec) = frame();
         let late = |t: &String| t.contains("sitting in it (2)") && t.contains("drop first");
-        let pick = ManualCut { placed: 0, contour: 1, start: [10.0, 300.0], reverse: false };
+        let pick = ManualCut { placed: 0, contour: 1, start: [10.0, 300.0], reverse: false, whole: None };
         let mut p = plan_manual(&parts, &placed, &spec, &[pick]);
         assert!(!crate::drawing::verify_machining(&p).iter().any(late));
         // The part in the hole moved to the end, after the plate's hole.
@@ -1858,7 +2060,7 @@ mod manual_tests {
     fn the_plan_starts_where_picked_and_can_cut_the_other_way() {
         let (parts, placed, spec) = setup();
         let auto = plan(&parts, &placed, &spec);
-        let pick = ManualCut { placed: 1, contour: 0, start: [350.0, 10.0], reverse: false };
+        let pick = ManualCut { placed: 1, contour: 0, start: [350.0, 10.0], reverse: false, whole: None };
         let p = plan_manual(&parts, &placed, &spec, &[pick]);
         let c = &p.contours[0];
         assert!(c.manual && c.part_no == 2);
@@ -1891,7 +2093,7 @@ mod kerf_plan_tests {
     }
     /// A drawing part from outline and holes as drawn (direction kept).
     fn drawn(outline: Vec<P>, holes: Vec<Vec<P>>) -> Part {
-        let g = crate::dxf::CustomGeo { w: 100.0, h: 60.0, outline, holes, fills: vec![], hole_fills: vec![], marks: vec![], texts: vec![], contours: vec![] };
+        let g = crate::dxf::CustomGeo { w: 100.0, h: 60.0, outline, holes, fills: vec![], hole_fills: vec![], marks: vec![], texts: vec![], contours: vec![], hand_order: vec![] };
         part(Shape::Custom, 100.0, 60.0, Some(g))
     }
     fn sides(p: &SheetPlan) -> Vec<(bool, Side)> {
@@ -1940,8 +2142,8 @@ mod kerf_plan_tests {
         crate::ct1::set_thread_active(None);
         let parts = vec![part(Shape::Rectangle, 100.0, 60.0, None)];
         let pl = [at(10.0, 10.0, 100.0, 60.0, false)];
-        let fwd = plan_manual(&parts, &pl, &spec(), &[ManualCut { placed: 0, contour: 0, start: [60.0, 10.0], reverse: false }]);
-        let rev = plan_manual(&parts, &pl, &spec(), &[ManualCut { placed: 0, contour: 0, start: [60.0, 10.0], reverse: true }]);
+        let fwd = plan_manual(&parts, &pl, &spec(), &[ManualCut { placed: 0, contour: 0, start: [60.0, 10.0], reverse: false, whole: None }]);
+        let rev = plan_manual(&parts, &pl, &spec(), &[ManualCut { placed: 0, contour: 0, start: [60.0, 10.0], reverse: true, whole: None }]);
         assert_eq!((fwd.contours[0].comp.side, rev.contours[0].comp.side), (Side::Right, Side::Left));
     }
 
@@ -2037,7 +2239,7 @@ mod kerf_plan_tests {
             let a = k as f64 * std::f64::consts::TAU / 48.0;
             [100.0 + 3.0 * a.cos(), 50.0 + 3.0 * a.sin()]
         }).collect();
-        part.custom = Some(std::sync::Arc::new(crate::dxf::CustomGeo { outline: vec![[0.0, 0.0], [200.0, 0.0], [200.0, 100.0], [0.0, 100.0]], holes: vec![hole], fills: vec![], hole_fills: vec![], marks: vec![], texts: vec![], w: 200.0, h: 100.0, contours: vec![] }));
+        part.custom = Some(std::sync::Arc::new(crate::dxf::CustomGeo { outline: vec![[0.0, 0.0], [200.0, 0.0], [200.0, 100.0], [0.0, 100.0]], holes: vec![hole], fills: vec![], hole_fills: vec![], marks: vec![], texts: vec![], w: 200.0, h: 100.0, contours: vec![], hand_order: vec![] }));
         part.shape = Shape::Custom;
         let pl = Placed { part: 0, x: 50.0, y: 50.0, w: 200.0, h: 100.0, turns: 0, mirror: false };
         let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material, thickness, level: 3, machine: Default::default(), kerf: Default::default() };
