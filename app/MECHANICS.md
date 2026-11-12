@@ -69,11 +69,11 @@ parts with technology are:
 
 | # | Rule |
 |---|---|
-| T1 | When a part is modified, each selected part is checked for how many technology items it has. If it has some **and the "warn" option is on**, a "part with technology" warning (name, count) is shown. |
-| T2 | If the "ask" option is also on, the program asks what to do. Its answer: **0 = put the change on a copy** (the original keeps its technology); **1 = modify the part**; **2 = modify this and all remaining selected parts without asking again**. |
-| T3 | A part without technology goes straight to "modify". |
-| T4 | Modifying a part compares old and new **material, thickness string, thickness value and machine config**. If all are equal, the data just changes. Otherwise the part's nestings are looked up. If there are any, the user is asked **once per batch** what to do with them (the answer is remembered). **3 = cancel**; **2 = remove the nestings**: each sheet is released (quantity = sheets × copies) and the nesting deleted; otherwise the nestings are kept. |
-| T5 | After a change, manufactured quantities are recounted, and the part is flagged "modified in the order" when the nesting window is open. |
+| PT1 | When a part is modified, each selected part is checked for how many technology items it has. If it has some **and the "warn" option is on**, a "part with technology" warning (name, count) is shown. |
+| PT2 | If the "ask" option is also on, the program asks what to do. Its answer: **0 = put the change on a copy** (the original keeps its technology); **1 = modify the part**; **2 = modify this and all remaining selected parts without asking again**. |
+| PT3 | A part without technology goes straight to "modify". |
+| PT4 | Modifying a part compares old and new **material, thickness string, thickness value and machine config**. If all are equal, the data just changes. Otherwise the part's nestings are looked up. If there are any, the user is asked **once per batch** what to do with them (the answer is remembered). **3 = cancel**; **2 = remove the nestings**: each sheet is released (quantity = sheets × copies) and the nesting deleted; otherwise the nestings are kept. |
+| PT5 | After a change, manufactured quantities are recounted, and the part is flagged "modified in the order" when the nesting window is open. |
 
 How the rebuild uses them:
 
@@ -85,11 +85,11 @@ How the rebuild uses them:
   (`M07`). The joint widths are subtracted from cut length. The feed is the machine's speed for the
   contour's quality (see "Machining time and speeds"); only when the machine file gives no
   speed at all is it our typical laser speed × a quality factor (CQ3: estimated).
-- **T1–T3**: changing the shape or size of a part with technology opens "Part with
-  technology" with **Edit a copy** (T2 answer 0), **Edit this part (remove technology)**
+- **PT1–PT3**: changing the shape or size of a part with technology opens "Part with
+  technology" with **Edit a copy** (PT2 answer 0), **Edit this part (remove technology)**
   (answer 1) and **Cancel**, plus "Use this answer for the rest of this session" (answer 2).
-  The warning can be turned off in Options (the T1 "warn" option).
-- **T4**: changing material or thickness while sheets are nested asks **Keep nested sheets**
+  The warning can be turned off in Options (the PT1 "warn" option).
+- **PT4**: changing material or thickness while sheets are nested asks **Keep nested sheets**
   (they're marked Modified), **Remove nestings** (sheets are freed) or **Cancel**.
 - Parts with technology show a **T** badge in Parts View and a Technology column in the
   product list. Micro-joints are drawn as small gaps with a yellow dot on the sheet.
@@ -104,11 +104,11 @@ DXF import and export, and the default automatic lead and micro-joint settings.
 
 | # | Rule / value |
 |---|---|
-| D1 | The Jobs manager itself never **reads** DXF. It **writes** a part as DXF to the temporary bend folder as `<id>.dxf`, plus a one-line `<id>.txt` beside it. |
-| D2 | "Send to bending" requires the bending software to be installed, and the part's material **and** thickness must equal the product's defaults, or it stops with a message. Then the bending program is run on the DXF and the program waits for it. |
-| D3 | DXF reading has these settings: joining tolerance, ellipse discretisation, spline mode ("As polylines" / "As splines, segments from SPLINESEGS" / "from the user"), blocks, layers, conversion to system units, circle recognition. |
-| D4 | DXF config defaults: **0.01** and **0.1**, then 10 layer slots that are each on with an empty name. Read here as joining tolerance 0.01 mm and arc smoothness (chord error) 0.1 mm; which value is which is inferred. |
-| D5 | Each object read from the DXF is looked up by **layer and line type** in a layer table. The default code **13** means a normal (cut) contour. Objects on layers mapped to another code get that technology applied, e.g. marking, and texts are turned into geometry in **Arial**. |
+| DF1 | The Jobs manager itself never **reads** DXF. It **writes** a part as DXF to the temporary bend folder as `<id>.dxf`, plus a one-line `<id>.txt` beside it. |
+| DF2 | "Send to bending" requires the bending software to be installed, and the part's material **and** thickness must equal the product's defaults, or it stops with a message. Then the bending program is run on the DXF and the program waits for it. |
+| DF3 | DXF reading has these settings: joining tolerance, ellipse discretisation, spline mode ("As polylines" / "As splines, segments from SPLINESEGS" / "from the user"), blocks, layers, conversion to system units, circle recognition. |
+| DF4 | DXF config defaults: **0.01** and **0.1**, then 10 layer slots that are each on with an empty name. Read here as joining tolerance 0.01 mm and arc smoothness (chord error) 0.1 mm; which value is which is inferred. |
+| DF5 | Each object read from the DXF is looked up by **layer and line type** in a layer table. The default code **13** means a normal (cut) contour. Objects on layers mapped to another code get that technology applied, e.g. marking, and texts are turned into geometry in **Arial**. |
 | A1 | Automatic lead-in/out record defaults: on; two angles of **120°**; **45°**; **3.0**; **10.0**; a value of **100.0** (or −1 when a flag is set); 8 lead records with type codes **13, 1, 11, 10, 12, 10, 9, 5**. |
 | A2 | Each lead record's defaults: **10.0**, **7.0**, angles **45° / 45° / 45°**, 10.0 / 10.0 when active, limit **99999.999** (no limit) or **0.5**. Field meanings weren't named. |
 | A3 | Automatic micro-joint record defaults: all 10 joint records have type **−1 (none)**, plus one value of **100.0**. **By default no micro-joints are made.** |
@@ -116,7 +116,7 @@ DXF import and export, and the default automatic lead and micro-joint settings.
 
 How the rebuild uses them:
 
-- **Joining tolerance 0.01 mm** (`dxf::JOIN_TOL`, D4). Then, among the chains still open only,
+- **Joining tolerance 0.01 mm** (`dxf::JOIN_TOL`, DF4). Then, among the chains still open only,
   gaps up to **0.5 mm** are closed with a straight piece (`dxf::CLOSE_TOL`, IM8: the original's
   importers have "close contours" on with 0.5 mm, DXF included) — to the nearest open end, or back
   to the chain's own start when that is nearer — and reported ("N gap(s) up to 0.5 mm closed").
@@ -132,7 +132,7 @@ How the rebuild uses them:
 - **Model space only (DX1)**: objects marked as paper space (title blocks, sheet borders) are left
   out and counted in the notes ("N paper-space objects"); agents and code can ask for them
   (`dxfread::Options::paper_space`). Estimated, as DW6.
-- **Arc smoothness 0.1 mm** (`dxf::ARC_CHORD_ERR`, D4): arcs, circles and bulges are split
+- **Arc smoothness 0.1 mm** (`dxf::ARC_CHORD_ERR`, DF4): arcs, circles and bulges are split
   so no straight piece strays more than 0.1 mm from the true arc.
 - **Hidden and drafting objects start as "Leave out" (DX3)**: objects on a layer the drawing has
   **frozen** or **turned off** (a negative colour in its layer table), **invisible** objects, and
@@ -148,7 +148,7 @@ How the rebuild uses them:
   Agents see the rows in `drawing-layers` (`left_out_by_default`) and set them with
   `layers=0 [CENTER]=cut`. A closed centreline (a bolt circle) would otherwise be cut as a hole and drop
   the middle of the plate. Estimated (own design): the original looks objects up by layer **and** line
-  type (D5) but its default table cuts everything (code 13), and it keeps invisible objects (DW13).
+  type (DF5) but its default table cuts everything (code 13), and it keeps invisible objects (DW13).
   DXF only for layers and line types; the DWG reader reads neither yet (FEATURES JOB-19), only
   invisible objects.
 - **An object drawn twice is cut once (DX4)**: cut or marking objects with the same points (to
@@ -157,13 +157,13 @@ How the rebuild uses them:
   once"). Objects that only overlap in part are not merged. Estimated (own design).
 - **At least 16 pieces to the full circle (DX2)**: however small the arc, so small holes stay round,
   are recognised as round and reach the LC5 as arcs. Estimated (own design).
-- **Layers (D5)**: a drawing's layers are listed in the import preview's cut technology panel
+- **Layers (DF5)**: a drawing's layers are listed in the import preview's cut technology panel
   (IM11); a dropped drawing with more than one layer opens the Import drawings window with it (IM12).
   Every layer starts as **Cut** (code 13) and can be set to **Mark** or **Leave out**. Marking lines show
   dashed on the part, are done before the part is cut (`M10 ( MARK ON )` … `M11`), and count
   toward time at the machine's marking speed (CTM9). The sample plate
   has a MARK layer.
-- **Export DXF (D1)**: Part Properties → Export DXF writes `<part>.dxf` (outline and holes on
+- **Export DXF (DF1)**: Part Properties → Export DXF writes `<part>.dxf` (outline and holes on
   layer CUT, marking on MARK, `$INSUNITS` = mm) and a one-line `<part>.txt` beside it. The
   text content is a guess (reference / material / thickness); the original's format
   couldn't be confirmed.
@@ -176,7 +176,7 @@ How the rebuild uses them:
 Still estimated or not used: which lead record field is the lead length. 10.0 vs 7.0 vs 3.0
 are unnamed, and a 10 mm lead wouldn't fit the 5 mm part gap, so the 5 mm automatic lead-in
 stays. Also the meaning of the 120° angles and the 8 lead type codes, the joint value 100.0,
-the bending hand-off itself (D2: no bending software here), and splines and ellipses (not
+the bending hand-off itself (DF2: no bending software here), and splines and ellipses (not
 read yet).
 
 # Importing part drawings: DWG, MEC, IGES, PDF, ESSI, DSTV, GEO
@@ -214,7 +214,7 @@ nesting, huge declared sizes) is refused whole — no part comes in quietly miss
 | IM8 | Open contours are closed within 0.5 mm; largest radius 99 999.999; discretisation 10 mm; verify and smoothing off. | observed |
 | IM9 | Detect equal parts off; order contours off (when on: outer clockwise, inner counter-clockwise). | observed |
 | IM10 | The open window for part drawings shows the picked drawing on its right before it is imported, with a check box that turns the preview off (on by default, IM5) and a Configure… button for the import settings. The rebuild draws the part as the import will make it (same reading, part name and starting layer roles), with its width and height, holes, format, layers, quantity and the notes the import will give; a file no part can be made from shows its lines and the reason; a file of several parts shows them one at a time. The window opens in the folder last imported from and lists the six last ones. The check box only turns the picture on and off; it is not animated, and off leaves the preview blank. | observed (window, check box, Configure), Rebuild (what the preview shows) |
-| IM11 | **The cut technology panel in the import preview** (*Cut technology* beside Preview; it opens by itself for a dropped drawing, IM12): the part's panel (CS6: rows, swatches, hover cards, All the same contours, click / box / sweep; Esc ends painting, a second Esc closes the window) on the part the shown drawing is about to make, drawn in the contour colours (CS7; Leave out faint and dashed while the panel is open). Each paint goes through the same engine function and rules as `contour-tech` and shows at once; Ctrl+Z takes back the last paint or layer change on the shown drawing, not a change to the job behind. Above the rows are the drawing's **layer rows**, each with its object count, set to **Cut**, **Mark** or **Leave out** (D5); rows holding what the drawing hides or draws as centre / dashed lines start as Leave out and say why on hover (DX3). Setting a layer makes the part again with it, so all its lines take it (a Cut layer's contours start as CS2 says, a Mark layer's as Mark, a left-out layer's aren't on the part). A contour painted by hand that the change leaves in the same place, starting as before, keeps its paint; one on that layer takes the layer's, and the panel says how many did. While the panel is open the places column makes room and the preview grows, and the line under the part's size says what the last paint or layer change did. **Import** brings in each picked drawing with what was set for it: the same part as `import-drawing` with the same `layers` and `contours` (IM12). A picked drawing that was never shown comes in with the roles it starts with. What was set is kept, with the drawing as it was read, while the window stays open, however many other drawings are previewed; if the file or the import settings change after that, the preview and the import notes say so and the drawing comes in as it starts (Import reads the file again and compares its contents with what the preview read, so a change shows even when the file's size and time stay the same). | estimated (own design, ADR 0001: the original imports everything as cut and has the programmer fix contours afterwards) |
+| IM11 | **The cut technology panel in the import preview** (*Cut technology* beside Preview; it opens by itself for a dropped drawing, IM12): the part's panel (CS6: rows, swatches, hover cards, All the same contours, click / box / sweep; Esc ends painting, a second Esc closes the window) on the part the shown drawing is about to make, drawn in the contour colours (CS7; Leave out faint and dashed while the panel is open). Each paint goes through the same engine function and rules as `contour-tech` and shows at once; Ctrl+Z takes back the last paint or layer change on the shown drawing, not a change to the job behind. Above the rows are the drawing's **layer rows**, each with its object count, set to **Cut**, **Mark** or **Leave out** (DF5); rows holding what the drawing hides or draws as centre / dashed lines start as Leave out and say why on hover (DX3). Setting a layer makes the part again with it, so all its lines take it (a Cut layer's contours start as CS2 says, a Mark layer's as Mark, a left-out layer's aren't on the part). A contour painted by hand that the change leaves in the same place, starting as before, keeps its paint; one on that layer takes the layer's, and the panel says how many did. While the panel is open the places column makes room and the preview grows, and the line under the part's size says what the last paint or layer change did. **Import** brings in each picked drawing with what was set for it: the same part as `import-drawing` with the same `layers` and `contours` (IM12). A picked drawing that was never shown comes in with the roles it starts with. What was set is kept, with the drawing as it was read, while the window stays open, however many other drawings are previewed; if the file or the import settings change after that, the preview and the import notes say so and the drawing comes in as it starts (Import reads the file again and compares its contents with what the preview read, so a change shows even when the file's size and time stay the same). | estimated (own design, ADR 0001: the original imports everything as cut and has the programmer fix contours afterwards) |
 | IM12 | **Choosing contours with the import**: `import-drawing` takes contour choices next to `layers=`: `contours="7=mark; 1=leave-out; 2=quality 1 same"`, each the contour numbers (as `contour-tech` takes them) and a state, `quality 1-12` or `auto`, and/or `same`, painted in order with `contour-tech`'s rules (CS4, CS5, CQ6) on the part the layer roles make. The numbers are those `drawing-layers` lists for each part (`contours`: number, kind, starting state, length) with the same `layers`. Only for one drawing of one part (contour numbers belong to one part); a choice the part can't take refuses the whole import, saying why. The separate Drawing layers window is retired: a drawing dropped on the window or picked in the system's file picker that has several layer rows, or rows that start as Leave out, opens the Import drawings window with it picked and the cut technology panel open, so its layers are set before it comes in; drawings with one layer come in at once. | estimated (own design, ADR 0001) |
 
 Every format joins at 0.01 mm and then closes gaps up to 0.5 mm (IM8, as for DXF above; how the
@@ -1268,9 +1268,9 @@ Sized by what each would take to rebuild here. What isn't built is tracked in FE
 
 | # | Rule |
 |---|------|
-| V1 | Verify Machining runs on the current sheet or all sheets of the subjob; with several sheets the panel shows how many are correct and incorrect, and each sheet's result can be opened. |
-| V2 | "Check safe distance": the minimum distance between parts is either the separation of parts set for the machine's material/thickness or a typed value. |
-| V3 | The rebuild measures outline to outline (or to the hole a part sits in) and marks each pair closer than the distance with a red line on the sheet; holes-before-outside is checked per part (`v44::safe_distance_issues`, `drawing::verify_machining`). |
+| VR1 | Verify Machining runs on the current sheet or all sheets of the subjob; with several sheets the panel shows how many are correct and incorrect, and each sheet's result can be opened. |
+| VR2 | "Check safe distance": the minimum distance between parts is either the separation of parts set for the machine's material/thickness or a typed value. |
+| VR3 | The rebuild measures outline to outline (or to the hole a part sits in) and marks each pair closer than the distance with a red line on the sheet; holes-before-outside is checked per part (`v44::safe_distance_issues`, `drawing::verify_machining`). |
 
 
 ### Verify Machining panel
@@ -1550,9 +1550,9 @@ and `TRANS` + `AROT` placements (NX6), turning the part by the angle.
 
 | # | Rule |
 |---|------|
-| ST1 | Expert's files for a record live in the **database folder** (LANTEKIN.CNI R005 / share R008) under a folder per kind, **1000 records per sub-folder**: `Products\<n/1000>\<n>` (kinds 1, 3), `Nestings\<n/1000>\<n>` (2, 4), `Machinings\…` (5), `NestQuot\…` (6), and `General\Mlt<n>`, `Turr<n>`, `Punch<n>`, `Hole<n>`, `MchM<n>`, `Para<n>` (11–15, 17). |
-| ST2 | A nesting is these files with its number as the name: **`.chp`** (sheet and placed parts), **`.mec`** (machining), **`.ret`** (remnant), `.bmp` and `.wmf` pictures, `.pdf`, `.mcs`, and `<n>Box1.wmf`, `Box2.wmf`. Exporting copies them to `<export>\Nestings\`. |
-| ST3 | A part's machining file names come from the database when the part has machinings. |
+| RD1 | Expert's files for a record live in the **database folder** (LANTEKIN.CNI R005 / share R008) under a folder per kind, **1000 records per sub-folder**: `Products\<n/1000>\<n>` (kinds 1, 3), `Nestings\<n/1000>\<n>` (2, 4), `Machinings\…` (5), `NestQuot\…` (6), and `General\Mlt<n>`, `Turr<n>`, `Punch<n>`, `Hole<n>`, `MchM<n>`, `Para<n>` (11–15, 17). |
+| RD2 | A nesting is these files with its number as the name: **`.chp`** (sheet and placed parts), **`.mec`** (machining), **`.ret`** (remnant), `.bmp` and `.wmf` pictures, `.pdf`, `.mcs`, and `<n>Box1.wmf`, `Box2.wmf`. Exporting copies them to `<export>\Nestings\`. |
+| RD3 | A part's machining file names come from the database when the part has machinings. |
 
 `.chp` and `.mec` are Lantek's own binary formats (kept on the database share), so
 they aren't read; a nesting is opened from its LC5 programs or a .nxp export instead (NX1–NX6).
@@ -1583,10 +1583,10 @@ programs.
 
 Lantek keeps its lists (jobs, products, nestings, folders) in SQL Server tables (DT1–DT10) and each
 record's drawings as encrypted files in a shared database folder, `Products\<n/1000>\<n>`,
-`Nestings\<n/1000>\<n>` (ST1–ST2, MF2). The rebuild has its own library for shops without Lantek
+`Nestings\<n/1000>\<n>` (RD1–RD2, MF2). The rebuild has its own library for shops without Lantek
 (src/library.rs, src/libui.rs), laid out the same way but open:
 - a folder (Settings → Folders → Library folder; local, or on a shared drive for the whole shop) with
-  `Products\<n/1000>\<n>.json` and `Jobs\<n/1000>\<n>.snjob` — **1000 records per sub-folder**, as ST1 —
+  `Products\<n/1000>\<n>.json` and `Jobs\<n/1000>\<n>.snjob` — **1000 records per sub-folder**, as RD1 —
   and `index.json` listing every record (name, folder, material, thickness, size, counts, last saved and by whom, LB5; each record carries its revision, LB7) for
   quick lists and search; **Rescan** rebuilds the index from the files;
 - a new record takes the next number by creating its file exclusively, so two people saving at once on
@@ -1642,7 +1642,7 @@ file only if it isn't there, and renaming one over another. There is no original
 
 Lantek adds stored products with **Parts From Database** / **Kits From Database** (Jobs → Home → Import):
 products live in PPRR_PPRR_00000100 (DT5), each with its own machining files
-(`Machinings\<n/1000>\<n>`, ST1; ST3) and routings per machine (MMNN_PPOO_00000100/200).
+(`Machinings\<n/1000>\<n>`, RD1; RD3) and routings per machine (MMNN_PPOO_00000100/200).
 
 The rebuild: library products are whole parts — shape, imported drawing, **own technology** (leads,
 micro-joints, quality, loops, start points) and texts — so a part programmed once is reused as is:

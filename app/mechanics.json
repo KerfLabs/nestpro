@@ -193,31 +193,31 @@
    "name": "warn before changing a part with technology",
    "group": "part technology",
    "value": true,
-   "source": "MECHANICS T1 (Part technology); default estimate"
+   "source": "MECHANICS PT1 (Part technology); default estimate"
   },
   {
    "name": "tech edit choice: copy keeps original",
    "group": "part technology",
    "value": "copy",
-   "source": "MECHANICS T2 (Part technology)"
+   "source": "MECHANICS PT2 (Part technology)"
   },
   {
    "name": "tech edit choice: apply to all remaining",
    "group": "part technology",
    "value": true,
-   "source": "MECHANICS T2 (Part technology)"
+   "source": "MECHANICS PT2 (Part technology)"
   },
   {
    "name": "nested part material change: remove nestings frees sheets",
    "group": "part technology",
    "value": true,
-   "source": "MECHANICS T4 (Part technology)"
+   "source": "MECHANICS PT4 (Part technology)"
   },
   {
    "name": "nested part change question asked once per batch",
    "group": "part technology",
    "value": true,
-   "source": "MECHANICS T4 (Part technology)"
+   "source": "MECHANICS PT4 (Part technology)"
   },
   {
    "name": "automatic lead-in",
@@ -414,38 +414,38 @@
    "group": "dxf",
    "value": 0.01,
    "unit": "mm",
-   "source": "MECHANICS D4 (DXF drawings); role inferred"
+   "source": "MECHANICS DF4 (DXF drawings); role inferred"
   },
   {
    "name": "DXF arc smoothness (chord error)",
    "group": "dxf",
    "value": 0.1,
    "unit": "mm",
-   "source": "MECHANICS D4 (DXF drawings); role inferred"
+   "source": "MECHANICS DF4 (DXF drawings); role inferred"
   },
   {
    "name": "DXF default layer role",
    "group": "dxf",
    "value": "cut (code 13)",
-   "source": "MECHANICS D5 (DXF drawings)"
+   "source": "MECHANICS DF5 (DXF drawings)"
   },
   {
    "name": "DXF text font",
    "group": "dxf",
    "value": "arial",
-   "source": "MECHANICS D5 (DXF drawings)"
+   "source": "MECHANICS DF5 (DXF drawings)"
   },
   {
    "name": "part DXF export writes .txt beside .dxf",
    "group": "dxf",
    "value": true,
-   "source": "MECHANICS D1 (DXF drawings)"
+   "source": "MECHANICS DF1 (DXF drawings)"
   },
   {
    "name": "bend hand-off requires matching material and thickness",
    "group": "dxf",
    "value": true,
-   "source": "MECHANICS D2 (DXF drawings)"
+   "source": "MECHANICS DF2 (DXF drawings)"
   },
   {
    "name": "marking speed factor",
@@ -1575,13 +1575,13 @@
    "name": "Verify Machining can check all sheets of the subjob",
    "group": "verify",
    "value": true,
-   "source": "MECHANICS V1 (v44 new features)"
+   "source": "MECHANICS VR1 (v44 new features)"
   },
   {
    "name": "safe distance default: the separation of parts",
    "group": "verify",
    "value": "The separation of parts",
-   "source": "MECHANICS V2 (v44 new features)"
+   "source": "MECHANICS VR2 (v44 new features)"
   },
   {
    "name": "safe distance tolerance",
@@ -2024,19 +2024,19 @@
    "name": "records per storage sub-folder",
    "group": "storage",
    "value": 1000,
-   "source": "MECHANICS ST1 (How Lantek stores nestings)"
+   "source": "MECHANICS RD1 (How Lantek stores nestings)"
   },
   {
    "name": "nesting folder pattern",
    "group": "storage",
    "value": "Nestings\\<n/1000>\\<n>",
-   "source": "MECHANICS ST1 (How Lantek stores nestings)"
+   "source": "MECHANICS RD1 (How Lantek stores nestings)"
   },
   {
    "name": "nesting file types",
    "group": "storage",
    "value": ".chp .mec .ret .bmp .wmf .pdf .mcs Box1/Box2.wmf",
-   "source": "MECHANICS ST2 (How Lantek stores nestings)"
+   "source": "MECHANICS RD2 (How Lantek stores nestings)"
   },
   {
    "name": "job file extension",
@@ -2877,7 +2877,7 @@
    "name": "linear tolerance (mm)",
    "group": "remnant line",
    "value": 0.01,
-   "source": "MECHANICS D4 (DXF drawings); assumed equal for the remnant engine (estimate)"
+   "source": "MECHANICS DF4 (DXF drawings); assumed equal for the remnant engine (estimate)"
   },
   {
    "name": "min X / min Y apply to",

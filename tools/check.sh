@@ -17,6 +17,7 @@ fi
 failed=()
 echo "== Public check";  tools/public-check.sh | tail -40
 [ "${PIPESTATUS[0]}" = 0 ] || failed+=("public check")
+echo "== Rule IDs";      tools/unique-ids.sh || failed+=("rule IDs")
 cd app
 echo "== Linux tests";   cargo test 2>&1 | grep -E "^test result|FAILED|panicked|^error"
 [ "${PIPESTATUS[0]}" = 0 ] || failed+=("Linux tests")

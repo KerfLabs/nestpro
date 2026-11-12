@@ -340,7 +340,7 @@ pub fn insert_part(parts: &mut Vec<Part>, sheets: &mut [Vec<Placed>], idx: usize
 }
 
 /// Name for a copy of a part with technology: "Name (1)", "(2)"…
-/// (T2: the change goes on a copy so the original keeps its technology).
+/// (PT2: the change goes on a copy so the original keeps its technology).
 pub fn copy_name(parts: &[Part], base: &str) -> String {
     (1..10).map(|k| format!("{base} ({k})")).find(|n| !parts.iter().any(|p| &p.name == n)).unwrap_or_else(|| format!("{base} copy"))
 }

@@ -1,7 +1,7 @@
 //! The app's own library ("database"): products and jobs kept as one open,
 //! readable file per record in a folder that can be local or shared on the
 //! network, so a shop without Lantek has its own part and job database.
-//! Laid out like Lantek's record folders (rule ST1:
+//! Laid out like Lantek's record folders (rule RD1:
 //! `Products\<n/1000>\<n>`, `Nestings\<n/1000>\<n>` — 1000
 //! records per folder), with an index for quick lists and search. Lantek
 //! keeps the lists in SQL Server and the files encrypted; here both are

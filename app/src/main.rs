@@ -150,7 +150,7 @@ pub enum Pending {
     ExportReview { problems: Vec<(usize, usize, usize)>, checks: Vec<(usize, usize)> },
 }
 
-/// Answers to "this part has technology" (the original's choices, rule T2).
+/// Answers to "this part has technology" (the original's choices, rule PT2).
 #[derive(Clone, Copy, PartialEq)]
 pub enum TechChoice {
     /// Keep the original with its technology and put the change on a copy.
@@ -1304,7 +1304,7 @@ impl App {
     /// Finish drawings that waited for the layer question.
     /// Save the selected part as DXF (outline and holes on CUT, marking on MARK),
     /// with a one-line text file of the same name beside it — the way the original
-    /// hands a part to its bending program (rule D1).
+    /// hands a part to its bending program (rule DF1).
     pub fn export_part_dxf(&mut self, idx: usize) {
         let Some(p) = self.parts.get(idx) else { return };
         let g = p.geometry();
@@ -1337,7 +1337,7 @@ impl App {
         self.checkpoint();
         match choice {
             TechChoice::EditCopy => {
-                // Original inserts a copy of the part (rule T2).
+                // Original inserts a copy of the part (rule PT2).
                 let mut copy = draft;
                 copy.tech = None;
                 let base = self.parts[idx].name.clone();
@@ -1361,7 +1361,7 @@ impl App {
     }
 
     /// Material/thickness change while parts are nested (original asks once:
-    /// keep the nestings, remove them and free their sheets, or cancel — rule T4).
+    /// keep the nestings, remove them and free their sheets, or cancel — rule PT4).
     pub fn apply_spec_change(&mut self, new_spec: SheetSpec, remove_nestings: bool) {
         self.checkpoint();
         self.spec = new_spec;
