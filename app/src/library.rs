@@ -163,6 +163,20 @@ impl Changed {
     }
 }
 
+/// A record an open job read, as it is now (LB15).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Since {
+    /// As it was read.
+    Same,
+    /// Someone saved it since: who, when, and its revision now.
+    Saved(Changed),
+    /// It isn't in the Library any more (deleted on another PC).
+    Gone,
+    /// It can't be read just now (being replaced, or the share): look
+    /// again at the next check.
+    Unreadable,
+}
+
 /// Why a Library save stored nothing.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Refused {
@@ -541,6 +555,34 @@ impl Library {
         let Some(id) = to.id() else { return Ok(()) };
         let Ok(b) = std::fs::read(self.path(kind, id)) else { return Ok(()) };
         self.changed(kind, to, &serde_json::from_slice::<OnDisk>(&b).unwrap_or_default()).map_or(Ok(()), Err)
+    }
+
+    /// Record `read` as it is now, for refreshing an open job (LB15): as it
+    /// was read, saved since (who, when, its revision now), gone from the
+    /// Library, or not readable just now. Reads only: never takes the write
+    /// lock. A record being replaced, or one whose file isn't there while
+    /// its line still is, is "not readable now", so the next look reads it
+    /// again rather than dropping it.
+    pub fn since(&self, kind: Kind, read: Record) -> Since {
+        let path = self.path(kind, read.id);
+        shared::pause("refresh reads a record");
+        let b = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // Gone only when it's out of the list too: a file missing
+                // while its line is still there may be a share hiccup.
+                return match self.read_index() {
+                    Ok(list) if !list.iter().any(|e| e.kind == kind && e.id == read.id) => Since::Gone,
+                    _ => Since::Unreadable,
+                };
+            }
+            Err(_) => return Since::Unreadable,
+        };
+        let Ok(d) = serde_json::from_slice::<OnDisk>(&b) else { return Since::Unreadable };
+        match self.changed(kind, SaveTo::Read(read), &d) {
+            None => Since::Same,
+            Some(c) => Since::Saved(c),
+        }
     }
 
     /// The record `to` goes over as it is now (`d`), when that isn't as it

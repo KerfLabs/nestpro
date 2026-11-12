@@ -979,6 +979,34 @@ impl App {
             }
         });
         ui.add_space(10.0);
+        // JX8, JX9: one setting, off on a new install; ticking it starts the
+        // period at 1 minute; whole minutes, 1 to 1440. LB14: while it's on,
+        // a quick look every few seconds shows other PCs' saves.
+        card(ui, "Auto-refresh", "Show what other PCs save to the Library without pressing Refresh: the Job Explorer, the Library window, Add product, the sheet stock, and open jobs someone else saved. Off on a new install. Each PC sets its own.", |ui| {
+            let mut on = self.cfg.refresh_minutes > 0;
+            row(ui, "Auto-refresh", |ui| {
+                if ui.checkbox(&mut on, "Update the lists and open jobs by themselves").changed() {
+                    self.cfg.refresh_minutes = if on { 1 } else { 0 };
+                }
+            });
+            row(ui, "Full reload every", |ui| {
+                let mut m = self.cfg.refresh_minutes.max(1);
+                let r = ui.add_enabled(on, egui::DragValue::new(&mut m).range(1..=crate::engine::refresh::PERIOD_MAX).speed(1.0).suffix(" min"));
+                if on && r.changed() {
+                    self.cfg.refresh_minutes = crate::engine::refresh::period(m as i64);
+                }
+                ui.label(RichText::new("whole minutes, 1 to 1440").size(11.5).color(th().text_dim));
+            });
+            ui.label(
+                RichText::new(format!(
+                    "While it's on, the program also looks every {} seconds whether another PC saved something, and at once when this window comes back to the front; the period reads everything again.",
+                    crate::engine::refresh::QUICK_S
+                ))
+                .size(11.5)
+                .color(th().text_dim),
+            );
+        });
+        ui.add_space(10.0);
         card(ui, "Lantek Expert install (optional)", "Only used to import its database connection, machines and post files.", |ui| {
             row(ui, "Folder", |ui| {
                 ui.add(egui::TextEdit::singleline(&mut self.cfg.lantek_dir).desired_width(380.0).hint_text("not used"));

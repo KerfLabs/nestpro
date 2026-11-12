@@ -134,6 +134,11 @@ pub struct AppSettings {
     pub nesting: NestPrefs,
     /// ERP / MES systems the app talks to (one per provider).
     pub integrations: Vec<crate::integrations::Integration>,
+    /// Auto-refresh (the original's Z076, JX8, JX9): 0 = off, as on a fresh
+    /// install; else the full reload's period in whole minutes, 1 to 1440.
+    /// While on, a quick check every few seconds shows other PCs' saves
+    /// (LB14). Kept on each PC.
+    pub refresh_minutes: u32,
 }
 
 /// Moving parts by hand on the sheet, and the units lengths are shown in
@@ -283,6 +288,7 @@ impl Default for AppSettings {
             stock: Default::default(),
             nesting: Default::default(),
             integrations: default_integrations(),
+            refresh_minutes: 0,
         }
     }
 }
@@ -388,6 +394,7 @@ impl AppSettings {
         s += &format!("import_preview = {}\n", self.import_preview);
         s += &format!("theme = {}\nwarn_tech = {}\nshow_unbuilt = {}\nauto_db = {}\n", self.theme, self.warn_tech, self.show_unbuilt, self.auto_db);
         s += &format!("ui_size = {}\nscroll_speed = {}\n", self.ui_size, self.scroll_speed);
+        s += &format!("refresh_minutes = {}\n", self.refresh_minutes);
         s += &format!("stock = {}\n", serde_json::to_string(&self.stock).unwrap_or_default());
         s += &format!("nesting = {}\n", serde_json::to_string(&self.nesting).unwrap_or_default());
         for (k, (n, id)) in self.materials.iter().enumerate() {
@@ -491,6 +498,7 @@ impl AppSettings {
                     "ui_size" => st.ui_size = ui_size_from(v.parse().unwrap_or(0)),
                     "stock" => st.stock = serde_json::from_str(&v).unwrap_or_default(),
                     "nesting" => st.nesting = serde_json::from_str::<NestPrefs>(&v).unwrap_or_default().sane(),
+                    "refresh_minutes" => st.refresh_minutes = crate::engine::refresh::period(v.parse::<i64>().unwrap_or(0)),
                     "scroll_speed" => st.scroll_speed = v.parse::<f32>().ok().filter(|x| (0.5..=6.0).contains(x)).unwrap_or(SCROLL_SPEED_DEFAULT),
                     _ if k.starts_with("material_ref") => {
                         if let Ok(i) = k["material_ref".len()..].parse::<usize>() {
@@ -686,6 +694,10 @@ impl AppSettings {
             if let Some(f) = val("A213") {
                 self.ui_size = ui_size_from(f);
             }
+            // Z076: the Job Explorer's auto-refresh, minutes (0 = off; JX8, JX9).
+            if let Some(m) = val("Z076") {
+                self.refresh_minutes = crate::engine::refresh::period(m);
+            }
         }
         // Moving parts by hand (LANTEKPR.CFG): the movement value, the turn
         // direction of the fixed-angle keys and the gap outline (HM4, HM5, HM11).
@@ -774,6 +786,21 @@ mod settings_tests {
         assert_eq!((n.step, n.keys_clockwise), (1.27, false));
     }
 
+    /// JX8, JX9: importing a Lantek install takes its auto-refresh period
+    /// (Z076, whole minutes, 0 = off), kept in 1–1440.
+    #[test]
+    fn importing_a_lantek_install_takes_its_auto_refresh_period() {
+        let dir = std::env::temp_dir().join(format!("nestpro_z076_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (line, want) in [("Z076 5                     ; auto-refresh", 5), ("Z076 0 ; off", 0), ("Z076 9000", 1440)] {
+            std::fs::write(dir.join("LANTEKIN.CNI"), format!("R001 \"srv\\SQL\" ; server\r\nR002 \"DEMO\" ; db\r\n{line}\r\n")).unwrap();
+            let mut s = AppSettings { refresh_minutes: 7, ..Default::default() };
+            s.import_lantek(&dir.display().to_string());
+            assert_eq!(s.refresh_minutes, want, "{line}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn settings_round_trip_through_text() {
         let s = AppSettings {
@@ -804,6 +831,7 @@ mod settings_tests {
             auto_db: false,
             ui_size: 2,
             scroll_speed: 3.0,
+            refresh_minutes: 15,
             stock: crate::stock::StockSettings { order: crate::stock::Order::ByPriority, min_efficiency: 0.6, ..Default::default() },
             nesting: NestPrefs { units: crate::units::LenUnit::Inch, part_gap: 6.35, edge_margin: 6.35, step: 25.4 / 16.0, keys_clockwise: true, snap: false, snap_px: 20.0, halo: true },
             integrations: vec![crate::integrations::Integration {
@@ -828,6 +856,13 @@ mod settings_tests {
         let odd = AppSettings::parse("[integration]\nprovider = sap\nbase_url = x\n");
         assert_eq!(odd.integrations, default_integrations());
         assert_eq!((ui_size_from(3), ui_size_from(7), ui_size_from(-1)), (3, 0, 0));
+        // JX8, JX9: auto-refresh is off unless set; a period outside 1–1440
+        // minutes written by hand is off below 1, a day above.
+        assert_eq!(AppSettings::default().refresh_minutes, 0);
+        assert_eq!(AppSettings::parse("[general]\nrefresh_minutes = 0\n").refresh_minutes, 0);
+        assert_eq!(AppSettings::parse("[general]\nrefresh_minutes = -3\n").refresh_minutes, 0);
+        assert_eq!(AppSettings::parse("[general]\nrefresh_minutes = 99999\n").refresh_minutes, 1440);
+        assert_eq!(AppSettings::parse("[general]\nrefresh_minutes = x\n").refresh_minutes, 0);
         assert!(LANTEK_STYLES[1].1 && !LANTEK_STYLES[3].1);
         // Empty or missing text gives one starter machine and no connection.
         let e = AppSettings::parse("");
