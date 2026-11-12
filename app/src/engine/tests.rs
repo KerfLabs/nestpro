@@ -2598,6 +2598,30 @@ fn agents_list_the_part_folders_and_move_a_library_part() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// JX19, LB7: a part saved into the Library stays saved when the part folder
+/// tree can't be read afterwards: the agent is told its folder can't be
+/// shown, and saving again goes over its own record instead of being refused
+/// as someone else's newer save.
+#[test]
+fn an_agents_saved_part_stays_saved_when_the_part_folders_cant_be_read() {
+    let d = dir("part_folders_damaged");
+    let ctx = stock_ctx(&d);
+    let tree = ctx.library_dir.join(crate::folders::file_name(crate::library::Kind::Product));
+    let mut s = Session::new(ctx);
+    let jp = d.join("frames.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"name": "DEMO-001", "week": "Acme"}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 300, "h": 120, "qty": 4, "name": "DEMO-P1"}));
+    let first = call(&mut s, "library", None, json!({"mode": "save-part", "parts": [1]}))["data"]["ids"][0].as_u64().unwrap();
+    std::fs::write(&tree, "{ damaged").unwrap();
+    call(&mut s, "edit-part", None, json!({"part": 1, "qty": 9}));
+    let saved = call(&mut s, "library", None, json!({"mode": "save-part", "parts": [1]}));
+    assert!(saved["message"].as_str().unwrap().contains("part folder can't be shown"), "{saved}");
+    assert_eq!(saved["data"]["ids"], json!([first]), "{saved}");
+    let again = call(&mut s, "library", None, json!({"mode": "save-part", "parts": [1]}));
+    assert_eq!(again["data"]["ids"], json!([first]), "{again}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 /// LB11 for agents' part folders: `part-folders` on a Library that can't be
 /// reached is refused naming its folder and saying what to do, and nothing
 /// is made.

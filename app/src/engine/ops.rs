@@ -1861,12 +1861,19 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                             Err(Refused::Failed(e)) => return Err(e),
                         }
                     }
-                    // Where each is now in the part folders.
-                    let tree = crate::folders::load(&lib, crate::library::Kind::Product)?;
-                    let places: Vec<String> = ids.iter().map(|&id| tree.path(tree.folder_of(id))).collect();
-                    let mut shown: Vec<String> = places.iter().map(|p| if p.is_empty() { "the top of the part folders".to_string() } else { format!("part folder '{p}'") }).collect();
-                    shown.dedup();
-                    Ok(Outcome { message: format!("Saved {} into the library, in {}.", who(job, &t), shown.join(", ")), data: json!({ "ids": ids, "folders": places }), changed: true, files: vec![] })
+                    // Where each is now in the part folders. The parts are
+                    // saved by now: a part tree that can't be read only
+                    // leaves the place out, and the job keeps what it saved.
+                    let (places, at) = match crate::folders::load(&lib, crate::library::Kind::Product) {
+                        Ok(tree) => {
+                            let places: Vec<String> = ids.iter().map(|&id| tree.path(tree.folder_of(id))).collect();
+                            let mut shown: Vec<String> = places.iter().map(|p| if p.is_empty() { "the top of the part folders".to_string() } else { format!("part folder '{p}'") }).collect();
+                            shown.dedup();
+                            (json!(places), format!(", in {}", shown.join(", ")))
+                        }
+                        Err(e) => (Value::Null, format!(" (its part folder can't be shown: {e})")),
+                    };
+                    Ok(Outcome { message: format!("Saved {} into the library{at}.", who(job, &t)), data: json!({ "ids": ids, "folders": places }), changed: true, files: vec![] })
                 }
                 "save-job" => {
                     // Over the job's own record as this file read it (LB10),
