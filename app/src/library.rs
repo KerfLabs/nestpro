@@ -341,8 +341,10 @@ impl Library {
                 lib.write_index(&entries_of(lib.scan(&first)), &lock)?;
             }
         }
-        // A Library from before folders gets its job folders now (JX11).
+        // A Library from before folders gets its job folders now (JX11), and
+        // its part folders (JX18).
         crate::folders::ensure(&lib, Kind::Job)?;
+        crate::folders::ensure(&lib, Kind::Product)?;
         Ok(lib)
     }
 
@@ -683,11 +685,24 @@ impl Library {
         let mut all = self.entries();
         all.retain(|x| !(x.kind == kind && x.id == id));
         self.write_index(&all, &lock)?;
-        // Its place in the folder tree goes with it (JX10).
-        if kind == Kind::Job {
-            let _ = crate::folders::change(self, kind, |t, _| t.put(id, crate::folders::TOP));
-        }
+        // Its place in its folder tree goes with it (JX10, JX18).
+        let _ = crate::folders::change(self, kind, |t, _| t.put(id, crate::folders::TOP));
         Ok(())
+    }
+
+    /// `save_product`, a new part going into the part folder `into` names,
+    /// made if missing (JX19); saving over a part never moves it. The
+    /// revision check (LB7), the part, its line in the list and its place in
+    /// the parts tree are one hold of the write lock (LB1): a save refused
+    /// because someone saved the part since files nothing. A place that
+    /// can't be written leaves the part at the top of the tree, saved.
+    pub fn save_product_in(&self, part: &Part, folder: &str, material: usize, thickness: f64, to: SaveTo, into: &crate::folders::PartsFolder) -> Result<Record, Refused> {
+        let _lock = self.lock()?;
+        let rec = self.save_product(part, folder, material, thickness, to)?;
+        if to.id().is_none() {
+            let _ = crate::folders::file_part(self, rec.id, into);
+        }
+        Ok(rec)
     }
 }
 
@@ -766,12 +781,13 @@ pub const THICKNESS_FILTER_MIN: f64 = 0.0;
 pub const THICKNESS_FILTER_DECIMALS: i32 = 6;
 
 /// Lantek's product filter (rule PK3): the same material when one is
-/// given, the same thickness when it is not negative, and the name.
-pub fn product_matches(e: &Entry, material: Option<usize>, thickness: f64, needle: &str) -> bool {
+/// given, the same thickness when it is not negative, and the name or the
+/// part's folder (`folder`, its path in the parts tree, JX20).
+pub fn product_matches(e: &Entry, folder: &str, material: Option<usize>, thickness: f64, needle: &str) -> bool {
     let k = 10f64.powi(THICKNESS_FILTER_DECIMALS);
     material.is_none_or(|m| e.material == m)
         && (thickness < THICKNESS_FILTER_MIN || (e.thickness * k).round() == (thickness * k).round())
-        && (needle.is_empty() || e.name.to_lowercase().contains(needle) || e.folder.to_lowercase().contains(needle))
+        && (needle.is_empty() || e.name.to_lowercase().contains(needle) || folder.to_lowercase().contains(needle))
 }
 
 /// The app's folder in the user's documents: Documents\Sheet Nesting
@@ -811,11 +827,12 @@ mod library_tests {
         assert_eq!(lib.find_product("Plate"), None);
         let es = lib.entries();
         let e2 = es.iter().find(|e| e.id == p2 && e.kind == Kind::Product).unwrap();
-        assert!(product_matches(e2, Some(1), 2.0, ""));
-        assert!(!product_matches(e2, Some(1), 5.0, ""));
-        assert!(product_matches(e2, Some(1), -1.0, "brack"));
-        assert!(product_matches(e2, None, -1.0, "acme"));
-        assert!(!product_matches(e2, Some(0), 2.0, ""));
+        assert!(product_matches(e2, "Acme", Some(1), 2.0, ""));
+        assert!(!product_matches(e2, "Acme", Some(1), 5.0, ""));
+        assert!(product_matches(e2, "Acme", Some(1), -1.0, "brack"));
+        assert!(product_matches(e2, "Acme", None, -1.0, "acme"));
+        assert!(!product_matches(e2, "Beta", None, -1.0, "acme"));
+        assert!(!product_matches(e2, "Acme", Some(0), 2.0, ""));
         let mut tp = part.clone();
         tp.tech = Some(Default::default());
         let p3 = lib.save_product(&tp, "ACME", 2, 1.0, SaveTo::New).unwrap().id;
