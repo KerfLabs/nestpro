@@ -328,7 +328,7 @@ pub static OPS: &[Op] = &[
     ] },
     // --- reference ---
     Op { name: "catalog", group: "Reference", kind: Kind::Global, help: "Choices the other operations take: shapes, materials, thicknesses, nesting levels, machine types, lead/joint types, qualities, text kinds and fields, layer roles.", args: &[] },
-    Op { name: "machines", group: "Reference", kind: Kind::Global, help: "The machines in Settings (read-only here): what each does (laser, plasma, punch…), output, post library, and the active machine's technology (CT1) values, with how it orders a part's holes nobody ordered by hand (hole_order: none, by proximity or by direction with its start corner, rows or columns and tolerance, and cut small holes first with its size limits).", args: &[] },
+    Op { name: "machines", group: "Reference", kind: Kind::Global, help: "The machines in Settings (read-only here): what each does (laser, plasma, punch…), output, post library, the sheet and hole order changed for it in Settings → Machines (order_changes), and the active machine's technology (CT1) values, with how it orders the parts on a sheet (sheet_order: start corner, columns or rows, zig-zag, zones) and a part's holes nobody ordered by hand (hole_order: none, by proximity or by direction with its start corner, rows or columns and tolerance, and cut small holes first with its size limits); for each, where the value comes from (Settings → Machines, the machine file or the default) and what the machine file alone gives.", args: &[] },
 ];
 
 pub fn find(name: &str) -> Option<&'static Op> {
@@ -985,24 +985,95 @@ fn hole_order_json(h: &crate::ct1::HoleOrder) -> Value {
     })
 }
 
+/// Where an order setting in use comes from (CO16, CO17): a change made in
+/// Settings → Machines, the machine file (it sets one of `codes`), or the
+/// default. `changed` reads `MachineTech::order_changes`, which holds only
+/// the changes used (`OrderChanges::valid`), so a saved value the setting
+/// can't take is reported as the file's, as it is cut.
+fn order_from(t: &crate::ct1::MachineTech, changed: bool, codes: &[&str]) -> &'static str {
+    if changed {
+        "Settings → Machines"
+    } else if codes.iter().any(|c| t.file.globals.contains_key(*c)) {
+        "machine file"
+    } else {
+        "default"
+    }
+}
+
+/// The sheet's order in shop words (CZ1–CZ6).
+fn sheet_order_words(o: &crate::ct1::SheetOrder) -> String {
+    let zones = if o.zones_x <= 1 && o.zones_y <= 1 { "one zone over the whole sheet".to_string() } else { format!("{} × {} zones", o.zones_x.max(1), o.zones_y.max(1)) };
+    let (each, back) = if o.zigzag { ("the first", ", every other one back") } else { ("each", "") };
+    let way = match (o.horizontal, o.start_left, o.start_bottom) {
+        (true, l, b) => format!("rows from the {}, {each} from the {}{back}", if b { "bottom up" } else { "top down" }, if l { "left" } else { "right" }),
+        (false, l, b) => format!("columns from the {}, {each} from the {}{back}", if l { "left" } else { "right" }, if b { "bottom up" } else { "top down" }),
+    };
+    format!("{zones}, {way}; in each zone the nearest part next")
+}
+
+/// The sheet's order in use, where each value comes from, and what the
+/// machine file alone gives (CO16).
+fn sheet_order_json(t: &crate::ct1::MachineTech) -> Value {
+    let (o, f, c) = (&t.sheet_order, t.file_order().sheet, &t.order_changes);
+    let values = |o: &crate::ct1::SheetOrder| json!({"start_corner": o.corner_label(), "direction": if o.horizontal { "rows" } else { "columns" }, "zigzag": o.zigzag, "zones": [o.zones_x, o.zones_y]});
+    let mut v = values(o);
+    v["cuts"] = json!(sheet_order_words(o));
+    v["from"] = json!({
+        "start_corner": order_from(t, c.start_left.is_some() || c.start_bottom.is_some(), &["B110"]),
+        "direction": order_from(t, c.rows.is_some(), &["B114"]),
+        "zigzag": order_from(t, c.zigzag.is_some(), &["B115"]),
+        "zones": order_from(t, c.zones_x.is_some() || c.zones_y.is_some(), &["B122", "B123"]),
+    });
+    v["machine_file"] = values(&f);
+    if t.file_says_top() {
+        v["note"] = json!("The machine file's start bottom is off, but the sheet is cut from the bottom row up, as programs from the machine are (MECHANICS CZ6, CO28). A top corner can be set in Settings → Machines.");
+    }
+    v
+}
+
+/// The hole order in use, where each value comes from, and what the
+/// machine file alone gives (CO17).
+fn hole_order_report(t: &crate::ct1::MachineTech) -> Value {
+    let c = &t.order_changes;
+    let mut v = hole_order_json(&t.hole_order);
+    v["from"] = json!({
+        "mode": order_from(t, c.hole_mode.is_some(), &["B565"]),
+        "start_corner": order_from(t, c.hole_start_corner.is_some(), &["B566"]),
+        "direction": order_from(t, c.hole_columns.is_some(), &["B567"]),
+        "orthogonality_tolerance_mm": order_from(t, c.orthogonality_tolerance.is_some(), &["B568"]),
+        "small_holes_first": order_from(t, c.small_holes_first.is_some(), &["B587"]),
+        "big_hole_min_length_mm": order_from(t, c.big_hole_min_length.is_some(), &["B588"]),
+        "big_hole_min_width_mm": order_from(t, c.big_hole_min_width.is_some(), &["B589"]),
+        "big_hole_offset_mm": order_from(t, c.big_hole_offset.is_some(), &["B590"]),
+    });
+    let mut file = hole_order_json(&t.file_order().holes);
+    if let Some(m) = file.as_object_mut() {
+        m.remove("cuts");
+    }
+    v["machine_file"] = file;
+    v
+}
+
 fn machines(ctx: &Ctx) -> Value {
     let t = &ctx.tech;
     json!({
         "active": ctx.cfg.active_machine + 1,
         "machines": ctx.cfg.machines.iter().enumerate().map(|(i, m)| json!({
             "machine": i + 1, "name": m.name, "does": m.kind.key(), "output": m.output.key(), "post_lib": m.post_lib, "blm_ps1": m.blm_ps1, "blm_cf1": m.blm_cf1, "gas": m.gas_name,
+            "order_changes": m.order.valid(),
         })).collect::<Vec<_>>(),
         "technology": {
             "source": t.source.as_ref().map_or("built-in values".to_string(), |p| p.display().to_string()),
             "lead_in": t.lead_in, "lead_out": t.lead_out, "overlap": t.overlap, "position": t.zone, "hole_lead_in": t.hole_lead_in,
-            "joint_gap": t.joint_gap, "joint_every": t.joint_every, "group_parts": t.group_parts, "zones": [t.zones_x, t.zones_y],
-            "hole_order": hole_order_json(&t.hole_order),
+            "joint_gap": t.joint_gap, "joint_every": t.joint_every, "group_parts": t.group_parts, "zones": [t.sheet_order.zones_x, t.sheet_order.zones_y],
+            "sheet_order": sheet_order_json(t),
+            "hole_order": hole_order_report(t),
             "material_sections": t.file.sections.len(),
             "qualities": qualities_json(&t.qualities),
             "note": "These are the machine's own values; a job's material and thickness may pick a section of the file instead (machine-tech).",
         },
         "post": { "extension": ctx.post.file_name("JOB", 1) },
-        "note": "Settings are changed in the app (Settings window), not by agents. A job is put on a machine's process with set-sheet machine=<does> (MK1).",
+        "note": "Settings are changed in the app (Settings window), not by agents. The sheet and hole order are changed per machine in Settings → Machines, and a change wins over the machine file (order_changes; each value's `from` says where it comes from). A job is put on a machine's process with set-sheet machine=<does> (MK1).",
     })
 }
 

@@ -128,6 +128,26 @@ pub struct SettingsUi {
     pub pending: Option<Receiver<String>>,
     /// Materials page: a name typed to see which material it means.
     pub mat_probe: String,
+    /// Machines page: the machine file's own sheet and hole order of the
+    /// machine being edited, read once per file: (which files, its values,
+    /// its start bottom is off, the file's name).
+    pub order_file: Option<(String, crate::ct1::OrderSettings, bool, Option<String>)>,
+    /// Scroll the Machines page down to the cut order (`--settings=machines-order`).
+    pub show_order: bool,
+}
+
+/// "lower left" → "Lower left".
+fn cap(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().map_or(String::new(), |f| f.to_uppercase().chain(c).collect())
+}
+
+/// A small "changed" tag after a value changed for this machine, with the
+/// machine file's value on hover (CO16, CO17).
+fn changed_tag(ui: &mut egui::Ui, changed: bool, file: &str) {
+    if changed {
+        ui.label(RichText::new("changed").size(11.0).color(th().accent_fg)).on_hover_text(format!("The machine file gives: {file}. \"Use the machine file\" puts it back."));
+    }
 }
 
 /// A rounded card with a title.
@@ -220,6 +240,8 @@ impl App {
         self.setui.section = s;
         self.setui.sel_conn = self.cfg.active_conn;
         self.setui.sel_machine = self.cfg.active_machine;
+        // Read the machine files again: they may have changed.
+        self.setui.order_file = None;
     }
 
     /// Apply the settings: the active machine's post library and BLM post
@@ -844,6 +866,8 @@ impl App {
             });
         }
         ui.add_space(10.0);
+        self.settings_cut_order(ui, k);
+        ui.add_space(10.0);
         if self.cfg.active_machine == k {
             let sheet_no = self.cur_sheet + 1;
             let text = if self.blm.on {
@@ -862,6 +886,163 @@ impl App {
                 let preview: String = text.lines().take(18).collect::<Vec<_>>().join("\n");
                 ui.add(egui::Label::new(RichText::new(preview).monospace().size(11.0)));
             });
+        }
+    }
+
+    /// Machine `k`'s sheet order and hole order (CO16, CO17): each value
+    /// starts as its machine file's; a change is kept for this machine and
+    /// wins over the file; "Use the machine file" puts the file's back.
+    fn settings_cut_order(&mut self, ui: &mut egui::Ui, k: usize) {
+        use crate::ct1::{HoleMode, OrderChanges, SheetOrder};
+        let m = self.cfg.machines[k].clone();
+        let key = format!("{}|{}|{}|{}", m.post_lib, m.blm_ps1, m.blm_cf1, self.cfg.lantek_dir);
+        if self.setui.order_file.as_ref().is_none_or(|c| c.0 != key) {
+            let t = crate::ct1::MachineTech::for_machine(&m, &self.cfg.lantek_dir);
+            let name = t.source.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned());
+            self.setui.order_file = Some((key, t.file_order(), t.file_says_top(), name));
+        }
+        let Some((_, file, says_top, file_name)) = self.setui.order_file.clone() else { return };
+        let unit = self.cfg.nesting.units;
+        let mut now = m.order.apply(file);
+        let (mut edited, mut reset) = (false, false);
+        let dim = |ui: &mut egui::Ui, s: &str| {
+            ui.horizontal(|ui| {
+                ui.add_space(154.0);
+                ui.label(RichText::new(s).size(11.5).color(th().text_dim));
+            });
+        };
+        let from = match &file_name {
+            Some(n) => format!("Each value starts as the machine file's ({n}); a change is kept for this machine and wins over the file."),
+            None => "No machine file was found, so each value starts as the default; a change is kept for this machine.".to_string(),
+        };
+        if self.setui.show_order {
+            ui.scroll_to_cursor(Some(egui::Align::TOP));
+            // A screenshot keeps it in view; a person can scroll on.
+            self.setui.show_order = self.shot_mode_now();
+        }
+        card(ui, "Cut order", &format!("How this machine orders the parts on a sheet, and a part's holes nobody has ordered by hand. {from}"), |ui| {
+            // The sheet's order (CZ1–CZ6, CO27 (c)).
+            ui.label(RichText::new("Sheet order").size(13.0).strong().color(th().text_strong));
+            let (s, f) = (&mut now.sheet, &file.sheet);
+            row(ui, "Start corner", |ui| {
+                egui::ComboBox::from_id_salt("sheet_start_corner").width(150.0).selected_text(cap(s.corner_label())).show_ui(ui, |ui| {
+                    for (l, b) in [(true, true), (false, true), (true, false), (false, false)] {
+                        let o = SheetOrder { start_left: l, start_bottom: b, ..*s };
+                        if ui.selectable_label(s.start_left == l && s.start_bottom == b, cap(o.corner_label())).clicked() {
+                            (s.start_left, s.start_bottom) = (l, b);
+                            edited = true;
+                        }
+                    }
+                })
+                .response
+                .on_hover_text("The corner of the sheet the first zone is in");
+                changed_tag(ui, (s.start_left, s.start_bottom) != (f.start_left, f.start_bottom), &cap(f.corner_label()));
+            });
+            if says_top && s.start_bottom {
+                dim(ui, "The machine file's start bottom is off, but sheets are cut from the bottom up, as programs from the machine are. Pick an upper corner to start at the top.");
+            }
+            row(ui, "Run", |ui| {
+                edited |= ui.radio_value(&mut s.horizontal, false, "Columns").on_hover_text("Up or down the sheet, then the next column").changed();
+                edited |= ui.radio_value(&mut s.horizontal, true, "Rows").on_hover_text("Across the sheet, then the next row").changed();
+                changed_tag(ui, s.horizontal != f.horizontal, if f.horizontal { "Rows" } else { "Columns" });
+            });
+            row(ui, "Zig-zag", |ui| {
+                edited |= ui.checkbox(&mut s.zigzag, "every other column or row runs back").changed();
+                changed_tag(ui, s.zigzag != f.zigzag, if f.zigzag { "on" } else { "off" });
+            });
+            row(ui, "Cutting zones", |ui| {
+                let max = crate::ct1::MAX_ZONES;
+                edited |= ui.add(egui::DragValue::new(&mut s.zones_x).range(0..=max).clamp_existing_to_range(false)).on_hover_text("Zones across the sheet (0 or 1 = one)").changed();
+                ui.label("across  ×");
+                edited |= ui.add(egui::DragValue::new(&mut s.zones_y).range(0..=max).clamp_existing_to_range(false)).on_hover_text("Zones up the sheet (0 or 1 = one)").changed();
+                ui.label("up");
+                changed_tag(ui, (s.zones_x, s.zones_y) != (f.zones_x, f.zones_y), &format!("{} across × {} up", f.zones_x, f.zones_y));
+            });
+            dim(ui, "The sheet is cut zone by zone in that order, the nearest part next inside a zone; parts sitting in a hole still go before it.");
+            ui.add_space(8.0);
+            // A part's holes nobody has ordered by hand (CO14, CO15, CO20).
+            ui.label(RichText::new("Hole order").size(13.0).strong().color(th().text_strong));
+            let (h, f) = (&mut now.holes, &file.holes);
+            let mode_text = |m: HoleMode| match m {
+                HoleMode::None => "None",
+                HoleMode::Proximity => "By proximity",
+                HoleMode::Direction => "By direction",
+                HoleMode::MinimumHeat => "Minimum heat",
+            };
+            row(ui, "Order mode", |ui| {
+                egui::ComboBox::from_id_salt("hole_order_mode").width(150.0).selected_text(mode_text(h.mode)).show_ui(ui, |ui| {
+                    let mut modes = vec![
+                        (HoleMode::None, "The part's own contour order, as drawn"),
+                        (HoleMode::Proximity, "The nearest hole next, from where the head is"),
+                        (HoleMode::Direction, "In rows or columns from a start corner, every other one back"),
+                    ];
+                    // Offered while in use or set by the machine file (MAC-62), so
+                    // choosing another mode can be taken back here.
+                    if h.mode == HoleMode::MinimumHeat || f.mode == HoleMode::MinimumHeat {
+                        modes.push((HoleMode::MinimumHeat, "Not built yet: the part's own contour order"));
+                    }
+                    for (md, tip) in modes {
+                        edited |= ui.selectable_value(&mut h.mode, md, mode_text(md)).on_hover_text(tip).changed();
+                    }
+                });
+                changed_tag(ui, h.mode != f.mode, mode_text(f.mode));
+            });
+            let corners = ["Nearest the head", "Lower left", "Lower right", "Upper right", "Upper left"];
+            let corner = |c: u8| corners.get(c as usize).copied().unwrap_or(corners[0]);
+            ui.add_enabled_ui(h.mode == HoleMode::Direction, |ui| {
+                row(ui, "Start corner", |ui| {
+                    egui::ComboBox::from_id_salt("hole_start_corner").width(150.0).selected_text(corner(h.corner)).show_ui(ui, |ui| {
+                        for c in 0..=4u8 {
+                            edited |= ui.selectable_value(&mut h.corner, c, corner(c)).changed();
+                        }
+                    })
+                    .response
+                    .on_hover_text("The corner of each part's box By direction starts from");
+                    changed_tag(ui, h.corner != f.corner, corner(f.corner));
+                });
+                row(ui, "Direction", |ui| {
+                    edited |= ui.radio_value(&mut h.columns, false, "Rows").changed();
+                    edited |= ui.radio_value(&mut h.columns, true, "Columns").changed();
+                    changed_tag(ui, h.columns != f.columns, if f.columns { "Columns" } else { "Rows" });
+                });
+                row(ui, "Same row within", |ui| {
+                    edited |= crate::units::drag_len(ui, &mut h.ortho_tol, unit, 100.0).on_hover_text("Holes whose edges are this close are in one row or column (orthogonality tolerance)").changed();
+                    changed_tag(ui, (h.ortho_tol - f.ortho_tol).abs() > 1e-6, &unit.show(f.ortho_tol));
+                });
+            });
+            row(ui, "Small holes first", |ui| {
+                edited |= ui.checkbox(&mut h.small_first, "cut the small holes next to a big hole before it").changed();
+                changed_tag(ui, h.small_first != f.small_first, if f.small_first { "on" } else { "off" });
+            });
+            ui.add_enabled_ui(h.small_first, |ui| {
+                row(ui, "Big from", |ui| {
+                    edited |= crate::units::drag_len(ui, &mut h.big_length, unit, 10_000.0).on_hover_text("A hole this long along X is big (0 = every hole)").changed();
+                    ui.label("long, or");
+                    edited |= crate::units::drag_len(ui, &mut h.big_width, unit, 10_000.0).on_hover_text("A hole this wide along Y is big (0 = every hole)").changed();
+                    ui.label("wide");
+                    let ch = (h.big_length - f.big_length).abs() > 1e-6 || (h.big_width - f.big_width).abs() > 1e-6;
+                    changed_tag(ui, ch, &format!("{} long, or {} wide", unit.show(f.big_length), unit.show(f.big_width)));
+                });
+                row(ui, "Next to it within", |ui| {
+                    edited |= crate::units::drag_len(ui, &mut h.big_offset, unit, 1_000.0).on_hover_text("A small hole this close to a big hole's box is cut before it").changed();
+                    changed_tag(ui, (h.big_offset - f.big_offset).abs() > 1e-6, &unit.show(f.big_offset));
+                });
+            });
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.add_space(154.0);
+                if ui.add_enabled(!m.order.is_empty(), egui::Button::new("Use the machine file")).on_hover_text("Put back every sheet and hole order value of this machine from its machine file").clicked() {
+                    reset = true;
+                }
+                let note = if m.order.is_empty() { "Every value is the machine file's." } else { "Values marked changed are this machine's own." };
+                ui.label(RichText::new(note).size(11.5).color(th().text_dim));
+            });
+        });
+        // A value set back to the file's follows the file again (CO16, CO17).
+        if reset {
+            self.cfg.machines[k].order = OrderChanges::default();
+        } else if edited {
+            self.cfg.machines[k].order = OrderChanges::between(&file, &now);
         }
     }
 

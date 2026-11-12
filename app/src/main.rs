@@ -2951,7 +2951,7 @@ fn main() -> eframe::Result {
                     "shortcuts" => Shortcuts,
                     "about" => About,
                     "connections" => Connections,
-                    "machines" => Machines,
+                    "machines" | "machines-order" => Machines,
                     "materials" => Materials,
                     "erp" | "integrations" => Integrations,
                     "folders" => Folders,
@@ -2959,6 +2959,8 @@ fn main() -> eframe::Result {
                     _ => General,
                 };
                 app.open_settings(sec);
+                // Screenshots of a machine's cut order scroll down to it.
+                app.setui.show_order = s == "machines-order";
             }
             // Load the saved "ExpertLayout" (the original does this at start, D6).
             if load_layout {

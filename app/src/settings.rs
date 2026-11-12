@@ -64,11 +64,15 @@ pub struct Machine {
     /// What the machine does (laser, plasma, punch …): picking the machine
     /// on the Sheet tab sets the job to it (MK1).
     pub kind: crate::machine::MachineKind,
+    /// The sheet and hole order changed in Settings → Machines: they win over
+    /// the machine file's (CO16, CO17). Empty = the file's (settings saved
+    /// before them have none).
+    pub order: crate::ct1::OrderChanges,
 }
 
 impl Default for Machine {
     fn default() -> Self {
-        Machine { name: "Laser 01".into(), output: Output::Iso, post_lib: String::new(), blm_ps1: String::new(), blm_cf1: String::new(), gas_id: 1, gas_name: "Nitrogen".into(), kind: Default::default() }
+        Machine { name: "Laser 01".into(), output: Output::Iso, post_lib: String::new(), blm_ps1: String::new(), blm_cf1: String::new(), gas_id: 1, gas_name: "Nitrogen".into(), kind: Default::default(), order: Default::default() }
     }
 }
 
@@ -422,6 +426,11 @@ impl AppSettings {
                 esc(&m.gas_name),
                 m.kind.key()
             );
+            // Only a machine whose order was changed in Settings → Machines
+            // writes it (CO16, CO17): an unchanged one saves as before.
+            if !m.order.is_empty() {
+                s += &format!("order = {}\n", serde_json::to_string(&m.order).unwrap_or_default());
+            }
         }
         for i in &self.integrations {
             s += &format!(
@@ -583,6 +592,9 @@ impl AppSettings {
                             "gas_id" => m.gas_id = v.parse().unwrap_or(1),
                             "gas_name" => m.gas_name = v,
                             "kind" => m.kind = crate::machine::MachineKind::from_key(&v).unwrap_or_default(),
+                            // Each value on its own: one that can't be read or
+                            // taken is left out, the others kept (CO16).
+                            "order" => m.order = crate::ct1::OrderChanges::read(&v),
                             _ => {}
                         }
                     }
@@ -604,9 +616,9 @@ impl AppSettings {
     /// Saved settings, or — the first time — an import of a Lantek install
     /// if there is one, else empty defaults.
     pub fn load() -> Self {
-        match std::fs::read_to_string(Self::file()) {
-            Ok(t) => Self::parse(&t),
-            Err(_) => {
+        match Self::read_from(&Self::file()) {
+            Some(s) => s,
+            None => {
                 let mut s = AppSettings::default();
                 let dir = lantek_default_dir();
                 if Path::new(&dir).join("LANTEKIN.CNI").exists() {
@@ -617,8 +629,17 @@ impl AppSettings {
         }
     }
 
+    /// The settings saved in `f`, None when it can't be read.
+    pub fn read_from(f: &Path) -> Option<Self> {
+        std::fs::read_to_string(f).ok().map(|t| Self::parse(&t))
+    }
+
     pub fn save(&self) -> std::io::Result<()> {
-        let f = Self::file();
+        self.save_to(&Self::file())
+    }
+
+    /// Save the settings in `f`.
+    pub fn save_to(&self, f: &Path) -> std::io::Result<()> {
         if let Some(d) = f.parent() {
             std::fs::create_dir_all(d)?;
         }
@@ -626,7 +647,7 @@ impl AppSettings {
         // leaves half a settings file (machines, posts and materials lost).
         let tmp = f.with_extension("tmp");
         std::fs::write(&tmp, self.to_text())?;
-        std::fs::rename(&tmp, &f)
+        std::fs::rename(&tmp, f)
     }
 
     /// Add Lantek Expert's database connection and machines from an install
@@ -833,5 +854,88 @@ mod settings_tests {
         let e = AppSettings::parse("");
         assert_eq!(e.machines.len(), 1);
         assert!(e.connections.is_empty() && e.conn().is_none());
+    }
+
+    #[test]
+    fn a_machines_order_changes_survive_a_restart_and_use_the_machine_file_puts_the_files_values_back() {
+        use crate::ct1::{HoleMode, MachineTech, OrderChanges, OrderSettings};
+        let d = std::env::temp_dir().join(format!("nestpro_settings_order_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("MchFiles")).unwrap();
+        // A made-up machine file: start bottom off (not followed, CZ6), 20 × 10
+        // zones, By proximity.
+        std::fs::write(d.join("MchFiles").join("PstAdi06.CT1"), "# Demo laser\nB110 ON\nB111 OFF\nB114 OFF\nB115 OFF\nB122 20\nB123 10\nB565 1\n").unwrap();
+        let lantek = d.to_str().unwrap();
+        let file_order = |m: &Machine| MachineTech::for_machine(m, lantek).file_order();
+        let in_use = |m: &Machine| MachineTech::for_machine(m, lantek).order();
+        let file = file_order(&Machine::default());
+        assert_eq!((file.sheet.corner_label(), file.sheet.horizontal, file.sheet.zones_x, file.holes.mode), ("lower left", false, 20, HoleMode::Proximity));
+
+        // Settings saved before this: no order line, so every value is the file's.
+        let path = d.join("settings.ini");
+        std::fs::write(&path, "# nestpro settings\n[general]\nlantek_dir = x\nactive_machine = 0\n[machine]\nname = Laser 01\noutput = iso\n[machine]\nname = Laser 02\noutput = blm\n").unwrap();
+        let mut s = AppSettings::read_from(&path).unwrap();
+        assert!(s.machines.iter().all(|m| m.order.is_empty()));
+        assert_eq!(in_use(&s.machines[0]), file);
+        assert!(!s.to_text().contains("\norder = "), "nothing new is written for an unchanged machine");
+
+        // Two machines, each changed its own way, as Settings → Machines does:
+        // the values wanted, kept where they differ from the file's.
+        let mut a: OrderSettings = file;
+        (a.sheet.start_left, a.sheet.start_bottom, a.sheet.horizontal, a.sheet.zigzag, a.sheet.zones_x, a.sheet.zones_y) = (false, false, true, true, 4, 0);
+        s.machines[0].order = OrderChanges::between(&file, &a);
+        let mut b = file;
+        (b.holes.mode, b.holes.corner, b.holes.columns, b.holes.ortho_tol) = (HoleMode::Direction, 3, true, 0.5);
+        (b.holes.small_first, b.holes.big_length, b.holes.big_width, b.holes.big_offset) = (true, 40.0, 30.0, 2.5);
+        // A value set to what the file says isn't a change: it follows the file.
+        b.sheet.zones_x = 20;
+        s.machines[1].order = OrderChanges::between(&file, &b);
+        assert!(s.machines[1].order.zones_x.is_none() && !s.machines[1].order.sheet_changed());
+        s.save_to(&path).unwrap();
+
+        // A restart: each machine cuts with its own changes.
+        let mut s = AppSettings::read_from(&path).unwrap();
+        assert_eq!((in_use(&s.machines[0]), in_use(&s.machines[1])), (a, b));
+        assert_eq!(s.machines[0].order, OrderChanges { start_left: Some(false), start_bottom: Some(false), rows: Some(true), zigzag: Some(true), zones_x: Some(4), zones_y: Some(0), ..Default::default() });
+        // Switching the active machine switches the order it cuts with.
+        s.active_machine = 1;
+        assert_eq!(in_use(&s.machine()), b);
+
+        // "Use the machine file" on the first: the file's values come back,
+        // after a restart too; the second keeps its changes.
+        s.machines[0].order = OrderChanges::default();
+        s.save_to(&path).unwrap();
+        let s = AppSettings::read_from(&path).unwrap();
+        assert_eq!((in_use(&s.machines[0]), in_use(&s.machines[1])), (file, b));
+        assert_eq!(file_order(&s.machines[1]), file, "the file's own values stay the file's");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_saved_order_value_that_cant_be_taken_is_left_out_and_the_machines_other_changes_are_kept() {
+        use crate::ct1::OrderChanges;
+        let d = std::env::temp_dir().join(format!("nestpro_settings_bad_order_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let path = d.join("settings.ini");
+        // A hand-edited line: a negative zone count, a mode and a corner the
+        // settings don't have, a negative tolerance, too many zones, a word
+        // for a switch; and two changes that are fine.
+        let line = r#"{"start_bottom":false,"zones_x":-1,"zones_y":100000,"hole_mode":0,"hole_start_corner":9,"orthogonality_tolerance":-1.0,"zigzag":"yes","big_hole_offset":2.5}"#;
+        std::fs::write(&path, format!("[machine]\nname = Demo laser\noutput = iso\norder = {line}\n[machine]\nname = Demo plasma\norder = not a list\n")).unwrap();
+        let s = AppSettings::read_from(&path).unwrap();
+        let kept = OrderChanges { start_bottom: Some(false), hole_mode: Some(0), big_hole_offset: Some(2.5), ..Default::default() };
+        assert_eq!(s.machines[0].order, kept);
+        // A line that can't be read at all leaves every value the file's.
+        assert!(s.machines[1].order.is_empty());
+        // Saved and read again, the good changes are still there, and only them.
+        s.save_to(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains(r#"order = {"start_bottom":false,"hole_mode":0,"big_hole_offset":2.5}"#), "{text}");
+        assert_eq!(AppSettings::read_from(&path).unwrap().machines[0].order, kept);
+        // Settings with no changes save back exactly as they were read.
+        let old = AppSettings::default().to_text();
+        assert_eq!(AppSettings::parse(&old).to_text(), old);
+        let _ = std::fs::remove_dir_all(&d);
     }
 }
