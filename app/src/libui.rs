@@ -2138,7 +2138,7 @@ pub(crate) mod libui_tests {
         assert!(!window.contains("No jobs in the Library yet"), "shown as empty:\n{window}");
         let explorer = shown_in_panel(&ctx, |ui| a.library_job_tree(ui));
         assert!(explorer.contains(&said), "Job Explorer:\n{explorer}");
-        assert!(!explorer.contains("none yet"), "shown as empty:\n{explorer}");
+        assert!(!explorer.contains("Saved jobs (Library) — none yet"), "shown as empty:\n{explorer}");
         let add = shown_in_panel(&ctx, |ui| {
             crate::ui_parts::library_parts_section(&mut a, ui);
         });

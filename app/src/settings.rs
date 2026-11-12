@@ -343,6 +343,11 @@ fn unesc(s: &str) -> String {
 
 impl AppSettings {
     pub fn file() -> PathBuf {
+        // Tests never touch this PC's own settings: what they save goes to a
+        // folder of the test run's own.
+        if cfg!(test) {
+            return std::env::temp_dir().join(format!("nestpro_test_settings_{}", std::process::id())).join("settings.ini");
+        }
         // %APPDATA% on Windows; $XDG_CONFIG_HOME or ~/.config elsewhere.
         let base = std::env::var_os("APPDATA")
             .or_else(|| std::env::var_os("XDG_CONFIG_HOME"))
@@ -624,7 +629,9 @@ impl AppSettings {
     /// Saved settings, or — the first time — an import of a Lantek install
     /// if there is one, else empty defaults.
     pub fn load() -> Self {
-        match std::fs::read_to_string(Self::file()) {
+        // A test starts from the defaults, never from what another test saved.
+        let saved = if cfg!(test) { Err(std::io::ErrorKind::NotFound.into()) } else { std::fs::read_to_string(Self::file()) };
+        match saved {
             Ok(t) => Self::parse(&t),
             Err(_) => {
                 let mut s = AppSettings::default();
