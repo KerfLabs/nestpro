@@ -474,6 +474,13 @@
    "estimated": true
   },
   {
+   "name": "contours picked on the sheet, on the LC5",
+   "group": "part cut order",
+   "value": "each part is one call, made where its outline is cut: a contour picked ahead of another part is cut with its own part there",
+   "source": "CO10",
+   "estimated": true
+  },
+  {
    "name": "setting a part's cut order on the part screen",
    "group": "part cut order",
    "value": ["Machining → Contours → Manual Contours: click, sweep or box", "All Marks", "All Cut", "All Contours of one Quality"],
