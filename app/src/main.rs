@@ -881,8 +881,9 @@ impl App {
                     // The file is a copy (LB13): the window doesn't follow
                     // it, or an agent's change to it, reloaded, would drop
                     // the job's booking and the next Save to library would
-                    // take its sheets again.
-                    self.job_path = Some(path.to_path_buf());
+                    // take its sheets again. Nor does the job keep it as its
+                    // own file: Save asks where, as for any Library job.
+                    self.job_path = None;
                     self.job_link = None;
                     self.store_job();
                 } else {

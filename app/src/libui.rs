@@ -1831,6 +1831,7 @@ pub(crate) mod libui_tests {
         assert_eq!(12 - in_stock(&dir).0, held, "DEMO-7 took its sheets");
         let file = std::env::temp_dir().join(format!("nestpro_libui_lib_job_file_agent_{}.snjob", std::process::id()));
         prog1.save_job_to(&file);
+        assert!(prog1.job_path.is_none() && prog1.job_link.is_none(), "the copy became the job's own file");
         // An agent adds a part to the file (the CLI's way); the window looks.
         std::thread::sleep(Duration::from_millis(1100));
         let mut s = crate::engine::session::Session::new(crate::engine::Ctx::builtin());

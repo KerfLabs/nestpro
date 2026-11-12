@@ -5091,7 +5091,7 @@
  {
   "name": "a Library job saved to a file and the stock",
   "group": "shared library",
-  "value": "left alone: booked at its next Save to library; the file is a copy holding none of its sheets or remnants, and the window doesn't follow changes to it",
+  "value": "left alone: booked at its next Save to library; the file is a copy holding none of its sheets or remnants, the window doesn't follow changes to it, and Save asks where each time",
   "source": "MECHANICS LB8; estimated"
  },
  {
