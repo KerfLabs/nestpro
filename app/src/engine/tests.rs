@@ -2484,6 +2484,25 @@ fn an_agents_copy_of_a_library_job_goes_into_its_folder() {
 }
 
 #[test]
+fn an_agents_new_library_part_goes_where_its_library_job_is_now() {
+    // JX19: a library job moved to another folder since its file was made:
+    // its new parts go into the part folder named like where it is now, not
+    // by the folder name the file was made with.
+    let d = dir("agent_part_follows_job");
+    let mut s = Session::new(stock_ctx(&d));
+    let jp = d.join("frames.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"name": "DEMO-001", "week": "W12"}));
+    call(&mut s, "library", None, json!({"mode": "save-job"}));
+    call(&mut s, "job-folders", None, json!({"mode": "new", "name": "Acme"}));
+    call(&mut s, "job-folders", None, json!({"mode": "new", "folder": "Acme", "name": "2026-11"}));
+    call(&mut s, "job-folders", None, json!({"mode": "move", "saved_job": "DEMO-001", "to": "Acme/2026-11"}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 300, "h": 120, "qty": 4, "name": "DEMO-P1"}));
+    let saved = call(&mut s, "library", None, json!({"mode": "save-part", "parts": [1]}));
+    assert_eq!(saved["data"]["folders"], json!(["Acme/2026-11"]), "{saved}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn an_agents_copy_of_a_library_job_someone_deleted_goes_by_its_folder_name() {
     // LB9, JX15: the job it was copied from is gone from the Library, so its
     // folder isn't known: the copy goes into the folder its name says.

@@ -1734,6 +1734,61 @@ pub(crate) mod libui_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// LB9: a part question is about the job it was asked in. Answered once
+    /// another job is in front, it saves nothing: that job's part of the
+    /// same name never replaces the library part, or takes a new name.
+    #[test]
+    fn a_part_question_answered_in_another_job_saves_nothing() {
+        let dir = new_library("part_question_other_job");
+        let clock = Clock::at(NOV_9_0920);
+        let mut prog1 = window(&dir, "sam", "PROG-1", &clock);
+        let mut prog2 = window(&dir, "kim", "PROG-2", &clock);
+        prog1.open_job(0);
+        prog1.parts[0].name = "DEMO-P1".into();
+        prog1.save_part_to_library(0);
+        let theirs = library_part(&prog1, "DEMO-P1");
+        prog2.open_job(1);
+        prog2.parts[0].name = "DEMO-P1".into();
+        prog2.parts[0].w += 70.0;
+        prog2.open_job(0);
+        prog2.parts[0].name = "DEMO-P1".into();
+        prog2.save_part_to_library(0);
+        assert!(matches!(prog2.libui.question, Some(SaveQuestion::Part { part: 0, .. })), "{}", prog2.status);
+        prog2.open_job(1);
+        prog2.overwrite_part();
+        assert_eq!(library_part(&prog1, "DEMO-P1"), theirs, "the other job's part replaced the library part");
+        prog2.save_part_under_new_name();
+        assert_eq!((prog2.parts[0].name.as_str(), library_part(&prog1, "DEMO-P1 (1)")), ("DEMO-P1", None));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// LB8, LB13: a Library job saved to a file on this PC leaves the stock
+    /// alone: its sheets are booked when it's saved to the Library, after
+    /// the revision check. The file is a copy holding none of its sheets, so
+    /// opening and saving it can never give back a sheet the record holds.
+    #[test]
+    fn a_library_job_saved_to_a_file_leaves_the_stock_alone() {
+        let dir = new_library("lib_job_to_file");
+        let clock = Clock::at(NOV_9_0920);
+        let mut prog1 = demo7(&dir, &clock);
+        let (held, stock) = (holds(&prog1), in_stock(&dir));
+        assert!(held > 1, "DEMO-7 holds {held} sheets");
+        prog1.parts[0].qty = 5;
+        prog1.run_nesting();
+        let file = std::env::temp_dir().join(format!("nestpro_libui_lib_job_to_file_{}.snjob", std::process::id()));
+        prog1.save_job_to(&file);
+        assert_eq!(in_stock(&dir), stock, "saving to a file changed the stock: {}", prog1.status);
+        let copy = crate::jobfile::load(&file).unwrap();
+        assert!(copy.held.is_empty() && !copy.booked && copy.library.is_none(), "the file holds stock: {:?}", copy.held);
+        // The open job still holds what its record holds; Save to library books the change.
+        assert_eq!(holds(&prog1), held);
+        prog1.save_job_to_library();
+        assert_eq!(holds(&prog1), prog1.result.sheets.len() as i32, "{}", prog1.status);
+        assert_eq!(in_stock(&dir).0, stock.0 + held - holds(&prog1));
+        let _ = std::fs::remove_file(&file);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// LB7: a job saved to a file and opened again still knows the library
     /// parts it read: saving one back goes over it without asking.
     #[test]

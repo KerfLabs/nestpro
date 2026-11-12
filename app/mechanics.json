@@ -5077,9 +5077,21 @@
   "source": "MECHANICS LB7; estimated"
  },
  {
+  "name": "a deleted record's number given to a new record",
+  "group": "shared library",
+  "value": false,
+  "source": "MECHANICS LB7; estimated"
+ },
+ {
   "name": "a refused job save and the stock",
   "group": "shared library",
   "value": "takes no sheets, gives none back, stores no remnants: the check comes first, then the booking, the record and a new record's folder (JX15) under one hold of the write lock",
+  "source": "MECHANICS LB8; estimated"
+ },
+ {
+  "name": "a Library job saved to a file and the stock",
+  "group": "shared library",
+  "value": "left alone: booked at its next Save to library; the file is a copy holding none of its sheets or remnants",
   "source": "MECHANICS LB8; estimated"
  },
  {

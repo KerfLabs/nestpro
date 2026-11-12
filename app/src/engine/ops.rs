@@ -1818,11 +1818,12 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                 "save-part" => {
                     let t = parts_sel(&job.parts, a.get("parts"), true)?;
                     // A new part goes into the part folder `folder` names, else
-                    // the one named like the job's folder (its week), made if
-                    // missing; saving over a part never moves it (JX19).
+                    // the one named like the job's folder (its place in the
+                    // Library now, else its week), made if missing; saving
+                    // over a part never moves it (JX19).
                     let into = match a.str("folder") {
                         Some(f) => crate::folders::PartsFolder::Path(f),
-                        None => crate::folders::PartsFolder::LikeJob { record: None, folder: None, week: job.week.clone() },
+                        None => crate::folders::PartsFolder::LikeJob { record: job.library.map(|r| r.id), folder: None, week: job.week.clone() },
                     };
                     let folder = a.str("folder").unwrap_or_else(|| job.week.clone());
                     // Two parts of one reference would save over each other.

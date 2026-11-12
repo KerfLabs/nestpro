@@ -385,6 +385,16 @@ impl Library {
         self.dir.join(kind.folder()).join((id / PER_FOLDER).to_string()).join(format!("{id}.{}", kind.ext()))
     }
 
+    /// The empty mark a deleted record leaves beside its file's place
+    /// (`7.snjob.deleted`), so its number is never given to a new record: a
+    /// PC that still has the deleted job open saves it again under that
+    /// number (LB16), never over another job that took it (LB7).
+    fn deleted_mark(&self, kind: Kind, id: u64) -> PathBuf {
+        let mut p = self.path(kind, id).into_os_string();
+        p.push(".deleted");
+        p.into()
+    }
+
     pub fn entries(&self) -> Vec<Entry> {
         std::fs::read_to_string(self.dir.join(INDEX))
             .ok()
@@ -460,13 +470,18 @@ impl Library {
     /// its file so two people saving at once on a shared folder can't get
     /// the same number (RF1: the original takes the next number under a
     /// database lock). Called under the write lock (LB1); the exclusive
-    /// create still keeps a number from being taken twice.
+    /// create still keeps a number from being taken twice. A deleted
+    /// record's number is skipped (LB7).
     fn new_id(&self, kind: Kind) -> Result<u64, String> {
         // Highest number + 1, or 1 for the first (RF1).
         let mut id = self.entries().iter().filter(|e| e.kind == kind).map(|e| e.id).max().unwrap_or(0) + 1;
         loop {
             if id > REF_MAX {
                 return Err(format!("the reference counter is full ({}{REF_MAX})", if kind == Kind::Job { JOB_PREFIX } else { PART_PREFIX }));
+            }
+            if self.deleted_mark(kind, id).exists() {
+                id += 1;
+                continue;
             }
             let p = self.path(kind, id);
             if let Some(d) = p.parent() {
@@ -752,6 +767,7 @@ impl Library {
             })?;
         }
         lock.still_held()?;
+        let _ = std::fs::write(self.deleted_mark(kind, id), b"");
         let _ = std::fs::remove_file(self.path(kind, id));
         if kind == Kind::Job {
             crate::engine::inuse::forget_job(self, id, &lock);
@@ -1292,6 +1308,33 @@ mod library_tests {
         again.week = "W13".into();
         assert_eq!(prog2.save_job(&again, SaveTo::Read(again.library.unwrap())).unwrap().id, first.id);
         assert_eq!(prog1.entries().iter().filter(|e| e.kind == Kind::Job).count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// LB7, LB16: a deleted record's number is never given to a new record,
+    /// so a PC that still has the deleted job open saves it again under its
+    /// own number, never over another PC's new job.
+    #[test]
+    fn a_deleted_records_number_is_never_given_again() {
+        let dir = scratch("deleted_number");
+        let clock = Clock::at(NOV_9_0920);
+        let prog1 = Library::open(&dir, &Who::new("sam", "PROG-1"), &clock).unwrap();
+        let prog2 = Library::open(&dir, &Who::new("kim", "PROG-2"), &clock).unwrap();
+        prog1.save_job(&job("DEMO-6"), SaveTo::New).unwrap();
+        let seven = prog1.save_job(&job("DEMO-7"), SaveTo::New).unwrap();
+        let mut on1 = prog1.load_job(seven.id).unwrap();
+        prog2.delete(Kind::Job, seven.id).unwrap();
+        assert_eq!(prog2.rescan().iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["DEMO-6"], "a deleted job came back");
+        let new = prog2.save_job(&job("DEMO-8"), SaveTo::New).unwrap();
+        assert_ne!(new.id, seven.id, "the deleted job's number was given again");
+        on1.week = "W12".into();
+        assert_eq!(prog1.save_job(&on1, SaveTo::Read(on1.library.unwrap())).unwrap().id, seven.id);
+        assert_eq!((prog2.load_job(seven.id).unwrap().name.as_str(), prog2.load_job(new.id).unwrap().name.as_str()), ("DEMO-7", "DEMO-8"));
+        // The same for library parts.
+        let part = Part { name: "DEMO-P1".into(), shape: crate::nest::Shape::Rectangle, w: 120.0, h: 80.0, qty: 1, rotate: true, color: 1, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
+        let p = prog1.save_product(&part, "", 0, 3.0, SaveTo::New).unwrap();
+        prog2.delete(Kind::Product, p.id).unwrap();
+        assert_ne!(prog2.save_product(&Part { name: "DEMO-P2".into(), ..part }, "", 0, 3.0, SaveTo::New).unwrap().id, p.id);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

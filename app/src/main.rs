@@ -745,6 +745,11 @@ impl App {
         self.sel_part = if self.parts.is_empty() { None } else { Some(0) };
         self.undo.clear();
         self.redo.clear();
+        // A question about the last job's library part goes with it (LB9):
+        // answered here, it would save this job's part of that name.
+        if matches!(self.libui.question, Some(crate::libui::SaveQuestion::Part { .. })) {
+            self.libui.question = None;
+        }
         self.jobs_reindexed();
         self.refresh();
         self.status = format!("Opened job {}.", self.job_name);
@@ -826,11 +831,26 @@ impl App {
                 return;
             }
         }
-        if !self.ready_to_save(stockui::SaveTarget::File(path.to_path_buf())) {
+        // A Library job's sheets are booked when it's saved to the Library,
+        // after its revision check (LB8): saved to a file, it leaves the
+        // stock alone, and the file is a copy holding none of its sheets or
+        // remnants (as LB9's copy), so it never gives back what the record
+        // holds (LB13).
+        let library_job = self.job_lib_id.is_some();
+        if !library_job && !self.ready_to_save(stockui::SaveTarget::File(path.to_path_buf())) {
             return;
         }
-        let stock_note = self.stock_on_save();
+        let stock_note = if library_job {
+            self.result.normalise(&self.spec);
+            " — its sheets are booked when it's saved to the Library.".to_string()
+        } else {
+            self.stock_on_save()
+        };
         self.store_job();
+        let (mut formats, mut held) = (self.result.formats.clone(), self.held.clone());
+        if library_job {
+            engine::stockflow::forget_booking(&mut formats, &mut held);
+        }
         let week = self.jobs.get(self.cur_job).map_or(String::new(), |j| j.week.clone());
         let j = jobfile::JobFile {
             format: jobfile::FORMAT.into(),
@@ -840,14 +860,15 @@ impl App {
             parts: self.parts.clone(),
             spec: self.spec.clone(),
             sheets: self.result.sheets.clone(),
-            formats: self.result.formats.clone(),
-            held: self.held.clone(),
+            formats,
+            held,
             cut_lines: self.cut_lines.clone(),
             method: self.result.method.clone(),
             manual_cuts: self.manual_cuts.clone(),
             stale: self.stale,
-            // The window books the stock on every save (stock_on_save).
-            booked: true,
+            // The window books the stock on every save (stock_on_save), a
+            // Library job's only when saved to the Library.
+            booked: !library_job,
             erp: self.erp_job.clone(),
             saved: None,
             library: None,
