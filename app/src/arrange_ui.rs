@@ -313,7 +313,8 @@ impl App {
                 if self.cut_drag_begin(w, (crate::cutoff::LINE_PICK_PX / s) as f64) {
                     self.panning = false;
                 } else if self.manual_mode {
-                    self.panning = true;
+                    // A drag sweeps or boxes whole parts (MM8, MM9; manual.rs).
+                    self.panning = false;
                 } else if let Some(i) = hit(self, w) {
                     if !self.is_selected(i) {
                         if mods.shift {

@@ -287,9 +287,12 @@ pub static OPS: &[Op] = &[
         a("text", Ty::Str, "add: the text"), a("height", Ty::Num, "add: capital height, mm (default 8)"), c("kind", TEXTS, "add: text kind (default special)"),
     ] },
     // --- machining ---
-    Op { name: "cut-order", group: "Machining", kind: Kind::Write, help: "Manual cutting order: pick the contour nearest x,y (cut first, from there), undo the last pick, or clear them (all automatic).", args: &[
-        Arg { name: "mode", ty: Ty::Str, required: true, help: "pick, undo or clear", choices: &["pick", "undo", "clear"] }, SHEET,
-        a("x", Ty::Num, "pick: X on the sheet, mm"), a("y", Ty::Num, "pick: Y, mm"), a("reverse", Ty::Bool, "pick: cut it the other way"), a("tol", Ty::Num, "pick: how near, mm (default 5)"),
+    Op { name: "cut-order", group: "Machining", kind: Kind::Write, help: "Manual cutting order: pick the contour nearest x,y (cut first, from there); take whole parts (parts: placed parts in the order given, the parts a sweep along points passes in the order it passes them, or the parts wholly inside a box in the automatic order; each cut whole in its own cut order, after the picks before it; parts the picks already finish are skipped); undo the last pick or the last parts command; or clear them (all automatic).", args: &[
+        Arg { name: "mode", ty: Ty::Str, required: true, help: "pick, parts, undo or clear", choices: &["pick", "parts", "undo", "clear"] }, SHEET,
+        a("x", Ty::Num, "pick: X on the sheet, mm"), a("y", Ty::Num, "pick: Y, mm"), a("reverse", Ty::Bool, "pick: cut it the other way"), a("tol", Ty::Num, "pick, parts with points: how near, mm (default 5)"),
+        a("items", Ty::Str, "parts: placed parts in the order to cut them, e.g. \"3,1,2\" (#n as in info/render; 4-2 is 4, 3, 2)"),
+        a("points", Ty::Points, "parts: a sweep \"x,y;x,y;…\" in sheet mm: the parts it passes within tol of their contours, in the order passed"),
+        a("box", Ty::Points, "parts: two opposite corners \"x,y;x,y\" in sheet mm: the parts wholly inside, in the sheet's automatic order"),
     ] },
     Op { name: "remnant", group: "Machining", kind: Kind::Write, help: "Cut off the remnant: auto (the automatic remnant line in the shape set in the Sheet Remnants options), exact (stepped around the parts), or a line at x= or y=. A new remnant line replaces the sheet's old one.", args: &[
         Arg { name: "mode", ty: Ty::Str, required: true, help: "auto, exact or line", choices: &["auto", "exact", "line"] }, SHEET,
@@ -2380,15 +2383,26 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                     let (parts, sheet) = (job.parts.clone(), job.sheets[s].clone());
                     Ok(Outcome::msg(manual_pick(&parts, &sheet, job.manual_mut(s), [x, y], tol, rev)?))
                 }
-                "undo" => match job.manual_mut(s).pop() {
-                    Some(_) => Ok(Outcome::msg("Last manual pick removed.")),
-                    None => Err("No manual picks on this sheet.".into()),
-                },
+                "parts" => {
+                    let (parts, sheet) = (job.parts.clone(), job.sheets[s].clone());
+                    let done = sheetpick::picked(&parts, &sheet, job.manual_mut(s));
+                    let got = match (a.str("items"), a.points("points")?, a.points("box")?) {
+                        (Some(list), None, None) => sheetpick::listed(&done, &arrange::parse_items_in_order(&list, sheet.len())?),
+                        (None, Some(path), None) if !path.is_empty() => sheetpick::sweep(&parts, &sheet, &done, &path, a.num("tol")?.unwrap_or(5.0)),
+                        (None, None, Some(b)) if b.len() == 2 => sheetpick::boxed(&parts, &sheet, &job.spec_at(s), &done, b[0], b[1]),
+                        _ => return Err("parts takes whole parts by one of: items=\"3,1,2\" (placed parts in the order to cut them), points=\"x,y;x,y;…\" (a sweep: the parts it passes, in that order) or box=\"x,y;x,y\" (two corners: the parts wholly inside).".into()),
+                    };
+                    // One engine function for agents and the sheet's sweep and box (MM8, MM9).
+                    let message = sheetpick::take(&parts, &sheet, job.manual_mut(s), &got)?;
+                    let one = |v: &[usize]| v.iter().map(|k| k + 1).collect::<Vec<_>>();
+                    Ok(Outcome { message, data: json!({"added": one(&got.add), "skipped": one(&got.skipped)}), changed: true, files: vec![] })
+                }
+                "undo" => sheetpick::undo(job.manual_mut(s)).map(Outcome::msg).ok_or_else(|| "No manual picks on this sheet.".to_string()),
                 "clear" => {
                     job.manual_mut(s).clear();
                     Ok(Outcome::msg("Manual cuts cleared — the whole sheet is cut automatically."))
                 }
-                m => Err(format!("cut-order mode '{m}'?")),
+                m => Err(format!("cut-order mode '{m}': give pick, parts, undo or clear.")),
             }
         }
         "remnant" => {

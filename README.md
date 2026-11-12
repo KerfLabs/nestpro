@@ -45,6 +45,7 @@ nestpro contour-tech jobs/frames.snjob --part=1 --contours=5 --state=mark   # nu
 nestpro contour-tech jobs/frames.snjob --part=1 --contours=2 --quality=1 --same=true   # every equal hole cut at quality 1
 nestpro part-cut-order jobs/frames.snjob --part=1 --mode=add --contours=3,1,2   # these holes first, in this order; the outline last
 nestpro nest jobs/frames.snjob                      # takes sheets from stock (remnants first)
+nestpro cut-order jobs/frames.snjob --sheet=1 --mode=parts --items=4,2,1   # these parts first, each cut whole in its own order
 nestpro leads jobs/frames.snjob --mode=machine
 nestpro machine-tech jobs/frames.snjob               # which material/thickness table of the machine file applies
 nestpro compensation jobs/frames.snjob --system=on   # kerf: offset path instead of G41/G42 (on/off/machine)

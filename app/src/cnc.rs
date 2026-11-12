@@ -666,6 +666,13 @@ pub struct ManualCut {
     pub contour: usize,
     pub start: P,
     pub reverse: bool,
+    /// A part taken whole by a sweep or a box (MM8, MM9): that command's
+    /// number on the sheet (1, 2…), so undo takes the command back together.
+    /// The part is cut whole there, in its own cut order; `contour` is its
+    /// outline when it was taken and `start` its corner, and neither sets
+    /// where a cut starts. `None` for one contour picked by a click (MM4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub whole: Option<u32>,
 }
 
 /// Contours of a placed part on the sheet: holes first, then the outer contour.
@@ -701,13 +708,21 @@ pub fn nearest_contour(parts: &[Part], placed: &[Placed], p: P, tol: f64) -> Opt
 /// the outside so the part doesn't drop). A contour is cut once
 /// (rule MM3). A picked hole, or a hole pulled in by a picked outside, first
 /// cuts every part sitting in it, whole, so none drops with its scrap (CO2).
-/// Then the rest automatically. Each part's contours that aren't picked
-/// follow its own cut order (CO8, CO10): `steps` by part, from `part_steps`.
+/// A part taken whole by a sweep or a box is cut whole at its place among
+/// the picks (MM8, MM9). Then the rest automatically. Each part's contours
+/// that aren't picked follow its own cut order (CO8, CO10): `steps` by
+/// part, from `part_steps`.
 pub fn cut_jobs(parts: &[Part], placed: &[Placed], steps: &[Vec<Step>], order: &[usize], manual: &[ManualCut]) -> Vec<CutJob> {
     let mut jobs: Vec<CutJob> = vec![];
     let mut busy = vec![false; placed.len()];
     let pick = Picks { parts, placed, steps, manual };
     for m in manual {
+        if m.whole.is_some() && m.placed < placed.len() {
+            // MM8, MM9: a part taken whole is cut here, what is left of it,
+            // in its own cut order, each hole after the parts sitting in it.
+            pick.cut_whole(m.placed, &mut jobs, &mut busy);
+            continue;
+        }
         if m.placed >= placed.len() || m.contour >= contour_count(parts, placed, m.placed) || job_done(&jobs, m.placed, m.contour) {
             continue;
         }
@@ -799,7 +814,7 @@ impl Picks<'_> {
             if ci + 1 < n {
                 self.pull_in(i, ci, jobs, busy);
             }
-            let pick = self.manual.iter().find(|m| m.placed == i && m.contour == ci).map(|m| (m.start, m.reverse));
+            let pick = self.manual.iter().find(|m| m.whole.is_none() && m.placed == i && m.contour == ci).map(|m| (m.start, m.reverse));
             jobs.push((i, ci, pick));
         }
         busy[i] = false;
@@ -904,8 +919,14 @@ fn marks_to_make(steps: &[Step], cut: &[bool], made: &mut [bool], last: bool) ->
     due
 }
 
-/// Like `plan`, with some contours cut by hand first.
-pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: &[ManualCut]) -> SheetPlan {
+/// The sheet's automatic part order (CO1, CZ4, CZ5): zone by zone, nearest
+/// first, parts sitting in another part's hole before it. A box in Manual
+/// cutting takes its parts in this order among themselves (MM9).
+pub fn sheet_order(placed: &[Placed], spec: &SheetSpec) -> Vec<usize> {
+    auto_order(placed, spec, &crate::ct1::for_spec(spec))
+}
+
+fn auto_order(placed: &[Placed], spec: &SheetSpec, mt: &crate::ct1::MachineTech) -> Vec<usize> {
     let mut left: Vec<usize> = (0..placed.len()).collect();
     let mut order = Vec::new();
     let mut at: P = [0.0, 0.0];
@@ -919,9 +940,7 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
     let inside_other = |i: usize| depth(i) > 0;
     // Zone by zone (rules CZ4, CZ5): the parts of each zone, nearest first,
     // with parts sitting in another part's hole before the rest.
-    // The machine's tables for this sheet's material and thickness (MTL1–MTL7).
-    let mt = crate::ct1::for_spec(spec);
-    let zones = crate::ct1::zones(spec.w, spec.h, &mt);
+    let zones = crate::ct1::zones(spec.w, spec.h, mt);
     let mut zi = 0;
     while !left.is_empty() {
         while zi < zones.len() && !left.iter().any(|&i| crate::ct1::box_in_zone(placed[i].bbox4(), zones[zi])) {
@@ -943,6 +962,14 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
         at = [placed[i].x + placed[i].w, placed[i].y];
         order.push(i);
     }
+    order
+}
+
+/// Like `plan`, with some contours cut by hand first.
+pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: &[ManualCut]) -> SheetPlan {
+    // The machine's tables for this sheet's material and thickness (MTL1–MTL7).
+    let mt = crate::ct1::for_spec(spec);
+    let order = auto_order(placed, spec, &mt);
 
     // Speeds and time settings for this sheet (CTM1–CTM16, TT1–TT10).
     let timing = Timing::for_spec(spec, &mt);
@@ -1927,8 +1954,8 @@ mod manual_tests {
     #[test]
     fn manual_picks_go_first_holes_before_the_outside_and_once_only() {
         let (parts, placed, _) = setup();
-        let outer = ManualCut { placed: 0, contour: 1, start: [10.0, 100.0], reverse: false };
-        let small = ManualCut { placed: 1, contour: 0, start: [400.0, 30.0], reverse: true };
+        let outer = ManualCut { placed: 0, contour: 1, start: [10.0, 100.0], reverse: false, whole: None };
+        let small = ManualCut { placed: 1, contour: 0, start: [400.0, 30.0], reverse: true, whole: None };
         let jobs = cut_jobs(&parts, &placed, &part_steps(&parts, &placed), &[0, 1], &[small, outer, outer]);
         let order: Vec<(usize, usize, bool)> = jobs.iter().map(|j| (j.0, j.1, j.2.is_some())).collect();
         // The small part, then the plate's hole (automatic, inserted), then its outside.
@@ -1951,9 +1978,9 @@ mod manual_tests {
         // CO2: picking the plate's outside or its hole cuts the part sitting
         // in the hole first, and a pick on that part keeps its start.
         let (parts, placed, _) = frame();
-        let outer = ManualCut { placed: 0, contour: 1, start: [10.0, 300.0], reverse: false };
-        let hole = ManualCut { placed: 0, contour: 0, start: [430.0, 310.0], reverse: false };
-        let inner = ManualCut { placed: 1, contour: 0, start: [285.0, 300.0], reverse: true };
+        let outer = ManualCut { placed: 0, contour: 1, start: [10.0, 300.0], reverse: false, whole: None };
+        let hole = ManualCut { placed: 0, contour: 0, start: [430.0, 310.0], reverse: false, whole: None };
+        let inner = ManualCut { placed: 1, contour: 0, start: [285.0, 300.0], reverse: true, whole: None };
         let order = |m: &[ManualCut]| cut_jobs(&parts, &placed, &part_steps(&parts, &placed), &[1, 0, 2], m).iter().map(|j| (j.0, j.1, j.2.is_some())).collect::<Vec<_>>();
         assert_eq!(order(&[outer, inner]), vec![(1, 0, true), (0, 0, false), (0, 1, true), (2, 0, false)]);
         assert_eq!(order(&[hole]), vec![(1, 0, false), (0, 0, true), (0, 1, false), (2, 0, false)]);
@@ -1963,7 +1990,7 @@ mod manual_tests {
     fn verify_flags_a_part_cut_after_the_hole_it_sits_in() {
         let (parts, placed, spec) = frame();
         let late = |t: &String| t.contains("sitting in it (2)") && t.contains("drop first");
-        let pick = ManualCut { placed: 0, contour: 1, start: [10.0, 300.0], reverse: false };
+        let pick = ManualCut { placed: 0, contour: 1, start: [10.0, 300.0], reverse: false, whole: None };
         let mut p = plan_manual(&parts, &placed, &spec, &[pick]);
         assert!(!crate::drawing::verify_machining(&p).iter().any(late));
         // The part in the hole moved to the end, after the plate's hole.
@@ -1978,7 +2005,7 @@ mod manual_tests {
     fn the_plan_starts_where_picked_and_can_cut_the_other_way() {
         let (parts, placed, spec) = setup();
         let auto = plan(&parts, &placed, &spec);
-        let pick = ManualCut { placed: 1, contour: 0, start: [350.0, 10.0], reverse: false };
+        let pick = ManualCut { placed: 1, contour: 0, start: [350.0, 10.0], reverse: false, whole: None };
         let p = plan_manual(&parts, &placed, &spec, &[pick]);
         let c = &p.contours[0];
         assert!(c.manual && c.part_no == 2);
@@ -2060,8 +2087,8 @@ mod kerf_plan_tests {
         crate::ct1::set_thread_active(None);
         let parts = vec![part(Shape::Rectangle, 100.0, 60.0, None)];
         let pl = [at(10.0, 10.0, 100.0, 60.0, false)];
-        let fwd = plan_manual(&parts, &pl, &spec(), &[ManualCut { placed: 0, contour: 0, start: [60.0, 10.0], reverse: false }]);
-        let rev = plan_manual(&parts, &pl, &spec(), &[ManualCut { placed: 0, contour: 0, start: [60.0, 10.0], reverse: true }]);
+        let fwd = plan_manual(&parts, &pl, &spec(), &[ManualCut { placed: 0, contour: 0, start: [60.0, 10.0], reverse: false, whole: None }]);
+        let rev = plan_manual(&parts, &pl, &spec(), &[ManualCut { placed: 0, contour: 0, start: [60.0, 10.0], reverse: true, whole: None }]);
         assert_eq!((fwd.contours[0].comp.side, rev.contours[0].comp.side), (Side::Right, Side::Left));
     }
 

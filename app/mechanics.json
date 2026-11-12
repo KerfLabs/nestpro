@@ -1144,6 +1144,41 @@
    "estimated": true
   },
   {
+   "name": "a sweep across parts on the sheet in Manual cutting",
+   "group": "manual machining",
+   "value": "takes whole parts in the order passed, each cut whole in its own cut order; parts the picks already cut whole are skipped",
+   "source": "MM8",
+   "estimated": true
+  },
+  {
+   "name": "a part passed by a sweep on the sheet",
+   "group": "manual machining",
+   "value": "the pointer comes within the pick aperture of one of its contours",
+   "source": "MM8",
+   "estimated": true
+  },
+  {
+   "name": "a part with some contours clicked, then swept",
+   "group": "manual machining",
+   "value": "taken: the rest of it cut whole at the sweep's place",
+   "source": "MM8",
+   "estimated": true
+  },
+  {
+   "name": "a box on the sheet in Manual cutting",
+   "group": "manual machining",
+   "value": "takes the parts wholly inside it, in the sheet's automatic order among themselves",
+   "source": "MM9",
+   "estimated": true
+  },
+  {
+   "name": "Undo pick after a sweep or a box",
+   "group": "manual machining",
+   "value": "takes back the whole sweep or box",
+   "source": "MM9",
+   "estimated": true
+  },
+  {
    "name": "text picked by its box sides or inside its box",
    "group": "texts",
    "value": true,

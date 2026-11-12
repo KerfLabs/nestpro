@@ -647,6 +647,8 @@ label saying what it is:
 | MM4 | **Picking a contour on the sheet** finds the part from the clicked element and refuses a contour that is already cut or not valid. It then reads the contour's cut position, cut quality, whether it is a standard shape (circle, rectangle…), whether it is a hole, and copies its geometry for the tool path. |
 | MM5 | A manual auxiliary path is **open** when its start and end are further apart than the tolerance. |
 | MM6 | After a delete, open manual paths that aren't cut yet are **joined** where two of their ends meet within the tolerance. One is reversed when the ends meet head-to-head or tail-to-tail. |
+| MM8 | **A sweep across parts** (in Manual cutting, a drag that starts on a contour) takes whole parts in the order the pointer passes over them: a part is passed when the pointer comes within the pick aperture of one of its contours, and each is taken once. Each part is cut whole at its place among the sheet's picks, in its own cut order (CO8), each hole after the parts sitting in it (CO2), so a part sitting in a hole of a part swept before it is still cut first. A part the picks so far already cut whole (taken by a sweep or box, its outline clicked, or sitting in a picked hole) is skipped and named; a part with only some of its contours clicked is taken, and the rest of it is cut whole at the sweep's place. Its contours start and run as the automatic ones would, so they aren't labelled `( MANUAL CUT )`; the sheet's M1, M2… badges number every pick in the order it is cut, a part taken whole at the first of its contours cut. A click still picks one contour, as before (MM4); a click on a contour of a part already taken whole sets where that contour starts and which way it runs, as on a part whose outline was clicked. Agents: `cut-order mode=parts` with `items` (placed parts in the order to cut them) or `points` (a sweep path). *Estimated (own design).* |
+| MM9 | **A box** (in Manual cutting, a drag from open space) takes the whole parts wholly inside it, in the sheet's automatic order among themselves (CO1, CZ4, CZ5); a part partly outside it is left out, and parts already picked are skipped (MM8). A sweep or box that takes no new part is refused and changes nothing. Every sweep and box is one command: **Undo pick** (and Ctrl+Z) takes back the whole of the last one, as it takes back one click. Each sheet keeps its own picks, saved with the job, and MM7 clears them when parts come off. Agents: `cut-order mode=parts box=…`, and `mode=undo`. *Estimated (own design).* |
 
 How the rebuild uses them (Sheet tab → **Manual cutting**):
 
@@ -654,15 +656,20 @@ How the rebuild uses them (Sheet tab → **Manual cutting**):
   under the pointer is highlighted with the start point; where you click is where the cut
   starts (MM4).
 - **Reverse direction** (or Shift+click for one pick) cuts it the other way.
-- **Undo pick** removes the last pick, and **Clear** goes back to fully automatic cutting.
+- **Sweep or box whole parts**: drag from a contour across parts to take them whole in the
+  order you pass them (MM8), or drag from open space to draw a box round whole parts, which
+  go in the automatic order (MM9). Each part is cut whole, in its own cut order.
+- **Undo pick** removes the last pick (a whole sweep or box at once), and **Clear** goes back to
+  fully automatic cutting.
 - A contour already picked can't be picked again (MM3). Picking a part's outside first cuts its
   remaining holes before it, so the part doesn't drop (MM2). Picking a hole, or the outside of a
   part with holes, first cuts every part sitting in that hole, whole (CO2).
 - Picked contours are cut **first, in the picked order**, labelled `( MANUAL CUT )` in the
   G-code and shown with M1, M2… badges and a direction arrow. Every other contour follows
   automatically.
-- While picking, dragging only pans the view (parts don't move). Nesting again clears the
-  picks, and so does taking parts off the sheet or removing a product from the job (MM7).
+- While picking, a drag sweeps or boxes (parts don't move); the middle button or Space + drag
+  pans the view. Nesting again clears the picks, and so does taking parts off the sheet or
+  removing a product from the job (MM7).
 - Not imitated: open manual paths and joining them (MM5/MM6), common cuts, islands, and the
   standard-shape macros.
 
