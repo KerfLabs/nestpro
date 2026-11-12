@@ -5260,6 +5260,157 @@
   "source": "MECHANICS CU4"
  },
  {
+  "name": "a job in use: the job in front and every job with unsaved changes",
+  "group": "jobs in use",
+  "value": true,
+  "estimated": true,
+  "source": "MECHANICS CU5"
+ },
+ {
+  "name": "holds per job in use",
+  "group": "jobs in use",
+  "value": 1,
+  "estimated": true,
+  "source": "MECHANICS CU5"
+ },
+ {
+  "name": "taking, renewing and letting go of a hold under the Library's write lock",
+  "group": "jobs in use",
+  "value": true,
+  "estimated": true,
+  "source": "MECHANICS CU5"
+ },
+ {
+  "name": "the same user on the same PC holds its own jobs (restart keeps holding)",
+  "group": "jobs in use",
+  "value": true,
+  "estimated": true,
+  "source": "MECHANICS CU5"
+ },
+ {
+  "name": "job files (not in the Library) are held",
+  "group": "jobs in use",
+  "value": false,
+  "estimated": true,
+  "source": "MECHANICS CU5"
+ },
+ {
+  "name": "hold renewed every",
+  "group": "jobs in use",
+  "value": 30,
+  "unit": "s",
+  "estimated": true,
+  "source": "MECHANICS CU6"
+ },
+ {
+  "name": "renewal that can't reach the Library said once, jobs stay open",
+  "group": "jobs in use",
+  "value": true,
+  "estimated": true,
+  "source": "MECHANICS CU6"
+ },
+ {
+  "name": "hold seen unchanged this long counts as gone (judged on the looking PC's own clock)",
+  "group": "jobs in use",
+  "value": 120,
+  "unit": "s",
+  "estimated": true,
+  "source": "MECHANICS CU7"
+ },
+ {
+  "name": "hold renewed longer ago than this by its PC's clock is gone at first sight",
+  "group": "jobs in use",
+  "value": 10,
+  "unit": "min",
+  "estimated": true,
+  "source": "MECHANICS CU7"
+ },
+ {
+  "name": "hold that can't be read counts as in use until unchanged for",
+  "group": "jobs in use",
+  "value": 120,
+  "unit": "s",
+  "estimated": true,
+  "source": "MECHANICS CU7"
+ },
+ {
+  "name": "allow on: Open anyway, Take over or Cancel",
+  "group": "jobs in use",
+  "value": true,
+  "estimated": true,
+  "source": "MECHANICS CU8"
+ },
+ {
+  "name": "allow off: Take over or Cancel",
+  "group": "jobs in use",
+  "value": true,
+  "estimated": true,
+  "source": "MECHANICS CU8"
+ },
+ {
+  "name": "take over a job in use (rebuild, after a warning)",
+  "group": "jobs in use",
+  "value": true,
+  "estimated": true,
+  "source": "MECHANICS CU9"
+ },
+ {
+  "name": "the PC that lost a hold is told at its next renewal and keeps its changes",
+  "group": "jobs in use",
+  "value": true,
+  "estimated": true,
+  "source": "MECHANICS CU9"
+ },
+ {
+  "name": "saving over a job someone else has in use asks: Save mine as a copy or Take over",
+  "group": "jobs in use",
+  "value": true,
+  "estimated": true,
+  "source": "MECHANICS CU9"
+ },
+ {
+  "name": "in-use note shown in the Job Explorer, the Library window and the Open job menu",
+  "group": "jobs in use",
+  "value": true,
+  "estimated": true,
+  "source": "MECHANICS CU10"
+ },
+ {
+  "name": "delete, rename or move a job someone else has in use, or a folder holding one",
+  "group": "jobs in use",
+  "value": false,
+  "estimated": true,
+  "source": "MECHANICS CU11"
+ },
+ {
+  "name": "refusals apply whatever this PC's warn switch says",
+  "group": "jobs in use",
+  "value": true,
+  "estimated": true,
+  "source": "MECHANICS CU11"
+ },
+ {
+  "name": "agents take a hold",
+  "group": "jobs in use",
+  "value": false,
+  "estimated": true,
+  "source": "MECHANICS CU12"
+ },
+ {
+  "name": "agents change a job anyone holds",
+  "group": "jobs in use",
+  "value": false,
+  "estimated": true,
+  "source": "MECHANICS CU12"
+ },
+ {
+  "name": "two-PC Library check takes, renews and lets go of holds",
+  "group": "jobs in use",
+  "value": true,
+  "estimated": true,
+  "source": "MECHANICS CU12"
+ },
+ {
   "name": "auto-refresh on (fresh install)",
   "group": "job explorer",
   "value": false,

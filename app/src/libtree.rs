@@ -211,6 +211,10 @@ impl App {
             let saved = e.saved_note(&self.clock);
             let saved = if saved.is_empty() { String::new() } else { format!("\n{saved}") };
             let r = ui.selectable_label(self.job_lib_id == Some(e.id), text).on_hover_text(format!("{} — {lib_tip}{saved}\nRight-click: Open, Cut", auto_ref(Kind::Job, e.id)));
+            // Another PC has it in use (CU10): said under it.
+            if let Some(n) = self.in_use_note(e.id) {
+                ui.label(egui::RichText::new(format!("🔒 {n}")).size(11.0).color(th().warn_fg));
+            }
             if r.clicked() {
                 *act = Some(TreeAct::Open(e.id));
             }
@@ -367,9 +371,12 @@ mod libtree_tests {
     }
 
     /// One programming PC: `user` at a window on PC `name`, working on the
-    /// Library in `dir`, going by `clock` (LB5).
+    /// Library in `dir`, going by `clock` (LB5). Its warn switch is off
+    /// (CU1): it holds no job, so another PC may move the jobs it has open;
+    /// folders with jobs in use are tested in `inuseui.rs`.
     fn pc(dir: &Path, user: &str, name: &str, clock: &Clock) -> App {
         let mut a = App::new(None);
+        a.cfg.in_use_warn = false;
         a.cfg.library_dir = dir.display().to_string();
         a.who = Who::new(user, name);
         a.clock = clock.clone();

@@ -95,3 +95,11 @@ _Avoid_: week, group, directory
 **In use**:
 Said of a job a programmer has open on their PC; others are warned or kept out, as the shop's setting says.
 _Avoid_: locked, blocked (a locked sheet is a different thing: one nesting won't use)
+
+**Hold**:
+The Library's note that a job is in use: who has it, on which PC, and since when. One per job; it lapses when its PC stops renewing it.
+_Avoid_: lock (the Library's write lock is a different thing: a moment's turn to write)
+
+**Take over**:
+Moving a job's hold to this PC from whoever has it, after a warning; the PC that had it is told and keeps its changes only as a copy.
+_Avoid_: steal, force open

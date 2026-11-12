@@ -1239,7 +1239,7 @@ fn read_drawing(ctx: &Ctx, path: &Path, a: &Args) -> Result<Vec<crate::formats::
 /// The Library, as the agent's user (LB5).
 fn library(ctx: &Ctx) -> Result<crate::library::Library, String> {
     reach_library(ctx, "Nothing was read from or saved to the Library, and the job is as it was")?;
-    crate::library::Library::open(&ctx.library_dir, &ctx.who, &ctx.clock)
+    Ok(crate::library::Library::open(&ctx.library_dir, &ctx.who, &ctx.clock)?.watching(&ctx.watch))
 }
 
 /// The Library folder can be used, or the refusal naming it, what was left
@@ -1730,9 +1730,15 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                     // numbers, so one can be renamed.
                     let all = lib.entries();
                     let twins = crate::library::shared_job_names(&all);
+                    // Jobs someone has in use (CU10): who, and since when.
+                    let in_use = crate::engine::inuse::look(&lib).unwrap_or_default();
                     for v in list.iter_mut().filter(|v| v["kind"] == "job") {
                         if let Some(others) = v["id"].as_u64().and_then(|id| twins.get(&id)) {
                             v["same_name_as"] = json!(others.iter().map(|e| e.id).collect::<Vec<_>>());
+                        }
+                        if let Some(u) = v["id"].as_u64().and_then(|id| in_use.get(&id)) {
+                            v["in_use"] = json!(u.by_since(&ctx.clock));
+                            v["in_use_since"] = json!(u.hold.as_ref().map(|h| ctx.clock.stamp(h.since)));
                         }
                     }
                     Ok(Outcome::read(format!("{} library record(s).", list.len()), json!(list)))
@@ -1761,7 +1767,12 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                     let mut j = lib.load_job(id)?;
                     j.booked = false;
                     let saved = j.saved.as_ref().map(|s| format!(", saved by {} at {}", s.by.label(), ctx.clock.stamp(s.at))).unwrap_or_default();
-                    let m = format!("Opened library job '{}' ({}){saved}. library mode=save-job saves over it.", j.name, crate::library::auto_ref(crate::library::Kind::Job, id));
+                    // Reading a job in use is allowed; saving over it isn't (CU12).
+                    let busy = match crate::engine::inuse::in_use(&lib, id) {
+                        Ok(Some(u)) => format!(" {} Saving over it is refused until it's free (library mode=list says in_use); save-job copy=true saves this job file as a new job.", u.said(&ctx.clock)),
+                        _ => String::new(),
+                    };
+                    let m = format!("Opened library job '{}' ({}){saved}. library mode=save-job saves over it.{busy}", j.name, crate::library::auto_ref(crate::library::Kind::Job, id));
                     *job = j;
                     Ok(Outcome::msg(m))
                 }
@@ -1838,7 +1849,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                                 ids.push(rec.id);
                             }
                             Err(Refused::Changed(c)) => return Err(refused(c, matches!(to, SaveTo::Read(_)), i)),
-                            Err(Refused::Failed(e)) => return Err(e),
+                            Err(r) => return Err(r.words(&ctx.clock)),
                         }
                     }
                     Ok(Outcome { message: format!("Saved {} into the library.", who(job, &t)), data: json!({ "ids": ids }), changed: true, files: vec![] })
@@ -1890,6 +1901,9 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                             c.saved_by_stamp(&ctx.clock),
                             c.id
                         )),
+                        // Someone has the job in use: agents never change it
+                        // then, and never hold it themselves (CU12).
+                        Err(Refused::InUse(u)) => Err(crate::engine::inuse::agent_refusal(&u, &ctx.clock, "Nothing was saved. To keep this job file's changes now, save it as a new job with library mode=save-job copy=true; library mode=list says which jobs are in use (in_use).")),
                         Err(Refused::Failed(e)) => Err(e),
                     }
                 }

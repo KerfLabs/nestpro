@@ -1366,6 +1366,9 @@ fn the_library_check_passes_on_a_test_folder_and_fails_on_a_half_written_record(
     // Round 1: its own folder, then each round a folder made, renamed and a job
     // moved in, a spare made and deleted; every second round a folder nested.
     assert!(report.contains("3 stock change(s), 17 job folder change(s)"), "{report}");
+    // Holds (CU12): taken on each round's job, renewed, and all let go.
+    assert!(report.contains("3 hold(s) taken"), "{report}");
+    assert_eq!(std::fs::read_dir(folder.join(crate::engine::inuse::FOLDER)).map_or(0, |d| d.count()), 0, "a finished run left a hold");
     // A job record cut off halfway through, as a dropped connection would leave it.
     let lib = crate::library::Library::open(&folder, &Who::new("sam", "PROG-1"), &Clock::pc()).unwrap();
     let rec = lib.path(crate::library::Kind::Job, 2);
@@ -1379,10 +1382,14 @@ fn the_library_check_passes_on_a_test_folder_and_fails_on_a_half_written_record(
     t.folders[renamed].name = "DEMO-CHECK round 1".into();
     t.placed.remove(&3);
     std::fs::write(&file, serde_json::to_string(&t).unwrap()).unwrap();
+    // A hold PROG-1's finished run never let go of.
+    let left = crate::engine::inuse::Hold { format: crate::engine::inuse::FORMAT.into(), job: 4, name: "DEMO-CHECK left".into(), by: Who::new(&crate::shared::user_name(), "PROG-1"), since: 0, renewed: 0, beat: 1 };
+    std::fs::write(crate::engine::inuse::path(&folder, 4), serde_json::to_string(&left).unwrap()).unwrap();
     let e = err(&mut s, "library-check", json!({"folder": folder.to_str().unwrap(), "rounds": 1, "pc": "PROG-1"}));
     assert!(e.contains("FAIL") && e.contains("Job record 2") && e.contains("half-written"), "{e}");
     assert!(e.contains("is 'DEMO-CHECK round 1' in") && e.contains("a folder change was lost"), "{e}");
     assert!(e.contains("(record 3) is in the top of the Library where PROG-1 left it in 'DEMO-CHECK PROG-1"), "{e}");
+    assert!(e.contains("A hold on 'DEMO-CHECK left' (Holds/4.json) was left by") && e.contains("whose run has finished"), "{e}");
 }
 
 /// A test folder the Library check made itself (one round, so it holds the
@@ -2670,5 +2677,82 @@ fn a_moved_lead_reads_the_same_with_system_compensation() {
     // Only the length given: the angle stays.
     call(&mut s, "lead-edit", None, json!({"part": 1, "contour": 1, "in_length": 12}));
     assert_eq!(lead(&mut s), (12.0, 90.0));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// Jobs in use (CU5–CU12) through the agents' operations.
+
+/// CU12: an agent never takes a hold. It reads a job someone has in use
+/// (`library list` says who and since when, `library open` works and says
+/// so), and is refused saving over it (also after renaming it), moving it,
+/// and renaming, moving or deleting a folder that holds it several folders
+/// down, each refusal naming who and since when and what to do instead. Its
+/// own user's window holding the job refuses it too. A copy is allowed, and
+/// once the job is free its save goes through.
+#[test]
+fn agents_are_refused_a_job_in_use_and_never_hold_one() {
+    use crate::engine::inuse;
+    use crate::library::{Kind, Library};
+    let d = dir("agents_in_use");
+    let clock = Clock::at(1_794_215_640); // 2026-11-09 09:14 UTC
+    let mut ctx = stock_ctx(&d);
+    ctx.who = Who::new("sam", "PROG-1").as_agent();
+    ctx.clock = clock.clone();
+    let lib = ctx.library_dir.clone();
+    let mut s = Session::new(ctx);
+    let jp = d.join("DEMO-7.snjob");
+    call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    call(&mut s, "rename", None, json!({"name": "DEMO-7"}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 400, "h": 300, "qty": 2, "name": "DEMO-P1"}));
+    let id = call(&mut s, "library", None, json!({"mode": "save-job"}))["data"]["id"].as_u64().unwrap();
+    for (folder, name) in [("", "Acme"), ("Acme", "2026-11"), ("Acme/2026-11", "Week 46")] {
+        call(&mut s, "job-folders", None, json!({"mode": "new", "folder": folder, "name": name}));
+    }
+    call(&mut s, "job-folders", None, json!({"mode": "move", "saved_job": "DEMO-7", "to": "Acme/2026-11/Week 46"}));
+    assert!(!inuse::path(&lib, id).exists(), "an agent took a hold");
+    // Sam opens it in the window on PROG-2.
+    let window = Library::open(&lib, &Who::new("Sam", "PROG-2"), &clock).unwrap();
+    inuse::take(&window, id, "DEMO-7").unwrap();
+    clock.advance(std::time::Duration::from_secs(60));
+    // Reading is allowed.
+    let l = call(&mut s, "library", None, json!({"mode": "list"}));
+    let row = l["data"].as_array().unwrap().iter().find(|r| r["name"] == "DEMO-7").cloned().unwrap();
+    assert_eq!((row["in_use"].as_str(), row["in_use_since"].as_str()), (Some("Sam on PROG-2 since 09:14"), Some("2026-11-09 09:14")), "{row}");
+    let r = call(&mut s, "library", None, json!({"mode": "open", "id": id}));
+    assert!(r["message"].as_str().unwrap().contains("DEMO-7 is in use by Sam on PROG-2 since 09:14."), "{r}");
+    // Changing it is refused, naming who and since when.
+    let said = "DEMO-7 is in use by Sam on PROG-2 since 09:14. Try again later.";
+    let record = std::fs::read(window.path(Kind::Job, id)).unwrap();
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 200, "h": 100, "qty": 1, "name": "DEMO-P2"}));
+    let e = err(&mut s, "library", json!({"mode": "save-job"}));
+    assert!(e.contains(said) && e.contains("Nothing was saved") && e.contains("copy=true"), "{e}");
+    call(&mut s, "rename", None, json!({"name": "DEMO-7 frames"}));
+    let e = err(&mut s, "library", json!({"mode": "save-job"}));
+    assert!(e.contains("is in use by Sam on PROG-2 since 09:14. Try again later."), "{e}");
+    assert_eq!(std::fs::read(window.path(Kind::Job, id)).unwrap(), record, "a refused save wrote the record");
+    let e = err(&mut s, "job-folders", json!({"mode": "move", "saved_job": "DEMO-7", "to": "/"}));
+    assert!(e.starts_with("DEMO-7 is in use by Sam on PROG-2 since 09:14. It can't be moved while it's in use. Try again later. Nothing was changed."), "{e}");
+    let deep = "'Acme/2026-11/Week 46' holds DEMO-7, which is in use by Sam on PROG-2 since 09:14.";
+    let e = err(&mut s, "job-folders", json!({"mode": "rename", "folder": "Acme", "name": "Acme Ltd"}));
+    assert!(e.contains("'Acme' holds DEMO-7, which is in use by Sam on PROG-2 since 09:14.") && e.contains("Try again later"), "{e}");
+    let e = err(&mut s, "job-folders", json!({"mode": "move", "folder": "Acme/2026-11", "to": "/"}));
+    assert!(e.contains("'Acme/2026-11' holds DEMO-7, which is in use by Sam on PROG-2 since 09:14."), "{e}");
+    let e = err(&mut s, "job-folders", json!({"mode": "delete", "folder": "Acme/2026-11/Week 46"}));
+    assert!(e.contains(deep) && e.contains("only an empty folder can be deleted"), "{e}");
+    let l = call(&mut s, "job-folders", None, json!({"mode": "list"}));
+    assert!(l["data"]["outline"].as_array().unwrap().iter().any(|p| p == "Acme/2026-11/Week 46/DEMO-7"), "{l}");
+    // Its own user's window holding it refuses it as well.
+    inuse::release(&window, &[id]).unwrap();
+    inuse::take(&Library::open(&lib, &Who::new("sam", "PROG-1"), &clock).unwrap(), id, "DEMO-7").unwrap();
+    let e = err(&mut s, "job-folders", json!({"mode": "move", "saved_job": "DEMO-7", "to": "/"}));
+    assert!(e.contains("in use by sam on PROG-1 since 09:15"), "{e}");
+    // A copy is no change to it.
+    let copy = call(&mut s, "library", None, json!({"mode": "save-job", "copy": true}))["data"]["id"].as_u64().unwrap();
+    assert_ne!(copy, id);
+    // Free again: the agent's change goes through, and it holds nothing.
+    inuse::release(&Library::open(&lib, &Who::new("sam", "PROG-1"), &clock).unwrap(), &[id]).unwrap();
+    call(&mut s, "job-folders", None, json!({"mode": "move", "saved_job": "DEMO-7", "to": "/"}));
+    call(&mut s, "job-folders", None, json!({"mode": "rename", "folder": "Acme", "name": "Acme Ltd"}));
+    assert!(std::fs::read_dir(lib.join(inuse::FOLDER)).map_or(0, |d| d.count()) == 0, "a hold is left");
     let _ = std::fs::remove_dir_all(&d);
 }

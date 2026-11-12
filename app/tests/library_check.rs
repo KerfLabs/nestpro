@@ -46,6 +46,8 @@ fn two_pcs_running_the_library_check_at_once_both_pass_and_a_half_written_record
         let r = report(o);
         eprintln!("{r}\n");
         assert!(o.status.success() && r.contains("PASS"), "a run failed:\n{r}");
+        // Each round also took, renewed and let go of holds (CU12).
+        assert!(r.contains("hold(s) taken"), "{r}");
     }
     // The run that finished last checked the other one's records too.
     assert!(outs.iter().any(|o| report(o).contains("from 2 run(s)")), "neither run saw the other");

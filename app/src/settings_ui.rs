@@ -364,6 +364,15 @@ impl App {
             }
         });
         ui.add_space(10.0);
+        // CU1: the original's Concurrency management, kept on this PC only.
+        card(ui, "Jobs in use", "When several PCs share one Library, a job open on one of them is in use there: the others see who has it and since when. Kept on this PC only.", |ui| {
+            ui.checkbox(&mut self.cfg.in_use_warn, "Warn when opening a job someone else has in use").on_hover_text("Also marks the jobs open here as in use for the other PCs. Off: this PC neither marks its jobs nor asks; a job someone else has in use still can't be deleted, renamed, moved or saved over from here.");
+            // Allow is only shown while warn is on (CU1).
+            if self.cfg.in_use_warn {
+                ui.checkbox(&mut self.cfg.in_use_allow, "Allow opening it anyway").on_hover_text("Off: a job someone else has in use can only be taken over, after a warning, or left closed.");
+            }
+        });
+        ui.add_space(10.0);
         card(ui, "Part data from the file name", "When DXF names follow a pattern, the reference and quantity are read from the name. Fields: [Reference] [Quantity] [Material] [Thickness], * skips text; the text between fields is the separator.", |ui| {
             ui.horizontal(|ui| {
                 ui.add(egui::TextEdit::singleline(&mut self.cfg.name_format).hint_text("[Reference]_[Quantity]_[Material]").desired_width(320.0));

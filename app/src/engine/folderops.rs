@@ -58,7 +58,7 @@ fn saved_job(jobs: &[Entry], t: &Tree, s: &str) -> Result<u64, String> {
 pub fn run(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
     // A Library that can't be reached is refused as agents' saves are (LB11).
     super::ops::reach_library(ctx, "Nothing was read from the Library, and no job folder was made, changed or moved")?;
-    let lib = Library::open(&ctx.library_dir, &ctx.who, &ctx.clock)?;
+    let lib = Library::open(&ctx.library_dir, &ctx.who, &ctx.clock)?.watching(&ctx.watch);
     let mode = a.str("mode").unwrap_or_default();
     let jobs = |l: &Library| -> Vec<Entry> { l.entries().into_iter().filter(|e| e.kind == Kind::Job).collect() };
     let now = folders::load(&lib, Kind::Job)?;
