@@ -2843,6 +2843,41 @@
    "estimated": true
   },
   {
+   "name": "sheet order settings",
+   "group": "cut order",
+   "value": "Settings → Machines: start corner (lower left, lower right, upper left, upper right), columns or rows, zig-zag, cutting zones across and up (0 or 1 = one zone, at most 500); each starts as the machine file's (B110, B114, B115, B122 / B123), else lower left, columns, no zig-zag, 20 × 10",
+   "source": "CO16",
+   "estimated": true
+  },
+  {
+   "name": "sheet start corner shown",
+   "group": "cut order",
+   "value": "the bottom row first whatever the file's start bottom (B111) says (CZ6), with a note when it is off; an upper corner set in Settings starts the sheet at the top",
+   "source": "CO16",
+   "estimated": true
+  },
+  {
+   "name": "order settings changed per machine",
+   "group": "cut order",
+   "value": "kept in the app's settings with the machine (only the values changed), winning over the machine file and its material sections; a value set back to the file's isn't kept; Use the machine file puts every sheet and hole order value back; settings saved before have none",
+   "source": "CO16",
+   "estimated": true
+  },
+  {
+   "name": "sheet order report",
+   "group": "cut order",
+   "value": "machines: sheet_order with each value in use, where it comes from (Settings → Machines, machine file, default) and the file's own; order_changes per machine; agents can't change settings",
+   "source": "CO16",
+   "estimated": true
+  },
+  {
+   "name": "hole order settings",
+   "group": "cut order",
+   "value": "Settings → Machines: order mode (None, By proximity, By direction; Minimum heat only when the file sets it), By direction's start corner, rows or columns and orthogonality tolerance, Cut small holes first with big-hole length, width and offset; each starts as the machine file's (B565–B568, B587–B590), else the original's default; the linear tolerance (A005) stays the file's",
+   "source": "CO17",
+   "estimated": true
+  },
+  {
    "name": "file name separator forbidden characters",
    "group": "import",
    "value": "<>:\"/\\|?*",

@@ -3672,3 +3672,175 @@ fn the_machines_report_shows_how_the_machine_orders_a_parts_holes() {
     assert_eq!(h["mode"], json!("minimum heat"));
     assert!(h["cuts"].as_str().unwrap().contains("own contour order"), "{h}");
 }
+
+// ---------------------------------------------------------------------------
+// The sheet and hole order changed in Settings → Machines (MAC-53, CO16, CO17).
+// ---------------------------------------------------------------------------
+
+/// The app's settings for a made-up Lantek folder in `root` whose machine
+/// file holds `codes`, with `machines` (the first in use).
+fn shop_settings(root: &Path, codes: &str, machines: Vec<crate::settings::Machine>) -> crate::settings::AppSettings {
+    std::fs::create_dir_all(root.join("MchFiles")).unwrap();
+    std::fs::write(root.join("MchFiles").join("PstAdi06.CT1"), codes).unwrap();
+    crate::settings::AppSettings { lantek_dir: root.to_string_lossy().into_owned(), machines, active_machine: 0, ..Default::default() }
+}
+
+/// A made-up machine on the G-code post or the LC5, its order changed by `order`.
+fn demo_machine_with(name: &str, blm: bool, order: crate::ct1::OrderChanges) -> crate::settings::Machine {
+    let output = if blm { crate::settings::Output::BlmSiemens } else { crate::settings::Output::Iso };
+    crate::settings::Machine { name: name.into(), output, order, ..Default::default() }
+}
+
+/// Put the session on its settings' active machine as Settings → Apply
+/// does (`install_machine`: the machine file with the changes made in
+/// Settings → Machines), on this test's thread only.
+fn apply_machine(s: &mut Session) -> OnMachine {
+    let m = s.ctx.cfg.machine();
+    let tech = crate::ct1::MachineTech::for_machine(&m, &s.ctx.cfg.lantek_dir);
+    s.ctx.blm = crate::engine::blm_base(&m);
+    s.ctx.tech = tech.clone();
+    crate::ct1::set_thread_active(Some(tech));
+    OnMachine
+}
+
+/// Four 100 × 100 squares near the corners of a 1500 × 1000 sheet: #1 lower
+/// left, #2 upper left, #3 lower right, #4 upper right.
+const SQUARES: [[f64; 2]; 4] = [[50.0, 50.0], [50.0, 850.0], [1350.0, 50.0], [1350.0, 850.0]];
+
+fn squares_job(d: &Path, cfg: crate::settings::AppSettings) -> Session {
+    let mut s = Session::new(Ctx::builtin());
+    s.ctx.cfg = cfg;
+    call(&mut s, "new", Some(d.join("squares.snjob").to_str().unwrap()), json!({"w": 1500, "h": 1000, "material": "mild steel", "thickness": 3, "force": true}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 100, "h": 100, "qty": 4, "name": "DEMO-SQUARE"}));
+    for at in SQUARES {
+        call(&mut s, "place", None, json!({"part": 1, "x": at[0], "y": at[1]}));
+    }
+    s
+}
+
+/// The squares in the order sheet 1's program cuts them: the G-code
+/// program's parts, or the LC5 set's calls by where each is placed. The LC5
+/// set is read back before `program` shows it (BL39).
+fn squares_cut(s: &mut Session) -> Vec<usize> {
+    let text = call(s, "program", None, json!({"sheet": 1}))["data"].as_str().unwrap().to_string();
+    if !text.contains("INITPART") {
+        return iso_parts(s, 1);
+    }
+    lc5_calls(&text).iter().map(|o| 1 + (0..4).find(|&k| (SQUARES[k][0] - o[0]).abs() < 1.0 && (SQUARES[k][1] - o[1]).abs() < 1.0).unwrap_or_else(|| panic!("{o:?}: {text}"))).collect()
+}
+
+#[test]
+fn a_sheet_order_changed_in_settings_changes_the_order_the_program_cuts_the_parts_in() {
+    use crate::ct1::OrderChanges;
+    for blm in [false, true] {
+        let d = dir(&format!("settings_sheet_order_{blm}"));
+        // A made-up machine file with start bottom off (not followed, CZ6).
+        let cfg = shop_settings(&d.join("Lantek"), "# Demo laser\nB110 ON\nB111 OFF\nB114 OFF\nB115 OFF\nB122 20\nB123 10\nB565 0\n", vec![demo_machine_with("Demo laser", blm, OrderChanges::default())]);
+        let mut s = squares_job(&d, cfg);
+        let cut = |s: &mut Session, c: OrderChanges| {
+            s.ctx.cfg.machines[0].order = c;
+            let _m = apply_machine(s);
+            squares_cut(s)
+        };
+        let corner = |left: bool, bottom: bool| OrderChanges { start_left: Some(left), start_bottom: Some(bottom), ..Default::default() };
+        // The machine file's: columns from the left, each bottom up.
+        assert_eq!(cut(&mut s, OrderChanges::default()), vec![1, 2, 3, 4], "lc5 {blm}");
+        // Each start corner (CZ3, CO27 (c)).
+        assert_eq!(cut(&mut s, corner(false, true)), vec![3, 4, 1, 2], "lc5 {blm}");
+        assert_eq!(cut(&mut s, corner(true, false)), vec![2, 1, 4, 3], "lc5 {blm}");
+        assert_eq!(cut(&mut s, corner(false, false)), vec![4, 3, 2, 1], "lc5 {blm}");
+        // Rows, then rows and columns zig-zag in 2 × 2 zones: every other one back.
+        assert_eq!(cut(&mut s, OrderChanges { rows: Some(true), ..Default::default() }), vec![1, 3, 2, 4], "lc5 {blm}");
+        let two = OrderChanges { zones_x: Some(2), zones_y: Some(2), zigzag: Some(true), ..Default::default() };
+        assert_eq!(cut(&mut s, OrderChanges { rows: Some(true), ..two }), vec![1, 3, 4, 2], "lc5 {blm}");
+        assert_eq!(cut(&mut s, OrderChanges { zigzag: Some(false), ..two }), vec![1, 2, 3, 4], "lc5 {blm}");
+        assert_eq!(cut(&mut s, two), vec![1, 2, 4, 3], "lc5 {blm}");
+        // No zones (0 or 1 each way): one zone, the nearest part next from
+        // the end of the last (CZ1).
+        for n in [0, 1] {
+            assert_eq!(cut(&mut s, OrderChanges { zones_x: Some(n), zones_y: Some(n), rows: Some(true), ..Default::default() }), vec![1, 2, 4, 3], "lc5 {blm}, {n} zones");
+        }
+        // Many zones: still columns from the left, each bottom up.
+        assert_eq!(cut(&mut s, OrderChanges { zones_x: Some(500), zones_y: Some(500), ..Default::default() }), vec![1, 2, 3, 4], "lc5 {blm}");
+        // A change equal to the file's value cuts as the file does.
+        assert_eq!(cut(&mut s, OrderChanges { zones_x: Some(20), start_left: Some(true), ..Default::default() }), vec![1, 2, 3, 4], "lc5 {blm}");
+        verify_clean(&mut s);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+#[test]
+fn a_hole_order_changed_in_settings_changes_the_order_the_program_cuts_a_parts_holes_in() {
+    use crate::ct1::OrderChanges;
+    for blm in [false, true] {
+        let d = dir(&format!("settings_hole_order_{blm}"));
+        // The machine file: By proximity (CO20).
+        let cfg = shop_settings(&d.join("Lantek"), "# Demo laser\nB565 1\n", vec![demo_machine_with("Demo laser", blm, OrderChanges::default())]);
+        let mut s = scattered_job(&d, blm, &[(20.0, 20.0, 0, false, "")]);
+        s.ctx.cfg = cfg;
+        let copies = [copy_at(20.0, 20.0, 0, false)];
+        let cut = |s: &mut Session, c: OrderChanges| {
+            s.ctx.cfg.machines[0].order = c;
+            let _m = apply_machine(s);
+            let got = scattered_program(s, 1, &copies);
+            verify_clean(s);
+            got[0].1.clone()
+        };
+        let direction = OrderChanges { hole_mode: Some(2), ..Default::default() };
+        // The same orders the machine file's settings give (CO14).
+        assert_eq!(cut(&mut s, OrderChanges::default()), vec![2, 5, 3, 1, 4, 6, 7], "lc5 {blm}: by proximity");
+        assert_eq!(cut(&mut s, OrderChanges { hole_mode: Some(0), ..Default::default() }), vec![1, 2, 3, 4, 5, 6, 7], "lc5 {blm}: none");
+        assert_eq!(cut(&mut s, direction), vec![2, 6, 4, 1, 3, 5, 7], "lc5 {blm}: by direction");
+        assert_eq!(cut(&mut s, OrderChanges { hole_columns: Some(true), ..direction }), vec![2, 5, 3, 6, 4, 1, 7], "lc5 {blm}: columns");
+        assert_eq!(cut(&mut s, OrderChanges { hole_start_corner: Some(3), ..direction }), vec![1, 3, 5, 2, 6, 4, 7], "lc5 {blm}: from the upper right");
+        // Holes 3 and 6 are 0.5 mm off their rows: below that each is a row of its own.
+        assert_eq!(cut(&mut s, OrderChanges { orthogonality_tolerance: Some(0.49), ..direction }), vec![6, 4, 2, 5, 1, 3, 7], "lc5 {blm}: tolerance");
+        // "Use the machine file": by proximity again.
+        assert_eq!(cut(&mut s, OrderChanges::default()), vec![2, 5, 3, 1, 4, 6, 7], "lc5 {blm}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+#[test]
+fn the_machines_report_shows_each_order_setting_in_use_and_where_it_comes_from() {
+    use crate::ct1::OrderChanges;
+    let d = dir("settings_order_report");
+    let changed = OrderChanges { start_bottom: Some(false), zones_x: Some(4), zones_y: Some(0), hole_mode: Some(2), hole_columns: Some(true), small_holes_first: Some(true), big_hole_min_length: Some(40.0), ..Default::default() };
+    let cfg = shop_settings(&d.join("Lantek"), "# Demo laser\nB110 OFF\nB111 OFF\nB114 ON\nB565 1\n", vec![demo_machine_with("Demo laser", false, changed), demo_machine_with("Demo plasma", false, OrderChanges::default())]);
+    let mut s = Session::new(Ctx::builtin());
+    s.ctx.cfg = cfg;
+    let report = |s: &mut Session| {
+        let _m = apply_machine(s);
+        call(s, "machines", None, json!({}))["data"].clone()
+    };
+    let r = report(&mut s);
+    let (sheet, holes) = (&r["technology"]["sheet_order"], &r["technology"]["hole_order"]);
+    // In use: the file's right-hand start and rows, the top row and zones changed.
+    assert_eq!((sheet["start_corner"].clone(), sheet["direction"].clone(), sheet["zigzag"].clone(), sheet["zones"].clone()), (json!("upper right"), json!("rows"), json!(false), json!([4, 0])), "{sheet}");
+    assert_eq!(sheet["from"], json!({"start_corner": "Settings → Machines", "direction": "machine file", "zigzag": "default", "zones": "Settings → Machines"}), "{sheet}");
+    assert_eq!(sheet["machine_file"], json!({"start_corner": "lower right", "direction": "rows", "zigzag": false, "zones": [20, 10]}), "{sheet}");
+    // The file's start bottom is off: shown as what the sheet does (CZ6).
+    assert!(sheet["note"].as_str().unwrap_or_else(|| panic!("{sheet}")).contains("bottom"), "{sheet}");
+    assert_eq!((holes["mode"].clone(), holes["direction"].clone(), holes["small_holes_first"].clone(), holes["big_hole_min_length_mm"].clone()), (json!("by direction"), json!("columns"), json!(true), json!(40.0)), "{holes}");
+    assert_eq!(holes["from"]["mode"], json!("Settings → Machines"), "{holes}");
+    assert_eq!((holes["from"]["start_corner"].clone(), holes["from"]["orthogonality_tolerance_mm"].clone()), (json!("default"), json!("default")), "{holes}");
+    assert_eq!(holes["machine_file"]["mode"], json!("by proximity"), "{holes}");
+    // Each machine's own changes; the second has none.
+    assert_eq!(r["machines"][0]["order_changes"]["zones_x"], json!(4), "{r}");
+    assert_eq!(r["machines"][1]["order_changes"], json!({}), "{r}");
+    // Switching the active machine: the second one cuts as its file says.
+    s.ctx.cfg.active_machine = 1;
+    let r = report(&mut s);
+    let sheet = &r["technology"]["sheet_order"];
+    assert_eq!((sheet["start_corner"].clone(), sheet["zones"].clone(), r["technology"]["hole_order"]["mode"].clone()), (json!("lower right"), json!([20, 10]), json!("by proximity")), "{r}");
+    assert_eq!((sheet["from"]["start_corner"].clone(), sheet["from"]["zones"].clone()), (json!("machine file"), json!("default")), "{sheet}");
+    // A machine file that sets nothing: the defaults, said so.
+    let mut s = Session::new(Ctx::builtin());
+    s.ctx.cfg = shop_settings(&d.join("Empty"), "", vec![demo_machine_with("Demo laser", false, OrderChanges { rows: Some(true), ..Default::default() })]);
+    let r = report(&mut s);
+    let sheet = &r["technology"]["sheet_order"];
+    assert_eq!((sheet["start_corner"].clone(), sheet["direction"].clone(), sheet["zones"].clone()), (json!("lower left"), json!("rows"), json!([20, 10])), "{sheet}");
+    assert_eq!((sheet["from"]["direction"].clone(), sheet["from"]["zones"].clone()), (json!("Settings → Machines"), json!("default")), "{sheet}");
+    assert!(sheet["note"].is_null(), "{sheet}");
+    let _ = std::fs::remove_dir_all(&d);
+}

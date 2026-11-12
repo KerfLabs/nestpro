@@ -62,19 +62,16 @@ pub struct MachineTech {
     pub joint_test: i32,
     pub joint_shorten: f64,
     pub joint_tries: i32,
-    /// B122 / B123: cutting zones along X and Y (the cut order goes zone by zone).
-    pub zones_x: u32,
-    pub zones_y: u32,
-    /// B110: start at the left (cutting); start at the bottom, as the real
-    /// BLM program does (B111 not followed, see `from_text`).
-    pub start_left: bool,
-    pub start_bottom: bool,
-    /// B114 / B115: run along X first (else along Y), and zig-zag.
-    pub horizontal: bool,
-    pub zigzag: bool,
+    /// B110–B123: the sheet's automatic order, zone by zone (CZ1–CZ6), with
+    /// any change made in Settings → Machines (CO16).
+    pub sheet_order: SheetOrder,
     /// B565–B568, B587–B590: how a part's holes are ordered when nobody has
-    /// ordered them by hand (CO20, CO14, CO15).
+    /// ordered them by hand (CO20, CO14, CO15), with any change made in
+    /// Settings → Machines (CO17).
     pub hole_order: HoleOrder,
+    /// The order settings changed in Settings → Machines (CO16, CO17): kept
+    /// so a material section's values (`for_job`) take them too.
+    pub order_changes: OrderChanges,
     /// B134: test parts inside holes (nest small parts in the holes of big ones).
     pub parts_in_holes: bool,
     /// B076: smallest hole area offered to other parts, mm² (0 = any).
@@ -168,13 +165,9 @@ impl Default for MachineTech {
             joint_test: -1,
             joint_shorten: -1.0,
             joint_tries: -1,
-            zones_x: 20,
-            zones_y: 10,
-            start_left: true,
-            start_bottom: true,
-            horizontal: false,
-            zigzag: false,
+            sheet_order: SheetOrder::default(),
             hole_order: HoleOrder::default(),
+            order_changes: OrderChanges::default(),
             parts_in_holes: true,
             min_hole_area: 0.0,
             group_parts: false,
@@ -653,7 +646,8 @@ impl MachineTech {
                 t.speed_files = self.speed_files.clone();
                 t.qualities = self.qualities.clone();
                 t.section = Some(i);
-                t
+                // Settings → Machines wins over the section too (CO16, CO17).
+                t.with_order_changes(self.order_changes)
             }
             None => MachineTech { section: None, ..self.clone() },
         };
@@ -675,6 +669,34 @@ impl MachineTech {
             return None;
         }
         bands.iter().find(|b| b.0 <= r && r < b.1).map(|b| crate::techtable::quality_of_index(b.2))
+    }
+
+    /// The sheet and hole order the machine cuts with: the machine file's,
+    /// with any change made in Settings → Machines (CO16, CO17).
+    pub fn order(&self) -> OrderSettings {
+        OrderSettings { sheet: self.sheet_order, holes: self.hole_order }
+    }
+
+    /// The sheet and hole order the machine file alone gives: what "Use the
+    /// machine file" puts back (CO16, CO17).
+    pub fn file_order(&self) -> OrderSettings {
+        OrderSettings::from_codes(&self.file.globals)
+    }
+
+    /// These values with the order settings changed in Settings → Machines
+    /// laid over the file's (CO16, CO17).
+    pub fn with_order_changes(mut self, c: OrderChanges) -> MachineTech {
+        let o = c.apply(self.order());
+        self.sheet_order = o.sheet;
+        self.hole_order = o.holes;
+        self.order_changes = c;
+        self
+    }
+
+    /// The machine file sets start bottom off (B111), which the sheet's
+    /// order doesn't follow: it starts at the bottom (CZ6, CO28).
+    pub fn file_says_top(&self) -> bool {
+        self.file.globals.get("B111").is_some_and(|v| v.trim() == "OFF")
     }
 
     /// The section the values came from.
@@ -751,15 +773,9 @@ impl MachineTech {
             joint_test: i("F133", d.joint_test),
             joint_shorten: f("F134", d.joint_shorten),
             joint_tries: i("F135", d.joint_tries),
-            zones_x: u("B122", d.zones_x),
-            zones_y: u("B123", d.zones_y),
-            start_left: m.get("B110").map_or(d.start_left, |v| v == "ON"),
-            // B111 is OFF in PstAdi06.CT1, yet the real program 1234X38THXSAMPLE
-            // cuts from the bottom up (ORIG Y 10 → 1091.6): the bottom start is kept.
-            start_bottom: d.start_bottom,
-            horizontal: m.get("B114").map_or(d.horizontal, |v| v == "ON"),
-            zigzag: m.get("B115").map_or(d.zigzag, |v| v == "ON"),
+            sheet_order: SheetOrder::from_codes(m),
             hole_order: HoleOrder::from_codes(m),
+            order_changes: OrderChanges::default(),
             parts_in_holes: m.get("B134").map_or(d.parts_in_holes, |v| v == "ON"),
             min_hole_area: f("B076", d.min_hole_area),
             group_parts: m.get("A785").map_or(d.group_parts, |v| v == "ON"),
@@ -826,7 +842,9 @@ impl MachineTech {
             e.starts_with("CF") && e != "CFF" && p.is_file()
         });
         t.speed_files = Arc::new(crate::techtable::SpeedFiles::find(found.map(|p| p.as_path()), cf.as_deref(), m.gas_id));
-        t
+        // The sheet and hole order changed for this machine in Settings →
+        // Machines win over its file (CO16, CO17).
+        t.with_order_changes(m.order)
     }
 
     /// Joints for a medium-sized part contour of length `per` at one per
@@ -1000,8 +1018,7 @@ mod ct1_tests {
 
     #[test]
     fn zones_split_the_sheet_and_hold_parts_by_their_corners() {
-        let t = MachineTech::default();
-        let z = zones(2000.0, 1000.0, &t);
+        let z = zones(2000.0, 1000.0, &SheetOrder::default());
         assert_eq!(z.len(), 200);
         // Left column first, bottom up (as the real BLM program cuts).
         assert_eq!(z[0], [0.0, 0.0, 100.0, 100.0]);
@@ -1012,7 +1029,7 @@ mod ct1_tests {
         assert!(!box_in_zone([110.0, 10.0, 150.0, 60.0], [0.0, 0.0, 100.0, 100.0]));
         // A long strip crossing the zone with no corner in it: not in that zone.
         assert!(!box_in_zone([-10.0, 40.0, 300.0, 60.0], [100.0, 0.0, 200.0, 100.0]));
-        let zz = zones(200.0, 200.0, &MachineTech { zones_x: 2, zones_y: 2, zigzag: true, ..MachineTech::default() });
+        let zz = zones(200.0, 200.0, &SheetOrder { zones_x: 2, zones_y: 2, zigzag: true, ..SheetOrder::default() });
         assert_eq!(zz, vec![[0.0, 0.0, 100.0, 100.0], [0.0, 100.0, 100.0, 200.0], [100.0, 100.0, 200.0, 200.0], [100.0, 0.0, 200.0, 100.0]]);
     }
 
@@ -1027,6 +1044,89 @@ mod ct1_tests {
         let plan = crate::cnc::plan(&parts, &placed, &spec);
         let ys: Vec<f64> = plan.contours.iter().map(|c| placed[c.part_no - 1].y).collect();
         assert!(ys.windows(2).all(|w| w[0] <= w[1]), "{ys:?}");
+    }
+
+    #[test]
+    fn the_sheet_order_is_read_from_the_machine_file_and_the_sheet_starts_at_the_bottom() {
+        // A machine file that sets nothing, and none: the BLM file's values
+        // (CZ3), the left column first, bottom up, columns, no zig-zag, 20 × 10.
+        let built_in = SheetOrder { zones_x: 20, zones_y: 10, start_left: true, start_bottom: true, horizontal: false, zigzag: false };
+        assert_eq!(MachineTech::default().sheet_order, built_in);
+        assert_eq!(MachineTech::from_text("").sheet_order, built_in);
+        assert_eq!(MachineTech::from_text("# Demo laser\nB244 7.0\n").sheet_order, built_in);
+        assert!(!MachineTech::from_text("").file_says_top());
+        // A made-up file that sets every one: start bottom off is shown and
+        // reported, but the sheet still starts at the bottom (CZ6, CO28).
+        let t = MachineTech::from_text("# Demo laser\nB110 OFF\nB111 OFF\nB114 ON\nB115 ON\nB122 4\nB123 0\n");
+        assert_eq!(t.sheet_order, SheetOrder { zones_x: 4, zones_y: 0, start_left: false, start_bottom: true, horizontal: true, zigzag: true });
+        assert!(t.file_says_top());
+        assert!(!MachineTech::from_text("B111 ON\n").file_says_top());
+        // A material section doesn't change them.
+        let mut text = demo_sections_file();
+        text.insert_str(0, "B110 OFF\nB122 4\n");
+        let t = MachineTech::from_text(&text).for_job(&JobKeys::new("0010", 3.0));
+        assert_eq!((t.section, t.sheet_order.start_left, t.sheet_order.zones_x), (Some(2), false, 4));
+        // A change made in Settings → Machines wins over a section too (CO16, CO17).
+        let c = OrderChanges { zones_x: Some(7), hole_mode: Some(2), ..Default::default() };
+        let t = MachineTech::from_text(&text).with_order_changes(c).for_job(&JobKeys::new("0010", 3.0));
+        assert_eq!((t.section, t.sheet_order.zones_x, t.hole_order.mode, t.order_changes), (Some(2), 7, HoleMode::Direction, c));
+        assert_eq!(t.file_order().sheet.zones_x, 4, "the file's own value stays the file's");
+    }
+
+    #[test]
+    fn a_change_wins_over_the_machine_file_and_a_value_the_setting_cant_take_leaves_the_files() {
+        let file = MachineTech::from_text("# Demo laser\nB565 2\nB566 3\nB568 0.5\n").order();
+        // Nothing changed: the file's values.
+        assert_eq!(OrderChanges::default().apply(file), file);
+        // Every value changed.
+        let c = OrderChanges {
+            start_left: Some(false), start_bottom: Some(false), rows: Some(true), zigzag: Some(true), zones_x: Some(3), zones_y: Some(1),
+            hole_mode: Some(0), hole_start_corner: Some(1), hole_columns: Some(true), orthogonality_tolerance: Some(2.0),
+            small_holes_first: Some(true), big_hole_min_length: Some(40.0), big_hole_min_width: Some(30.0), big_hole_offset: Some(2.5),
+        };
+        let o = c.apply(file);
+        assert_eq!(o.sheet, SheetOrder { zones_x: 3, zones_y: 1, start_left: false, start_bottom: false, horizontal: true, zigzag: true });
+        assert_eq!(o.holes, HoleOrder { mode: HoleMode::None, corner: 1, columns: true, ortho_tol: 2.0, small_first: true, big_length: 40.0, big_width: 30.0, big_offset: 2.5, tol: file.holes.tol });
+        // `between` gives back exactly those changes, and none for the file's own values.
+        assert_eq!(OrderChanges::between(&file, &o), c);
+        assert!(OrderChanges::between(&file, &file).is_empty());
+        // Values the settings don't have leave the file's; zones are capped.
+        let odd = OrderChanges { hole_mode: Some(9), hole_start_corner: Some(5), orthogonality_tolerance: Some(-1.0), big_hole_min_length: Some(f64::NAN), zones_x: Some(100_000), ..Default::default() };
+        let o = odd.apply(file);
+        assert_eq!((o.holes.mode, o.holes.corner, o.holes.ortho_tol, o.holes.big_length, o.sheet.zones_x), (HoleMode::Direction, 3, 0.5, 0.0, MAX_ZONES));
+        // Saved as only the values changed; a line from a newer or older app
+        // with keys this one doesn't know still reads.
+        assert_eq!(serde_json::to_string(&OrderChanges { rows: Some(true), ..Default::default() }).unwrap(), r#"{"rows":true}"#);
+        let read: OrderChanges = serde_json::from_str(r#"{"zigzag":true,"cut_by":"heat"}"#).unwrap();
+        assert_eq!(read, OrderChanges { zigzag: Some(true), ..Default::default() });
+    }
+
+    #[test]
+    fn zones_are_cut_from_each_start_corner_in_rows_or_columns_with_or_without_zig_zag() {
+        // A 200 × 200 sheet in 2 × 2 zones: lower left (LL), upper left (UL),
+        // lower right (LR), upper right (UR).
+        let (ll, ul, lr, ur) = ([0.0, 0.0, 100.0, 100.0], [0.0, 100.0, 100.0, 200.0], [100.0, 0.0, 200.0, 100.0], [100.0, 100.0, 200.0, 200.0]);
+        let order = |start_left: bool, start_bottom: bool, horizontal: bool, zigzag: bool| zones(200.0, 200.0, &SheetOrder { zones_x: 2, zones_y: 2, start_left, start_bottom, horizontal, zigzag });
+        // Columns, every one run the same way.
+        assert_eq!(order(true, true, false, false), vec![ll, ul, lr, ur]);
+        assert_eq!(order(false, true, false, false), vec![lr, ur, ll, ul]);
+        assert_eq!(order(true, false, false, false), vec![ul, ll, ur, lr]);
+        assert_eq!(order(false, false, false, false), vec![ur, lr, ul, ll]);
+        // Rows.
+        assert_eq!(order(true, true, true, false), vec![ll, lr, ul, ur]);
+        assert_eq!(order(false, false, true, false), vec![ur, ul, lr, ll]);
+        // Zig-zag: every other column or row runs back.
+        assert_eq!(order(true, true, false, true), vec![ll, ul, ur, lr]);
+        assert_eq!(order(true, false, true, true), vec![ul, ur, lr, ll]);
+        // 0 zones along an axis is one zone across it (CZ1), as is 1.
+        for n in [0, 1] {
+            let z = zones(300.0, 200.0, &SheetOrder { zones_x: n, zones_y: n, ..SheetOrder::default() });
+            assert_eq!(z, vec![[0.0, 0.0, 300.0, 200.0]], "{n} zones");
+        }
+        // Many: every zone, the first and last where the start corner says.
+        let z = zones(1500.0, 1000.0, &SheetOrder { zones_x: 500, zones_y: 400, start_left: false, start_bottom: false, ..SheetOrder::default() });
+        assert_eq!(z.len(), 200_000);
+        assert_eq!((z[0], z[399], z[400]), ([1497.0, 997.5, 1500.0, 1000.0], [1497.0, 0.0, 1500.0, 2.5], [1494.0, 997.5, 1497.0, 1000.0]));
     }
 
     #[test]
@@ -1067,11 +1167,195 @@ mod ct1_tests {
     }
 }
 
+/// The sheet's automatic order (CZ1–CZ6, CO27 (c)): the cutting zones, the
+/// corner the first one is in and the way they are run.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SheetOrder {
+    /// B122 / B123: cutting zones along X (across) and Y (up); 0 = one zone across.
+    pub zones_x: u32,
+    pub zones_y: u32,
+    /// B110: the left column first, else the right.
+    pub start_left: bool,
+    /// The bottom row first, else the top. The machine file's start bottom
+    /// (B111) isn't followed: the sheet starts at the bottom (CZ6, CO28).
+    pub start_bottom: bool,
+    /// B114: rows (along X) one after another, else columns.
+    pub horizontal: bool,
+    /// B115: every other row or column runs back.
+    pub zigzag: bool,
+}
+
+impl Default for SheetOrder {
+    /// The BLM machine file's values (CZ3), with the bottom start (CZ6).
+    fn default() -> Self {
+        SheetOrder { zones_x: 20, zones_y: 10, start_left: true, start_bottom: true, horizontal: false, zigzag: false }
+    }
+}
+
+impl SheetOrder {
+    /// The sheet order a machine file's codes give. A code the file doesn't
+    /// set keeps the built-in value.
+    pub fn from_codes(m: &HashMap<String, String>) -> SheetOrder {
+        let d = SheetOrder::default();
+        let u = |k: &str, def: u32| m.get(k).and_then(|v| v.parse::<i64>().ok()).map_or(def, |v| v.clamp(0, u32::MAX as i64) as u32);
+        let on = |k: &str, def: bool| m.get(k).map_or(def, |v| v == "ON");
+        SheetOrder {
+            zones_x: u("B122", d.zones_x),
+            zones_y: u("B123", d.zones_y),
+            start_left: on("B110", d.start_left),
+            // CZ6: B111 isn't followed; the sheet starts at the bottom.
+            start_bottom: d.start_bottom,
+            horizontal: on("B114", d.horizontal),
+            zigzag: on("B115", d.zigzag),
+        }
+    }
+
+    /// The corner the first zone is in, for people and agents.
+    pub fn corner_label(&self) -> &'static str {
+        match (self.start_left, self.start_bottom) {
+            (true, true) => "lower left",
+            (false, true) => "lower right",
+            (true, false) => "upper left",
+            (false, false) => "upper right",
+        }
+    }
+}
+
+/// Most cutting zones a change in Settings → Machines takes along one axis
+/// (own limit, MAC-62).
+pub const MAX_ZONES: u32 = 500;
+
+/// A machine's sheet and hole order (CO16, CO17).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OrderSettings {
+    pub sheet: SheetOrder,
+    pub holes: HoleOrder,
+}
+
+impl OrderSettings {
+    /// What a machine file's codes give, before any change in Settings.
+    pub fn from_codes(m: &HashMap<String, String>) -> OrderSettings {
+        OrderSettings { sheet: SheetOrder::from_codes(m), holes: HoleOrder::from_codes(m) }
+    }
+}
+
+/// The sheet and hole order settings changed for one machine in Settings →
+/// Machines (CO16, CO17), saved with the machine. Each value set wins over
+/// the machine file's; None = the file's. Empty = every value from the file
+/// ("Use the machine file").
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct OrderChanges {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_left: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_bottom: Option<bool>,
+    /// Rows (along X), else columns.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rows: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zigzag: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zones_x: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub zones_y: Option<u32>,
+    /// Order mode of the holes by its number in the machine file (B565).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hole_mode: Option<u8>,
+    /// By direction's start corner (B566: 0 nearest the head, 1–4).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hole_start_corner: Option<u8>,
+    /// By direction in columns (B567 2), else rows.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hole_columns: Option<bool>,
+    /// B568, mm.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub orthogonality_tolerance: Option<f64>,
+    /// B587.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub small_holes_first: Option<bool>,
+    /// B588 / B589 / B590, mm.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub big_hole_min_length: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub big_hole_min_width: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub big_hole_offset: Option<f64>,
+}
+
+/// `wanted` when it isn't `file`.
+fn changed<T: PartialEq>(file: T, wanted: T) -> Option<T> {
+    (file != wanted).then_some(wanted)
+}
+
+/// A length `wanted` when it isn't `file` (to a millionth of a mm).
+fn changed_len(file: f64, wanted: f64) -> Option<f64> {
+    ((file - wanted).abs() > 1e-6).then_some(wanted)
+}
+
+impl OrderChanges {
+    /// Nothing changed: every value from the machine file.
+    pub fn is_empty(&self) -> bool {
+        *self == OrderChanges::default()
+    }
+
+    /// The order settings with these changes laid over `file`'s. A value
+    /// the setting can't take (a mode or corner number it doesn't have, a
+    /// negative or endless length) leaves the file's; zones are capped at
+    /// `MAX_ZONES`.
+    pub fn apply(&self, file: OrderSettings) -> OrderSettings {
+        let (mut s, mut h) = (file.sheet, file.holes);
+        let len = |v: Option<f64>, def: f64| v.filter(|x| x.is_finite() && *x >= 0.0).unwrap_or(def);
+        s.start_left = self.start_left.unwrap_or(s.start_left);
+        s.start_bottom = self.start_bottom.unwrap_or(s.start_bottom);
+        s.horizontal = self.rows.unwrap_or(s.horizontal);
+        s.zigzag = self.zigzag.unwrap_or(s.zigzag);
+        s.zones_x = self.zones_x.map_or(s.zones_x, |n| n.min(MAX_ZONES));
+        s.zones_y = self.zones_y.map_or(s.zones_y, |n| n.min(MAX_ZONES));
+        h.mode = self.hole_mode.and_then(HoleMode::from_code).unwrap_or(h.mode);
+        h.corner = self.hole_start_corner.filter(|c| *c <= 4).unwrap_or(h.corner);
+        h.columns = self.hole_columns.unwrap_or(h.columns);
+        h.ortho_tol = len(self.orthogonality_tolerance, h.ortho_tol);
+        h.small_first = self.small_holes_first.unwrap_or(h.small_first);
+        h.big_length = len(self.big_hole_min_length, h.big_length);
+        h.big_width = len(self.big_hole_min_width, h.big_width);
+        h.big_offset = self.big_hole_offset.filter(|x| x.is_finite()).unwrap_or(h.big_offset);
+        OrderSettings { sheet: s, holes: h }
+    }
+
+    /// The changes that make `file`'s settings `wanted`: only the values
+    /// that differ, so a value set back to the file's follows the file again.
+    pub fn between(file: &OrderSettings, wanted: &OrderSettings) -> OrderChanges {
+        let (fs, ws, fh, wh) = (&file.sheet, &wanted.sheet, &file.holes, &wanted.holes);
+        OrderChanges {
+            start_left: changed(fs.start_left, ws.start_left),
+            start_bottom: changed(fs.start_bottom, ws.start_bottom),
+            rows: changed(fs.horizontal, ws.horizontal),
+            zigzag: changed(fs.zigzag, ws.zigzag),
+            zones_x: changed(fs.zones_x, ws.zones_x),
+            zones_y: changed(fs.zones_y, ws.zones_y),
+            hole_mode: changed(fh.mode.code(), wh.mode.code()),
+            hole_start_corner: changed(fh.corner, wh.corner),
+            hole_columns: changed(fh.columns, wh.columns),
+            orthogonality_tolerance: changed_len(fh.ortho_tol, wh.ortho_tol),
+            small_holes_first: changed(fh.small_first, wh.small_first),
+            big_hole_min_length: changed_len(fh.big_length, wh.big_length),
+            big_hole_min_width: changed_len(fh.big_width, wh.big_width),
+            big_hole_offset: changed_len(fh.big_offset, wh.big_offset),
+        }
+    }
+
+    /// The sheet order is changed (start corner, rows or columns, zig-zag, zones).
+    pub fn sheet_changed(&self) -> bool {
+        self.start_left.is_some() || self.start_bottom.is_some() || self.rows.is_some() || self.zigzag.is_some() || self.zones_x.is_some() || self.zones_y.is_some()
+    }
+}
+
 /// Cutting zones of a sheet, in the order they are cut (CZ1: zone width = sheet length ÷ X zones, height =
 /// sheet width ÷ Y zones, only when the count is above 0). Each zone is
 /// (x0, y0, x1, y1). Columns (or rows when `horizontal`) start on the
 /// configured side; with `zigzag` every other one runs back.
-pub fn zones(w: f64, h: f64, t: &MachineTech) -> Vec<[f64; 4]> {
+pub fn zones(w: f64, h: f64, t: &SheetOrder) -> Vec<[f64; 4]> {
     let nx = t.zones_x.max(1) as usize;
     let ny = t.zones_y.max(1) as usize;
     let (zw, zh) = (if t.zones_x > 0 { w / t.zones_x as f64 } else { w }, if t.zones_y > 0 { h / t.zones_y as f64 } else { h });
@@ -1119,6 +1403,11 @@ pub enum HoleMode {
 }
 
 impl HoleMode {
+    /// The mode a machine-file number stands for (B565), if any.
+    pub fn from_code(code: u8) -> Option<HoleMode> {
+        [HoleMode::None, HoleMode::Proximity, HoleMode::Direction, HoleMode::MinimumHeat].into_iter().find(|m| m.code() == code)
+    }
+
     /// The setting's number in the machine file (B565).
     pub fn code(self) -> u8 {
         match self {

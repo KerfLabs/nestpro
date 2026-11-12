@@ -995,7 +995,7 @@ fn auto_order(placed: &[Placed], spec: &SheetSpec, mt: &crate::ct1::MachineTech)
     let inside_other = |i: usize| depth(i) > 0;
     // Zone by zone (rules CZ4, CZ5): the parts of each zone, nearest first,
     // with parts sitting in another part's hole before the rest.
-    let zones = crate::ct1::zones(spec.w, spec.h, mt);
+    let zones = crate::ct1::zones(spec.w, spec.h, &mt.sheet_order);
     let mut zi = 0;
     while !left.is_empty() {
         while zi < zones.len() && !left.iter().any(|&i| crate::ct1::box_in_zone(placed[i].bbox4(), zones[zi])) {
