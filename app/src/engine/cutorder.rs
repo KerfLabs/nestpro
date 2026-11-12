@@ -32,7 +32,7 @@ pub fn automatic(list: &[Contour]) -> Vec<usize> {
 /// in the order added, the outline moved last. Only contours the part has
 /// and cuts or marks, each once, so a file edited elsewhere can't point the
 /// order at anything else. Empty for a built-in shape.
-fn hand(part: &Part) -> Vec<usize> {
+pub fn hand(part: &Part) -> Vec<usize> {
     let Some(geo) = custom(part) else { return vec![] };
     let list = geo.contour_list();
     let o = dxf::outline_index(&list);
@@ -44,6 +44,23 @@ fn hand(part: &Part) -> Vec<usize> {
     }
     all.sort_by_key(|&k| Some(k) == o);
     all
+}
+
+/// Contours `picks` (numbers from 0) gathered by one sweep on the part
+/// screen, in the order passed (CO11): the outline, passed before another
+/// contour, can't take that place (CO4), so it is left out of the pick,
+/// with the reason; the rest go in as one command. The outline passed last
+/// stays.
+pub fn hold_outline(list: &[Contour], picks: &[usize]) -> (Vec<usize>, Option<(usize, String)>) {
+    let Some(o) = dxf::outline_index(list) else { return (picks.to_vec(), None) };
+    match picks.iter().position(|&k| k == o) {
+        Some(at) if at + 1 < picks.len() => {
+            let rest = picks.iter().copied().filter(|&k| k != o).collect();
+            let why = format!("Contour {}, the part's outline, is left out: it is always cut last, or the part drops before its holes are cut.", o + 1);
+            (rest, Some((o, why)))
+        }
+        _ => (picks.to_vec(), None),
+    }
 }
 
 /// An imported part's geometry; a built-in shape has none to order.

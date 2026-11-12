@@ -137,6 +137,52 @@ pub fn contours_on_stroke(list: &[Contour], a: P, b: P, half: f64) -> Vec<usize>
     list.iter().enumerate().filter(|(_, c)| segments(c).into_iter().any(|(p, q)| between_segments(a, b, p, q) <= half)).map(|(k, _)| k).collect()
 }
 
+/// Where along the move from `a` to `b` (0 at `a`, 1 at `b`) the pointer
+/// first comes within `half` mm of the segment `p`–`q`, if it does. The
+/// distance is convex along the move, so its nearest point is found by
+/// thirds, and the first point within reach before it by halving.
+fn first_reach(a: P, b: P, p: P, q: P, half: f64) -> Option<f64> {
+    if between_segments(a, b, p, q) > half {
+        return None;
+    }
+    let at = |t: f64| to_segment([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t], p, q);
+    if at(0.0) <= half {
+        return Some(0.0);
+    }
+    let (mut lo, mut hi) = (0.0, 1.0);
+    for _ in 0..60 {
+        let (m1, m2) = (lo + (hi - lo) / 3.0, hi - (hi - lo) / 3.0);
+        if at(m1) <= at(m2) {
+            hi = m2;
+        } else {
+            lo = m1;
+        }
+    }
+    let (mut out, mut inside) = (0.0, (lo + hi) / 2.0);
+    for _ in 0..50 {
+        let m = (out + inside) / 2.0;
+        if at(m) <= half {
+            inside = m;
+        } else {
+            out = m;
+        }
+    }
+    Some(inside)
+}
+
+/// The contours a sweep passes as the pointer moves from `a` to `b` (CS6,
+/// CO11): every one whose line comes within `half` mm of the pointer's
+/// path, in the order the pointer reaches them.
+pub fn contours_along_stroke(list: &[Contour], a: P, b: P, half: f64) -> Vec<usize> {
+    let mut met: Vec<(f64, usize)> = list
+        .iter()
+        .enumerate()
+        .filter_map(|(k, c)| segments(c).into_iter().filter_map(|(p, q)| first_reach(a, b, p, q, half)).min_by(f64::total_cmp).map(|t| (t, k)))
+        .collect();
+    met.sort_by(|x, y| x.0.total_cmp(&y.0).then(x.1.cmp(&y.1)));
+    met.into_iter().map(|m| m.1).collect()
+}
+
 /// What a drag with a row chosen does.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Drag {
@@ -154,6 +200,76 @@ pub fn drag_kind(list: &[Contour], start: P, half: f64) -> Drag {
     } else {
         Drag::Box
     }
+}
+
+/// What the pointer did over the part's drawing in one frame while contours
+/// are picked by click, box or sweep (CS6, CO11).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Gesture {
+    /// A click on contour `k` (numbers from 0).
+    Click(usize),
+    /// A sweep starts where the button went down, on a contour (part mm).
+    SweepStart(P),
+    /// The pointer moved on to here with the button held (part mm).
+    SweepTo(P),
+    /// The button was let go: the sweep ends.
+    SweepEnd,
+    /// A box from one corner to the other (part mm) was let go.
+    Box(P, P),
+}
+
+/// Clicks, sweeps and boxes over contours `list` this frame (CS6): a click
+/// picks the contour under the pointer, a drag from a contour sweeps, a drag
+/// from open space draws a box (drawn here while the button is held).
+/// `sweeping` says a sweep is in progress; `box_from` keeps the box's first
+/// corner (screen) between frames. `half` is the pick aperture, mm.
+#[allow(clippy::too_many_arguments)]
+pub fn gestures(ui: &egui::Ui, resp: &egui::Response, painter: &egui::Painter, list: &[Contour], to_w: &dyn Fn(egui::Pos2) -> P, half: f64, sweeping: bool, box_from: &mut Option<egui::Pos2>) -> Vec<Gesture> {
+    let mut out = vec![];
+    let mut sweeping = sweeping;
+    let at = resp.hover_pos().or(resp.interact_pointer_pos()).map(to_w);
+    if resp.clicked() {
+        if let Some(k) = at.and_then(|w| contour_at(list, w, half)) {
+            out.push(Gesture::Click(k));
+        }
+    }
+    if resp.drag_started_by(egui::PointerButton::Primary) {
+        if let Some(w) = resp.interact_pointer_pos().map(to_w) {
+            // Where the button went down, not where the drag was noticed.
+            let from = ui.input(|i| i.pointer.press_origin()).map(to_w).unwrap_or(w);
+            match drag_kind(list, from, half) {
+                Drag::Sweep => {
+                    out.extend([Gesture::SweepStart(from), Gesture::SweepTo(w)]);
+                    sweeping = true;
+                }
+                Drag::Box => *box_from = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos()),
+            }
+        }
+    }
+    if resp.dragged_by(egui::PointerButton::Primary) {
+        if let (true, Some(w)) = (sweeping, resp.interact_pointer_pos().map(to_w)) {
+            out.push(Gesture::SweepTo(w));
+        }
+        if let (Some(a), Some(b)) = (*box_from, resp.interact_pointer_pos()) {
+            let r = egui::Rect::from_two_pos(a, b);
+            painter.rect_filled(r, egui::CornerRadius::same(2), crate::ui_parts::with_alpha(th().accent, 30));
+            painter.extend(egui::Shape::dashed_line(&[r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom(), r.left_top()], egui::Stroke::new(1.0, th().accent_fg), 5.0, 3.0));
+        }
+    }
+    if resp.drag_stopped() {
+        if sweeping {
+            // The last stretch, from the last held frame to where the button
+            // came up, belongs to the same sweep (and the same undo step).
+            if let Some(w) = resp.interact_pointer_pos().or_else(|| ui.input(|i| i.pointer.latest_pos())).map(to_w) {
+                out.push(Gesture::SweepTo(w));
+            }
+            out.push(Gesture::SweepEnd);
+        }
+        if let (Some(a), Some(b)) = (box_from.take(), resp.interact_pointer_pos()) {
+            out.push(Gesture::Box(to_w(a), to_w(b)));
+        }
+    }
+    out
 }
 
 /// The panel's state: on the part's drawing screen (`B` the job's undo
@@ -362,49 +478,22 @@ pub fn canvas<T: PaintTarget>(
         painter.add(egui::Shape::line(list[k].path().into_iter().map(to_s).collect(), egui::Stroke::new(4.0, crate::ui_parts::with_alpha(col, 150))));
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    if resp.clicked() {
-        if let Some(k) = at.and_then(|w| contour_at(&list, w, half)) {
-            paint_contours(t, &[k], row, same);
-        }
-    }
-    if resp.drag_started_by(egui::PointerButton::Primary) {
-        if let Some(w) = resp.interact_pointer_pos().map(to_w) {
-            // Where the button went down, not where the drag was noticed.
-            let from = ui.input(|i| i.pointer.press_origin()).map(to_w).unwrap_or(w);
-            match drag_kind(&list, from, half) {
-                Drag::Sweep => {
-                    sweep_start(t, panel, part, from, row, same, half);
-                    sweep_to(t, panel, w, half);
+    let sweeping = panel.sweep.is_some();
+    for g in gestures(ui, resp, painter, &list, to_w, half, sweeping, &mut panel.box_from) {
+        match g {
+            Gesture::Click(k) => {
+                paint_contours(t, &[k], row, same);
+            }
+            Gesture::SweepStart(from) => sweep_start(t, panel, part, from, row, same, half),
+            Gesture::SweepTo(w) => sweep_to(t, panel, w, half),
+            Gesture::SweepEnd => sweep_end(t, panel, names),
+            Gesture::Box(a, b) => {
+                let picks = contours_in_box(&list, a, b);
+                if picks.is_empty() {
+                    t.say("No contour lies wholly inside the box.".into());
+                } else {
+                    paint_gathered(t, &picks, row, same);
                 }
-                Drag::Box => panel.box_from = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos()),
-            }
-        }
-    }
-    if resp.dragged_by(egui::PointerButton::Primary) {
-        if let (Some(_), Some(w)) = (&panel.sweep, resp.interact_pointer_pos().map(to_w)) {
-            sweep_to(t, panel, w, half);
-        }
-        if let (Some(a), Some(b)) = (panel.box_from, resp.interact_pointer_pos()) {
-            let r = egui::Rect::from_two_pos(a, b);
-            painter.rect_filled(r, egui::CornerRadius::same(2), crate::ui_parts::with_alpha(th().accent, 30));
-            painter.extend(egui::Shape::dashed_line(&[r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom(), r.left_top()], egui::Stroke::new(1.0, th().accent_fg), 5.0, 3.0));
-        }
-    }
-    if resp.drag_stopped() {
-        if panel.sweep.is_some() {
-            // The last stretch, from the last held frame to where the button
-            // came up, belongs to the same sweep (and the same undo step).
-            if let Some(w) = resp.interact_pointer_pos().or_else(|| ui.input(|i| i.pointer.latest_pos())).map(to_w) {
-                sweep_to(t, panel, w, half);
-            }
-            sweep_end(t, panel, names);
-        }
-        if let (Some(a), Some(b)) = (panel.box_from.take(), resp.interact_pointer_pos()) {
-            let picks = contours_in_box(&list, to_w(a), to_w(b));
-            if picks.is_empty() {
-                t.say("No contour lies wholly inside the box.".into());
-            } else {
-                paint_gathered(t, &picks, row, same);
             }
         }
     }
@@ -730,7 +819,7 @@ pub fn paint_contour_colours(painter: &egui::Painter, part: &crate::nest::Part, 
 }
 
 /// A refusal's first sentence: what is wrong, without the agents' advice.
-fn first_sentence(e: &str) -> String {
+pub fn first_sentence(e: &str) -> String {
     match e.find(". ") {
         Some(i) => e[..=i].to_string(),
         None => e.to_string(),
@@ -738,7 +827,7 @@ fn first_sentence(e: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::nest::{Part, Shape};
 

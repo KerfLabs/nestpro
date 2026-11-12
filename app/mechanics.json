@@ -474,6 +474,76 @@
    "estimated": true
   },
   {
+   "name": "setting a part's cut order on the part screen",
+   "group": "part cut order",
+   "value": ["Machining → Contours → Manual Contours: click, sweep or box", "All Marks", "All Cut", "All Contours of one Quality"],
+   "source": "CO11",
+   "estimated": true
+  },
+  {
+   "name": "a sweep of a part's contours while picking the cut order",
+   "group": "part cut order",
+   "value": "adds each cut or marked contour in the order the pointer reaches it, each once, as one command when the button is let go; an outline passed before another contour is left out",
+   "source": "CO11",
+   "estimated": true
+  },
+  {
+   "name": "what picking a part's cut order sets",
+   "group": "part cut order",
+   "value": "the order only, never where a cut starts",
+   "source": "CO11",
+   "estimated": true
+  },
+  {
+   "name": "Ctrl+Z after a cut-order command on the part screen",
+   "group": "part cut order",
+   "value": "takes back that one command (a click, sweep, box or bulk command)",
+   "source": "CO11",
+   "estimated": true
+  },
+  {
+   "name": "Machine part (Automatic) on the part screen",
+   "group": "part cut order",
+   "value": "clears the part's cut order set by hand",
+   "source": "CO11",
+   "estimated": true
+  },
+  {
+   "name": "a box while picking a part's cut order",
+   "group": "part cut order",
+   "value": "adds the cut and marked contours wholly inside it, in the automatic order among themselves",
+   "source": "CO12",
+   "estimated": true
+  },
+  {
+   "name": "where the part screen numbers a contour of the cut order",
+   "group": "part cut order",
+   "value": "beside where it starts: a cut contour at its pierce, a mark at its first point",
+   "source": "CO13",
+   "estimated": true
+  },
+  {
+   "name": "rapids on the part screen",
+   "group": "part cut order",
+   "value": "dashed, from where one contour ends to where the next starts",
+   "source": "CO13",
+   "estimated": true
+  },
+  {
+   "name": "cut order numbers and rapids set by hand, part screen",
+   "group": "part cut order",
+   "value": "#22d3ee, solid",
+   "source": "CO13",
+   "estimated": true
+  },
+  {
+   "name": "automatic cut order numbers and rapids, part screen",
+   "group": "part cut order",
+   "value": "#8c909c, grey",
+   "source": "CO13",
+   "estimated": true
+  },
+  {
    "name": "import preview: cut technology panel",
    "group": "drawing import",
    "value": "the part's cut technology panel (CS6, CS7) on the part about to be imported, with the drawing's layer rows above its rows",
@@ -1071,6 +1141,41 @@
    "group": "manual machining",
    "value": 8.0,
    "unit": "px",
+   "estimated": true
+  },
+  {
+   "name": "a sweep across parts on the sheet in Manual cutting",
+   "group": "manual machining",
+   "value": "takes whole parts in the order passed, each cut whole in its own cut order; parts the picks already cut whole are skipped",
+   "source": "MM8",
+   "estimated": true
+  },
+  {
+   "name": "a part passed by a sweep on the sheet",
+   "group": "manual machining",
+   "value": "the pointer comes within the pick aperture of one of its contours",
+   "source": "MM8",
+   "estimated": true
+  },
+  {
+   "name": "a part with some contours clicked, then swept",
+   "group": "manual machining",
+   "value": "taken: the rest of it cut whole at the sweep's place",
+   "source": "MM8",
+   "estimated": true
+  },
+  {
+   "name": "a box on the sheet in Manual cutting",
+   "group": "manual machining",
+   "value": "takes the parts wholly inside it, in the sheet's automatic order among themselves",
+   "source": "MM9",
+   "estimated": true
+  },
+  {
+   "name": "Undo pick after a sweep or a box",
+   "group": "manual machining",
+   "value": "takes back the whole sweep or box",
+   "source": "MM9",
    "estimated": true
   },
   {
@@ -2705,7 +2810,7 @@
   {
    "name": "hole order on the sheet",
    "group": "cut order",
-   "value": "worked out where each copy sits, turned or mirrored; the head from where the sheet's last cut was, the sheet's origin before the first",
+   "value": "worked out where each copy sits, turned or mirrored, also for a part taken whole by a sweep or a box; the head from where the sheet's last cut was, the sheet's origin before the first",
    "source": "CO14",
    "estimated": true
   },

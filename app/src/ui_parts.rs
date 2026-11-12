@@ -154,6 +154,12 @@ pub enum Icon {
     /// A lead-in on a corner, taken from a small table (the machine's
     /// standard leads).
     StandardLeads,
+    /// A plate with an etched line across it (every mark into the cut order).
+    OrderMarks,
+    /// A plate with its holes picked out (every cut contour into the cut order).
+    OrderCut,
+    /// A list of colour swatches (contours of one cut quality).
+    OrderQuality,
 }
 
 pub fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
@@ -802,6 +808,29 @@ pub fn draw_icon_with(p: &egui::Painter, r: Rect, icon: Icon, ink: Color32, acce
             p.line_segment([Pos2::new(t.left(), t.top() + 6.0), Pos2::new(t.right(), t.top() + 6.0)], Stroke::new(1.0, ink));
             p.line_segment([Pos2::new(t.center().x, t.top()), Pos2::new(t.center().x, t.bottom())], Stroke::new(1.0, ink));
         }
+        Icon::OrderMarks => {
+            rr(Rect::from_center_size(c, Vec2::new(22.0, 18.0)), s);
+            poly(vec![v(-7.0, 4.0), v(-3.0, -3.0), v(1.0, 3.0), v(5.0, -4.0), v(8.0, 1.0)], a);
+        }
+        Icon::OrderCut => {
+            rr(Rect::from_center_size(c, Vec2::new(22.0, 18.0)), s);
+            for x in [-5.0, 5.0] {
+                p.circle_stroke(v(x, 0.0), 3.5, a);
+            }
+            p.extend(EShape::dashed_line(&[v(-1.5, 0.0), v(1.5, 0.0)], Stroke::new(1.0, accent), 1.5, 1.5));
+        }
+        Icon::OrderQuality => {
+            for (k, y) in [-6.0f32, 0.0, 6.0].into_iter().enumerate() {
+                let sw = Rect::from_center_size(v(-6.0, y), Vec2::splat(4.5));
+                if k == 1 {
+                    p.rect_filled(sw, CornerRadius::same(1), accent);
+                    p.line_segment([v(-1.0, y), v(9.0, y)], a);
+                } else {
+                    p.rect_stroke(sw, CornerRadius::same(1), Stroke::new(1.2, ink), egui::StrokeKind::Middle);
+                    p.line_segment([v(-1.0, y), v(7.0, y)], Stroke::new(1.3, ink));
+                }
+            }
+        }
         Icon::Reverse => {
             p.circle_stroke(c, 8.0, Stroke::new(1.4, ink));
             poly(vec![v(-3.0, -11.0), v(1.0, -8.0), v(-3.0, -5.0)], a);
@@ -913,6 +942,47 @@ pub(crate) fn ribbon_button_ex(ui: &mut egui::Ui, icon: Icon, label: &str, activ
     let gpos = Pos2::new(rect.center().x - galley.size().x / 2.0, rect.top() + 40.0);
     p.galley(gpos, galley, text_col);
     resp
+}
+
+/// A command in a ribbon button's menu: its picture and name on one line,
+/// `width` wide; a submenu's (`more`) with an arrow at the right. Its hover
+/// card says what it does; one that can't be used now (`why_not`) is greyed
+/// out and its card says why.
+pub(crate) fn menu_item(ui: &mut egui::Ui, icon: Icon, label: &str, sentence: &str, why_not: Option<&str>, width: f32, more: bool) -> egui::Response {
+    let t = th();
+    let enabled = why_not.is_none();
+    let col = if enabled { t.text } else { with_alpha(t.text_dim, 160) };
+    let galley = ui.painter().layout_no_wrap(label.to_string(), FontId::proportional(13.0), col);
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width.max(galley.size().x + 52.0), 24.0), if enabled { Sense::click() } else { Sense::hover() });
+    let p = ui.painter();
+    if enabled && resp.hovered() {
+        p.rect_filled(rect, CornerRadius::same(5), t.hover);
+    }
+    let ir = Rect::from_center_size(Pos2::new(rect.left() + 14.0, rect.center().y), Vec2::splat(22.0));
+    let (ink, acc) = if enabled { (t.text, t.accent_fg) } else { (with_alpha(t.text_dim, 150), with_alpha(t.text_dim, 150)) };
+    draw_icon_with(&p.clone().with_clip_rect(rect), ir, icon, ink, acc, false);
+    p.galley(Pos2::new(rect.left() + 30.0, rect.center().y - galley.size().y / 2.0), galley, col);
+    if more {
+        let a = Pos2::new(rect.right() - 10.0, rect.center().y);
+        p.add(EShape::convex_polygon(vec![a + Vec2::new(-3.0, -4.0), a + Vec2::new(2.0, 0.0), a + Vec2::new(-3.0, 4.0)], col, Stroke::NONE));
+    }
+    resp.on_hover_ui(|ui| command_card(ui, icon, label, sentence, why_not))
+}
+
+/// A command's hover card: its name in bold beside its picture, one plain
+/// sentence on what it does, and why it can't be used now (`why_not`).
+pub(crate) fn command_card(ui: &mut egui::Ui, icon: Icon, title: &str, sentence: &str, why_not: Option<&str>) {
+    let t = th();
+    ui.set_max_width(290.0);
+    ui.horizontal(|ui| {
+        let (r, _) = ui.allocate_exact_size(Vec2::new(26.0, 24.0), Sense::hover());
+        draw_icon_with(ui.painter(), r, icon, t.text, t.accent_fg, false);
+        ui.label(RichText::new(title).strong().size(13.5).color(t.text_strong));
+    });
+    ui.label(RichText::new(sentence).size(12.5));
+    if let Some(w) = why_not {
+        ui.label(RichText::new(w).size(12.0).color(t.warn_fg));
+    }
 }
 
 /// A small ribbon button: its picture and label on one line, three to a
