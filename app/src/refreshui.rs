@@ -229,9 +229,9 @@ impl App {
     /// look; the full reload reads every one. False: one must be looked at
     /// again at the next check.
     fn refresh_open_jobs(&mut self, lib: &Library, list: Option<&[crate::library::Entry]>, full: bool) -> bool {
-        // Not while a save waits for remnant names or another answer about
-        // the job in front: the next look does it.
-        if self.naming.is_some() || self.pending.is_some() {
+        // Not while a save waits for remnant names or for an answer about a
+        // job or one of its parts (LB15): the next look does it.
+        if self.naming.is_some() || self.pending.is_some() || matches!(self.libui.question, Some(SaveQuestion::Job(_) | SaveQuestion::Part { .. })) {
             return false;
         }
         self.store_job();
@@ -288,9 +288,9 @@ impl App {
             let (sheet, part) = (self.cur_sheet, self.sel_part);
             self.cur_job = usize::MAX;
             self.open_job_forced(i);
-            if sheet < self.result.sheets.len() {
-                self.cur_sheet = sheet;
-            }
+            // Through `select_sheet`, so the program and overlaps shown are
+            // that sheet's.
+            self.select_sheet(sheet);
             if part.is_some_and(|p| p < self.parts.len()) {
                 self.sel_part = part;
             }
@@ -318,8 +318,6 @@ impl App {
                 *q = c;
                 true
             }
-            // Its save is already asking about the same job.
-            Some(SaveQuestion::Job(q)) if q.id == c.id => true,
             Some(_) => false,
         }
     }
@@ -821,6 +819,70 @@ mod refreshui_tests {
         a.open_job(i);
         remnant_line(a);
         a.open_job(cur);
+    }
+
+    /// LB15: the job in front, reloaded by itself while PC 2 looks at its
+    /// second sheet, stays on that sheet, and the program shown is that
+    /// sheet's, not the first one's.
+    #[test]
+    fn a_job_reloaded_in_front_shows_the_program_of_the_sheet_it_was_on() {
+        let dir = new_library("refresh_sheet");
+        let clock = Clock::at(NOV_9_0920);
+        let mut pc1 = demo7(&dir, &clock);
+        let id = pc1.job_lib_id.unwrap();
+        pc1.parts[0].qty = 60;
+        pc1.run_nesting();
+        pc1.save_job_to_library();
+        let mut pc2 = stock_window(&dir, "kim", "PROG-2", &clock);
+        pc2.cfg.refresh_minutes = 5;
+        pc2.open_library_job(id);
+        assert!(pc2.result.sheets.len() >= 2, "{}", pc2.status);
+        pc2.select_sheet(1);
+        pc2.refresh_tick(false);
+        later(&clock, 60);
+        pc1.parts[0].qty = 61;
+        pc1.run_nesting();
+        pc1.save_job_to_library();
+        later(&clock, QUICK_S);
+        pc2.refresh_tick(false);
+        assert_eq!((pc2.parts[0].qty, pc2.cur_sheet), (61, 1), "{}", pc2.status);
+        let shown = pc2.program.clone();
+        pc2.refresh();
+        assert_eq!(pc2.program, shown, "the program shown is the second sheet's");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// LB15: no open job reloads by itself while a save waits for an answer;
+    /// here PC 2's "save this part to the library" question about DEMO-7's
+    /// part. The job stays as it is under the question; the first look after
+    /// the answer reloads it.
+    #[test]
+    fn nothing_reloads_while_a_save_question_waits() {
+        let dir = new_library("refresh_part_question");
+        let clock = Clock::at(NOV_9_0920);
+        let mut pc1 = demo7(&dir, &clock);
+        let id = pc1.job_lib_id.unwrap();
+        pc1.save_part_to_library(0);
+        let mut pc2 = stock_window(&dir, "kim", "PROG-2", &clock);
+        pc2.cfg.refresh_minutes = 5;
+        pc2.open_library_job(id);
+        pc2.refresh_tick(false);
+        pc2.save_part_to_library(0);
+        assert!(matches!(pc2.libui.question, Some(SaveQuestion::Part { .. })), "{}", pc2.status);
+        assert!(!pc2.job_unsaved(pc2.cur_job));
+        later(&clock, 60);
+        pc1.parts[0].qty = 25;
+        pc1.run_nesting();
+        pc1.save_job_to_library();
+        later(&clock, QUICK_S);
+        pc2.refresh_tick(false);
+        assert_eq!(pc2.parts[0].qty, 20, "not reloaded under the question");
+        assert!(matches!(pc2.libui.question, Some(SaveQuestion::Part { .. })));
+        pc2.keep_theirs();
+        later(&clock, QUICK_S);
+        pc2.refresh_tick(false);
+        assert_eq!(pc2.parts[0].qty, 25, "{}", pc2.status);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// LB16 (JOB-62): PC 1 deletes DEMO-7 while PC 2 has it open with
