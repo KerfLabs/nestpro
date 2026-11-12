@@ -29,14 +29,21 @@ style() {
   else echo mixed; fi
 }
 tmp=$(mktemp)
-trap 'rm -f "$tmp"' EXIT
+# A throwaway index holding the base: adding the changed files to it gives
+# what git would commit, with the same line-ending conversion as a real
+# commit (core.autocrlf on a Windows checkout).
+idx=$(mktemp)
+trap 'rm -f "$tmp" "$idx"' EXIT
+GIT_INDEX_FILE=$idx git read-tree "$base"
 
 fail=0
 # Text files only: numstat shows "-" for binary ones.
 while IFS=$'\t' read -r added _ path; do
   [ "$added" = - ] && continue
   [ -f "$path" ] || continue
-  now=$(style "$path")
+  GIT_INDEX_FILE=$idx git add -- "$path" 2>/dev/null
+  GIT_INDEX_FILE=$idx git cat-file blob ":$path" > "$tmp"
+  now=$(style "$tmp")
   if git cat-file -e "$base:$path" 2>/dev/null; then
     git show "$base:$path" > "$tmp"
     was=$(style "$tmp")
