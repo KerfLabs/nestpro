@@ -1,9 +1,11 @@
-//! The Library's job folders (JX10–JX15): one tree, kept in the Library
-//! folder, that every PC sharing the Library sees. As in the original's
-//! tables (DT8, DT9), each folder has a number of its own, a name and a
-//! parent, and each saved job's place is a line naming its record and its
-//! folder's number: renaming or moving a folder changes only its own line,
-//! and moving a job only its line, never the job's record.
+//! The Library's folder trees: one for its jobs (JX10–JX15) and one for its
+//! library parts (JX18–JX20), each kept in the Library folder, the same on
+//! every PC sharing the Library. As in the original's tables (DT8, DT9: job
+//! and product folders in one table, told apart by which tree), each folder
+//! has a number of its own, a name and a parent, and each saved job's or
+//! part's place is a line naming its record and its folder's number:
+//! renaming or moving a folder changes only its own line, and moving a job
+//! or part only its line, never its record.
 //!
 //! Every change is made under the Library's write lock (LB1–LB3): the tree
 //! is read again under it, changed and written back whole, so two PCs'
@@ -56,18 +58,35 @@ impl Default for Tree {
     }
 }
 
+/// What a tree holds, in words: "job" or "part" (`n` of them: "2 jobs").
+pub fn noun(kind: Kind, n: usize) -> String {
+    let one = match kind {
+        Kind::Job => "job",
+        Kind::Product => "part",
+    };
+    format!("{n} {one}{}", if n == 1 { "" } else { "s" })
+}
+
+/// The agents' operation for a tree: `job-folders` or `part-folders`.
+pub fn op_name(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Job => "job-folders",
+        Kind::Product => "part-folders",
+    }
+}
+
 /// Why a change to the tree was refused.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Refused {
-    /// The folder or job (named) is no longer in the Library.
+    /// The folder, job or part (named) is no longer in the Library.
     Gone(String),
     /// A folder under the same parent has the name, without case (JX4–JX6:
     /// the original's error 9).
     Taken { name: String, place: String },
     /// No name.
     NoName,
-    /// Delete: the folder still holds jobs or folders (JX13).
-    NotEmpty { name: String, jobs: usize, folders: usize },
+    /// Delete: the folder still holds jobs (parts) or folders (JX13).
+    NotEmpty { name: String, records: usize, folders: usize },
     /// Move: into the folder itself or one of its own folders (JX12).
     IntoItself { name: String },
     /// "New folder (1)" … "(9)" are all taken (JX7).
@@ -80,18 +99,19 @@ pub enum Refused {
 pub const NAME_TAKEN: i32 = crate::jobtree::FOLDER_NAME_TAKEN;
 
 impl Refused {
-    /// The refusal in plain words, ending with what to do instead: in the
-    /// window (`agent` false) or for an agent.
-    pub fn say(&self, agent: bool) -> String {
-        let again = if agent { "`job-folders mode=list` shows the folders as they are now" } else { "Refresh to see the folders as they are now" };
+    /// The refusal of a change to the `kind` tree in plain words, ending
+    /// with what to do instead: in the window (`agent` false) or for an
+    /// agent.
+    pub fn say(&self, kind: Kind, agent: bool) -> String {
+        let again = if agent { format!("`{} mode=list` shows the folders as they are now", op_name(kind)) } else { "Refresh to see the folders as they are now".into() };
         match self {
             Refused::Gone(what) => format!("{what} is no longer in the Library: another PC may have deleted it. {again}."),
             Refused::Taken { name, place } => format!("A folder called '{name}' is already in {place} (names are compared without case, error {NAME_TAKEN}). Pick another name."),
             Refused::NoName => "A folder needs a name.".into(),
-            Refused::NotEmpty { name, jobs, folders } => {
+            Refused::NotEmpty { name, records, folders } => {
                 let mut what = vec![];
-                if *jobs > 0 {
-                    what.push(format!("{jobs} job{}", if *jobs == 1 { "" } else { "s" }));
+                if *records > 0 {
+                    what.push(noun(kind, *records));
                 }
                 if *folders > 0 {
                     what.push(format!("{folders} folder{}", if *folders == 1 { "" } else { "s" }));
@@ -254,9 +274,9 @@ impl Tree {
     /// and no folders.
     pub fn delete(&mut self, id: u64, entries: &[Entry]) -> Result<(), Refused> {
         let name = self.need(id)?.name.clone();
-        let (jobs, folders) = (self.records_in(id, entries).len(), self.children(id).len());
-        if jobs > 0 || folders > 0 {
-            return Err(Refused::NotEmpty { name, jobs, folders });
+        let (records, folders) = (self.records_in(id, entries).len(), self.children(id).len());
+        if records > 0 || folders > 0 {
+            return Err(Refused::NotEmpty { name, records, folders });
         }
         self.folders.retain(|f| f.id != id);
         self.placed.retain(|_, f| *f != id);
@@ -277,14 +297,36 @@ impl Tree {
     /// The top-level folder called `name` (without case), made when there is
     /// none; TOP for no name.
     pub fn top_folder_named(&mut self, name: &str) -> u64 {
-        let n = name.trim();
-        if n.is_empty() {
-            return TOP;
+        self.folder_made(&[name.to_string()]).unwrap_or(TOP)
+    }
+
+    /// The names of the folders from the top down to `id` ("Acme",
+    /// "2026-11"); none for the top.
+    pub fn names(&self, id: u64) -> Vec<String> {
+        let mut names = vec![];
+        let mut at = id;
+        while let Some(f) = self.get(at) {
+            names.push(f.name.clone());
+            at = f.parent;
+            if names.len() > self.folders.len() {
+                break;
+            }
         }
-        match self.folders.iter().find(|f| f.parent == TOP && same(&f.name, n)) {
-            Some(f) => f.id,
-            None => self.make(TOP, n).unwrap_or(TOP),
+        names.reverse();
+        names
+    }
+
+    /// The folder reached from the top by `names`, each level found without
+    /// case (JX6) or made when missing (JX19); the top for none.
+    pub fn folder_made(&mut self, names: &[String]) -> Result<u64, Refused> {
+        let mut at = TOP;
+        for n in names.iter().map(|n| n.trim()).filter(|n| !n.is_empty()) {
+            at = match self.folders.iter().find(|f| f.parent == at && same(&f.name, n)) {
+                Some(f) => f.id,
+                None => self.make(at, n)?,
+            };
         }
+        Ok(at)
     }
 
     /// Where a record saved into the Library for the first time goes (JX15):
@@ -392,6 +434,51 @@ pub fn change<T>(lib: &Library, kind: Kind, f: impl FnOnce(&mut Tree, &[Entry]) 
     Ok(out)
 }
 
+/// The part folder a library part saved into the Library for the first
+/// time goes into (JX19).
+#[derive(Clone, Debug, PartialEq)]
+pub enum PartsFolder {
+    /// Named like the folder of the job it is saved from: the job's own
+    /// place in the jobs' tree when the job is in the Library (`record`),
+    /// else the jobs' folder `folder` while that is still there (the library
+    /// job it was opened or copied from, JX15; the top: no folder), else its
+    /// Open jobs folder `week`, a top-level name ("" for none).
+    LikeJob { record: Option<u64>, folder: Option<u64>, week: String },
+    /// A path in the parts tree ("Acme/2026-11", names separated by / or \).
+    Path(String),
+}
+
+impl PartsFolder {
+    /// The names, from the top, of the part folder it means, with the
+    /// Library's job folders `jobs` and saved jobs `saved` as they are now.
+    pub fn names(&self, jobs: &Tree, saved: &[Entry]) -> Vec<String> {
+        let names = |p: &str| p.split(['/', '\\']).map(str::trim).filter(|n| !n.is_empty()).map(String::from).collect::<Vec<_>>();
+        match self {
+            PartsFolder::Path(p) => names(p),
+            PartsFolder::LikeJob { record, folder, week } => {
+                let at = record.filter(|r| saved.iter().any(|e| e.kind == Kind::Job && e.id == *r)).map(|r| jobs.folder_of(r)).or_else(|| folder.filter(|&f| f == TOP || jobs.get(f).is_some()));
+                match at {
+                    Some(f) => jobs.names(f),
+                    None => Some(week.trim()).filter(|w| !w.is_empty()).map(String::from).into_iter().collect(),
+                }
+            }
+        }
+    }
+}
+
+/// File the library part `record`, saved into the Library for the first
+/// time, into the part folder `to` names, made if missing (JX19), under the
+/// write lock with the job folders and saved jobs as they are now. Returns
+/// the folder.
+pub fn file_part(lib: &Library, record: u64, to: &PartsFolder) -> Result<u64, Refused> {
+    change(lib, Kind::Product, |t, _| {
+        let jobs = load(lib, Kind::Job).unwrap_or_default();
+        let f = t.folder_made(&to.names(&jobs, &of_kind(lib, Kind::Job)))?;
+        t.put(record, f)?;
+        Ok(f)
+    })
+}
+
 #[cfg(test)]
 mod folders_tests {
     use super::*;
@@ -435,14 +522,14 @@ mod folders_tests {
         let gone = d.join("Nesting");
         let lib = Library::at(&gone, &who, &clock);
         assert_eq!(load(&lib, Kind::Job).err(), Some(crate::library::unreachable(&gone)));
-        assert_eq!(change(&lib, Kind::Job, |t, _| t.make(TOP, "Acme")).err().map(|e| e.say(false)), Some(crate::library::unreachable(&gone)));
+        assert_eq!(change(&lib, Kind::Job, |t, _| t.make(TOP, "Acme")).err().map(|e| e.say(Kind::Job, false)), Some(crate::library::unreachable(&gone)));
         assert!(!gone.exists(), "a folder change made the Library folder");
         // A folder that's there but holds no Library (LB12).
         let empty = d.join("Empty");
         std::fs::create_dir_all(&empty).unwrap();
         let lib = Library::at(&empty, &who, &clock);
         assert_eq!(load(&lib, Kind::Job).err(), Some(crate::library::no_library(&empty)));
-        assert_eq!(change(&lib, Kind::Job, |t, _| t.make(TOP, "Acme")).err().map(|e| e.say(false)), Some(crate::library::no_library(&empty)));
+        assert_eq!(change(&lib, Kind::Job, |t, _| t.make(TOP, "Acme")).err().map(|e| e.say(Kind::Job, false)), Some(crate::library::no_library(&empty)));
         assert_eq!(std::fs::read_dir(&empty).unwrap().count(), 0, "a folder change wrote into a folder that holds no Library");
         let _ = std::fs::remove_dir_all(&d);
     }

@@ -84,7 +84,9 @@ nestpro ops --gui      # which GUI ribbon command each operation stands for
 - **Job folders** are the Library's, the same on every PC: `job-folders
   --mode=list` shows the tree, and `new`, `rename`, `delete` (empty folders
   only) and `move` (a saved job or a folder) change it, as the Job Explorer's
-  Library section does.
+  Library section does. **Part folders** are a tree of their own:
+  `part-folders` does the same for library parts (`move --library_part=…`),
+  as the Library window's Products tab does.
 - Agents may create and change jobs, use the Library, and write programs to the
   export folder. They never send anything to a machine and don't change
   settings (machines, posts, materials are set in the app).

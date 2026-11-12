@@ -172,13 +172,14 @@ impl App {
         }
     }
 
-    /// Read the Library's list and job folders again for the Job Explorer,
-    /// the Library window and Add product (LB14). A quick check reads only
-    /// the library parts whose line changed; the full reload reads them all.
-    /// Something that can't be read now (being replaced) keeps what was
-    /// shown, and false says to read it again at the next look.
+    /// Read the Library's list and its job and part folder trees again for
+    /// the Job Explorer, the Library window (Jobs and Products) and Add
+    /// product (LB14, JX10, JX18). A quick check reads only the library
+    /// parts whose line changed; the full reload reads them all. Something
+    /// that can't be read now (being replaced) keeps what was shown, and
+    /// false says to read it again at the next look.
     fn refresh_lists(&mut self, lib: &Library, list: Option<Vec<crate::library::Entry>>, full: bool) -> bool {
-        let (Some(entries), Ok(tree)) = (list, crate::folders::load(lib, Kind::Job)) else { return false };
+        let (Some(entries), Ok(tree), Ok(part_tree)) = (list, crate::folders::load(lib, Kind::Job), crate::folders::load(lib, Kind::Product)) else { return false };
         let old: HashMap<u64, (crate::library::Entry, crate::nest::Part)> = std::mem::take(&mut self.libui.products).into_iter().map(|p| (p.0.id, p)).collect();
         let mut ok = true;
         let mut products = Vec::new();
@@ -198,7 +199,8 @@ impl App {
         }
         products.sort_by(|a, b| b.0.updated.cmp(&a.0.updated));
         self.libui.entries = entries;
-        self.libui.tree = tree;
+        *self.libui.view(Kind::Job).tree = tree;
+        *self.libui.view(Kind::Product).tree = part_tree;
         self.libui.products = products;
         if self.libui.error.take().is_some() {
             self.libui.status.clear();
@@ -804,7 +806,7 @@ mod refreshui_tests {
         let copy = pc2.job_lib_id.filter(|c| *c != id).unwrap_or_else(|| panic!("{}", pc2.status));
         assert_eq!(std::fs::read(pc2.library().unwrap().path(Kind::Job, id)).unwrap(), record, "theirs stays as they saved it");
         pc2.lib_refresh();
-        assert_eq!(pc2.libui.tree.folder_of(copy), pc2.libui.tree.folder_of(id), "filed next to theirs");
+        assert_eq!(pc2.libui.tree_of(Kind::Job).folder_of(copy), pc2.libui.tree_of(Kind::Job).folder_of(id), "filed next to theirs");
         let (left, now) = in_stock(&dir);
         assert!(holds(&pc2) > 0);
         assert_eq!(left, sheets - holds(&pc2), "the copy took its own sheets");
@@ -856,7 +858,7 @@ mod refreshui_tests {
         pc2.refresh_tick(false);
         assert_eq!(saved_jobs(&pc2), ["DEMO-8", "DEMO-9"]);
         assert_eq!(pc2.status, "", "told once");
-        assert_eq!(pc2.libui.tree.folder_of(moved), elsewhere, "the moved job shows in its new folder");
+        assert_eq!(pc2.libui.tree_of(Kind::Job).folder_of(moved), elsewhere, "the moved job shows in its new folder");
         let at = pc2.jobs.iter().position(|j| j.lib_id == Some(moved)).unwrap();
         assert!(!pc2.job_unsaved(at));
         pc2.save_job_to_library();
@@ -866,8 +868,59 @@ mod refreshui_tests {
         pc2.parts[0].qty += 2;
         pc2.save_job_to_library();
         pc2.lib_refresh();
-        assert_eq!(pc2.libui.tree.folder_of(moved), elsewhere, "its save leaves it where PC 1 put it: {}", pc2.status);
+        assert_eq!(pc2.libui.tree_of(Kind::Job).folder_of(moved), elsewhere, "its save leaves it where PC 1 put it: {}", pc2.status);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// JX18 with LB14: on PC 1, a part folder is made, library part DEMO-P1
+    /// is moved into it with Cut and Paste, the folder is renamed, and an
+    /// empty one is made and deleted. PC 2's Library window (Products tab)
+    /// and Add product's folder labels show each change at PC 2's next look,
+    /// without Refresh. With the option off, nothing moves until Refresh.
+    #[test]
+    fn a_library_part_moved_on_one_pc_shows_in_its_new_folder_on_the_other() {
+        use crate::folders::TOP;
+        use crate::libui::LibItem;
+        for minutes in [10, 0] {
+            let dir = new_library(&format!("refresh_part_folders_{minutes}"));
+            let clock = Clock::at(NOV_9_0920);
+            let sam = Library::open(&dir, &Who::new("sam", "PROG-1"), &clock).unwrap();
+            let p = crate::nest::Part { name: "DEMO-P1".into(), shape: crate::nest::Shape::Rectangle, w: 600.0, h: 400.0, qty: 3, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
+            let part = sam.save_product(&p, "", 0, 10.0, SaveTo::New).unwrap().id;
+            let mut pc1 = window(&dir, "sam", "PROG-1", &clock);
+            pc1.lib_refresh();
+            let mut pc2 = watching(&dir, "kim", "PROG-2", &clock, minutes);
+            assert_eq!(pc2.library_parts_outline(), ["DEMO-P1"]);
+            // A look a few seconds after each change on PC 1.
+            let look = |pc2: &mut App| {
+                later(&clock, QUICK_S);
+                pc2.refresh_tick(false);
+                if minutes == 0 {
+                    pc2.lib_refresh();
+                }
+            };
+            let brackets = pc1.lib_new_folder(Kind::Product, TOP).unwrap();
+            assert!(pc1.lib_rename_folder(Kind::Product, brackets, "Brackets"), "{}", pc1.status);
+            pc1.lib_cut(Kind::Product, LibItem::Part(part));
+            assert!(pc1.lib_paste(Kind::Product, brackets), "{}", pc1.status);
+            if minutes == 0 {
+                later(&clock, QUICK_S);
+                pc2.refresh_tick(true);
+                assert_eq!(pc2.library_parts_outline(), ["DEMO-P1"], "option off: nothing moves by itself");
+            }
+            look(&mut pc2);
+            assert_eq!(pc2.library_parts_outline(), ["Brackets/", "Brackets/DEMO-P1"], "{minutes} min");
+            assert_eq!(pc2.libui.part_folder(part), "Brackets", "Add product's label");
+            assert!(pc1.lib_rename_folder(Kind::Product, brackets, "Brackets 2026"), "{}", pc1.status);
+            let old = pc1.lib_new_folder(Kind::Product, TOP).unwrap();
+            look(&mut pc2);
+            assert_eq!(pc2.library_parts_outline(), ["Brackets 2026/", "Brackets 2026/DEMO-P1", "New folder/"], "{minutes} min");
+            assert!(pc1.lib_delete_folder(Kind::Product, old), "{}", pc1.status);
+            look(&mut pc2);
+            assert_eq!(pc2.library_parts_outline(), ["Brackets 2026/", "Brackets 2026/DEMO-P1"], "{minutes} min");
+            assert_eq!(pc2.libui.part_folder(part), "Brackets 2026");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     /// Let a background look for the Library finish.

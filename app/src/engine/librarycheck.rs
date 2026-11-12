@@ -84,6 +84,10 @@ struct Log {
     deleted: Vec<u64>,
     #[serde(default)]
     folder_changes: u64,
+    /// Its new library parts were filed in the part folder DEMO-CHECK
+    /// (JX19); runs of versions before part folders didn't.
+    #[serde(default)]
+    parts_filed: bool,
     errors: Vec<String>,
 }
 
@@ -132,8 +136,8 @@ pub fn refuse_real_library(folder: &Path, this_library: &Path) -> Result<(), Str
     // Only what the check and the Library under it make: temporary files and
     // the write lock's files come and go while another run is saving.
     let passing = |n: &str| n.ends_with(".tmp") || n.starts_with(shared::LOCK_FILE);
-    let tree = folders::file_name(Kind::Job);
-    if let Some(n) = top.iter().find(|n| ![MARKER, LOGS, crate::library::INDEX, tree, "Jobs", "Products", "Sheets"].contains(&n.as_str()) && !passing(n)) {
+    let (tree, part_tree) = (folders::file_name(Kind::Job), folders::file_name(Kind::Product));
+    if let Some(n) = top.iter().find(|n| ![MARKER, LOGS, crate::library::INDEX, tree, part_tree, "Jobs", "Products", "Sheets"].contains(&n.as_str()) && !passing(n)) {
         return Err(real(format!("'{n}'")));
     }
     if let Some(n) = folder.join("Sheets").is_dir().then(|| names(&folder.join("Sheets"))).transpose()?.unwrap_or_default().iter().find(|n| *n != "stock.json" && !passing(n)) {
@@ -141,11 +145,13 @@ pub fn refuse_real_library(folder: &Path, this_library: &Path) -> Result<(), Str
     }
     // The list: readable, and only the check's own records.
     let lib = Library::at(folder, &shared::Who::this_pc(), &shared::Clock::pc());
-    // The job folders: readable, and only the check's own.
-    if folder.join(tree).exists() {
-        let t = folders::load(&lib, Kind::Job).map_err(|e| unsure(e.to_string()))?;
-        if let Some(f) = t.folders.iter().find(|f| !f.name.starts_with(TAG)) {
-            return Err(real(format!("the job folder '{}'", f.name)));
+    // The job and part folders: readable, and only the check's own.
+    for (kind, file, what) in [(Kind::Job, tree, "job"), (Kind::Product, part_tree, "part")] {
+        if folder.join(file).exists() {
+            let t = folders::load(&lib, kind).map_err(|e| unsure(e.to_string()))?;
+            if let Some(f) = t.folders.iter().find(|f| !f.name.starts_with(TAG)) {
+                return Err(real(format!("the {what} folder '{}'", f.name)));
+            }
         }
     }
     if folder.join(crate::library::INDEX).exists() {
@@ -249,7 +255,7 @@ fn folder_round(lib: &Library, log: &mut Log, n: u64, own: &str) {
                 Some(id)
             }
             Err(e) => {
-                log.errors.push(format!("{what} reported an error: {}", e.say(true)));
+                log.errors.push(format!("{what} reported an error: {}", e.say(Kind::Job, true)));
                 None
             }
         }
@@ -361,6 +367,7 @@ pub fn run(folder: &Path, this_library: &Path, opt: &Options) -> Result<Report, 
         folders: vec![],
         deleted: vec![],
         folder_changes: 0,
+        parts_filed: true,
         errors: vec![],
     };
     let until = started + Duration::from_secs_f64(opt.minutes.max(0.0) * 60.0);
@@ -384,9 +391,10 @@ pub fn run(folder: &Path, this_library: &Path, opt: &Options) -> Result<Report, 
                 Err(e) => log.errors.push(format!("saving job '{}' over record {} reported an error: {e}", s.name, s.id)),
             }
         }
-        // The same for a library part.
+        // The same for a library part, filed in the part folder DEMO-CHECK
+        // (JX19), which every run shares.
         let name = format!("{TAG} {pc} {stamp} part {n}");
-        match lib.save_product(&demo_part(&name, 0), TAG, 0, 3.0, SaveTo::New) {
+        match lib.save_product_in(&demo_part(&name, 0), TAG, 0, 3.0, SaveTo::New, &folders::PartsFolder::Path(TAG.into())) {
             Ok(Record { id, .. }) => log.parts.push(Saved { id, name, rev: 0, folder: None }),
             Err(e) => log.errors.push(format!("saving library part '{name}' reported an error: {e}")),
         }
@@ -528,6 +536,13 @@ fn verify(folder: &Path, lib: &Library, own: &Log) -> Checked {
         }
     };
     let filed = tree.as_ref().and_then(|t| t.find(TAG));
+    let part_tree = match folders::load(lib, Kind::Product) {
+        Ok(t) => Some(t),
+        Err(e) => {
+            add("part folders".into(), format!("The Library's part folders ({}) are half-written or damaged ({e}).", folders::file_name(Kind::Product)));
+            None
+        }
+    };
     let rel = |p: &Path| p.strip_prefix(folder).unwrap_or(p).to_string_lossy().replace('\\', "/");
     // Records that can't be read are looked at again under the write lock: a
     // save in progress on another PC has its number taken but nothing in it yet.
@@ -576,6 +591,13 @@ fn verify(folder: &Path, lib: &Library, own: &Log) -> Checked {
             }
             if !list.iter().any(|e| e.kind == Kind::Product && e.id == s.id && e.name == s.name) {
                 add(format!("list part {}", s.id), format!("Library part '{}' (record {}), saved by {}, is missing from the Library's list.", s.name, s.id, l.pc));
+            }
+            // Where its save filed it: the part folder DEMO-CHECK (JX19).
+            if let Some(t) = part_tree.as_ref().filter(|_| l.parts_filed) {
+                let (at, want) = (t.folder_of(s.id), t.find(TAG));
+                if Some(at) != want {
+                    add(format!("place part {}", s.id), format!("Library part '{}' (record {}) is in {} where {}'s save filed it in '{TAG}': its place in the part folders was lost.", s.name, s.id, t.place(at), l.pc));
+                }
             }
         }
         if let Some(t) = &tree {

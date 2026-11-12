@@ -1239,7 +1239,7 @@ pub(crate) fn library_parts_section(app: &mut App, ui: &mut egui::Ui) {
     // From Database": products with their own technology).
     ui.horizontal(|ui| {
         ui.label(RichText::new("From the library").strong().color(th().text_strong));
-        ui.add(egui::TextEdit::singleline(&mut app.libui.part_search).hint_text("🔍 search").desired_width(150.0));
+        ui.add(egui::TextEdit::singleline(&mut app.libui.part_search).hint_text("🔍 name or folder").desired_width(150.0));
     });
     // Lantek lists products of the job's material and thickness
     // (PK3); "all" drops both filters.
@@ -1248,13 +1248,16 @@ pub(crate) fn library_parts_section(app: &mut App, ui: &mut egui::Ui) {
     ui.add_space(4.0);
     let needle = app.libui.part_search.to_lowercase();
     let (mat, thk) = if app.libui.part_all { (None, crate::library::THICKNESS_FILTER_MIN - 1.0) } else { (Some(app.spec.material), app.spec.thickness) };
-    let found: Vec<(u64, crate::nest::Part, bool, String, String)> = app
+    // Each part with its folder: its path in the Library's part folders
+    // (JX20), searched by too.
+    let found: Vec<(u64, crate::nest::Part, bool, String, String, String)> = app
         .libui
         .products
         .iter()
-        .filter(|(e, _)| crate::library::product_matches(e, mat, thk, &needle))
+        .map(|(e, p)| (e, p, app.libui.part_folder(e.id)))
+        .filter(|(e, _, folder)| crate::library::product_matches(e, folder, mat, thk, &needle))
         .take(MENU_LIBRARY_PARTS)
-        .map(|(e, p)| (e.id, p.clone(), e.tech, app.mat_thk(e.material, e.thickness), e.saved_note(&app.clock)))
+        .map(|(e, p, folder)| (e.id, p.clone(), e.tech, app.mat_thk(e.material, e.thickness), e.saved_note(&app.clock), folder))
         .collect();
     if let Some(e) = app.libui.error.clone() {
         // Unreachable, not empty (LB11).
@@ -1278,12 +1281,20 @@ pub(crate) fn library_parts_section(app: &mut App, ui: &mut egui::Ui) {
     }
     let mut pick: Option<u64> = None;
     egui::Grid::new("lib_gallery").spacing([6.0, 6.0]).show(ui, |ui| {
-        for (k, (id, part, tech, info, saved)) in found.iter().enumerate() {
+        for (k, (id, part, tech, info, saved, folder)) in found.iter().enumerate() {
             let (r, cell) = ui.allocate_exact_size(Vec2::new(104.0, 104.0), Sense::click());
             let hov = ui.ctx().animate_bool_with_time(cell.id.with("lg"), cell.hovered(), 0.1);
             let p = ui.painter();
             p.rect_filled(r, CornerRadius::same(8), lerp_color(th().hover, th().accent_soft, hov));
-            let area = Rect::from_min_max(r.min + Vec2::new(14.0, 10.0), Pos2::new(r.right() - 14.0, r.bottom() - 38.0));
+            // Its folder (JX20) in a small line on top, the end of a long path kept.
+            let top = if folder.is_empty() { 10.0 } else { 20.0 };
+            if !folder.is_empty() {
+                // Clear of the technology mark in the corner.
+                let room = if *tech { 13 } else { 17 };
+                let shown: String = if folder.chars().count() > room { format!("…{}", folder.chars().skip(folder.chars().count() + 1 - room).collect::<String>()) } else { folder.clone() };
+                p.text(Pos2::new(r.left() + 6.0, r.top() + 9.0), Align2::LEFT_CENTER, shown, FontId::proportional(9.5), th().text_dim);
+            }
+            let area = Rect::from_min_max(r.min + Vec2::new(14.0, top), Pos2::new(r.right() - 14.0, r.bottom() - 38.0));
             let (bw, bh) = part.bbox();
             let s = (area.width() / bw.max(1e-6) as f32).min(area.height() / bh.max(1e-6) as f32);
             let o = area.center() + Vec2::new(-(bw as f32) * s / 2.0, bh as f32 * s / 2.0);
@@ -1296,9 +1307,10 @@ pub(crate) fn library_parts_section(app: &mut App, ui: &mut egui::Ui) {
                 p.rect_filled(b, CornerRadius::same(4), th().accent);
                 p.text(b.center(), Align2::CENTER_CENTER, "T", FontId::proportional(11.0), Color32::WHITE);
             }
-            // Who last saved it, and when (LB6).
+            // Its folder (JX20), and who last saved it, and when (LB6).
+            let folder = if folder.is_empty() { "\nAt the top of the part folders".to_string() } else { format!("\nIn part folder {folder}") };
             let saved = if saved.is_empty() { String::new() } else { format!("\n{saved}") };
-            if cell.on_hover_text(format!("{} — {info}{}{saved}", part.name, if *tech { " · with its technology" } else { "" })).clicked() {
+            if cell.on_hover_text(format!("{} — {info}{}{folder}{saved}", part.name, if *tech { " · with its technology" } else { "" })).clicked() {
                 pick = Some(*id);
             }
             if k % 4 == 3 {
