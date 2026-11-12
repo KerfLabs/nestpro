@@ -629,9 +629,12 @@ impl AppSettings {
     /// Saved settings, or — the first time — an import of a Lantek install
     /// if there is one, else empty defaults.
     pub fn load() -> Self {
-        // A test starts from the defaults, never from what another test saved.
-        let saved = if cfg!(test) { Err(std::io::ErrorKind::NotFound.into()) } else { std::fs::read_to_string(Self::file()) };
-        match saved {
+        // A test starts from the defaults: never from what another test
+        // saved, nor from a Lantek install on the PC running it.
+        if cfg!(test) {
+            return AppSettings::default();
+        }
+        match std::fs::read_to_string(Self::file()) {
             Ok(t) => Self::parse(&t),
             Err(_) => {
                 let mut s = AppSettings::default();
@@ -817,6 +820,29 @@ mod settings_tests {
             s.import_lantek(&dir.display().to_string());
             assert_eq!(s.refresh_minutes, want, "{line}");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Tests start from the defaults even on a PC with a Lantek install:
+    /// `load` never imports one there. Checked in a process of its own, so
+    /// LANTEK_DIR is set for it alone.
+    #[test]
+    fn tests_start_from_the_defaults_even_with_a_lantek_install() {
+        if std::env::var_os("NESTPRO_LOAD_CHILD").is_some() {
+            assert_eq!(AppSettings::load().to_text(), AppSettings::default().to_text(), "the Lantek install in LANTEK_DIR was imported");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("nestpro_load_install_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("LANTEKIN.CNI"), "R001 \"srv\\SQL\" ; server\r\nR002 \"DEMO\" ; db\r\nZ076 5 ; auto-refresh\r\n").unwrap();
+        // Imported on purpose, the install does change the settings.
+        let mut imported = AppSettings::default();
+        imported.import_lantek(&dir.display().to_string());
+        assert_ne!(imported.to_text(), AppSettings::default().to_text());
+        let name = "settings::settings_tests::tests_start_from_the_defaults_even_with_a_lantek_install";
+        let out = std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact", name, "--test-threads=1"]).env("LANTEK_DIR", &dir).env("NESTPRO_LOAD_CHILD", "1").output().unwrap();
+        let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        assert!(out.status.success() && said.contains("1 passed"), "{said}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
