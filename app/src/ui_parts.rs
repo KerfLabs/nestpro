@@ -1861,7 +1861,7 @@ impl App {
     }
 
     /// After the material or thickness was changed outside the Sheet tab:
-    /// with parts nested, ask first (T4) as the Sheet tab does; else refresh.
+    /// with parts nested, ask first (PT4) as the Sheet tab does; else refresh.
     pub(crate) fn after_material_edit(&mut self, before: crate::nest::SheetSpec) {
         if self.spec.material == before.material && self.spec.thickness == before.thickness {
             return;
@@ -2003,7 +2003,7 @@ impl App {
         });
         self.ribbon_cutoff(ui);
         // Material or thickness changed while parts are nested: ask first
-        // (T4: keep nestings / remove them / cancel).
+        // (PT4: keep nestings / remove them / cancel).
         let mat_changed = self.spec.material != spec_before.material || self.spec.thickness != spec_before.thickness;
         if mat_changed && !self.result.sheets.is_empty() {
             let new_spec = self.spec.clone();
@@ -2150,7 +2150,7 @@ impl App {
         let now = ui.input(|inp| inp.time);
         let mut changed = false;
         // Edit a draft so a geometry change on a part with technology can be held
-        // back and questioned first (T1–T3).
+        // back and questioned first (PT1–PT3).
         let mut draft = self.parts[i].clone();
         let u = self.unit();
         egui::Grid::new("part_edit").num_columns(2).spacing([10.0, 5.0]).show(ui, |ui| {
@@ -2278,7 +2278,7 @@ impl App {
             let geometry_changed = old.shape != draft.shape || old.w != draft.w || old.h != draft.h;
             if geometry_changed && old.tech.is_some() && self.warn_tech {
                 // Part with technology: warn and ask what to do, or reuse the answer
-                // given "for all" earlier (original: warn, then ask; T1–T2).
+                // given "for all" earlier (original: warn, then ask; PT1–PT2).
                 match self.tech_answer_all {
                     Some(choice) => self.apply_tech_choice(i, draft.clone(), choice),
                     None if self.pending.is_none() => {

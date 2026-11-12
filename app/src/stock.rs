@@ -1225,8 +1225,18 @@ mod tests {
         // PROG-1 holds the lock; PROG-2's change waits while 10 minutes pass.
         let held = prog1.lock().unwrap();
         let (d, c) = (dir.clone(), clock.clone());
-        let prog2 = std::thread::spawn(move || Stock::update(&crate::library::Library::at(&d, &Who::new("kim", "PROG-2"), &c), |s| s.take("S-1", 2, false)));
-        std::thread::sleep(std::time::Duration::from_millis(400));
+        let (waiting, waiting_rx) = std::sync::mpsc::channel::<()>();
+        let prog2 = std::thread::spawn(move || {
+            crate::shared::hooks::set(move |s| {
+                if s == "lock busy" {
+                    let _ = waiting.send(());
+                }
+            });
+            let r = Stock::update(&crate::library::Library::at(&d, &Who::new("kim", "PROG-2"), &c), |s| s.take("S-1", 2, false));
+            crate::shared::hooks::clear();
+            r
+        });
+        waiting_rx.recv_timeout(std::time::Duration::from_secs(60)).expect("PROG-2 waits for the lock");
         clock.advance(std::time::Duration::from_secs(10 * 60));
         drop(held);
         prog2.join().unwrap().unwrap();

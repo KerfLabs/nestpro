@@ -379,7 +379,7 @@ pub struct DrawingChoices {
 
 impl DrawingChoices {
     /// The layer roles for the file's parts `reads`: the ones they start
-    /// with, as `import-drawing` gives them (D5, DX3), with the rows set here.
+    /// with, as `import-drawing` gives them (DF5, DX3), with the rows set here.
     pub fn roles(&self, reads: &[crate::formats::Incoming]) -> BTreeMap<String, dxf::LayerRole> {
         let mut roles = crate::formats::default_roles(reads.iter().map(|r| &r.part));
         for (l, r) in &self.roles {
@@ -434,7 +434,7 @@ fn carry(start: &Part, painted: &Part, now: &Part) -> (Vec<ContourChoice>, usize
 
 /// A layer row set to `role` in the import preview's panel (IM11): the
 /// file's parts are made again with it, so every contour on that layer takes
-/// it (D5, CS2). A contour painted by hand that the change leaves in place,
+/// it (DF5, CS2). A contour painted by hand that the change leaves in place,
 /// starting as before, keeps its paint; one on that layer takes the layer's.
 /// The new choices, and how many contours painted by hand gave way.
 pub fn set_layer(cfg: &AppSettings, spec: &SheetSpec, reads: &[crate::formats::Incoming], choices: &DrawingChoices, layer: &str, role: dxf::LayerRole) -> (DrawingChoices, usize) {

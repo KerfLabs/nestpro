@@ -1643,7 +1643,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             }
             if resized && d.tech.is_some() {
                 // The original asks: edit a copy (keeps this part's technology) or
-                // edit the part and remove its technology (T2).
+                // edit the part and remove its technology (PT2).
                 match a.str("tech").as_deref() {
                     Some("copy") => {
                         let base = job.parts[i].name.clone();
@@ -1959,7 +1959,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                 m = format!("{m} {s}");
             }
             if nested && mat_change {
-                // The original asks once: keep the nestings, or remove them and free the sheets (T4).
+                // The original asks once: keep the nestings, or remove them and free the sheets (PT4).
                 match a.str("nestings").as_deref() {
                     Some("remove") => {
                         m.push_str(&format!(" Removed {} nested sheet(s); nest again.", job.sheets.len()));

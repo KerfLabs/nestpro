@@ -148,12 +148,24 @@ impl App {
 }
 
 #[cfg(test)]
-mod filewatch_tests {
+pub(crate) mod filewatch_tests {
     use super::*;
 
-    fn wait_tick() {
-        // File times can be coarse; make sure the next write gets a new one.
-        std::thread::sleep(std::time::Duration::from_millis(1100));
+    /// Wait until a file written now gets a later time than `path` has:
+    /// file times can be coarse (a second or two on some disks), so the next
+    /// write is told apart from the last one.
+    pub(crate) fn wait_tick(path: &Path) {
+        let before = mtime(path).unwrap();
+        let probe = path.with_extension("tick");
+        for _ in 0..300 {
+            std::fs::write(&probe, b"").unwrap();
+            if mtime(&probe).unwrap() > before {
+                let _ = std::fs::remove_file(&probe);
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("file times never moved on");
     }
 
     #[test]
@@ -169,7 +181,7 @@ mod filewatch_tests {
         let n = a.parts.len();
 
         // An agent adds a part through the engine (the CLI's way).
-        wait_tick();
+        wait_tick(&path);
         let mut s = crate::engine::session::Session::new(crate::engine::Ctx::builtin());
         s.call("add-shape", Some(path.to_str().unwrap()), &serde_json::json!({"shape": "disc", "w": 150, "qty": 2, "name": "From agent"})).unwrap();
         let ctx = egui::Context::default();
@@ -180,7 +192,7 @@ mod filewatch_tests {
 
         // Both change: the window asks.
         a.parts[0].qty += 1;
-        wait_tick();
+        wait_tick(&path);
         s.call("add-shape", None, &serde_json::json!({"shape": "rectangle", "qty": 1, "name": "Second"})).unwrap();
         a.disk_poll = -10.0;
         a.watch_job_file(&ctx);
@@ -198,7 +210,7 @@ mod filewatch_tests {
             l.disk_sig = job_sig(&j);
         }
         a.pending = None;
-        wait_tick();
+        wait_tick(&path);
         a.save_job_to(&path);
         assert!(a.pending.is_none(), "{}", a.status);
         assert!(s.call("undo", None, &serde_json::json!({})).is_err());

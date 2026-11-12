@@ -488,6 +488,7 @@ impl WriteLock {
                     if started.elapsed() >= longest_wait {
                         return Err(format!("the Library at {} is busy: {} has been writing to it for more than {}. Nothing was saved — try again.", dir.display(), holder_label(chain.first()), shown(longest_wait)));
                     }
+                    pause("lock busy");
                     // A little jitter so two waiting PCs don't keep colliding.
                     let jitter = Duration::from_micros(u64::from(SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos())) % 3000);
                     std::thread::sleep(wait + jitter);
@@ -659,37 +660,64 @@ mod shared_tests {
 
     #[test]
     fn a_lock_left_by_a_pc_that_crashed_is_taken_over_but_one_in_use_is_waited_for() {
+        use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+        use std::sync::Arc;
         let dir = scratch("abandoned");
-        // Long enough that taking it over (a write and a flush, within a
-        // third of this) finishes on a busy PC too.
-        let short = Duration::from_millis(1500);
+        // Abandoned after a short time, but with the full 30 s to write once
+        // taken over, so a busy PC never runs out of time while it takes the
+        // lock over or lets go (the time to write has tests of its own).
+        let short = Duration::from_millis(100);
+        let take_dead_lock = || WriteLock::take_for(&dir, short, HOLD_FOR, Duration::from_secs(10));
         // PROG-9 crashed while saving: its lock stays behind.
         std::fs::write(dir.join(LOCK_FILE), r#"{"user":"sam","pc":"PROG-9","process":7,"since":0,"token":"PROG-9-7-0"}"#).unwrap();
         let t = Instant::now();
-        let lock = WriteLock::take_with(&dir, short, Duration::from_secs(10)).unwrap();
+        let lock = take_dead_lock().unwrap();
         assert!(t.elapsed() >= short, "taken over before it counted as abandoned");
         assert!(std::fs::read_to_string(dir.join(LOCK_FILE)).unwrap().contains(&pc_name()));
         drop(lock);
         // A PC that crashed just as it made the lock, before writing in it.
         std::fs::write(dir.join(LOCK_FILE), "").unwrap();
         let t = Instant::now();
-        drop(WriteLock::take_with(&dir, short, Duration::from_secs(10)).unwrap());
+        drop(take_dead_lock().unwrap());
         assert!(t.elapsed() >= short);
-        // A PC writing now holds it: another waits for it, however long that
-        // takes, and never takes it over while it's in use.
-        let lock = WriteLock::take_with(&dir, Duration::from_secs(3), Duration::from_secs(5)).unwrap();
+        // A PC writing now holds it: another waits for it and never takes it
+        // over while it's in use. The holder lets go once the other has found
+        // it busy a few times; the other gets it then, and only then.
+        let lock = WriteLock::take(&dir).unwrap();
+        let let_go = Arc::new(AtomicBool::new(false));
+        let (busy, busy_rx) = std::sync::mpsc::channel::<()>();
         let other = {
-            let dir = dir.clone();
+            let (dir, let_go) = (dir.clone(), let_go.clone());
             std::thread::spawn(move || {
-                let t = Instant::now();
-                WriteLock::take_with(&dir, Duration::from_secs(2), Duration::from_secs(5)).map(|_| t.elapsed())
+                let (mut times, mut busy) = (0, Some(busy));
+                let taken_over = Arc::new(AtomicBool::new(false));
+                let saw = taken_over.clone();
+                hooks::set(move |s| match s {
+                    "lock busy" => {
+                        times += 1;
+                        if times >= 3 && let Some(b) = busy.take() {
+                            let _ = b.send(());
+                        }
+                    }
+                    "take over" => saw.store(true, SeqCst),
+                    _ => {}
+                });
+                let got = WriteLock::take(&dir).map(|l| {
+                    let after = let_go.load(SeqCst);
+                    drop(l);
+                    after
+                });
+                hooks::clear();
+                (got, taken_over.load(SeqCst))
             })
         };
-        std::thread::sleep(Duration::from_millis(500));
+        busy_rx.recv_timeout(Duration::from_secs(60)).expect("the other PC never found the lock busy");
         lock.still_held().unwrap();
+        let_go.store(true, SeqCst);
         drop(lock);
-        let waited = other.join().unwrap().unwrap();
-        assert!(waited >= Duration::from_millis(450) && waited < Duration::from_secs(2), "waited {waited:?}");
+        let (got, taken_over) = other.join().unwrap();
+        assert!(!taken_over, "a lock in use was taken over");
+        assert!(got.unwrap(), "the other PC got the lock before it was let go");
         // Released: no lock file, mark or temporary file is left.
         assert!(names(&dir).is_empty(), "{:?}", names(&dir));
         let _ = std::fs::remove_dir_all(&dir);
@@ -744,9 +772,11 @@ mod shared_tests {
         std::fs::write(&lock, dead).unwrap();
         // PROG-8 made its mark on PROG-9's lock, then crashed.
         std::fs::write(mark_path(&lock, dead.as_bytes()), r#"{"user":"kim","pc":"PROG-8","process":8,"since":0,"token":"PROG-8-8-0"}"#).unwrap();
-        let short = Duration::from_millis(300);
+        // Abandoned after a short time, with the full 30 s to write once
+        // taken over, so a busy PC never runs out of it here.
+        let short = Duration::from_millis(100);
         let t = Instant::now();
-        let held = WriteLock::take_with(&dir, short, Duration::from_secs(5)).unwrap();
+        let held = WriteLock::take_for(&dir, short, HOLD_FOR, Duration::from_secs(5)).unwrap();
         assert!(t.elapsed() >= short);
         let text = std::fs::read_to_string(&lock).unwrap();
         assert!(text.contains(&pc_name()) && !text.contains("PROG-9"), "{text}");

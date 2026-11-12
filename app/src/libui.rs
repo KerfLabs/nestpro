@@ -1833,7 +1833,7 @@ pub(crate) mod libui_tests {
         prog1.save_job_to(&file);
         assert!(prog1.job_path.is_none() && prog1.job_link.is_none(), "the copy became the job's own file");
         // An agent adds a part to the file (the CLI's way); the window looks.
-        std::thread::sleep(Duration::from_millis(1100));
+        crate::filewatch::filewatch_tests::wait_tick(&file);
         let mut s = crate::engine::session::Session::new(crate::engine::Ctx::builtin());
         s.call("add-shape", Some(file.to_str().unwrap()), &serde_json::json!({"shape": "disc", "w": 150, "qty": 2, "name": "From agent"})).unwrap();
         prog1.disk_poll = -10.0;
@@ -2138,7 +2138,7 @@ pub(crate) mod libui_tests {
         assert!(!window.contains("No jobs in the Library yet"), "shown as empty:\n{window}");
         let explorer = shown_in_panel(&ctx, |ui| a.library_job_tree(ui));
         assert!(explorer.contains(&said), "Job Explorer:\n{explorer}");
-        assert!(!explorer.contains("none yet"), "shown as empty:\n{explorer}");
+        assert!(!explorer.contains("Saved jobs (Library) — none yet"), "shown as empty:\n{explorer}");
         let add = shown_in_panel(&ctx, |ui| {
             crate::ui_parts::library_parts_section(&mut a, ui);
         });
@@ -2226,6 +2226,9 @@ pub(crate) mod libui_tests {
         let dir = d.join("Nesting");
         library::create(&dir).unwrap();
         let mut a = App::new(None);
+        // No in-use hold (as `window`): its background write would race the
+        // share going away below.
+        a.cfg.in_use_warn = false;
         a.cfg.library_dir = dir.display().to_string();
         a.open_job(0);
         a.save_job_to_library();
@@ -2358,6 +2361,7 @@ pub(crate) mod libui_tests {
         stock_of_two(&dir);
         let clock = Clock::at(NOV_9_0920);
         let (checked, checked_rx) = channel::<()>();
+        let (waiting, waiting_rx) = channel::<()>();
         let prog1 = {
             let (dir, clock) = (dir.clone(), clock.clone());
             std::thread::spawn(move || {
@@ -2368,7 +2372,8 @@ pub(crate) mod libui_tests {
                 crate::shared::hooks::set(move |s| {
                     if s == "job name checked" && std::mem::take(&mut first) {
                         let _ = checked.send(());
-                        std::thread::sleep(Duration::from_millis(500));
+                        // Held here until PROG-2 waits for the write lock.
+                        waiting_rx.recv_timeout(Duration::from_secs(60)).expect("PROG-2 waits for the write lock");
                     }
                 });
                 a.save_job_to_library();
@@ -2383,7 +2388,13 @@ pub(crate) mod libui_tests {
                 a.jobs[a.cur_job].week = "W12".into();
                 a.run_nesting();
                 checked_rx.recv_timeout(Duration::from_secs(60)).expect("PROG-1 checked the name");
+                crate::shared::hooks::set(move |s| {
+                    if s == "lock busy" {
+                        let _ = waiting.send(());
+                    }
+                });
                 a.save_job_to_library();
+                crate::shared::hooks::clear();
                 (a.job_lib_id, a.status)
             })
         };
