@@ -255,7 +255,7 @@ impl App {
         }
     }
 
-    fn stock_reload(&mut self) {
+    pub(crate) fn stock_reload(&mut self) {
         let dir = self.library_dir();
         self.stockui.loaded = true;
         // Unreachable, not empty (LB11): nothing is read or made.

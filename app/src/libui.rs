@@ -68,6 +68,10 @@ pub enum SaveQuestion {
     /// mine under a new name. `added`: the job's part was added from that
     /// library part (else it only has its name).
     Part { part: usize, changed: Changed, added: bool },
+    /// An open job with unsaved changes here that someone else saved since
+    /// it was opened, found by a refresh (LB15): Reload theirs, Keep mine,
+    /// or Save mine as a copy.
+    Theirs(Changed),
 }
 
 /// A job, part or folder in one of the Library's trees.
@@ -320,6 +324,8 @@ impl App {
         self.lib_read = Default::default();
         self.libui.question = None;
         self.libui.overwrite = None;
+        // What auto-refresh saw was the old Library's (LB14).
+        self.autorefresh.forget();
         for j in &mut self.jobs {
             j.lib_id = None;
             j.lib_read = Default::default();
@@ -627,7 +633,7 @@ impl App {
         match self.libui.question.take() {
             Some(SaveQuestion::Part { part, changed, .. }) if self.parts.get(part).is_some_and(|p| p.name == changed.name) => Some((part, changed)),
             other => {
-                self.libui.question = other.filter(|q| matches!(q, SaveQuestion::Job(_)));
+                self.libui.question = other.filter(|q| matches!(q, SaveQuestion::Job(_) | SaveQuestion::Theirs(_)));
                 None
             }
         }
@@ -683,9 +689,7 @@ impl App {
         if !self.libui.loaded {
             self.lib_refresh();
         }
-        let folder = self.libui.tree.folder_of(id);
-        let week = self.libui.tree.get(folder).map_or_else(|| "Library".to_string(), |f| f.name.clone());
-        (folder, week)
+        place_in(&self.libui.tree, id)
     }
 
     pub fn open_library_job(&mut self, id: u64) {
@@ -974,6 +978,19 @@ impl App {
                     ("Overwrite", "Yours replaces theirs. Their sheets go back to stock; yours are taken."),
                 ],
             ),
+            SaveQuestion::Theirs(c) => (
+                "Someone else saved a job you've changed",
+                format!(
+                    "{} was saved by {} since you opened it. Your changes to it here aren't saved.",
+                    self.jobs.iter().find(|j| j.lib_id == Some(c.id)).map_or(c.name.as_str(), |j| j.name.as_str()),
+                    c.saved_by(&self.clock)
+                ),
+                vec![
+                    ("Reload theirs", "Open the job as they saved it. Your changes are dropped."),
+                    ("Keep mine", "Keep working on yours. Saving it asks first, as theirs is newer."),
+                    ("Save mine as a copy", "Save yours as a new job under a free name. Theirs stays as they saved it."),
+                ],
+            ),
             SaveQuestion::Part { changed: c, added, .. } => (
                 "Someone else saved this library part",
                 format!("{}. Nothing was saved.", part_changed(c, *added, &self.clock)),
@@ -1017,6 +1034,9 @@ impl App {
             (SaveQuestion::Job(_), Some(0)) => self.reload_theirs(),
             (SaveQuestion::Job(_), Some(1)) => self.save_mine_as_copy(),
             (SaveQuestion::Job(_), Some(2)) => self.overwrite_theirs(),
+            (SaveQuestion::Theirs(_), Some(0)) => self.refresh_reload_theirs(),
+            (SaveQuestion::Theirs(_), Some(1)) => self.keep_mine(),
+            (SaveQuestion::Theirs(_), Some(2)) => self.refresh_copy_mine(),
             (SaveQuestion::Part { .. }, Some(0)) => self.keep_theirs(),
             (SaveQuestion::Part { .. }, Some(1)) => self.overwrite_part(),
             (SaveQuestion::Part { .. }, Some(2)) => self.save_part_under_new_name(),
@@ -1219,11 +1239,18 @@ fn part_changed(c: &Changed, added: bool, clock: &crate::shared::Clock) -> Strin
     format!("{} in the library was saved by {} {why}", c.name, c.saved_by(clock))
 }
 
+/// Where library job `id` sits in the job folders `tree`: its folder, and
+/// that folder's name, the Open jobs folder it sits in (JX15).
+pub(crate) fn place_in(tree: &crate::folders::Tree, id: u64) -> (u64, String) {
+    let folder = tree.folder_of(id);
+    (folder, tree.get(folder).map_or_else(|| "Library".to_string(), |f| f.name.clone()))
+}
+
 /// An open job made from library job `id` as read (`j`), named `name`:
 /// linked to its record and the revisions read (LB7).
 /// `place`: its folder in the Library's job folders and that folder's name,
 /// the Open jobs folder it sits in (JX15).
-fn job_from_library(id: u64, name: String, j: crate::jobfile::JobFile, place: (u64, String)) -> crate::Job {
+pub(crate) fn job_from_library(id: u64, name: String, j: crate::jobfile::JobFile, place: (u64, String)) -> crate::Job {
     let lib_read = LibRead { revision: j.library.map_or(0, |r| r.revision), parts: j.library_parts };
     let mut result = crate::nest::NestResult { sheets: j.sheets, formats: j.formats, method: j.method, tried: 0 };
     result.normalise(&j.spec);
@@ -1232,7 +1259,7 @@ fn job_from_library(id: u64, name: String, j: crate::jobfile::JobFile, place: (u
 }
 
 #[cfg(test)]
-mod libui_tests {
+pub(crate) mod libui_tests {
     use super::SaveQuestion;
     use crate::jobfile::JobFile;
     use crate::library::{self, Kind, Library};
@@ -1246,10 +1273,10 @@ mod libui_tests {
     use std::time::Duration;
 
     /// 2026-11-09 09:20 UTC: a test clock shows UTC.
-    const NOV_9_0920: u64 = 1_794_216_000;
+    pub(crate) const NOV_9_0920: u64 = 1_794_216_000;
 
     /// A window on PC `pc`, working on the Library in `dir`.
-    fn window(dir: &Path, user: &str, pc: &str, clock: &Clock) -> App {
+    pub(crate) fn window(dir: &Path, user: &str, pc: &str, clock: &Clock) -> App {
         let mut a = App::new(None);
         a.cfg.library_dir = dir.display().to_string();
         a.who = Who::new(user, pc);
@@ -1259,14 +1286,14 @@ mod libui_tests {
 
     /// What the Library window shows of each record of `kind`: its name and
     /// who saved it, and when.
-    fn listed(a: &App, kind: Kind) -> Vec<(String, String)> {
+    pub(crate) fn listed(a: &App, kind: Kind) -> Vec<(String, String)> {
         let mut v: Vec<(String, String)> = a.libui.entries.iter().filter(|e| e.kind == kind).map(|e| (e.name.clone(), e.saved_note(&a.clock))).collect();
         v.sort();
         v
     }
 
     /// A new, empty Library of the test's own (made as Settings would).
-    fn new_library(tag: &str) -> PathBuf {
+    pub(crate) fn new_library(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("nestpro_libui_{tag}_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         library::create(&dir).unwrap();
@@ -1276,7 +1303,7 @@ mod libui_tests {
     /// A window that keeps sheet stock in the Library (remnants stored on
     /// save), with job DEMO-7 open: DEMO-P1 ×`qty` nested on sheets from
     /// stock.
-    fn stock_window(dir: &std::path::Path, user: &str, pc: &str, clock: &Clock) -> App {
+    pub(crate) fn stock_window(dir: &std::path::Path, user: &str, pc: &str, clock: &Clock) -> App {
         let mut a = window(dir, user, pc, clock);
         a.cfg.stock = crate::stock::StockSettings { remnants_on_save: true, ..Default::default() };
         a.group_nest = false;
@@ -1285,7 +1312,7 @@ mod libui_tests {
 
     /// PROG-1 makes DEMO-7 (DEMO-P1 ×20 on 10 mm steel) from a stock of twelve
     /// 3000 × 1500 sheets, and saves it to the Library.
-    fn demo7(dir: &std::path::Path, clock: &Clock) -> App {
+    pub(crate) fn demo7(dir: &std::path::Path, clock: &Clock) -> App {
         let mut s = crate::stock::Stock::default();
         s.add_sheet(crate::stock::Item::sheet("S3000", 0, 10.0, 3000.0, 1500.0, 12), true).unwrap();
         s.save(dir).unwrap();
@@ -1305,12 +1332,12 @@ mod libui_tests {
     }
 
     /// The stock file as it is now.
-    fn stock_file(dir: &std::path::Path) -> Vec<u8> {
+    pub(crate) fn stock_file(dir: &std::path::Path) -> Vec<u8> {
         std::fs::read(crate::stock::Stock::file(dir)).unwrap()
     }
 
     /// A remnant line across the last sheet, right of its parts.
-    fn remnant_line(a: &mut App) {
+    pub(crate) fn remnant_line(a: &mut App) {
         let last = a.result.sheets.len() - 1;
         let x = a.result.sheets[last].iter().map(|p| p.x + p.w).fold(0.0, f64::max) + 20.0;
         a.cut_lines.resize(last + 1, vec![]);
@@ -1359,19 +1386,19 @@ mod libui_tests {
 
     /// How many of DEMO-7's 3000 × 1500 sheets are left in stock, and the
     /// references of the remnants in stock.
-    fn in_stock(dir: &std::path::Path) -> (i32, Vec<String>) {
+    pub(crate) fn in_stock(dir: &std::path::Path) -> (i32, Vec<String>) {
         let s = crate::stock::Stock::load(dir).unwrap();
         (s.get("S3000").map_or(0, |i| i.qty), s.items.iter().filter(|i| i.kind == crate::stock::Kind::NestRemnant).map(|i| i.reference.clone()).collect())
     }
 
     /// The remnants a window's job stored.
-    fn made(a: &App) -> Vec<String> {
+    pub(crate) fn made(a: &App) -> Vec<String> {
         a.result.formats.iter().flat_map(|f| f.made.iter().cloned()).collect()
     }
 
     /// How many of DEMO-7's 3000 × 1500 sheets a window's job holds (its
     /// remnant sheets aside).
-    fn holds(a: &App) -> i32 {
+    pub(crate) fn holds(a: &App) -> i32 {
         a.held.get("S3000").copied().unwrap_or(0)
     }
 
