@@ -94,7 +94,12 @@ impl App {
     /// nothing is tried here: the renewal looks again (LB11).
     pub fn sync_holds(&mut self) {
         let open: BTreeSet<u64> = self.jobs.iter().filter_map(|j| j.lib_id).chain(self.job_lib_id).collect();
-        self.inuse.lost.retain(|id, _| open.contains(id));
+        // A job taken over from here that is closed now: done with (CU9).
+        let watch = self.inuse.watch.clone();
+        self.inuse.lost.retain(|id, _| open.contains(id) || {
+            watch.done_with(*id);
+            false
+        });
         self.inuse.synced = Some((self.job_lib_id, self.jobs.len(), self.cfg.in_use_warn));
         let wants = if self.cfg.in_use_warn { self.in_use_jobs() } else { vec![] };
         if !self.cfg.in_use_warn || (wants.is_empty() && self.inuse.held.is_empty()) {
@@ -128,7 +133,7 @@ impl App {
                 Err(NotTaken::InUse(u)) => {
                     // Came to the front by itself (CU8): said, not asked.
                     if !self.inuse.busy.contains_key(&id) && self.job_lib_id == Some(id) {
-                        self.status = format!("{} It's open here too: saving over it asks until they close it.", u.said(&self.clock));
+                        self.status = format!("{} It's open here as usual; saving it asks first if they've saved it since.", u.said(&self.clock));
                     }
                     self.inuse.busy.insert(id, u);
                 }
@@ -336,8 +341,9 @@ impl App {
         self.inuse.ask = Some(Ask { what: Opening::Save, u, warning: false });
     }
 
-    /// Open anyway (CU8, allow on): the job opens here without a hold; the
-    /// hold stays theirs, and this PC takes it once they let it go.
+    /// Open anyway (CU8, allow on): the job opens here as usual, without a
+    /// hold, and saves as usual through the save check (CU3, LB7); the hold
+    /// stays theirs, and this PC takes it once they let it go.
     pub fn open_anyway(&mut self) {
         let Some(a) = self.inuse.ask.take() else { return };
         if !self.cfg.in_use_allow {
@@ -349,7 +355,7 @@ impl App {
             Opening::Open(i) => self.open_job(i),
             Opening::Save => {}
         }
-        self.status = format!("{} Opened here too: it stays theirs, and saving over it asks until they close it.", a.u.said(&self.clock));
+        self.status = format!("{} Opened here too, as usual: it stays theirs, and saving it asks first if they've saved it since.", a.u.said(&self.clock));
     }
 
     /// Take over, after its warning (CU9): the hold moves to this PC, then
@@ -397,6 +403,7 @@ impl App {
         if self.save_copy() {
             self.inuse.lost.remove(&u.job);
             self.inuse.busy.remove(&u.job);
+            self.inuse.watch.done_with(u.job);
             self.status = format!("{} {theirs} stays with {}.", self.status, u.by().map_or_else(|| "the PC that has it".to_string(), |w| w.label()));
         }
     }
@@ -446,7 +453,7 @@ impl App {
             } else {
                 match a.what {
                     Opening::Save => row(ui, "copy", "Save mine as a copy", "Save yours as a new job under a free name. Theirs stays theirs."),
-                    _ if allow => row(ui, "anyway", "Open anyway", "Open it here too. It stays theirs: saving over it asks until they close it."),
+                    _ if allow => row(ui, "anyway", "Open anyway", "Open it here too. It stays theirs; if they save first, saving asks you."),
                     _ => {}
                 }
                 row(ui, "take", "Take over…", &format!("Move it to this PC; {by} is told."));
@@ -768,6 +775,54 @@ mod inuseui_tests {
         assert_eq!(holder(&dir, pc1.job_lib_id.unwrap()).as_deref(), Some("Sam on PROG-2"));
         assert_eq!(std::fs::read(Library::at(&dir, &pc1.who, &clock).path(Kind::Job, id)).unwrap(), record);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// CU3, CU8: PC 2 opens DEMO-7 while PC 1 holds it, with Open anyway,
+    /// then again with its warn switch off, and saves: the save goes through
+    /// and PC 1 keeps its hold. PC 1 then saves its own changes and the save
+    /// check asks, naming PC 2 (LB7, LB9); nothing is lost: the record keeps
+    /// PC 2's save, and PC 1 still has its changes, which it saves as a copy.
+    #[test]
+    fn a_job_opened_anyway_or_with_warn_off_saves_as_usual_and_the_holder_is_asked() {
+        use crate::libui::SaveQuestion;
+        for warn_off in [false, true] {
+            let dir = new_library(if warn_off { "save_warn_off" } else { "save_anyway" });
+            let id = saved(&dir, "DEMO-7");
+            let clock = Clock::at(NOV_9_0914);
+            let lib = Library::at(&dir, &Who::new("kim", "PROG-3"), &clock);
+            let mut pc1 = window(&dir, "Sam", "PROG-2", &clock, true, true);
+            pc1.open_library_job(id);
+            pc1.parts[0].qty = 40;
+            clock.advance(Duration::from_secs(60));
+            let mut pc2 = window(&dir, "sam", "PROG-1", &clock, !warn_off, true);
+            pc2.open_library_job(id);
+            if warn_off {
+                assert!(pc2.inuse.ask.is_none(), "warn off asked");
+            } else {
+                assert!(pc2.inuse.ask.is_some(), "not asked");
+                pc2.open_anyway();
+            }
+            assert_eq!(pc2.job_name, "DEMO-7");
+            pc2.parts[0].qty = 25;
+            pc2.save_job_to_library();
+            assert!(pc2.inuse.ask.is_none() && pc2.libui.question.is_none(), "PC 2's save asked: {}", pc2.status);
+            assert_eq!(pc2.job_lib_id, Some(id));
+            assert_eq!(lib.load_job(id).unwrap().parts[0].qty, 25, "PC 2's save didn't land");
+            assert_eq!(holder(&dir, id).as_deref(), Some("Sam on PROG-2"), "PC 1 lost its hold");
+            // PC 1 saves: the save check asks, naming PC 2; nothing written.
+            clock.advance(Duration::from_secs(60));
+            pc1.save_job_to_library();
+            let Some(SaveQuestion::Job(c)) = pc1.libui.question.clone() else { panic!("PC 1 wasn't asked: {}", pc1.status) };
+            assert_eq!(c.saved_by(&clock), "sam on PROG-1, 9 Nov 09:15");
+            assert!(pc1.inuse.ask.is_none());
+            assert_eq!((lib.load_job(id).unwrap().parts[0].qty, pc1.parts[0].qty), (25, 40));
+            // PC 1 keeps its changes as a copy; PC 2's save stays.
+            pc1.save_mine_as_copy();
+            assert_eq!((pc1.job_name.as_str(), pc1.parts[0].qty), ("DEMO-7 (1)", 40), "{}", pc1.status);
+            assert_eq!(lib.load_job(pc1.job_lib_id.unwrap()).unwrap().parts[0].qty, 40);
+            assert_eq!(lib.load_job(id).unwrap().parts[0].qty, 25);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     /// CU5: the job in front is held; switching to another lets go of it

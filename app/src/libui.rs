@@ -317,6 +317,7 @@ impl App {
     pub fn library_folder_changed(&mut self) {
         // The holds belong to the old Library: let go of them there (CU5).
         self.release_holds();
+        self.inuse.watch.done_with_all();
         self.inuse = crate::inuseui::InUseUi { watch: self.inuse.watch.clone(), ..Default::default() };
         self.libui.loaded = false;
         // The Sheet stock window lists the new Library's stock (LB12).
@@ -380,10 +381,12 @@ impl App {
             }
         };
         let to = self.job_save_to();
-        // Not over a job someone else has in use (CU11): asked first, before
-        // anything else, and checked again under the write lock.
+        // Not over a job taken over from this PC, nor under a new name over
+        // one someone else has in use (CU9, CU11): asked first, before
+        // anything else, and checked again under the write lock. A job
+        // opened anyway, or with warn off, saves as usual (CU3).
         if let Some(id) = to.id() {
-            if let Err(u) = crate::engine::inuse::may_change(&lib, id) {
+            if let Err(u) = crate::engine::inuse::may_save_as(&lib, id, &self.job_name) {
                 self.ask_in_use(u);
                 return;
             }
@@ -433,7 +436,10 @@ impl App {
                     j.lib_folder = Some(f);
                 }
                 self.status = format!("Saved job {} to the library as {} ({}).{stock_note}", self.job_name, crate::library::auto_ref(Kind::Job, rec.id), self.library_dir().display());
-                // A new record (a copy) is in use now, and held (CU5).
+                // Saved over a job taken over from here once it was free again:
+                // it's this PC's to hold again. A new record (a copy) is in
+                // use now, and held (CU5).
+                self.inuse.lost.remove(&rec.id);
                 self.sync_holds();
             }
             Err(Refused::Changed(c)) => self.ask_about_job(c),

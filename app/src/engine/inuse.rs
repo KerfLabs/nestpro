@@ -17,9 +17,13 @@
 //!   renewal is more than 10 minutes behind this PC's clock is gone at first
 //!   sight (a PC that crashed long ago); clocks a few minutes apart never make
 //!   a live hold look gone that way.
-//! - Take over moves a hold to this PC whatever it says (CU9).
+//! - Take over moves a hold to this PC whatever it says (CU9); the PC that
+//!   lost it saves its changes as a copy.
+//! - Deleting, renaming or moving a job someone else holds is refused
+//!   (CU11). Saving over it isn't: a job opened anyway, or with warn off,
+//!   opens and saves as usual (CU3), through the save check (LB7–LB10).
 //! - Agents never hold a job, and are refused a change to any job that is
-//!   held (CU12). The window is refused one that someone else holds (CU11).
+//!   held (CU12).
 //!
 //! The window and the agents give the engine who is working, its clock and
 //! what it has seen of each hold (`Watch`, the Library's `watch`), so one test
@@ -111,17 +115,30 @@ impl InUse {
 }
 
 /// What this PC has seen of each job's hold, and since when, by its own
-/// clock (CU7). Shared by everything one window (or one agent session) does,
-/// so every look counts.
+/// clock (CU7), and which jobs it took a hold on and hasn't let go of (held
+/// now, or taken over from it, CU9). Shared by everything one window (or
+/// one agent session) does, so every look counts.
 #[derive(Clone, Debug, Default)]
-pub struct Watch(Arc<Mutex<HashMap<u64, (u64, u64)>>>);
+pub struct Watch(Arc<Mutex<Memory>>);
+
+#[derive(Debug, Default)]
+struct Memory {
+    /// Job → (the hold's fingerprint, when this PC first saw it so).
+    looks: HashMap<u64, (u64, u64)>,
+    /// Jobs this PC took a hold on and hasn't let go of.
+    taken: std::collections::BTreeSet<u64>,
+}
 
 impl Watch {
+    fn seen(&self) -> std::sync::MutexGuard<'_, Memory> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Note job `job`'s hold as it is now (`look`, its fingerprint) at `now`
     /// by this PC's clock; how long this PC has seen it just so.
     fn unchanged_for(&self, job: u64, look: u64, now: u64) -> u64 {
-        let mut m = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        let e = m.entry(job).or_insert((look, now));
+        let mut s = self.seen();
+        let e = s.looks.entry(job).or_insert((look, now));
         // Changed, or this PC's clock was put back: seen from now.
         if e.0 != look || e.1 > now {
             *e = (look, now);
@@ -130,7 +147,28 @@ impl Watch {
     }
 
     fn forget(&self, job: u64) {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).remove(&job);
+        self.seen().looks.remove(&job);
+    }
+
+    fn took(&self, job: u64) {
+        self.seen().taken.insert(job);
+    }
+
+    /// Did this PC take a hold on `job` and not let go of it (it holds it,
+    /// or it was taken over from it)?
+    pub fn took_it(&self, job: u64) -> bool {
+        self.seen().taken.contains(&job)
+    }
+
+    /// This PC is done with `job`: let go, closed, or its changes saved as
+    /// a copy after it was taken over.
+    pub fn done_with(&self, job: u64) {
+        self.seen().taken.remove(&job);
+    }
+
+    /// Done with every job (the Library folder changed).
+    pub fn done_with_all(&self) {
+        self.seen().taken.clear();
     }
 }
 
@@ -268,6 +306,7 @@ pub fn take(lib: &Library, job: u64, name: &str) -> Result<Hold, NotTaken> {
     shared::pause("hold checked");
     let h = mine(lib, job, name, before.as_ref(), beat);
     write(lib, &h, &lock).map_err(NotTaken::Failed)?;
+    lib.watch.took(job);
     Ok(h)
 }
 
@@ -316,6 +355,7 @@ pub fn renew(lib: &Library, wants: &[Want]) -> Result<Vec<(u64, Renewed)>, Strin
                     let _ = std::fs::remove_file(path(&lib.dir, w.job));
                 }
             }
+            lib.watch.done_with(w.job);
             out.push((w.job, Renewed::JobGone));
             continue;
         }
@@ -346,6 +386,7 @@ fn lost_to(lib: &Library, w: &Want) -> Result<InUse, String> {
 fn renewed(lib: &Library, w: &Want, before: Option<&Hold>, beat: u64, lock: &shared::WriteLock) -> Result<Renewed, String> {
     let h = mine(lib, w.job, &w.name, before, beat);
     write(lib, &h, lock)?;
+    lib.watch.took(w.job);
     Ok(Renewed::Held(h))
 }
 
@@ -369,6 +410,7 @@ pub fn release(lib: &Library, jobs: &[u64]) -> Result<(), String> {
             }
         }
         lib.watch.forget(job);
+        lib.watch.done_with(job);
     }
     Ok(())
 }
@@ -397,6 +439,7 @@ pub fn take_over(lib: &Library, job: u64, name: &str) -> Result<Option<Hold>, St
     let h = mine(lib, job, name, keep.as_ref(), beat);
     write(lib, &h, &lock)?;
     lib.watch.forget(job);
+    lib.watch.took(job);
     Ok(before)
 }
 
@@ -462,6 +505,24 @@ pub fn may_change(lib: &Library, job: u64) -> Result<(), InUse> {
         Seen::Mine(h) if lib.who.agent => Err(InUse { job, name: h.name.clone(), hold: Some(h) }),
         _ => Ok(()),
     }
+}
+
+/// May this PC save library job `job` over its record under the name `name`
+/// (CU3, CU9, CU11, CU12)? An agent: not while anyone holds it. A window:
+/// not when it took the job and someone else has it now (taken over: it
+/// saves its changes as a copy), and not under a new name while someone
+/// else has it (that renames it). A job it opened anyway, or opened with
+/// warn off, saves as usual (CU3), through the save check (LB7–LB10).
+/// Called before anything else is done, and again under the save's write
+/// lock.
+pub fn may_save_as(lib: &Library, job: u64, name: &str) -> Result<(), InUse> {
+    if lib.who.agent || lib.watch.took_it(job) {
+        may_change(lib, job)?;
+    }
+    if lib.entries().iter().any(|e| e.kind == Kind::Job && e.id == job && e.name != name) {
+        may_change(lib, job)?;
+    }
+    Ok(())
 }
 
 /// A job deleted from the Library takes every hold on it with it (CU2,
@@ -807,6 +868,49 @@ mod inuse_tests {
         let copy = p1.save_job(&again, SaveTo::New).unwrap();
         assert_ne!(copy.id, id);
         assert_eq!(std::fs::read(p1.path(Kind::Job, id)).unwrap(), record);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// CU3, CU9, CU11: a PC that didn't take the job (opened anyway, or warn
+    /// off) saves over it while someone else holds it, through the save
+    /// check alone: the holder's next save is asked (LB7), nothing lost, and
+    /// the hold stays the holder's. Saving it under a new name is renaming
+    /// it: refused. The PC it was taken over from is refused; so are agents.
+    #[test]
+    fn a_pc_that_didnt_take_a_job_saves_over_it_and_the_one_it_was_taken_from_cant() {
+        let dir = new_library("save_held");
+        let id = job(&dir, "DEMO-7");
+        let clock = Clock::at(NOV_9_0914);
+        let (p1, p2) = (pc(&dir, "Sam", "PROG-2", &clock), pc(&dir, "sam", "PROG-1", &clock));
+        take(&p1, id, "DEMO-7").unwrap();
+        let read = p1.load_job(id).unwrap();
+        clock.advance(Duration::from_secs(60));
+        // PROG-1 (never took it) saves: through.
+        let mut theirs = p2.load_job(id).unwrap();
+        theirs.parts.push(crate::engine::shape_part(crate::nest::Shape::Disc, 1, 1));
+        let rec = p2.save_job(&theirs, SaveTo::Read(theirs.library.unwrap())).expect("a job opened anyway saves as usual");
+        assert_eq!(p2.load_job(id).unwrap().saved.map(|s| s.by.label()).as_deref(), Some("sam on PROG-1"));
+        let on_disk: Hold = serde_json::from_slice(&std::fs::read(path(&dir, id)).unwrap()).unwrap();
+        assert_eq!(on_disk.by.label(), "Sam on PROG-2", "the hold stays the holder's");
+        // Under a new name: renaming a job in use, refused.
+        let mut renamed = p2.load_job(id).unwrap();
+        renamed.name = "DEMO-7 frames".into();
+        let Err(crate::library::Refused::InUse(u)) = p2.save_job(&renamed, SaveTo::Read(rec)) else { panic!("renamed a job in use") };
+        assert_eq!(u.said(&clock), "DEMO-7 is in use by Sam on PROG-2 since 09:14.");
+        // The holder saves what it read: the save check asks (LB7).
+        assert!(matches!(p1.save_job(&read, SaveTo::Read(read.library.unwrap())), Err(crate::library::Refused::Changed(c)) if c.by.as_ref().map(Who::label).as_deref() == Some("sam on PROG-1")));
+        assert_eq!(p1.load_job(id).unwrap().parts.len(), 1, "PROG-1's save is still there");
+        // Taken over from PROG-2: PROG-2 may not save over it now.
+        take_over(&pc(&dir, "kim", "PROG-3", &clock), id, "DEMO-7").unwrap();
+        let now = p1.load_job(id).unwrap();
+        let Err(crate::library::Refused::InUse(u)) = p1.save_job(&now, SaveTo::Read(now.library.unwrap())) else { panic!("saved over a job taken over from it") };
+        assert_eq!(u.by().map(Who::label).as_deref(), Some("kim on PROG-3"));
+        // Agents: refused on any job in use.
+        let agent = Library::at(&dir, &Who::new("sam", "PROG-1").as_agent(), &clock);
+        assert!(matches!(agent.save_job(&now, SaveTo::Read(now.library.unwrap())), Err(crate::library::Refused::InUse(_))));
+        // Done with it (saved as a copy, or closed): PROG-2 is like any PC again.
+        p1.watch.done_with(id);
+        assert!(p1.save_job(&now, SaveTo::Read(now.library.unwrap())).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

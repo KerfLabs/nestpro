@@ -5362,11 +5362,17 @@
   "source": "MECHANICS CU9"
  },
  {
-  "name": "saving over a job someone else has in use asks: Save mine as a copy or Take over",
+  "name": "the PC a job was taken over from: saving over it asks Save mine as a copy or Take over",
   "group": "jobs in use",
   "value": true,
   "estimated": true,
   "source": "MECHANICS CU9"
+ },
+ {
+  "name": "a job opened anyway, or with warn off, saves as usual through the save check",
+  "group": "jobs in use",
+  "value": true,
+  "source": "MECHANICS CU3, CU11"
  },
  {
   "name": "in-use note shown in the Job Explorer, the Library window and the Open job menu",

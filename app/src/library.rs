@@ -612,10 +612,13 @@ impl Library {
     /// folder tree that can't be written leaves the job at the top, saved.
     pub fn save_job_with(&self, to: SaveTo, name: &str, folder: Option<u64>, job: impl FnOnce() -> Result<JobFile, String>) -> Result<Record, Refused> {
         let _lock = self.lock()?;
-        // Not over a job someone else has in use (an agent: anyone), CU11,
-        // CU12: checked first, under the lock, so nothing is booked.
+        // Not over a job taken over from this PC, nor under a new name over
+        // one someone else has in use (an agent: not over any job in use),
+        // CU9, CU11, CU12: checked first, under the lock, so nothing is
+        // booked. A job opened anyway, or with warn off, saves as usual
+        // (CU3), through the save check below (LB7).
         if let Some(id) = to.id() {
-            crate::engine::inuse::may_change(self, id).map_err(Refused::InUse)?;
+            crate::engine::inuse::may_save_as(self, id, name).map_err(Refused::InUse)?;
         }
         let job = || {
             self.check_job_name(name, to.id())?;
