@@ -703,6 +703,17 @@ pub fn on_save(lib: &Library, j: &JobSheets, formats: &mut Vec<SheetFormat>, hel
     notes.join("; ")
 }
 
+/// Forget a job's stock booking, leaving the stock as it is: it holds no
+/// sheets and stored no remnants. A copy of a job then takes its own sheets
+/// when it's saved, and the original keeps its own (LB9).
+pub fn forget_booking(formats: &mut [SheetFormat], held: &mut BTreeMap<String, i32>) {
+    held.clear();
+    for f in formats.iter_mut() {
+        f.made.clear();
+        f.made_from = 0;
+    }
+}
+
 /// Undo a job's stock booking: every sheet it holds back into stock, and the
 /// remnants it stored taken out again while nothing else has used them (their
 /// quantity is still the 1 they were stored with). Returns (sheets given back,

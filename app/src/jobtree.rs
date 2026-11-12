@@ -184,7 +184,7 @@ impl App {
         self.status = format!("Job {name} deleted.");
     }
 
-    fn open_job_forced(&mut self, i: usize) {
+    pub(crate) fn open_job_forced(&mut self, i: usize) {
         let j = self.jobs[i].clone();
         self.cur_job = i;
         self.job_name = j.name;
@@ -193,6 +193,7 @@ impl App {
         self.result = j.result;
         self.stale = j.stale;
         self.job_lib_id = j.lib_id;
+        self.lib_read = j.lib_read;
         self.cut_lines = j.cut_lines;
         self.manual_cuts = j.manual_cuts;
         self.cam_changed = j.cam_changed;
@@ -286,6 +287,8 @@ impl App {
             booked: true,
             erp: j.erp.clone(),
             saved: None,
+            library: None,
+            library_parts: Default::default(),
         }
     }
 

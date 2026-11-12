@@ -5065,6 +5065,72 @@
   "source": "MECHANICS LB6; estimated"
  },
  {
+  "name": "a Library save over a record",
+  "group": "shared library",
+  "value": "refused when the record's revision isn't the one read (opened, added or last saved), checked under the write lock; nothing is saved and the refusal names who saved it and when",
+  "source": "MECHANICS LB7; estimated"
+ },
+ {
+  "name": "a part not added from the Library, saved under a library part's name",
+  "group": "shared library",
+  "value": "counts as changed: asked like one someone else saved",
+  "source": "MECHANICS LB7; estimated"
+ },
+ {
+  "name": "a refused job save and the stock",
+  "group": "shared library",
+  "value": "takes no sheets, gives none back, stores no remnants: the check comes first, then the booking, the record and a new record's folder (JX15) under one hold of the write lock",
+  "source": "MECHANICS LB8; estimated"
+ },
+ {
+  "name": "someone else saved the job: choices",
+  "group": "shared library",
+  "value": "Reload theirs; Save mine as a copy; Overwrite; Cancel",
+  "source": "MECHANICS LB9; estimated"
+ },
+ {
+  "name": "someone else saved the library part: choices",
+  "group": "shared library",
+  "value": "Keep theirs; Overwrite; Save mine under a new name",
+  "source": "MECHANICS LB9; estimated"
+ },
+ {
+  "name": "name of a copy",
+  "group": "shared library",
+  "value": "first free of NAME (1), NAME (2)… whatever its capitals",
+  "source": "MECHANICS LB9; estimated"
+ },
+ {
+  "name": "where a copy is filed",
+  "group": "shared library",
+  "value": "in the folder of the job it was copied from (JX15)",
+  "source": "MECHANICS LB9; estimated"
+ },
+ {
+  "name": "Overwrite and the stock",
+  "group": "shared library",
+  "value": "their sheets back to stock and their unused remnants out, then this job's booked",
+  "source": "MECHANICS LB9; estimated"
+ },
+ {
+  "name": "agents: library job saves",
+  "group": "shared library",
+  "value": "open links the job file to its record; save-job saves over it (twice = one record), refused with who, when and what to do (open again, or copy=true) when someone saved it since; never overwrites",
+  "source": "MECHANICS LB10; estimated"
+ },
+ {
+  "name": "agents: stock on a library job",
+  "group": "shared library",
+  "value": "stock-book book and release refused on a job file opened from or saved into the Library (its sheets are booked when someone saves it in the window); status still answers",
+  "source": "MECHANICS LB10; estimated"
+ },
+ {
+  "name": "agents: a booked job file saved into the Library",
+  "group": "shared library",
+  "value": "save-job hands the file's booking to the record (the record keeps its sheets and remnants) and the file stops following the stock (booked off), as one opened from the Library; later changes are booked when someone saves the job in the window",
+  "source": "MECHANICS LB10; estimated"
+ },
+ {
   "name": "the Library can't be reached when",
   "group": "shared library",
   "value": "its folder isn't there (the share, the server or the network is down, or the folder was moved or renamed)",
