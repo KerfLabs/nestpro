@@ -2226,6 +2226,9 @@ pub(crate) mod libui_tests {
         let dir = d.join("Nesting");
         library::create(&dir).unwrap();
         let mut a = App::new(None);
+        // No in-use hold (as `window`): its background write would race the
+        // share going away below.
+        a.cfg.in_use_warn = false;
         a.cfg.library_dir = dir.display().to_string();
         a.open_job(0);
         a.save_job_to_library();
