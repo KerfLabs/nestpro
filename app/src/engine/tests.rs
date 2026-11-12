@@ -2492,9 +2492,11 @@ fn a_hand_set_order_is_kept_in_jobs_and_products_and_old_files_open_with_none() 
     let d = dir("part_order_keep");
     let job = d.join("plate.snjob");
     let jp = job.to_str().unwrap();
+    let lib = d.join("library");
+    crate::library::create(&lib).unwrap();
     let ctx = || {
         let mut c = Ctx::builtin();
-        c.cfg.library_dir = d.join("library").to_string_lossy().into_owned();
+        c.library_dir = lib.clone();
         c
     };
     let mut s = Session::new(ctx());

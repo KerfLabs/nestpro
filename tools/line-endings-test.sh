@@ -46,6 +46,9 @@ expect 0 "line-endings: ok" "a file renamed with its endings kept, committed"
 repo; printf 'a\r\nb\n' > new.txt; git_ add new.txt
 expect 1 "new.txt is new and mixes CRLF and LF" "a new file with mixed endings"
 
+repo; printf 'a\r\nb\n' > kept.txt; printf 'kept.txt -text\n' > .gitattributes; git_ add kept.txt .gitattributes
+expect 0 "line-endings: ok" "a new file with mixed endings kept byte for byte (-text)"
+
 repo; printf 'a\r\nb\r\n' > lf.txt
 expect 1 "lf.txt was LF, is CRLF now" "an LF file rewritten with CRLF"
 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.autocrlf GIT_CONFIG_VALUE_0=true \
