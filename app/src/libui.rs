@@ -2370,7 +2370,7 @@ pub(crate) mod libui_tests {
                     if s == "job name checked" && std::mem::take(&mut first) {
                         let _ = checked.send(());
                         // Held here until PROG-2 waits for the write lock.
-                        let _ = waiting_rx.recv_timeout(Duration::from_secs(10));
+                        waiting_rx.recv_timeout(Duration::from_secs(60)).expect("PROG-2 waits for the write lock");
                     }
                 });
                 a.save_job_to_library();

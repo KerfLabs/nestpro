@@ -913,8 +913,8 @@ mod inuse_tests {
                         });
                         take_over(&pc(&dir, "Sam", "PROG-2", &clock), id, "DEMO-7")
                     });
-                    let waits = waiting_rx.recv_timeout(Duration::from_secs(60));
-                    assert!(waits.is_ok() && !t.is_finished(), "Take over didn't wait for the save");
+                    waiting_rx.recv_timeout(Duration::from_secs(60)).expect("Take over waits for the write lock");
+                    assert!(!t.is_finished(), "Take over didn't wait for the save");
                     *taking.lock().unwrap() = Some(t);
                 }
             });

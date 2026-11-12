@@ -1056,7 +1056,7 @@ mod inuseui_tests {
             std::thread::spawn(move || {
                 let lock = crate::shared::WriteLock::take(&dir).unwrap();
                 tx.send(()).unwrap();
-                let _ = done_rx.recv_timeout(Duration::from_secs(10));
+                done_rx.recv_timeout(Duration::from_secs(10)).expect("the switch was over within 10 s");
                 drop(lock);
             })
         };
