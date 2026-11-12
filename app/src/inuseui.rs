@@ -13,9 +13,23 @@ use eframe::egui;
 use egui::RichText;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// What a renewal brings back: what it found for each job, and every job
-/// someone else has in use now.
-type Tick = (Result<Vec<(u64, Renewed)>, String>, Result<BTreeMap<u64, InUse>, String>);
+/// What background hold work brings back (CU5, CU6): the holds it let go
+/// of, what it found for each job it renewed or took, and every job someone
+/// else has in use now.
+pub struct Tick {
+    released: Vec<u64>,
+    renewed: Result<Vec<(u64, Renewed)>, String>,
+    looked: Result<BTreeMap<u64, InUse>, String>,
+}
+
+/// Hold work, away from the window: let go of `release`, then renew `wants`
+/// and take the ones that are free, then look at every hold. A share that's
+/// slow to answer, or a write lock left by a crashed PC (up to 120 s, LB1,
+/// LB2), never stops the window.
+fn hold_work(lib: &Library, release: &[u64], wants: &[Want]) -> Tick {
+    let released = if !release.is_empty() && inuse::release(lib, release).is_ok() { release.to_vec() } else { vec![] };
+    Tick { released, renewed: inuse::renew(lib, wants), looked: inuse::look(lib) }
+}
 
 #[derive(Default)]
 pub struct InUseUi {
@@ -37,9 +51,12 @@ pub struct InUseUi {
     pub told: Option<InUse>,
     /// When the next renewal is due, by this window's clock (CU6).
     pub next: u64,
-    /// A renewal running in the background (a share that's slow to answer
-    /// never stops the window).
+    /// Hold work running in the background (a share that's slow to answer
+    /// never stops the window), and whether more was asked for meanwhile.
     pub running: Option<std::sync::mpsc::Receiver<Tick>>,
+    pub again: bool,
+    /// Do hold work in this thread, as it's asked for (tests, screenshots).
+    pub inline: bool,
     /// The last renewal couldn't reach the Library: said once (LB11).
     pub out_of_reach: bool,
     /// The job in front, how many jobs were open and whether warn was on, at
@@ -89,9 +106,9 @@ impl App {
     }
 
     /// Take the holds this window should have and let go of the rest (CU5),
-    /// now: after a job came to the front, was opened, closed or saved. With
-    /// warn off it holds nothing (CU1). While the Library can't be reached
-    /// nothing is tried here: the renewal looks again (LB11).
+    /// after a job came to the front, was opened, closed or saved, or warn
+    /// was switched: the work is done in the background (CU6). With warn off
+    /// it holds nothing (CU1).
     pub fn sync_holds(&mut self) {
         let open: BTreeSet<u64> = self.jobs.iter().filter_map(|j| j.lib_id).chain(self.job_lib_id).collect();
         // A job taken over from here that is closed now: done with (CU9).
@@ -101,79 +118,58 @@ impl App {
             false
         });
         self.inuse.synced = Some((self.job_lib_id, self.jobs.len(), self.cfg.in_use_warn));
-        let wants = if self.cfg.in_use_warn { self.in_use_jobs() } else { vec![] };
-        if !self.cfg.in_use_warn || (wants.is_empty() && self.inuse.held.is_empty()) {
-            // Warn off: nothing held (CU1). Nothing in use: the Library isn't
-            // touched at all.
-            self.release_holds();
-            self.inuse.busy.clear();
-            return;
-        }
-        if self.libui.error.is_some() {
-            return;
-        }
-        let Ok(lib) = self.library() else { return };
-        self.inuse.dir = Some(lib.dir.clone());
-        let drop: Vec<u64> = self.inuse.held.iter().copied().filter(|h| !wants.iter().any(|(w, _)| w == h)).collect();
-        if inuse::release(&lib, &drop).is_ok() {
-            for h in &drop {
-                self.inuse.held.remove(h);
-            }
-        }
-        self.inuse.busy.retain(|id, _| wants.iter().any(|(w, _)| w == id));
-        for (id, name) in wants {
-            if self.inuse.held.contains(&id) {
-                continue;
-            }
-            match inuse::take(&lib, id, &name) {
-                Ok(_) => {
-                    self.inuse.held.insert(id);
-                    self.inuse.busy.remove(&id);
-                }
-                Err(NotTaken::InUse(u)) => {
-                    // Came to the front by itself (CU8): said, not asked.
-                    if !self.inuse.busy.contains_key(&id) && self.job_lib_id == Some(id) {
-                        self.status = format!("{} It's open here as usual; saving it asks first if they've saved it since.", u.said(&self.clock));
-                    }
-                    self.inuse.busy.insert(id, u);
-                }
-                // The share: said by the renewal and the lists (LB11).
-                Err(NotTaken::Failed(_)) => {}
-            }
-        }
+        let wants: Vec<u64> = if self.cfg.in_use_warn { self.in_use_jobs().into_iter().map(|(j, _)| j).collect() } else { vec![] };
+        self.inuse.busy.retain(|id, _| wants.contains(id));
+        self.start_hold_work(false);
     }
 
-    /// Let go of every hold this window has (warn turned off, CU1; quitting).
+    /// Let go of every hold this window has, in the Library folder they are
+    /// in (the Library folder setting changed): in the background, like the
+    /// rest of the hold work. One not let go is gone 2 minutes later (CU7).
     pub fn release_holds(&mut self) {
-        if self.inuse.held.is_empty() {
+        let held: Vec<u64> = std::mem::take(&mut self.inuse.held).into_iter().collect();
+        if held.is_empty() {
             return;
         }
-        let held: Vec<u64> = self.inuse.held.iter().copied().collect();
-        let dir = self.inuse.dir.clone().unwrap_or_else(|| self.library_dir());
-        let lib = Library::at(&dir, &self.who, &self.clock).watching(&self.inuse.watch);
-        if inuse::release(&lib, &held).is_ok() {
-            self.inuse.held.clear();
+        let lib = self.hold_library();
+        if self.inuse.inline {
+            let _ = inuse::release(&lib, &held);
+        } else {
+            std::thread::spawn(move || {
+                let _ = inuse::release(&lib, &held);
+            });
         }
     }
 
-    /// Quitting: let go of this window's holds, waiting a few seconds at most
-    /// for a share that's slow to answer. One not let go is gone 2 minutes
-    /// later anyway (CU7).
+    /// Quitting: let go of this window's holds, after any hold work under
+    /// way (it may have just renewed one), waiting a few seconds at most for
+    /// a share that's slow to answer. One not let go is gone 2 minutes later
+    /// anyway (CU7).
     pub fn release_holds_on_quit(&mut self) {
+        let wait = std::time::Duration::from_secs(3);
+        if let Some(rx) = self.inuse.running.take() {
+            if let Ok(t) = rx.recv_timeout(wait) {
+                for (id, r) in t.renewed.unwrap_or_default() {
+                    if matches!(r, Renewed::Held(_)) {
+                        self.inuse.held.insert(id);
+                    }
+                }
+            }
+        }
         if self.inuse.held.is_empty() {
             return;
         }
         let held: Vec<u64> = std::mem::take(&mut self.inuse.held).into_iter().collect();
-        let dir = self.inuse.dir.clone().unwrap_or_else(|| self.library_dir());
-        let lib = Library::at(&dir, &self.who, &self.clock).watching(&self.inuse.watch);
+        let lib = self.hold_library();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let _ = tx.send(inuse::release(&lib, &held));
         });
-        let _ = rx.recv_timeout(std::time::Duration::from_secs(3));
+        let _ = rx.recv_timeout(wait);
     }
 
-    /// What a renewal asks for: every job in use here (CU5), whether held.
+    /// What hold work asks for: every job in use here (CU5), whether held;
+    /// none while warn is off.
     fn renewal_wants(&mut self) -> Vec<Want> {
         if !self.cfg.in_use_warn {
             return vec![];
@@ -182,23 +178,63 @@ impl App {
         self.in_use_jobs().into_iter().map(|(job, name)| Want { held: held.contains(&job), job, name }).collect()
     }
 
-    /// The Library as the renewal uses it: as it is, nothing set up (LB11).
-    fn renewal_library(&self) -> Library {
-        Library::at(&self.library_dir(), &self.who, &self.clock).watching(&self.inuse.watch)
+    /// The Library as hold work uses it: the folder the holds are in, as it
+    /// is, nothing set up (LB11).
+    fn hold_library(&self) -> Library {
+        let dir = self.inuse.dir.clone().unwrap_or_else(|| self.library_dir());
+        Library::at(&dir, &self.who, &self.clock).watching(&self.inuse.watch)
+    }
+
+    /// What hold work would do now: let go of what's held but no longer in
+    /// use here, renew and take what is. None when there's nothing to do
+    /// and `look` (the timer) isn't asked.
+    fn hold_job(&mut self, look: bool) -> Option<(Library, Vec<u64>, Vec<Want>)> {
+        let wants = self.renewal_wants();
+        let release: Vec<u64> = self.inuse.held.iter().copied().filter(|h| !wants.iter().any(|w| w.job == *h)).collect();
+        if !look && release.is_empty() && wants.iter().all(|w| w.held) {
+            return None;
+        }
+        if self.inuse.dir.is_none() {
+            self.inuse.dir = Some(self.library_dir());
+        }
+        Some((self.hold_library(), release, wants))
+    }
+
+    /// Start hold work (CU5, CU6): in the background, one at a time (asked
+    /// while one runs, it runs again once that's done); in this thread for
+    /// tests and screenshots. `look`: the timer, which renews and looks at
+    /// every hold even when nothing changed here.
+    fn start_hold_work(&mut self, look: bool) {
+        if self.inuse.inline {
+            if let Some((lib, release, wants)) = self.hold_job(look) {
+                let t = hold_work(&lib, &release, &wants);
+                self.apply_renewal(t);
+            }
+            return;
+        }
+        if self.inuse.running.is_some() {
+            self.inuse.again = true;
+            return;
+        }
+        let Some((lib, release, wants)) = self.hold_job(look) else { return };
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(hold_work(&lib, &release, &wants));
+        });
+        self.inuse.running = Some(rx);
     }
 
     /// Renew now, in this thread (what the timer does in the background).
     pub fn renew_holds(&mut self) {
-        let wants = self.renewal_wants();
-        let lib = self.renewal_library();
-        let r = inuse::renew(&lib, &wants);
-        let l = inuse::look(&lib);
-        self.apply_renewal((r, l));
+        if let Some((lib, release, wants)) = self.hold_job(true) {
+            let t = hold_work(&lib, &release, &wants);
+            self.apply_renewal(t);
+        }
     }
 
-    /// Every frame: take or let go of holds when another job came to the
-    /// front or a job was opened or closed; renew about every 30 s in the
-    /// background (CU6), and take in what the last renewal found.
+    /// Every frame: hold work when another job came to the front, a job was
+    /// opened or closed or warn was switched; a renewal about every 30 s
+    /// (CU6); and what the last work found taken in.
     pub fn hold_frame(&mut self, ctx: &egui::Context) {
         if self.inuse.synced != Some((self.job_lib_id, self.jobs.len(), self.cfg.in_use_warn)) {
             self.sync_holds();
@@ -208,39 +244,35 @@ impl App {
                 Ok(t) => {
                     self.inuse.running = None;
                     self.apply_renewal(t);
+                    if std::mem::take(&mut self.inuse.again) {
+                        self.start_hold_work(false);
+                    }
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => self.inuse.running = None,
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         } else if self.clock.now() >= self.inuse.next {
             self.inuse.next = self.clock.now() + inuse::RENEW_EVERY.as_secs();
-            let wants = self.renewal_wants();
-            let lib = self.renewal_library();
-            let (tx, rx) = std::sync::mpsc::channel();
-            std::thread::spawn(move || {
-                let r = inuse::renew(&lib, &wants);
-                let l = inuse::look(&lib);
-                let _ = tx.send((r, l));
-            });
-            self.inuse.running = Some(rx);
+            self.start_hold_work(true);
         }
         ctx.request_repaint_after(std::time::Duration::from_secs(1));
     }
 
-    /// Take in what a renewal found (CU6, CU9).
-    fn apply_renewal(&mut self, (r, l): Tick) {
-        match r {
+    /// Take in what hold work found (CU6, CU9), with no share I/O here. A
+    /// hold it renewed or took that's no longer in use here (another job
+    /// came to the front, or warn was switched off meanwhile) is let go of
+    /// by more hold work.
+    pub fn apply_renewal(&mut self, t: Tick) {
+        for id in &t.released {
+            self.inuse.held.remove(id);
+        }
+        match t.renewed {
             Ok(found) => {
                 if std::mem::take(&mut self.inuse.out_of_reach) {
                     self.status = "The Library can be reached again; the jobs in use here are held again.".into();
                 }
-                let wanted: Vec<u64> = self.in_use_jobs().into_iter().map(|(j, _)| j).collect();
-                let mut stale = vec![];
                 for (id, res) in found {
                     match res {
-                        // Let go meanwhile (another job came to the front):
-                        // not held after all.
-                        Renewed::Held(_) if !wanted.contains(&id) => stale.push(id),
                         Renewed::Held(_) => {
                             self.inuse.held.insert(id);
                             self.inuse.busy.remove(&id);
@@ -252,6 +284,10 @@ impl App {
                             self.inuse.told = Some(u);
                         }
                         Renewed::Busy(u) => {
+                            // Came to the front by itself (CU8): said, not asked.
+                            if !self.inuse.busy.contains_key(&id) && self.job_lib_id == Some(id) {
+                                self.status = format!("{} It's open here as usual; saving it asks first if they've saved it since.", u.said(&self.clock));
+                            }
                             self.inuse.busy.insert(id, u);
                         }
                         Renewed::JobGone => {
@@ -262,8 +298,14 @@ impl App {
                         }
                     }
                 }
-                if !stale.is_empty() {
-                    let _ = inuse::release(&self.renewal_library(), &stale);
+                // Held, but not in use here any more (or warn is off): let go.
+                let wanted: Vec<u64> = if self.cfg.in_use_warn { self.in_use_jobs().into_iter().map(|(j, _)| j).collect() } else { vec![] };
+                if self.inuse.held.iter().any(|h| !wanted.contains(h)) {
+                    if self.inuse.running.is_some() {
+                        self.inuse.again = true;
+                    } else {
+                        self.start_hold_work(false);
+                    }
                 }
             }
             // Said once, not every 30 s (LB11); the jobs stay open with their
@@ -274,7 +316,7 @@ impl App {
                 }
             }
         }
-        if let Ok(o) = l {
+        if let Ok(o) = t.looked {
             self.inuse.others = o;
         }
     }
@@ -293,13 +335,37 @@ impl App {
         self.inuse.others.get(&id).map(|u| u.note(&self.clock))
     }
 
-    /// Someone else has library job `id` in use, as this window sees it now
-    /// (read again; CU7).
-    fn someone_else_has(&mut self, id: u64) -> Option<InUse> {
+    /// Opening library job `id` (named `name`) with warn on: its hold is
+    /// taken first, under the write lock, so of two PCs opening it at the
+    /// same moment one holds it and the other is asked (CU5, CU8). Who has
+    /// it, when someone else does. A Library that can't be reached opens
+    /// nothing anyway, and says why (LB11).
+    fn take_to_open(&mut self, id: u64, name: &str) -> Option<InUse> {
+        crate::shared::pause("opening");
         let lib = self.library().ok()?;
-        let u = inuse::in_use(&lib, id).ok()??;
-        self.inuse.others.insert(id, u.clone());
-        Some(u)
+        // The hold names the job as the Library lists it.
+        let listed = lib.entries().into_iter().find(|e| e.kind == crate::library::Kind::Job && e.id == id).map(|e| e.name);
+        match inuse::take(&lib, id, listed.as_deref().unwrap_or(name)) {
+            Ok(_) => {
+                self.inuse.held.insert(id);
+                self.inuse.dir = Some(lib.dir.clone());
+                None
+            }
+            Err(NotTaken::InUse(u)) => {
+                self.inuse.others.insert(id, u.clone());
+                Some(u)
+            }
+            Err(NotTaken::Failed(_)) => None,
+        }
+    }
+
+    /// The open job that is library job `job` now, if any (the questions
+    /// aren't modal: jobs may have been opened or closed meanwhile).
+    fn open_index_of(&self, job: u64) -> Option<usize> {
+        if self.job_lib_id == Some(job) {
+            return Some(self.cur_job);
+        }
+        self.jobs.iter().position(|j| j.lib_id == Some(job))
     }
 
     /// Open library job `id`. When someone else has it in use and warn is on,
@@ -309,13 +375,17 @@ impl App {
         // already), or opened here anyway.
         let known = self.inuse.held.contains(&id) || self.inuse.lost.contains_key(&id) || self.inuse.busy.contains_key(&id);
         if self.cfg.in_use_warn && !known {
-            if let Some(u) = self.someone_else_has(id) {
+            if let Some(u) = self.take_to_open(id, &crate::library::auto_ref(crate::library::Kind::Job, id)) {
                 self.status = format!("{} Open it anyway, take it over, or cancel.", u.said(&self.clock));
                 self.inuse.ask = Some(Ask { what: Opening::Library(id), u, warning: false });
                 return;
             }
         }
         self.open_library_job_now(id);
+        // Not opened after all (the record couldn't be read): let go of it.
+        if self.job_lib_id != Some(id) && self.inuse.held.contains(&id) {
+            self.sync_holds();
+        }
     }
 
     /// Bring open job `i` to the front (the Job Explorer): a library job
@@ -324,7 +394,8 @@ impl App {
         let id = self.jobs.get(i).and_then(|j| j.lib_id);
         let known = |id: &u64| self.inuse.held.contains(id) || self.inuse.lost.contains_key(id) || self.inuse.busy.contains_key(id);
         if let Some(id) = id.filter(|id| i != self.cur_job && self.cfg.in_use_warn && !known(id)) {
-            if let Some(u) = self.someone_else_has(id) {
+            let name = self.jobs[i].name.clone();
+            if let Some(u) = self.take_to_open(id, &name) {
                 self.status = format!("{} Open it anyway, take it over, or cancel.", u.said(&self.clock));
                 self.inuse.ask = Some(Ask { what: Opening::Open(i), u, warning: false });
                 return;
@@ -352,7 +423,11 @@ impl App {
         self.inuse.busy.insert(a.u.job, a.u.clone());
         match a.what {
             Opening::Library(id) => self.open_library_job_now(id),
-            Opening::Open(i) => self.open_job(i),
+            Opening::Open(_) => {
+                if let Some(i) = self.open_index_of(a.u.job) {
+                    self.open_job(i);
+                }
+            }
             Opening::Save => {}
         }
         self.status = format!("{} Opened here too, as usual: it stays theirs, and saving it asks first if they've saved it since.", a.u.said(&self.clock));
@@ -363,6 +438,18 @@ impl App {
     /// first is in it) or the save goes ahead.
     pub fn take_over_job(&mut self) {
         let Some(a) = self.inuse.ask.take() else { return };
+        // The question isn't modal: the job it's about comes to the front
+        // first, or, closed meanwhile, nothing is done.
+        if matches!(a.what, Opening::Open(_) | Opening::Save) {
+            match self.open_index_of(a.u.job) {
+                Some(i) if i != self.cur_job => self.open_job(i),
+                Some(_) => {}
+                None => {
+                    self.status = format!("{} isn't open here any more: nothing was taken over or saved.", a.u.name);
+                    return;
+                }
+            }
+        }
         let lib = match self.library() {
             Ok(l) => l,
             Err(e) => {
@@ -379,7 +466,8 @@ impl App {
                 let from = was.map_or_else(|| "nobody (it was free)".to_string(), |h| h.by.label());
                 match a.what {
                     Opening::Library(id) => self.open_library_job_now(id),
-                    Opening::Open(i) => self.open_job(i),
+                    // Already in front (above).
+                    Opening::Open(_) => {}
                     Opening::Save => self.save_job_to_library(),
                 }
                 self.status = format!("Took over {} from {from}: their PC is told the next time it checks, within about 30 seconds. {}", a.u.name, self.status);
@@ -527,6 +615,8 @@ impl App {
             self.status = "--in-use needs --library-dir= set to a new, empty folder".into();
             return;
         }
+        // Hold work here and now, so what's shown is what was set up.
+        self.inuse.inline = true;
         let at_0914 = 1_794_215_640;
         let clock = crate::shared::Clock::at(at_0914);
         self.clock = clock.clone();
@@ -617,6 +707,8 @@ mod inuseui_tests {
         a.cfg.in_use_allow = allow;
         a.who = Who::new(user, pc);
         a.clock = clock.clone();
+        // Hold work in the test's thread, as soon as it's asked for.
+        a.inuse.inline = true;
         a.jobs.truncate(1);
         a.cur_job = 0;
         a.job_lib_id = None;
@@ -823,6 +915,167 @@ mod inuseui_tests {
             assert_eq!(lib.load_job(id).unwrap().parts[0].qty, 25);
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+
+    /// S1 (CU5, CU8): PC 2 opens DEMO-7 at the moment PC 1 takes it. PC
+    /// 2's hold is taken first, under the write lock, so PC 2 is asked (allow
+    /// on) or kept out (allow off), never left with the job open and only a
+    /// status line.
+    #[test]
+    fn two_pcs_opening_one_job_at_once_ask_the_one_that_loses() {
+        for allow in [true, false] {
+            let dir = new_library(if allow { "race_allow" } else { "race_no_allow" });
+            let id = saved(&dir, "DEMO-7");
+            let clock = Clock::at(NOV_9_0914);
+            let mut pc2 = window(&dir, "sam", "PROG-1", &clock, true, allow);
+            pc2.lib_refresh();
+            {
+                let (dir, clock) = (dir.clone(), clock.clone());
+                crate::shared::hooks::set(move |s| {
+                    if s == "opening" {
+                        // PC 1 opens it in the same moment.
+                        inuse::take(&Library::at(&dir, &Who::new("Sam", "PROG-2"), &clock), id, "DEMO-7").unwrap();
+                    }
+                });
+            }
+            pc2.open_library_job(id);
+            crate::shared::hooks::clear();
+            let ask = pc2.inuse.ask.clone().expect("PC 2 wasn't asked");
+            assert_eq!(ask.u.said(&clock), "DEMO-7 is in use by Sam on PROG-2 since 09:14.");
+            assert!(!open_names(&pc2).contains(&"DEMO-7".to_string()), "opened before the answer");
+            assert_eq!(holder(&dir, id).as_deref(), Some("Sam on PROG-2"));
+            pc2.open_anyway();
+            assert_eq!(open_names(&pc2).contains(&"DEMO-7".to_string()), allow, "allow {allow}");
+            assert_eq!(holder(&dir, id).as_deref(), Some("Sam on PROG-2"));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    /// S3 (CU1, CU6): warn is switched off while a renewal is under way, and
+    /// the renewal writes the hold again after it was let go. Taken in with
+    /// warn off, it's let go, not kept. Quitting while one is under way waits
+    /// for it, then lets go of what it held.
+    #[test]
+    fn a_renewal_that_lands_after_warn_is_switched_off_or_on_quitting_lets_go() {
+        let dir = new_library("late_renewal");
+        let id = saved(&dir, "DEMO-7");
+        let clock = Clock::at(NOV_9_0914);
+        let mut pc = window(&dir, "Sam", "PROG-2", &clock, true, true);
+        pc.open_library_job(id);
+        let asked = vec![inuse::Want { job: id, name: "DEMO-7".into(), held: true }];
+        pc.cfg.in_use_warn = false;
+        pc.sync_holds();
+        assert_eq!(holder(&dir, id), None);
+        // The renewal under way lands now.
+        let lib = Library::at(&dir, &pc.who, &clock).watching(&pc.inuse.watch);
+        let late = super::hold_work(&lib, &[], &asked);
+        assert_eq!(holder(&dir, id).as_deref(), Some("Sam on PROG-2"));
+        pc.apply_renewal(late);
+        assert_eq!(holder(&dir, id), None, "kept a hold with warn off");
+        assert!(pc.inuse.held.is_empty());
+        // Quitting while a renewal is under way.
+        pc.cfg.in_use_warn = true;
+        let late = super::hold_work(&lib, &[], &asked);
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(late).unwrap();
+        pc.inuse.running = Some(rx);
+        pc.release_holds_on_quit();
+        assert_eq!(holder(&dir, id), None, "a hold the renewal took was left on quitting");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// S5 (CU5, CU6): letting go of a job on switching away from it is done
+    /// in the background: with another PC sitting on the Library's write
+    /// lock, switching jobs doesn't wait for it, and the hold is let go once
+    /// the lock is free.
+    #[test]
+    fn switching_jobs_never_waits_for_the_librarys_write_lock() {
+        let dir = new_library("switch_waits");
+        let (a, b) = (saved(&dir, "DEMO-7"), saved(&dir, "DEMO-8"));
+        let clock = Clock::at(NOV_9_0914);
+        let mut pc = window(&dir, "Sam", "PROG-2", &clock, true, true);
+        pc.inuse.inline = false;
+        pc.open_library_job(a);
+        pc.parts[0].qty += 3;
+        pc.open_library_job(b);
+        let settle = |pc: &mut App| {
+            for _ in 0..600 {
+                match pc.inuse.running.as_ref().map(|rx| rx.try_recv()) {
+                    None if !pc.inuse.again => return,
+                    None => {
+                        pc.inuse.again = false;
+                        pc.sync_holds();
+                    }
+                    Some(Ok(t)) => {
+                        pc.inuse.running = None;
+                        pc.apply_renewal(t);
+                    }
+                    Some(Err(_)) => std::thread::sleep(Duration::from_millis(100)),
+                }
+            }
+            panic!("hold work never finished");
+        };
+        settle(&mut pc);
+        assert_eq!((holder(&dir, a).as_deref(), holder(&dir, b).as_deref()), (Some("Sam on PROG-2"), Some("Sam on PROG-2")));
+        // Another PC sits on the write lock for 10 s.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let held_by_other = {
+            let dir = dir.clone();
+            std::thread::spawn(move || {
+                let lock = crate::shared::WriteLock::take(&dir).unwrap();
+                tx.send(()).unwrap();
+                std::thread::sleep(Duration::from_secs(10));
+                drop(lock);
+            })
+        };
+        rx.recv().unwrap();
+        let started = std::time::Instant::now();
+        let i = pc.jobs.iter().position(|j| j.lib_id == Some(a)).unwrap();
+        pc.switch_to_job(i);
+        assert!(started.elapsed() < Duration::from_secs(5), "switching waited {:?} for the write lock", started.elapsed());
+        assert_eq!(pc.job_lib_id, Some(a));
+        held_by_other.join().unwrap();
+        settle(&mut pc);
+        assert_eq!((holder(&dir, a).as_deref(), holder(&dir, b)), (Some("Sam on PROG-2"), None));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// S6 (CU9): the question after a refused save isn't modal. Answered
+    /// with Take over after another job was brought to the front, it takes
+    /// over and saves the job it's about, not the one in front; closed
+    /// meanwhile, nothing is done.
+    #[test]
+    fn take_over_after_a_refused_save_saves_the_job_it_is_about() {
+        use crate::library::Kind;
+        let dir = new_library("save_answer");
+        let (a, b) = (saved(&dir, "DEMO-7"), saved(&dir, "DEMO-8"));
+        let clock = Clock::at(NOV_9_0914);
+        let lib = Library::at(&dir, &Who::new("kim", "PROG-3"), &clock);
+        let mut pc = window(&dir, "sam", "PROG-1", &clock, true, true);
+        pc.open_library_job(a);
+        pc.parts[0].qty = 40;
+        pc.open_library_job(b);
+        // Sam takes DEMO-7 over; this PC is told, tries to save it and is asked.
+        inuse::take_over(&Library::at(&dir, &Who::new("Sam", "PROG-2"), &clock), a, "DEMO-7").unwrap();
+        pc.renew_holds();
+        pc.inuse.told = None;
+        pc.switch_to_job(pc.jobs.iter().position(|j| j.lib_id == Some(a)).unwrap());
+        pc.save_job_to_library();
+        assert!(matches!(&pc.inuse.ask, Some(q) if q.what == super::Opening::Save), "{}", pc.status);
+        // DEMO-8 comes to the front; then the answer: Take over.
+        pc.switch_to_job(pc.jobs.iter().position(|j| j.lib_id == Some(b)).unwrap());
+        let demo8 = std::fs::read(lib.path(Kind::Job, b)).unwrap();
+        pc.inuse.ask.as_mut().unwrap().warning = true;
+        pc.take_over_job();
+        assert_eq!(pc.job_lib_id, Some(a), "{}", pc.status);
+        assert_eq!(lib.load_job(a).unwrap().parts[0].qty, 40, "DEMO-7 wasn't saved: {}", pc.status);
+        assert_eq!(std::fs::read(lib.path(Kind::Job, b)).unwrap(), demo8, "DEMO-8 was saved instead");
+        assert_eq!(holder(&dir, a).as_deref(), Some("sam on PROG-1"));
+        // Asked about a job closed since: nothing is done.
+        pc.inuse.ask = Some(super::Ask { what: super::Opening::Save, u: inuse::InUse { job: 999, name: "DEMO-9".into(), ..Default::default() }, warning: true });
+        pc.take_over_job();
+        assert!(pc.status.contains("DEMO-9 isn't open here any more"), "{}", pc.status);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// CU5: the job in front is held; switching to another lets go of it

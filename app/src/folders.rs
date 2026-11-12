@@ -467,7 +467,8 @@ fn in_use_within(lib: &Library, held: &std::collections::BTreeMap<u64, crate::en
 /// change's write lock, so no hold is taken between the check and the
 /// change. New folders and new jobs filed are no one's yet.
 fn in_use_refusal(lib: &Library, before: &Tree, after: &Tree, entries: &[Entry]) -> Result<(), Refused> {
-    let held = crate::engine::inuse::look(lib).unwrap_or_default();
+    // Holds that can't be read now: nothing goes past them (CU11).
+    let held = crate::engine::inuse::look(lib).map_err(Refused::Failed)?;
     if held.is_empty() {
         return Ok(());
     }

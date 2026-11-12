@@ -253,7 +253,8 @@ pub fn refuse_real_library(folder: &Path, this_library: &Path) -> Result<(), Str
             if passing(&n) {
                 continue;
             }
-            if n.strip_suffix(".json").and_then(|s| s.parse::<u64>().ok()).is_none() {
+            // A hold, or a let-go hold's takeover (CU9).
+            if n.strip_suffix(".over.json").or_else(|| n.strip_suffix(".json")).and_then(|s| s.parse::<u64>().ok()).is_none() {
                 return Err(real(format!("'{holds}/{n}'")));
             }
             let h = std::fs::read(folder.join(holds).join(&n)).ok().and_then(|b| serde_json::from_slice::<super::inuse::Hold>(&b).ok());

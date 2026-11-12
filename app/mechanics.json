@@ -5410,6 +5410,42 @@
   "source": "MECHANICS CU12"
  },
  {
+  "name": "opening a Library job takes its hold before it opens (the PC that loses a race is asked)",
+  "group": "jobs in use",
+  "value": true,
+  "estimated": true,
+  "source": "MECHANICS CU5"
+ },
+ {
+  "name": "holds taken and let go on switching, closing and saving done in the background",
+  "group": "jobs in use",
+  "value": true,
+  "estimated": true,
+  "source": "MECHANICS CU6"
+ },
+ {
+  "name": "longest wait on quitting for hold work under way, then for letting go",
+  "group": "jobs in use",
+  "value": 3,
+  "unit": "s",
+  "estimated": true,
+  "source": "MECHANICS CU6"
+ },
+ {
+  "name": "a takeover is kept after the hold is let go until the PC it was taken from is told",
+  "group": "jobs in use",
+  "value": true,
+  "estimated": true,
+  "source": "MECHANICS CU9"
+ },
+ {
+  "name": "a hold that can't be read now refuses delete, rename, move and agents' saves",
+  "group": "jobs in use",
+  "value": true,
+  "estimated": true,
+  "source": "MECHANICS CU11"
+ },
+ {
   "name": "two-PC Library check takes, renews and lets go of holds",
   "group": "jobs in use",
   "value": true,

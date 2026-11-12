@@ -704,7 +704,10 @@ impl Library {
     pub fn delete(&self, kind: Kind, id: u64) -> Result<(), String> {
         let lock = self.lock()?;
         if kind == Kind::Job {
-            crate::engine::inuse::may_change(self, id).map_err(|u| format!("{} It can't be deleted while it's in use: try again when it's closed. Nothing was deleted.", u.said(&self.clock)))?;
+            crate::engine::inuse::may_change(self, id).map_err(|u| match u.unreadable {
+                Some(_) => format!("{} Nothing was deleted.", u.said(&self.clock)),
+                None => format!("{} It can't be deleted while it's in use: try again when it's closed. Nothing was deleted.", u.said(&self.clock)),
+            })?;
         }
         lock.still_held()?;
         let _ = std::fs::remove_file(self.path(kind, id));

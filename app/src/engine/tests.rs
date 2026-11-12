@@ -1388,7 +1388,7 @@ fn the_library_check_passes_on_a_test_folder_and_fails_on_a_half_written_record(
     t.placed.remove(&2);
     std::fs::write(&parts, serde_json::to_string(&t).unwrap()).unwrap();
     // A hold PROG-1's finished run never let go of.
-    let left = crate::engine::inuse::Hold { format: crate::engine::inuse::FORMAT.into(), job: 4, name: "DEMO-CHECK left".into(), by: Who::new(&crate::shared::user_name(), "PROG-1"), since: 0, renewed: 0, beat: 1 };
+    let left = crate::engine::inuse::Hold { format: crate::engine::inuse::FORMAT.into(), job: 4, name: "DEMO-CHECK left".into(), by: Who::new(&crate::shared::user_name(), "PROG-1"), since: 0, renewed: 0, beat: 1, taken_from: vec![] };
     std::fs::write(crate::engine::inuse::path(&folder, 4), serde_json::to_string(&left).unwrap()).unwrap();
     let e = err(&mut s, "library-check", json!({"folder": folder.to_str().unwrap(), "rounds": 1, "pc": "PROG-1"}));
     assert!(e.contains("FAIL") && e.contains("Job record 2") && e.contains("half-written"), "{e}");

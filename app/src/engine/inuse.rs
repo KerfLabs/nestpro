@@ -66,15 +66,23 @@ pub struct Hold {
     /// How often it has been written: every renewal changes it, so a PC
     /// watching the hold sees it renewed whatever the clocks say (CU7).
     pub beat: u64,
+    /// The PCs it was taken over from (CU9), not yet told: kept when the
+    /// hold is let go (`<record>.over.json`), so each is told at its next
+    /// renewal even after the PC that took it over has let it go.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub taken_from: Vec<Who>,
 }
 
 /// A job someone else has in use, as this PC sees it: its hold, or None for
-/// a hold that can't be read (damaged, CU7).
-#[derive(Clone, Debug, PartialEq)]
+/// a hold that can't be read (damaged, CU7). `unreadable`: the holds can't
+/// be read now at all (the share), so whether the job is in use isn't known
+/// and no change is made to it (CU11).
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct InUse {
     pub job: u64,
     pub name: String,
     pub hold: Option<Hold>,
+    pub unreadable: Option<String>,
 }
 
 /// "since 09:14" today, else "since 9 Nov 09:14", in this PC's local time.
@@ -86,25 +94,28 @@ pub fn since(clock: &Clock, t: u64) -> String {
 impl InUse {
     /// "sam on PROG-2 since 09:14".
     pub fn by_since(&self, clock: &Clock) -> String {
-        match &self.hold {
-            Some(h) => format!("{} {}", h.by.label(), since(clock, h.since)),
-            None => "a PC its hold doesn't name (the hold in the Library can't be read)".into(),
+        match (&self.hold, &self.unreadable) {
+            (Some(h), _) => format!("{} {}", h.by.label(), since(clock, h.since)),
+            (None, Some(_)) => "a PC that can't be told now (the holds in the Library can't be read)".into(),
+            (None, None) => "a PC its hold doesn't name (the hold in the Library can't be read)".into(),
         }
     }
 
     /// "In use by sam on PROG-2 since 09:14" (CU10).
     pub fn note(&self, clock: &Clock) -> String {
-        match &self.hold {
-            Some(_) => format!("In use by {}", self.by_since(clock)),
-            None => "In use (its hold can't be read)".into(),
+        match (&self.hold, &self.unreadable) {
+            (Some(_), _) => format!("In use by {}", self.by_since(clock)),
+            (None, Some(_)) => "Holds can't be read now".into(),
+            (None, None) => "In use (its hold can't be read)".into(),
         }
     }
 
     /// "DEMO-7 is in use by sam on PROG-2 since 09:14." (CU11, CU12)
     pub fn said(&self, clock: &Clock) -> String {
-        match &self.hold {
-            Some(_) => format!("{} is in use by {}.", self.name, self.by_since(clock)),
-            None => format!("{} is in use, but its hold in the Library can't be read to say by whom; it counts as gone 2 minutes after it last changed.", self.name),
+        match (&self.hold, &self.unreadable) {
+            (Some(_), _) => format!("{} is in use by {}.", self.name, self.by_since(clock)),
+            (None, Some(e)) => format!("The holds in the Library can't be read now ({e}), so whether {} is in use isn't known: nothing was changed. Try again.", self.name),
+            (None, None) => format!("{} is in use, but its hold in the Library can't be read to say by whom; it counts as gone 2 minutes after it last changed.", self.name),
         }
     }
 
@@ -183,6 +194,17 @@ pub fn path(dir: &Path, job: u64) -> PathBuf {
     dir.join(FOLDER).join(format!("{job}.json"))
 }
 
+/// The file that keeps a let-go hold's takeover (CU9): who took job `job`
+/// over, and the PCs it was taken from that haven't been told yet.
+pub fn taken_path(dir: &Path, job: u64) -> PathBuf {
+    dir.join(FOLDER).join(format!("{job}.over.json"))
+}
+
+/// The takeover kept for `job` after its hold was let go, if any.
+fn taken_over(dir: &Path, job: u64) -> Option<Hold> {
+    std::fs::read(taken_path(dir, job)).ok().and_then(|b| serde_json::from_slice(&b).ok())
+}
+
 /// What a hold's file holds now.
 enum Found {
     Free,
@@ -209,7 +231,13 @@ fn same(a: &str, b: &str) -> bool {
 /// Is `h` this PC's own: the same user on the same PC (CU3: the same user on
 /// another PC is someone else)? An agent never holds a job (CU12).
 pub fn is_mine(h: &Hold, who: &Who) -> bool {
-    !who.agent && !h.by.agent && same(&h.by.user, &who.user) && same(&h.by.pc, &who.pc)
+    same_pc(&h.by, who)
+}
+
+/// Are `a` and `b` the same user on the same PC (capitals aside), neither an
+/// agent (CU3, CU12)?
+fn same_pc(a: &Who, b: &Who) -> bool {
+    !a.agent && !b.agent && same(&a.user, &b.user) && same(&a.pc, &b.pc)
 }
 
 /// What a hold is to this PC.
@@ -237,14 +265,14 @@ fn judge(lib: &Library, job: u64, name: &str, f: Found) -> Seen {
             if unchanged >= GONE_AFTER.as_secs() || old {
                 Seen::Free
             } else {
-                Seen::Other(InUse { job, name: h.name.clone(), hold: Some(h) })
+                Seen::Other(InUse { job, name: h.name.clone(), hold: Some(h), ..Default::default() })
             }
         }
         Found::Damaged(b) => {
             if lib.watch.unchanged_for(job, fingerprint(&b), now) >= GONE_AFTER.as_secs() {
                 Seen::Free
             } else {
-                Seen::Other(InUse { job, name: name.to_string(), hold: None })
+                Seen::Other(InUse { job, name: name.to_string(), ..Default::default() })
             }
         }
     }
@@ -264,16 +292,22 @@ pub enum NotTaken {
     Failed(String),
 }
 
+/// Write a hold, under the write lock. A takeover kept from a let-go hold
+/// (CU9) goes once someone holds the job again: the PCs it was taken from
+/// then see that hold at their next renewal.
 fn write(lib: &Library, h: &Hold, lock: &shared::WriteLock) -> Result<(), String> {
     let text = serde_json::to_string_pretty(h).map_err(|e| e.to_string())?;
-    shared::write_file(&path(&lib.dir, h.job), text.as_bytes(), Some(lock))
+    shared::write_file(&path(&lib.dir, h.job), text.as_bytes(), Some(lock))?;
+    let _ = std::fs::remove_file(taken_path(&lib.dir, h.job));
+    Ok(())
 }
 
 /// This PC's hold on `job`, going on from `before` (its earlier hold, kept
 /// since then).
 fn mine(lib: &Library, job: u64, name: &str, before: Option<&Hold>, beat: u64) -> Hold {
     let now = lib.clock.now();
-    Hold { format: FORMAT.into(), job, name: name.to_string(), by: lib.who.clone(), since: before.map_or(now, |h| h.since), renewed: now, beat }
+    let taken_from = before.map_or_else(Vec::new, |h| h.taken_from.clone());
+    Hold { format: FORMAT.into(), job, name: name.to_string(), by: lib.who.clone(), since: before.map_or(now, |h| h.since), renewed: now, beat, taken_from }
 }
 
 /// The beat a new write of a hold gets: one more than what's there.
@@ -360,6 +394,22 @@ pub fn renew(lib: &Library, wants: &[Want]) -> Result<Vec<(u64, Renewed)>, Strin
             continue;
         }
         let f = read(&lib.dir, w.job)?;
+        // Taken over from this PC, and let go again since: told, not taken
+        // back (CU9).
+        if w.held && matches!(f, Found::Free) {
+            if let Some(mut t) = taken_over(&lib.dir, w.job).filter(|t| t.taken_from.iter().any(|from| same_pc(from, &lib.who))) {
+                t.taken_from.retain(|from| !same_pc(from, &lib.who));
+                if lock.still_held().is_ok() {
+                    let _ = if t.taken_from.is_empty() {
+                        std::fs::remove_file(taken_path(&lib.dir, w.job)).map_err(|e| e.to_string())
+                    } else {
+                        serde_json::to_string_pretty(&t).map_err(|e| e.to_string()).and_then(|text| shared::write_file(&taken_path(&lib.dir, w.job), text.as_bytes(), Some(&lock)))
+                    };
+                }
+                out.push((w.job, Renewed::Lost(InUse { job: w.job, name: t.name.clone(), hold: Some(t), ..Default::default() })));
+                continue;
+            }
+        }
         let beat = next_beat(&f);
         let someone_else = matches!(&f, Found::Hold(h, _) if !is_mine(h, &lib.who));
         let r = match judge(lib, w.job, &w.name, f) {
@@ -378,8 +428,8 @@ pub fn renew(lib: &Library, wants: &[Want]) -> Result<Vec<(u64, Renewed)>, Strin
 /// The hold that now names someone else, for a PC that lost it.
 fn lost_to(lib: &Library, w: &Want) -> Result<InUse, String> {
     match read(&lib.dir, w.job)? {
-        Found::Hold(h, _) => Ok(InUse { job: w.job, name: h.name.clone(), hold: Some(h) }),
-        _ => Ok(InUse { job: w.job, name: w.name.clone(), hold: None }),
+        Found::Hold(h, _) => Ok(InUse { job: w.job, name: h.name.clone(), hold: Some(h), ..Default::default() }),
+        _ => Ok(InUse { job: w.job, name: w.name.clone(), ..Default::default() }),
     }
 }
 
@@ -403,6 +453,11 @@ pub fn release(lib: &Library, jobs: &[u64]) -> Result<(), String> {
         if let Found::Hold(h, _) = read(&lib.dir, job)? {
             if is_mine(&h, &lib.who) {
                 lock.still_held()?;
+                // Taken over from PCs not told yet: kept, so they are (CU9).
+                if !h.taken_from.is_empty() {
+                    let text = serde_json::to_string_pretty(&h).map_err(|e| e.to_string())?;
+                    shared::write_file(&taken_path(&lib.dir, job), text.as_bytes(), Some(&lock))?;
+                }
                 match std::fs::remove_file(path(&lib.dir, job)) {
                     Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(format!("couldn't let go of the hold on {}: {e}", h.name)),
                     _ => {}
@@ -436,7 +491,11 @@ pub fn take_over(lib: &Library, job: u64, name: &str) -> Result<Option<Hold>, St
         _ => (None, None),
     };
     shared::pause("taking over");
-    let h = mine(lib, job, name, keep.as_ref(), beat);
+    let mut h = mine(lib, job, name, keep.as_ref(), beat);
+    // Who it was taken from, to be told even once it's let go again (CU9).
+    if let Some(b) = &before {
+        h.taken_from = b.taken_from.iter().chain(std::iter::once(&b.by)).filter(|w| !same_pc(w, &lib.who)).cloned().collect();
+    }
     write(lib, &h, &lock)?;
     lib.watch.forget(job);
     lib.watch.took(job);
@@ -475,7 +534,9 @@ pub fn look(lib: &Library) -> Result<BTreeMap<u64, InUse>, String> {
     for f in files.flatten() {
         let n = f.file_name().to_string_lossy().into_owned();
         let Some(job) = n.strip_suffix(".json").and_then(|s| s.parse::<u64>().ok()) else { continue };
-        let Ok(found) = read(&lib.dir, job) else { continue };
+        // A hold that can't be read now: whether its job is in use isn't
+        // known, so no change may go past it (CU11).
+        let found = read(&lib.dir, job).map_err(|e| format!("The holds in the Library can't be read now ({e}), so nothing was changed. Try again."))?;
         let name = match &found {
             Found::Damaged(_) => {
                 let es = names.get_or_insert_with(|| lib.entries());
@@ -495,14 +556,15 @@ pub fn look(lib: &Library) -> Result<BTreeMap<u64, InUse>, String> {
 /// it in use; an agent, not while anyone has. Called under the write lock
 /// the change holds, so no hold is taken between the check and the change.
 pub fn may_change(lib: &Library, job: u64) -> Result<(), InUse> {
-    let Ok(f) = read(&lib.dir, job) else { return Ok(()) };
+    // A hold that can't be read now (the share): not known, so refused.
+    let f = read(&lib.dir, job).map_err(|e| InUse { job, name: job_name(lib, job), unreadable: Some(e), ..Default::default() })?;
     let name = match &f {
         Found::Damaged(_) => job_name(lib, job),
         _ => String::new(),
     };
     match judge(lib, job, &name, f) {
         Seen::Other(u) => Err(u),
-        Seen::Mine(h) if lib.who.agent => Err(InUse { job, name: h.name.clone(), hold: Some(h) }),
+        Seen::Mine(h) if lib.who.agent => Err(InUse { job, name: h.name.clone(), hold: Some(h), ..Default::default() }),
         _ => Ok(()),
     }
 }
@@ -530,6 +592,7 @@ pub fn may_save_as(lib: &Library, job: u64, name: &str) -> Result<(), InUse> {
 pub fn forget_job(lib: &Library, job: u64, lock: &shared::WriteLock) {
     if lock.still_held().is_ok() {
         let _ = std::fs::remove_file(path(&lib.dir, job));
+        let _ = std::fs::remove_file(taken_path(&lib.dir, job));
     }
     lib.watch.forget(job);
 }
@@ -911,6 +974,67 @@ mod inuse_tests {
         // Done with it (saved as a copy, or closed): PROG-2 is like any PC again.
         p1.watch.done_with(id);
         assert!(p1.save_job(&now, SaveTo::Read(now.library.unwrap())).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// S2 (CU9): PROG-2 takes DEMO-7 over from PROG-1 and lets it go again
+    /// before PROG-1's next renewal. PROG-1 is still told it was taken over
+    /// at that renewal, and doesn't take it back; once told, nothing of the
+    /// takeover is kept. Had a third PC taken the job meanwhile, PROG-1 sees
+    /// that hold instead.
+    #[test]
+    fn a_takeover_let_go_before_the_next_renewal_is_still_told() {
+        let dir = new_library("takeover_let_go");
+        let id = job(&dir, "DEMO-7");
+        let clock = Clock::at(NOV_9_0914);
+        let (p1, p2) = (pc(&dir, "sam", "PROG-1", &clock), pc(&dir, "Sam", "PROG-2", &clock));
+        let want = [Want { job: id, name: "DEMO-7".into(), held: true }];
+        for third in [false, true] {
+            take(&p1, id, "DEMO-7").unwrap();
+            clock.advance(RENEW_EVERY);
+            take_over(&p2, id, "DEMO-7").unwrap();
+            clock.advance(Duration::from_secs(10));
+            release(&p2, &[id]).unwrap();
+            assert!(!path(&dir, id).exists());
+            if third {
+                take(&pc(&dir, "kim", "PROG-3", &clock), id, "DEMO-7").unwrap();
+            }
+            clock.advance(Duration::from_secs(20));
+            let r = renew(&p1, &want).unwrap();
+            let Renewed::Lost(u) = &r[0].1 else { panic!("PROG-1 wasn't told: {r:?}") };
+            assert_eq!(u.by().map(|w| w.pc.as_str()), Some(if third { "PROG-3" } else { "PROG-2" }));
+            let now: Option<Hold> = std::fs::read(path(&dir, id)).ok().and_then(|b| serde_json::from_slice(&b).ok());
+            assert_ne!(now.map(|h| h.by.pc), Some("PROG-1".to_string()), "PROG-1 took it back");
+            assert!(!taken_path(&dir, id).exists(), "the takeover was kept after PROG-1 was told");
+            release(&pc(&dir, "kim", "PROG-3", &clock), &[id]).unwrap();
+            p1.watch.done_with(id);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// S4 (CU11, CU12): a hold that can't be read now (an I/O error, not a
+    /// damaged file) refuses a change rather than letting it past: an
+    /// agent's save, deleting the job, moving it into another folder.
+    /// Nothing is written, and the refusal says so in plain words.
+    #[test]
+    fn a_hold_that_cant_be_read_now_refuses_the_change() {
+        let dir = new_library("unreadable");
+        let id = job(&dir, "DEMO-7");
+        let clock = Clock::at(NOV_9_0914);
+        // A hold file the share won't give back (here: a folder in its place).
+        std::fs::create_dir_all(path(&dir, id)).unwrap();
+        let record = std::fs::read(Library::at(&dir, &Who::new("kim", "PROG-3"), &clock).path(Kind::Job, id)).unwrap();
+        let agent = Library::at(&dir, &Who::new("sam", "PROG-1").as_agent(), &clock);
+        let j = agent.load_job(id).unwrap();
+        let Err(crate::library::Refused::InUse(u)) = agent.save_job(&j, SaveTo::Read(j.library.unwrap())) else { panic!("saved past a hold that can't be read") };
+        assert!(u.said(&clock).contains("can't be read now") && u.said(&clock).contains("nothing was changed"), "{}", u.said(&clock));
+        let window = pc(&dir, "Sam", "PROG-2", &clock);
+        let e = window.delete(Kind::Job, id).unwrap_err();
+        assert!(e.contains("can't be read now") && e.contains("Nothing was deleted"), "{e}");
+        let e = crate::folders::change(&window, Kind::Job, |t, _| t.put(id, crate::folders::TOP)).unwrap_err().say(Kind::Job, false);
+        assert!(e.contains("can't be read now"), "{e}");
+        assert_eq!(std::fs::read(window.path(Kind::Job, id)).unwrap(), record);
+        assert!(window.load_job(id).is_ok(), "the job was deleted");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
