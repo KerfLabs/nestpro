@@ -1061,7 +1061,7 @@ mod blm_tests {
         let parts = vec![p("FRAME", Shape::Custom, 400.0, 200.0, Some(std::sync::Arc::new(g))), p("TAB", Shape::Rectangle, 50.0, 50.0, None)];
         let sheet = vec![Placed { part: 0, x: 10.0, y: 10.0, w: 400.0, h: 200.0, turns: 0, mirror: false }, Placed { part: 1, x: 285.0, y: 85.0, w: 50.0, h: 50.0, turns: 0, mirror: false }];
         let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
-        let picks = [crate::cnc::ManualCut { placed: 0, contour: 0, start: [30.0, 100.0], reverse: false }, crate::cnc::ManualCut { placed: 0, contour: 2, start: [10.0, 100.0], reverse: false }];
+        let picks = [crate::cnc::ManualCut { placed: 0, contour: 0, start: [30.0, 100.0], reverse: false, whole: None }, crate::cnc::ManualCut { placed: 0, contour: 2, start: [10.0, 100.0], reverse: false, whole: None }];
         let plan = crate::cnc::plan_manual(&parts, &sheet, &spec, &picks);
         let s = sheet_set(1, &parts, &sheet, &spec, &plan, &[], &BlmSettings::for_spec(&spec, "LC5", "J-1"));
         let main = &s.spf[0].1;

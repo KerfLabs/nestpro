@@ -481,8 +481,18 @@ pub fn gap_halo(parts: &[Part], p: &Placed, gap: f64) -> Vec<Vec<P>> {
     crate::region::offset_round(&ol, -gap).into_iter().map(|g| g.outer).collect()
 }
 
-/// Parse a list of placed-part numbers ("1,3,5" or "2-4", from 1) into indices.
+/// Parse a list of placed-part numbers ("1,3,5" or "2-4", from 1) into indices,
+/// in number order, each once.
 pub fn parse_items(s: &str, n: usize) -> Result<Vec<usize>, String> {
+    let mut v = parse_items_in_order(s, n)?;
+    v.sort_unstable();
+    v.dedup();
+    Ok(v)
+}
+
+/// Placed parts ("3,1,2", "4-2", numbers from 1) in the order written, a
+/// range the way it runs (`4-2` is 4, 3, 2); numbers from 0.
+pub fn parse_items_in_order(s: &str, n: usize) -> Result<Vec<usize>, String> {
     let mut v = vec![];
     for tok in s.split([',', ' ', ';']).map(str::trim).filter(|t| !t.is_empty()) {
         let tok = tok.trim_start_matches('#');
@@ -494,13 +504,15 @@ pub fn parse_items(s: &str, n: usize) -> Result<Vec<usize>, String> {
         if a == 0 || b == 0 || a > n || b > n {
             return Err(format!("There is no part #{} on this sheet (it has {n}).", if a == 0 || a > n { a } else { b }));
         }
-        v.extend((a.min(b)..=a.max(b)).map(|k| k - 1));
+        if a <= b {
+            v.extend((a..=b).map(|k| k - 1));
+        } else {
+            v.extend((b..=a).rev().map(|k| k - 1));
+        }
     }
     if v.is_empty() {
         return Err("Name the parts, e.g. items=1,3,5.".into());
     }
-    v.sort_unstable();
-    v.dedup();
     Ok(v)
 }
 

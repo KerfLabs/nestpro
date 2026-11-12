@@ -2926,3 +2926,239 @@ fn a_part_saved_before_contour_states_is_cut_and_marked_in_its_hand_set_order() 
     assert_eq!(marks, vec![true, false], "the square, then the line");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+// ---------------------------------------------------------------------------
+// Whole parts swept or boxed into a sheet's cut order (MAC-5, MM8, MM9).
+// ---------------------------------------------------------------------------
+
+/// The placed parts in the order a G-code program first cuts them.
+fn iso_parts(s: &mut Session, sheet: usize) -> Vec<usize> {
+    iso_order(s, sheet).iter().map(|p| p.0).collect()
+}
+
+#[test]
+fn parts_taken_whole_are_cut_first_in_that_order_each_in_its_own_order() {
+    let d = dir("sheet_parts_items");
+    let mut s = ordered_plate_job(&d, false, "3, 1, 2", &TURNED);
+    let want = vec![3, 1, 2, 7, 4, 5, 6];
+    assert_eq!(iso_parts(&mut s, 1), vec![1, 3, 2, 4], "the automatic order");
+    // MM8: #4, #2 and #1, as a sweep would take them; #3 follows on its own.
+    let r = call(&mut s, "cut-order", None, json!({"mode": "parts", "items": "4, 2, 1"}));
+    assert_eq!(r["data"]["added"], json!([4, 2, 1]), "{r}");
+    let got = iso_order(&mut s, 1);
+    assert_eq!(got.iter().map(|p| p.0).collect::<Vec<_>>(), vec![4, 2, 1, 3]);
+    for (part, order) in got {
+        assert_eq!(order, want, "copy #{part}, turned or mirrored, in its own order");
+    }
+    // Their contours start where the automatic ones would: none is a
+    // contour picked by hand.
+    let text = call(&mut s, "program", None, json!({"sheet": 1}))["data"].as_str().unwrap().to_string();
+    assert!(!text.contains("MANUAL CUT"), "{text}");
+    verify_clean(&mut s);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Where `TURNED` puts each copy (#1–#4).
+fn turned_copy(k: usize) -> Placed {
+    let (x, y, w, h, turns, mirror) = [(50.0, 50.0, 100.0, 300.0, 1, false), (400.0, 50.0, 300.0, 100.0, 2, false), (50.0, 500.0, 100.0, 300.0, 3, true), (400.0, 500.0, 300.0, 100.0, 0, true)][k - 1];
+    Placed { part: 0, x, y, w, h, turns, mirror }
+}
+
+/// (placed part, paths in a row) in the order a G-code program cuts and
+/// marks them.
+fn part_runs(s: &mut Session, sheet: usize) -> Vec<(usize, usize)> {
+    let text = call(s, "program", None, json!({"sheet": sheet}))["data"].as_str().unwrap().to_string();
+    let mut out: Vec<(usize, usize)> = vec![];
+    let mut part = 0;
+    for l in text.lines() {
+        if let Some(r) = l.strip_prefix("( PART ") {
+            part = r.split(' ').next().unwrap().parse().unwrap();
+        }
+        if l.contains("M07 ( PIERCE") || l.contains("M10 ( MARK ON )") {
+            match out.last_mut() {
+                Some(o) if o.0 == part => o.1 += 1,
+                _ => out.push((part, 1)),
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn a_sweep_and_a_box_take_parts_and_undo_takes_back_one_command() {
+    let d = dir("sheet_parts_sweep_box");
+    let mut s = ordered_plate_job(&d, false, "3, 1, 2", &TURNED);
+    let want = vec![3, 1, 2, 7, 4, 5, 6];
+    // A sweep from #2's far edge to the left, over #1, then up over #3.
+    let r = call(&mut s, "cut-order", None, json!({"mode": "parts", "points": "700,100; 100,100; 100,650"}));
+    assert_eq!(r["data"]["added"], json!([2, 1, 3]), "{r}");
+    // Then a click on hole 4 of #4: one contour, cut after the sweep.
+    let at = five_holes_edge(turned_copy(4), 4);
+    call(&mut s, "cut-order", None, json!({"mode": "pick", "x": at[0], "y": at[1], "tol": 1}));
+    assert_eq!(iso_order(&mut s, 1), vec![(2, want.clone()), (1, want.clone()), (3, want.clone()), (4, vec![4, 3, 1, 2, 7, 5, 6])]);
+    let text = call(&mut s, "program", None, json!({"sheet": 1}))["data"].as_str().unwrap().to_string();
+    assert_eq!(text.matches("MANUAL CUT").count(), 1, "only the clicked hole is a contour picked by hand");
+    verify_clean(&mut s);
+    // MM9: undo takes back the click, then the whole sweep.
+    assert_eq!(call(&mut s, "cut-order", None, json!({"mode": "undo"}))["message"], "Last manual pick removed.");
+    assert_eq!(iso_parts(&mut s, 1), vec![2, 1, 3, 4]);
+    let r = call(&mut s, "cut-order", None, json!({"mode": "undo"}));
+    assert_eq!(r["message"], "Last sweep or box taken back: #2, #1 and #3 back to the automatic order.");
+    assert_eq!(iso_parts(&mut s, 1), vec![1, 3, 2, 4]);
+    assert!(err(&mut s, "cut-order", json!({"mode": "undo"})).contains("No manual picks"));
+    // A box round #1 and #2, and half of #4: #1 and #2, in the automatic order.
+    let r = call(&mut s, "cut-order", None, json!({"mode": "parts", "box": "720,0; 0,420"}));
+    assert_eq!(r["data"]["added"], json!([1, 2]), "{r}");
+    assert_eq!(iso_parts(&mut s, 1), vec![1, 2, 3, 4]);
+    for (part, order) in iso_order(&mut s, 1) {
+        assert_eq!(order, want, "copy #{part}");
+    }
+    verify_clean(&mut s);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_sweep_over_parts_already_picked_skips_them_and_takes_the_rest_of_a_part_with_a_hole_picked() {
+    let d = dir("sheet_parts_picked");
+    let mut s = ordered_plate_job(&d, false, "3, 1, 2", &TURNED);
+    // Hole 4 of #2 clicked; #3's outline clicked, which cuts it whole.
+    let at = five_holes_edge(turned_copy(2), 4);
+    call(&mut s, "cut-order", None, json!({"mode": "pick", "x": at[0], "y": at[1], "tol": 1}));
+    call(&mut s, "cut-order", None, json!({"mode": "pick", "x": 50, "y": 650, "tol": 1}));
+    // An agent names #3, #2 and #1: #3 is already cut whole by the picks
+    // and skipped; the rest of #2 is taken whole here, then #1.
+    let r = call(&mut s, "cut-order", None, json!({"mode": "parts", "items": "3, 2, 1"}));
+    assert_eq!((r["data"]["added"].clone(), r["data"]["skipped"].clone()), (json!([2, 1]), json!([3])), "{r}");
+    assert!(r["message"].as_str().unwrap().contains("#3 is already picked"), "{r}");
+    assert_eq!(part_runs(&mut s, 1), vec![(2, 1), (3, 7), (2, 6), (1, 7), (4, 7)]);
+    assert_eq!(iso_order(&mut s, 1)[0], (2, vec![4, 3, 1, 2, 7, 5, 6]));
+    // Only parts already picked: refused, and nothing changes.
+    let e = err(&mut s, "cut-order", json!({"mode": "parts", "items": "3, 1"}));
+    assert!(e.contains("#3 and #1 are already picked"), "{e}");
+    assert_eq!(part_runs(&mut s, 1), vec![(2, 1), (3, 7), (2, 6), (1, 7), (4, 7)]);
+    // A sweep over open sheet takes nothing.
+    let e = err(&mut s, "cut-order", json!({"mode": "parts", "points": "800,300; 1400,900"}));
+    assert!(e.starts_with("No part there"), "{e}");
+    verify_clean(&mut s);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_sweep_across_a_frame_and_the_part_in_its_window_cuts_that_part_before_the_window() {
+    let d = dir("sheet_parts_frame");
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(d.join("frames.snjob").to_str().unwrap()), json!({"w": 1500, "h": 1000, "material": "mild steel", "thickness": 3}));
+    call(&mut s, "import-drawing", None, json!({"path": frame_with_window(&d).to_str().unwrap(), "qty": 2, "layers": "MARK=mark"}));
+    call(&mut s, "add-shape", None, json!({"shape": "plate-hole", "w": 150, "h": 80, "qty": 1, "name": "DEMO-INNER"}));
+    // The frame: the Ø16 hole by hand, then the window (the mark, the outline after).
+    call(&mut s, "part-cut-order", None, json!({"part": 1, "mode": "add", "contours": "2, 1"}));
+    call(&mut s, "place", None, json!({"part": 1, "x": 500, "y": 50}));
+    call(&mut s, "place", None, json!({"part": 1, "x": 50, "y": 50}));
+    call(&mut s, "place", None, json!({"part": 2, "x": 110, "y": 110}));
+    // Across #2 (the frame at the left), its window and #3 sitting in it,
+    // then on to #1: as passed, #2, #3, #1.
+    let r = call(&mut s, "cut-order", None, json!({"mode": "parts", "points": "50,150; 200,150; 200,300; 600,300; 600,200"}));
+    assert_eq!(r["data"]["added"], json!([2, 3, 1]), "{r}");
+    // CO2: #2's Ø16 hole, then #3 whole before the window, then the
+    // window, the mark and the outline; then #1.
+    assert_eq!(part_runs(&mut s, 1), vec![(2, 1), (3, 2), (2, 3), (1, 4)]);
+    verify_clean(&mut s);
+    // A box round #3 alone takes it; round #2 and #3, #3 goes first (CO1).
+    call(&mut s, "cut-order", None, json!({"mode": "clear"}));
+    let r = call(&mut s, "cut-order", None, json!({"mode": "parts", "box": "40,40; 360,260"}));
+    assert_eq!(r["data"]["added"], json!([3, 2]), "{r}");
+    assert_eq!(part_runs(&mut s, 1), vec![(3, 2), (2, 4), (1, 4)]);
+    verify_clean(&mut s);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The order an LC5 sheet program calls its parts: each call's ORIG.
+fn lc5_calls(text: &str) -> Vec<[f64; 2]> {
+    let main = text.split("; ==== ").nth(1).unwrap();
+    main.lines()
+        .filter_map(|l| l.trim().strip_prefix("ORIG(")?.strip_suffix(')').map(|a| a.split(',').map(|v| v.parse::<f64>().unwrap()).collect::<Vec<_>>()))
+        .map(|v| [v[0], v[1]])
+        .collect()
+}
+
+#[test]
+fn the_lc5_set_calls_parts_taken_whole_in_that_order_each_in_its_own_order() {
+    let d = dir("sheet_parts_lc5");
+    let mut s = ordered_plate_job(&d, true, "3, 1, 2", &TURNED);
+    let corners = |s: &mut Session| -> Vec<usize> {
+        let text = call(s, "program", None, json!({"sheet": 1}))["data"].as_str().unwrap().to_string();
+        lc5_calls(&text).iter().map(|o| (1..=4).find(|&k| (turned_copy(k).x - o[0]).abs() < 1.0 && (turned_copy(k).y - o[1]).abs() < 1.0).unwrap_or(0)).collect()
+    };
+    assert_eq!(corners(&mut s), vec![1, 3, 2, 4], "the automatic order");
+    call(&mut s, "cut-order", None, json!({"mode": "parts", "items": "4, 2, 1"}));
+    // `program` reads the set back before showing it (BL39).
+    let text = call(&mut s, "program", None, json!({"sheet": 1}))["data"].as_str().unwrap().to_string();
+    assert_eq!(corners(&mut s), vec![4, 2, 1, 3], "{text}");
+    for paths in lc5_paths(&text) {
+        assert_eq!(five_holes_numbers(&paths), vec![3, 1, 2, 7, 4, 5, 6], "{text}");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn each_sheet_keeps_its_own_parts_picks_and_taking_parts_off_clears_them() {
+    let d = dir("sheet_parts_sheets");
+    let mut s = ordered_plate_job(&d, false, "3, 1, 2", &TURNED);
+    for (x, y) in [(50, 50), (400, 50), (800, 50)] {
+        let sheet = if x == 50 { "new" } else { "2" };
+        call(&mut s, "place", None, json!({"part": 1, "sheet": sheet, "x": x, "y": y}));
+    }
+    call(&mut s, "cut-order", None, json!({"mode": "parts", "sheet": 1, "items": "4, 3"}));
+    call(&mut s, "cut-order", None, json!({"mode": "parts", "sheet": 2, "points": "1100,100; 100,100"}));
+    assert_eq!(iso_parts(&mut s, 1), vec![4, 3, 1, 2]);
+    assert_eq!(iso_parts(&mut s, 2), vec![3, 2, 1]);
+    // MM7: taking a part off sheet 1 clears its picks; sheet 2 keeps its own.
+    call(&mut s, "unplace", None, json!({"sheet": 1, "item": 1}));
+    assert_eq!(iso_parts(&mut s, 1).len(), 3);
+    let info = call(&mut s, "info", None, json!({}));
+    assert_eq!(info["data"]["sheets"][0]["manual_cuts"], 0, "{info}");
+    assert_eq!(info["data"]["sheets"][1]["manual_cuts"], 3, "{info}");
+    assert_eq!(iso_parts(&mut s, 2), vec![3, 2, 1]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn picks_save_with_the_job_and_a_click_is_saved_as_before() {
+    let d = dir("sheet_parts_saved");
+    let job = d.join("ordered.snjob");
+    let mut s = ordered_plate_job(&d, false, "3, 1, 2", &TURNED);
+    let at = five_holes_edge(turned_copy(1), 2);
+    call(&mut s, "cut-order", None, json!({"mode": "pick", "x": at[0], "y": at[1], "tol": 1}));
+    call(&mut s, "cut-order", None, json!({"mode": "parts", "items": "4, 2"}));
+    let before = programs(&mut s);
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(&job).unwrap()).unwrap();
+    let picks = v["manual_cuts"][0].as_array().unwrap();
+    // A click is saved with the fields it always had; a part taken whole
+    // also says by which sweep or box.
+    let keys = |p: &Value| p.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+    assert_eq!(keys(&picks[0]), vec!["contour", "placed", "reverse", "start"]);
+    assert_eq!((picks[1]["placed"].clone(), picks[1]["whole"].clone(), picks[2]["placed"].clone(), picks[2]["whole"].clone()), (json!(3), json!(1), json!(1), json!(1)));
+    // Opened again, it writes the same programs.
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "info", Some(job.to_str().unwrap()), json!({}));
+    assert_eq!(programs(&mut s), before);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_technology_change_after_a_sweep_keeps_the_parts_taken() {
+    let d = dir("sheet_parts_tech");
+    let mut s = ordered_plate_job(&d, false, "3, 1, 2", &TURNED);
+    call(&mut s, "cut-order", None, json!({"mode": "parts", "items": "4, 2, 1"}));
+    // CO7 with the sweep: hole 1 set to No cut leaves every copy's order;
+    // the parts taken whole stay where the sweep put them.
+    call(&mut s, "contour-tech", None, json!({"part": 1, "contours": "1", "state": "no-cut"}));
+    let got = iso_order(&mut s, 1);
+    assert_eq!(got.iter().map(|p| p.0).collect::<Vec<_>>(), vec![4, 2, 1, 3]);
+    for (part, order) in got {
+        assert_eq!(order.len(), 6, "copy #{part}: {order:?}");
+        assert_eq!(order.last(), Some(&6), "copy #{part}: the outline last");
+    }
+    verify_clean(&mut s);
+    let _ = std::fs::remove_dir_all(&d);
+}

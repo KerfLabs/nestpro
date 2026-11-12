@@ -370,6 +370,11 @@ pub struct App {
     pub manual_cuts: Vec<Vec<cnc::ManualCut>>,
     pub manual_mode: bool,
     pub manual_reverse: bool,
+    /// A sweep across the sheet's parts in progress in Manual cutting (MM8),
+    /// with which parts the picks before it finish.
+    pub manual_sweep: Option<(engine::sheetpick::PartSweep, Vec<bool>)>,
+    /// A box being drawn in Manual cutting from this corner (screen; MM9).
+    pub manual_box: Option<Pos2>,
     /// The radial (gesture) menu, when open.
     pub radial: Option<crate::radial::Radial>,
     /// The quick text editor, when open.
@@ -641,6 +646,8 @@ impl App {
             remnant_names: None,
             manual_mode: false,
             manual_reverse: false,
+            manual_sweep: None,
+            manual_box: None,
             radial: None,
             text_editor: None,
             ghost: None,
@@ -2397,7 +2404,7 @@ impl App {
         let hint = if self.ghost.is_some() {
             Some("Click to drop the part  ·  R or Space turns it  ·  M mirrors  ·  Enter finds a free spot  ·  Esc or right-click cancels")
         } else if self.manual_mode {
-            Some("Click the contours in the order to cut them  ·  Esc ends")
+            Some("Click the contours in the order to cut them  ·  drag across parts, or box them, to take them whole  ·  Esc ends")
         } else {
             match self.cut_tool {
                 Some(cutoff::CutTool::Straight) => Some("Click where the cut line starts, then where it ends  ·  Esc stops"),
@@ -2835,6 +2842,8 @@ fn main() -> eframe::Result {
     let want_float = args.iter().any(|a| a == "--float-panel");
     let want_radial = args.iter().any(|a| a == "--radial");
     let want_manual = args.iter().any(|a| a == "--manual");
+    // --manual-sweep="x,y;x,y;…": a sweep across sheet 1's parts along that path, sheet mm (screenshots).
+    let manual_sweep = args.iter().find_map(|a| a.strip_prefix("--manual-sweep=").map(|s| s.to_string()));
     let want_ghost = args.iter().any(|a| a == "--ghost");
     let want_ghost_ring = args.iter().any(|a| a == "--ghost-ring");
     let want_cutoff = args.iter().any(|a| a == "--cutoff");
@@ -3202,6 +3211,12 @@ fn main() -> eframe::Result {
                 }
                 app.manual_reverse = false;
             }
+            if let (Some(path), false) = (&manual_sweep, app.result.sheets.is_empty()) {
+                app.tab = Tab::Machining;
+                app.manual_mode = true;
+                let pts: Vec<nest::P> = path.split(';').filter_map(|t| t.split_once(',').and_then(|(x, y)| Some([x.trim().parse().ok()?, y.trim().parse().ok()?]))).collect();
+                app.manual_sweep_along(&pts);
+            }
             if want_ghost {
                 // A part picked in the Parts View, hovering near a free spot.
                 if let Some(i) = app.parts.iter().position(|p| p.name == "Square") {
@@ -3542,7 +3557,7 @@ mod tests {
         a.undo();
         assert!(a.ghost.is_none());
         // Taking a part off the sheet renumbers the rest: its hand picks go.
-        a.manual_cuts = vec![vec![cnc::ManualCut { placed: 1, contour: 0, start: [0.0, 0.0], reverse: false }]];
+        a.manual_cuts = vec![vec![cnc::ManualCut { placed: 1, contour: 0, start: [0.0, 0.0], reverse: false, whole: None }]];
         a.set_selection(vec![0]);
         a.remove_selected();
         assert!(a.manual_cuts.iter().all(|m| m.is_empty()));
