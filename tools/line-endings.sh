@@ -1,22 +1,29 @@
 #!/usr/bin/env bash
 # Some tracked files use CRLF line endings and the rest LF, and scripted
 # rewrites quietly turn one into the other (a whole-file diff). Fail when a
-# file changed since the branch left main (committed or not) now ends its
-# lines differently from main's copy, or a new file mixes the two, and say
-# how to put them back. Nothing is rewritten here.
+# file changed since the branch left main (committed or not, renamed or
+# not) now ends its lines differently from main's copy, or a new file mixes
+# the two, and say how to put them back. Nothing is rewritten here. Fails,
+# rather than passing, when it can't find what to compare with (a shallow
+# clone, or no main branch fetched).
 #
 #   tools/line-endings.sh          compare with where this branch left origin/main (or main)
-#   tools/line-endings.sh REV      compare with REV
+#   tools/line-endings.sh REF      compare with where it left REF (CI: a pull request's base)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-base=${1:-}
-if [ -z "$base" ]; then
-  for b in origin/main main; do
-    if git rev-parse -q --verify "$b^{commit}" >/dev/null; then base=$(git merge-base HEAD "$b") && break; fi
-  done
-fi
-base=${base:-HEAD}
+refs=("$@")
+[ ${#refs[@]} -gt 0 ] || refs=(origin/main main)
+base=
+for b in "${refs[@]}"; do
+  git rev-parse -q --verify "$b^{commit}" >/dev/null || continue
+  base=$(git merge-base HEAD "$b") || {
+    echo "line-endings: no history shared with $b to compare with (a shallow clone?). Fetch it in full: git fetch --unshallow origin, or fetch-depth: 0 in CI."
+    exit 2
+  }
+  break
+done
+[ -n "$base" ] || { echo "line-endings: can't find ${refs[*]} to compare with. Fetch it first: git fetch origin main"; exit 2; }
 
 # CRLF, LF, mixed, or none (no line breaks), of file $1.
 style() {
@@ -37,15 +44,22 @@ trap 'rm -f "$tmp" "$idx"' EXIT
 GIT_INDEX_FILE=$idx git read-tree "$base"
 
 fail=0
-# Text files only: numstat shows "-" for binary ones.
-while IFS=$'\t' read -r added _ path; do
+# Text files only: numstat shows "-" for binary ones. A renamed file comes
+# as an empty path and then its old and new names; it is compared with its
+# old name's copy.
+while IFS=$'\t' read -r -d '' added _ path; do
+  from=$path
+  if [ -z "$path" ]; then
+    IFS= read -r -d '' from
+    IFS= read -r -d '' path
+  fi
   [ "$added" = - ] && continue
   [ -f "$path" ] || continue
   GIT_INDEX_FILE=$idx git add -- "$path" 2>/dev/null
   GIT_INDEX_FILE=$idx git cat-file blob ":$path" > "$tmp"
   now=$(style "$tmp")
-  if git cat-file -e "$base:$path" 2>/dev/null; then
-    git show "$base:$path" > "$tmp"
+  if git cat-file -e "$base:$from" 2>/dev/null; then
+    git show "$base:$from" > "$tmp"
     was=$(style "$tmp")
   else
     was=new
@@ -62,10 +76,11 @@ while IFS=$'\t' read -r added _ path; do
   case "$was" in
     CRLF) fix="perl -pi -e 's/\\r?\\n/\\r\\n/' $path" ;;
     LF)   fix="perl -pi -e 's/\\r\\n/\\n/' $path" ;;
-    *)    fix="start again from git show $(git rev-parse --short "$base"):$path and make the change without rewriting the whole file" ;;
+    *)    fix="start again from git show $(git rev-parse --short "$base"):$from and make the change without rewriting the whole file" ;;
   esac
+  [ "$from" = "$path" ] || was="$was (as $from)"
   echo "line-endings: $path was $was, is $now now. Put its endings back: $fix"
-done < <(git diff --numstat --diff-filter=AM "$base" --)
+done < <(git diff -z --numstat -M --diff-filter=AMR "$base" --)
 
 [ $fail = 0 ] && echo "line-endings: ok (against $(git rev-parse --short "$base"))"
 exit $fail
