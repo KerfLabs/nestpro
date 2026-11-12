@@ -13,7 +13,7 @@
 
 use crate::folders::{self, TOP};
 use crate::jobfile::{self, JobFile};
-use crate::library::{Kind, Library};
+use crate::library::{Kind, Library, Record, SaveTo};
 use crate::nest::{SheetSpec, Shape};
 use crate::shared::{self, WriteLock};
 use crate::stock::{Item, Stock};
@@ -377,13 +377,13 @@ pub fn run(folder: &Path, this_library: &Path, opt: &Options) -> Result<Report, 
         let n = log.rounds;
         // A new job, then one of this run's jobs saved over again.
         let name = format!("{TAG} {pc} {stamp} job {n}");
-        match lib.save_job(&demo_job(&name, 0), None) {
-            Ok(id) => log.jobs.push(Saved { id, name, rev: 0, folder: None }),
+        match lib.save_job(&demo_job(&name, 0), SaveTo::New) {
+            Ok(Record { id, .. }) => log.jobs.push(Saved { id, name, rev: 0, folder: None }),
             Err(e) => log.errors.push(format!("saving job '{name}' reported an error: {e}")),
         }
         if let Some(k) = (!log.jobs.is_empty()).then(|| (n as usize * 7) % log.jobs.len()) {
             let s = &mut log.jobs[k];
-            match lib.save_job(&demo_job(&s.name, s.rev + 1), Some(s.id)) {
+            match lib.save_job(&demo_job(&s.name, s.rev + 1), SaveTo::Over(s.id)) {
                 Ok(_) => {
                     s.rev += 1;
                     job_overs += 1;
@@ -394,13 +394,13 @@ pub fn run(folder: &Path, this_library: &Path, opt: &Options) -> Result<Report, 
         // The same for a library part, filed in the part folder DEMO-CHECK
         // (JX19), which every run shares.
         let name = format!("{TAG} {pc} {stamp} part {n}");
-        match lib.save_product_in(&demo_part(&name, 0), TAG, 0, 3.0, None, &folders::PartsFolder::Path(TAG.into())) {
-            Ok(id) => log.parts.push(Saved { id, name, rev: 0, folder: None }),
+        match lib.save_product_in(&demo_part(&name, 0), TAG, 0, 3.0, SaveTo::New, &folders::PartsFolder::Path(TAG.into())) {
+            Ok(Record { id, .. }) => log.parts.push(Saved { id, name, rev: 0, folder: None }),
             Err(e) => log.errors.push(format!("saving library part '{name}' reported an error: {e}")),
         }
         if let Some(k) = (!log.parts.is_empty()).then(|| (n as usize * 5) % log.parts.len()) {
             let s = &mut log.parts[k];
-            match lib.save_product(&demo_part(&s.name, s.rev + 1), TAG, 0, 3.0, Some(s.id)) {
+            match lib.save_product(&demo_part(&s.name, s.rev + 1), TAG, 0, 3.0, SaveTo::Over(s.id)) {
                 Ok(_) => {
                     s.rev += 1;
                     part_overs += 1;

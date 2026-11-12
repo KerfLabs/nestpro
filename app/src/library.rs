@@ -96,6 +96,143 @@ impl Entry {
     }
 }
 
+/// A Library record as a job or a part in it was read from it, or last
+/// saved to it: its number, and its revision then (LB7). Every save of a
+/// record gives it the next revision.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Record {
+    pub id: u64,
+    pub revision: u64,
+}
+
+/// Where a Library save goes (LB7).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SaveTo {
+    /// A new record.
+    New,
+    /// Over the record as it was read: refused when someone saved it since.
+    Read(Record),
+    /// Over record `id`, never read here (a part saved under a name a
+    /// library part already has): refused while that record is there.
+    Unread(u64),
+    /// Over record `id`, whatever it holds now (the two-PC check's own
+    /// records).
+    Over(u64),
+}
+
+impl SaveTo {
+    /// The record this save goes over, if any.
+    pub fn id(self) -> Option<u64> {
+        match self {
+            SaveTo::New => None,
+            SaveTo::Read(r) => Some(r.id),
+            SaveTo::Unread(id) | SaveTo::Over(id) => Some(id),
+        }
+    }
+}
+
+/// Someone saved a record since it was read (LB7): which, who and when.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Changed {
+    pub kind: Kind,
+    pub id: u64,
+    /// Its name as saved now.
+    pub name: String,
+    /// Who saved it (LB5); None when the PC that saved it didn't record it.
+    pub by: Option<Who>,
+    /// When it was saved (seconds since 1970).
+    pub at: u64,
+    /// Its revision now: what a save that overwrites it was read at.
+    pub revision: u64,
+}
+
+impl Changed {
+    /// "sam on PROG-1, 9 Nov 09:30" (LB6).
+    pub fn saved_by(&self, clock: &Clock) -> String {
+        format!("{}, {}", self.by.as_ref().map_or_else(|| "another PC".to_string(), |w| w.label()), clock.shown(self.at))
+    }
+
+    /// The same for agents: "sam on PROG-1 at 2026-11-09 09:30" (LB6).
+    pub fn saved_by_stamp(&self, clock: &Clock) -> String {
+        format!("{} at {}", self.by.as_ref().map_or_else(|| "another PC".to_string(), |w| w.label()), clock.stamp(self.at))
+    }
+
+    /// The record as it is now, read at its revision now.
+    pub fn record(&self) -> Record {
+        Record { id: self.id, revision: self.revision }
+    }
+}
+
+/// Why a Library save stored nothing.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Refused {
+    /// Someone saved the record since it was read (LB7).
+    Changed(Changed),
+    /// It couldn't be saved (the share, the write lock, a name taken…).
+    Failed(String),
+}
+
+impl From<String> for Refused {
+    fn from(e: String) -> Refused {
+        Refused::Failed(e)
+    }
+}
+
+impl From<Refused> for String {
+    fn from(r: Refused) -> String {
+        r.to_string()
+    }
+}
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.words(&Clock::pc()))
+    }
+}
+
+impl Refused {
+    /// In words, for a status line or an agent's error, with times as
+    /// `clock` shows them.
+    pub fn words(&self, clock: &Clock) -> String {
+        match self {
+            Refused::Changed(c) => format!("{} was saved by {} since it was read here. Nothing was saved", c.name, c.saved_by(clock)),
+            Refused::Failed(e) => e.clone(),
+        }
+    }
+}
+
+/// What a save reads of the record it goes over, under the write lock
+/// (LB7): its revision, and who saved it, when and under what name.
+#[derive(Deserialize, Default)]
+struct OnDisk {
+    /// Jobs: the record and its revision.
+    #[serde(default)]
+    library: Option<Record>,
+    /// Library parts: their revision.
+    #[serde(default)]
+    revision: u64,
+    #[serde(default)]
+    saved: Option<Saved>,
+    /// Jobs: their name.
+    #[serde(default)]
+    name: Option<String>,
+    /// Library parts: their part, for its name.
+    #[serde(default)]
+    part: Option<NameOnly>,
+}
+
+#[derive(Deserialize, Default)]
+struct NameOnly {
+    #[serde(default)]
+    name: String,
+}
+
+impl OnDisk {
+    fn revision(&self) -> u64 {
+        self.library.map_or(self.revision, |r| r.revision)
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct Index {
     format: String,
@@ -115,6 +252,14 @@ pub struct ProductFile {
     /// Who saved it, and when (LB5).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub saved: Option<Saved>,
+    /// Its revision: every save gives it the next one (LB7). 0 for a part
+    /// saved before revisions.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub revision: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// A Library folder, as one user on one PC works with it: what they save
@@ -326,36 +471,54 @@ impl Library {
     /// newer save is never undone (LB2). Either way the error says nothing
     /// was saved, so saving again never makes a duplicate. A save reports
     /// success only when its record was written.
-    /// `record` makes the record's text and list line once the lock is held,
-    /// so it is signed with when it is written (LB5), not when it began
-    /// waiting for the lock.
-    fn store<E: FnOnce(u64) -> Entry>(&self, kind: Kind, id: Option<u64>, record: impl FnOnce(Saved) -> Result<(String, E), String>) -> Result<u64, String> {
+    /// Once the lock is held, the record it goes over is read: when someone
+    /// saved it since it was read (`to`), nothing else happens (LB7). Then
+    /// `prepare` runs, still under the lock (the window books the stock
+    /// there, so a refused save takes nothing from it, LB8), and `record`
+    /// makes the record's text and list line, signed with when it is written
+    /// (LB5) and the next revision (LB7).
+    fn store<T, E: FnOnce(u64) -> Entry>(&self, kind: Kind, to: SaveTo, prepare: impl FnOnce() -> Result<T, String>, record: impl FnOnce(T, Saved, Record) -> Result<(String, E), String>) -> Result<Record, Refused> {
         let nothing = |e: String| if e.contains("Nothing was saved") { e } else { format!("{e}. Nothing was saved") };
         let lock = self.lock()?;
-        let (text, entry) = record(self.saved()).map_err(nothing)?;
-        let (id, new) = match id {
+        // The record being saved over: to check it (LB7), and to put back if
+        // this save fails.
+        let before = match to.id() {
+            None => None,
+            Some(id) => match std::fs::read(self.path(kind, id)) {
+                Ok(b) => Some(b),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => return Err(Refused::Failed(format!("can't read record {id} before saving over it ({e}). Nothing was saved"))),
+            },
+        };
+        let now = before.as_ref().map(|b| serde_json::from_slice::<OnDisk>(b).unwrap_or_default());
+        if let Some(c) = now.as_ref().and_then(|d| self.changed(kind, to, d)) {
+            return Err(Refused::Changed(c));
+        }
+        shared::pause("revision checked");
+        let read = if let SaveTo::Read(r) = to { r.revision } else { 0 };
+        let revision = now.as_ref().map_or(0, |d| d.revision()).max(read) + 1;
+        let prepared = prepare().map_err(nothing)?;
+        let (id, new) = match to.id() {
             Some(i) => (i, false),
             None => (self.new_id(kind)?, true),
         };
         let path = self.path(kind, id);
-        // The record being saved over, to put back if this save fails.
-        let before = match std::fs::read(&path) {
-            _ if new => None,
-            Ok(b) => Some(b),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => return Err(format!("can't read record {id} before saving over it ({e}). Nothing was saved")),
-        };
-        if let Err(e) = shared::write_file(&path, text.as_bytes(), Some(&lock)) {
+        let give_back = |e: String| {
             // Nothing was replaced. A new record's number is given back: its
             // empty file is this save's own, as no other PC writes to a
             // number that isn't in the list (RF1).
             if new {
                 let _ = std::fs::remove_file(&path);
             }
-            return Err(nothing(e));
+            Refused::Failed(nothing(e))
+        };
+        let (text, entry) = record(prepared, self.saved(), Record { id, revision }).map_err(give_back)?;
+        if let Err(e) = shared::write_file(&path, text.as_bytes(), Some(&lock)) {
+            return Err(give_back(e));
         }
+        let stored = Record { id, revision };
         shared::pause("record written");
-        let Err(e) = self.upsert(entry(id), &lock) else { return Ok(id) };
+        let Err(e) = self.upsert(entry(id), &lock) else { return Ok(stored) };
         // The record is stored but its line isn't: undo this save's own
         // write, only while the lock is still this PC's (checked again just
         // before the record is put back).
@@ -364,13 +527,47 @@ impl Library {
             None => lock.still_held().and_then(|_| std::fs::remove_file(&path).or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) }).map_err(|e| e.to_string())),
         };
         match undone {
-            Ok(()) => Err(nothing(e)),
+            Ok(()) => Err(Refused::Failed(nothing(e))),
             // Couldn't be undone (the lock was taken over, or the share went
             // away): the record is stored, so the save counts (an error would
             // make the next save a duplicate); its line in the list comes
             // with its next save or Rescan.
-            Err(_) => Ok(id),
+            Err(_) => Ok(stored),
         }
+    }
+
+    /// Has someone saved the record `to` goes over since it was read (LB7)?
+    /// Read without the write lock, to ask before anything else is done; the
+    /// save checks again under it.
+    pub fn check(&self, kind: Kind, to: SaveTo) -> Result<(), Changed> {
+        let Some(id) = to.id() else { return Ok(()) };
+        let Ok(b) = std::fs::read(self.path(kind, id)) else { return Ok(()) };
+        self.changed(kind, to, &serde_json::from_slice::<OnDisk>(&b).unwrap_or_default()).map_or(Ok(()), Err)
+    }
+
+    /// The record `to` goes over as it is now (`d`), when that isn't as it
+    /// was read (LB7). A record that isn't there any more is saved again.
+    fn changed(&self, kind: Kind, to: SaveTo, d: &OnDisk) -> Option<Changed> {
+        let differs = match to {
+            SaveTo::Read(r) => d.revision() != r.revision,
+            SaveTo::Unread(_) => true,
+            SaveTo::New | SaveTo::Over(_) => false,
+        };
+        let id = to.id()?;
+        differs.then(|| Changed {
+            kind,
+            id,
+            name: d.name.clone().or_else(|| d.part.as_ref().map(|p| p.name.clone())).unwrap_or_default(),
+            by: d.saved.as_ref().map(|s| s.by.clone()),
+            at: d.saved.as_ref().map_or_else(|| self.written(kind, id), |s| s.at),
+            revision: d.revision(),
+        })
+    }
+
+    /// When a record's file was last written (seconds since 1970): when a
+    /// record saved before saves recorded it was saved.
+    fn written(&self, kind: Kind, id: u64) -> u64 {
+        std::fs::metadata(self.path(kind, id)).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs())
     }
 
     /// Who is saving, and now (LB5). Taken once the write lock is held.
@@ -378,33 +575,46 @@ impl Library {
         Saved { by: self.who.clone(), at: self.clock.now() }
     }
 
-    /// Save a job (a new record, or over `id`), recording who saved it and
-    /// when (LB5). Returns its number. Refused when another job in the
-    /// Library holds its name (JX16). A new record goes into the top-level
+    /// Save a job, recording who saved it and when (LB5) and its revision
+    /// (LB7). Returns its record. A new record goes into the top-level
     /// folder named like the job's folder (JX15).
-    pub fn save_job(&self, job: &JobFile, id: Option<u64>) -> Result<u64, String> {
-        self.save_job_in(job, id, None)
+    pub fn save_job(&self, job: &JobFile, to: SaveTo) -> Result<Record, Refused> {
+        self.save_job_in(job, to, None)
     }
 
     /// `save_job`, a new record going into the folder `folder` while that is
-    /// still there (JX15). Saving over a record never moves it. The name is
-    /// checked (JX16), and the record, its line in the list and its place in
-    /// the folder tree written, under one hold of the write lock (LB1), so
-    /// of two PCs saving one new name at the same moment, one is stored and
-    /// the other refused. A place that can't be written leaves the job at
-    /// the top of the tree, saved.
-    pub fn save_job_in(&self, job: &JobFile, id: Option<u64>, folder: Option<u64>) -> Result<u64, String> {
+    /// still there (JX15).
+    pub fn save_job_in(&self, job: &JobFile, to: SaveTo, folder: Option<u64>) -> Result<Record, Refused> {
+        self.save_job_with(to, &job.name, folder, || Ok(job.clone()))
+    }
+
+    /// Save the job `job` makes, under the name `name`, while the write lock
+    /// is held (LB1) and once nobody else has saved it since it was read
+    /// (LB7) and no other job in the Library holds the name (JX16): the
+    /// window books the stock in `job`, so a save refused for either reason
+    /// books nothing (LB8). A new record then goes into the folder `folder`
+    /// while that is still there, else the top-level folder named like the
+    /// job's folder (JX15); saving over a record never moves it. All of it
+    /// is one hold of the write lock, so of two PCs saving one new name at
+    /// the same moment, one is stored and the other refused. A place in the
+    /// folder tree that can't be written leaves the job at the top, saved.
+    pub fn save_job_with(&self, to: SaveTo, name: &str, folder: Option<u64>, job: impl FnOnce() -> Result<JobFile, String>) -> Result<Record, Refused> {
         let _lock = self.lock()?;
-        self.check_job_name(&job.name, id).map_err(|e| format!("{e}. Nothing was saved"))?;
-        let saved = self.store(Kind::Job, id, |saved| {
-            let job = JobFile { saved: Some(saved), ..job.clone() };
+        let job = || {
+            self.check_job_name(name, to.id())?;
+            job()
+        };
+        let mut week = String::new();
+        let rec = self.store(Kind::Job, to, job, |job, saved, rec| {
+            week = job.week.clone();
+            let job = JobFile { saved: Some(saved), library: Some(rec), ..job };
             let text = serde_json::to_string_pretty(&job).map_err(|e| e.to_string())?;
             Ok((text, move |id| job_entry(id, &job, 0)))
         })?;
-        if id.is_none() {
-            let _ = crate::folders::change(self, Kind::Job, |t, _| Ok(t.file_new(saved, folder, &job.week)));
+        if to.id().is_none() {
+            let _ = crate::folders::change(self, Kind::Job, |t, _| Ok(t.file_new(rec.id, folder, &week)));
         }
-        Ok(saved)
+        Ok(rec)
     }
 
     /// May job `id` (None: a new record, as Save as makes) be saved as
@@ -428,18 +638,21 @@ impl Library {
         }
     }
 
+    /// A Library job, linked to its record and the revision read (LB7).
     pub fn load_job(&self, id: u64) -> Result<JobFile, String> {
-        crate::jobfile::load(&self.path(Kind::Job, id))
+        let mut j = crate::jobfile::load(&self.path(Kind::Job, id))?;
+        j.library = Some(Record { id, revision: j.library.map_or(0, |r| r.revision) });
+        Ok(j)
     }
 
-    /// Save a product, recording who saved it and when (LB5). Returns its
-    /// number.
-    pub fn save_product(&self, part: &Part, folder: &str, material: usize, thickness: f64, id: Option<u64>) -> Result<u64, String> {
+    /// Save a product, recording who saved it and when (LB5) and its
+    /// revision (LB7). Returns its record.
+    pub fn save_product(&self, part: &Part, folder: &str, material: usize, thickness: f64, to: SaveTo) -> Result<Record, Refused> {
         // A library product is reusable stock, not one order's part: its ERP orders stay with the job.
         let mut part = part.clone();
         part.erp.clear();
-        self.store(Kind::Product, id, |saved| {
-            let pf = ProductFile { format: FORMAT.into(), version: VERSION, part, folder: folder.into(), material, thickness, saved: Some(saved) };
+        self.store(Kind::Product, to, || Ok(part), |part, saved, rec| {
+            let pf = ProductFile { format: FORMAT.into(), version: VERSION, part, folder: folder.into(), material, thickness, saved: Some(saved), revision: rec.revision };
             let text = serde_json::to_string_pretty(&pf).map_err(|e| e.to_string())?;
             Ok((text, move |id| product_entry(id, &pf, 0)))
         })
@@ -457,6 +670,14 @@ impl Library {
         self.entries().into_iter().find(|e| e.kind == Kind::Product && e.name == name).map(|e| e.id)
     }
 
+    /// The first free name for a copy of `base`: "base (1)", "base (2)"…,
+    /// that no record of `kind` in the Library has, whatever its capitals,
+    /// and `taken` doesn't refuse (LB9).
+    pub fn free_name(&self, kind: Kind, base: &str, taken: impl Fn(&str) -> bool) -> String {
+        let used: std::collections::HashSet<String> = self.entries().into_iter().filter(|e| e.kind == kind).map(|e| e.name.trim().to_lowercase()).collect();
+        (1..).map(|k| format!("{base} ({k})")).find(|n| !used.contains(&n.trim().to_lowercase()) && !taken(n)).unwrap_or_else(|| base.to_string())
+    }
+
     pub fn delete(&self, kind: Kind, id: u64) -> Result<(), String> {
         let lock = self.lock()?;
         lock.still_held()?;
@@ -469,18 +690,19 @@ impl Library {
         Ok(())
     }
 
-    /// `save_product`, a new part going into the part folder `to` names,
-    /// made if missing (JX19); saving over a part never moves it. The part,
-    /// its line in the list and its place in the parts tree are written
-    /// under one hold of the write lock (LB1). A place that can't be written
-    /// leaves the part at the top of the tree, saved.
-    pub fn save_product_in(&self, part: &Part, folder: &str, material: usize, thickness: f64, id: Option<u64>, to: &crate::folders::PartsFolder) -> Result<u64, String> {
+    /// `save_product`, a new part going into the part folder `into` names,
+    /// made if missing (JX19); saving over a part never moves it. The
+    /// revision check (LB7), the part, its line in the list and its place in
+    /// the parts tree are one hold of the write lock (LB1): a save refused
+    /// because someone saved the part since files nothing. A place that
+    /// can't be written leaves the part at the top of the tree, saved.
+    pub fn save_product_in(&self, part: &Part, folder: &str, material: usize, thickness: f64, to: SaveTo, into: &crate::folders::PartsFolder) -> Result<Record, Refused> {
         let _lock = self.lock()?;
-        let saved = self.save_product(part, folder, material, thickness, id)?;
-        if id.is_none() {
-            let _ = crate::folders::file_part(self, saved, to);
+        let rec = self.save_product(part, folder, material, thickness, to)?;
+        if to.id().is_none() {
+            let _ = crate::folders::file_part(self, rec.id, into);
         }
-        Ok(saved)
+        Ok(rec)
     }
 }
 
@@ -598,8 +820,8 @@ mod library_tests {
         let lib = Library::open(&dir, &Who::new("sam", "PROG-1"), &Clock::pc()).unwrap();
         let part = Part { name: "Bracket".into(), shape: Shape::LBracket, w: 120.0, h: 80.0, qty: 5, rotate: true, color: 1, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
         assert_eq!((auto_ref(Kind::Job, 1), auto_ref(Kind::Product, 1234)), ("JOB000001".to_string(), "SHP001234".to_string()));
-        let p1 = lib.save_product(&part, "ACME", 0, 3.0, None).unwrap();
-        let p2 = lib.save_product(&part, "ACME", 1, 2.0, None).unwrap();
+        let p1 = lib.save_product(&part, "ACME", 0, 3.0, SaveTo::New).unwrap().id;
+        let p2 = lib.save_product(&part, "ACME", 1, 2.0, SaveTo::New).unwrap().id;
         // The reference is the key: the first "Bracket" is found whatever its material.
         assert_eq!(lib.find_product("Bracket"), Some(p1));
         assert_eq!(lib.find_product("Plate"), None);
@@ -613,16 +835,16 @@ mod library_tests {
         assert!(!product_matches(e2, "Acme", Some(0), 2.0, ""));
         let mut tp = part.clone();
         tp.tech = Some(Default::default());
-        let p3 = lib.save_product(&tp, "ACME", 2, 1.0, None).unwrap();
+        let p3 = lib.save_product(&tp, "ACME", 2, 1.0, SaveTo::New).unwrap().id;
         assert!(lib.entries().iter().find(|e| e.kind == Kind::Product && e.id == p3).unwrap().tech);
         lib.delete(Kind::Product, p3).unwrap();
         assert_eq!((p1, p2), (1, 2));
         assert_eq!(lib.path(Kind::Product, 1234), dir.join("Products").join("1").join("1234.json"));
         let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
-        let job = JobFile { format: crate::jobfile::FORMAT.into(), version: crate::jobfile::VERSION, name: "Frames".into(), week: "W12".into(), parts: vec![part.clone()], spec, sheets: vec![vec![Placed { part: 0, x: 5.0, y: 5.0, w: 120.0, h: 80.0, turns: 0, mirror: false }]], formats: vec![], held: Default::default(), cut_lines: vec![], method: String::new(), manual_cuts: vec![], stale: false, booked: false, erp: None, saved: None };
-        let j = lib.save_job(&job, None).unwrap();
+        let job = JobFile { format: crate::jobfile::FORMAT.into(), version: crate::jobfile::VERSION, name: "Frames".into(), week: "W12".into(), parts: vec![part.clone()], spec, sheets: vec![vec![Placed { part: 0, x: 5.0, y: 5.0, w: 120.0, h: 80.0, turns: 0, mirror: false }]], formats: vec![], held: Default::default(), cut_lines: vec![], method: String::new(), manual_cuts: vec![], stale: false, booked: false, erp: None, saved: None, library: None, library_parts: Default::default() };
+        let j = lib.save_job(&job, SaveTo::New).unwrap().id;
         // Saving again over the same number keeps one record.
-        lib.save_job(&job, Some(j)).unwrap();
+        lib.save_job(&job, SaveTo::Over(j)).unwrap();
         let e = lib.entries();
         assert_eq!(e.iter().filter(|x| x.kind == Kind::Job).count(), 1);
         assert_eq!(e.iter().filter(|x| x.kind == Kind::Product).count(), 2);
@@ -660,11 +882,11 @@ mod library_tests {
                 std::thread::spawn(move || {
                     let lib = Library::open(&dir, &Who::new("sam", "PROG-1"), &Clock::pc()).unwrap();
                     start.wait();
-                    (0..saves).map(|n| (format!("PROG-{pc} job {n}"), lib.save_job(&job(&format!("PROG-{pc} job {n}")), None))).collect::<Vec<_>>()
+                    (0..saves).map(|n| (format!("PROG-{pc} job {n}"), lib.save_job(&job(&format!("PROG-{pc} job {n}")), SaveTo::New).map(|r| r.id))).collect::<Vec<_>>()
                 })
             })
             .collect();
-        let saved: Vec<(String, Result<u64, String>)> = runs.into_iter().flat_map(|r| r.join().unwrap()).collect();
+        let saved: Vec<(String, Result<u64, Refused>)> = runs.into_iter().flat_map(|r| r.join().unwrap()).collect();
         let lib = Library::open(&dir, &Who::new("sam", "PROG-1"), &Clock::pc()).unwrap();
         let list = lib.entries();
         for (name, r) in &saved {
@@ -690,11 +912,11 @@ mod library_tests {
         create(&dir).unwrap();
         let lib = Library::open(&dir, &who, &clock).unwrap();
         assert!(lib.entries().is_empty());
-        lib.save_job(&job("Frames"), None).unwrap();
+        lib.save_job(&job("Frames"), SaveTo::New).unwrap();
         // The share goes away: saving is refused, naming the folder, and
         // nothing is made in its place.
         std::fs::remove_dir_all(&dir).unwrap();
-        let refused = lib.save_job(&job("Brackets"), None).err().expect("a save to a folder that isn't there was stored");
+        let Some(Refused::Failed(refused)) = lib.save_job(&job("Brackets"), SaveTo::New).err() else { panic!("a save to a folder that isn't there was stored") };
         assert!(refused.contains(&dir.display().to_string()) && refused.contains("can't be reached"), "{refused}");
         assert!(!dir.exists(), "saving made the Library folder again");
         // A folder that's there but holds no Library is refused too, and left
@@ -729,7 +951,7 @@ mod library_tests {
         let lib = Library::open(&dir, &Who::new("sam", "PROG-1"), &Clock::pc()).unwrap();
         let mut frames = job("Frames");
         frames.week = "W12".into();
-        let first = lib.save_job(&frames, None).unwrap();
+        let first = lib.save_job(&frames, SaveTo::New).unwrap().id;
         let before = files(&dir);
         // The Library's list can't be written (here: something else sits
         // where it goes), as when the share drops in the middle of a save.
@@ -737,20 +959,20 @@ mod library_tests {
         std::fs::create_dir_all(dir.join(INDEX).join("in the way")).unwrap();
         let blocked = files(&dir);
         // A new job: refused, and neither its record nor its number is left.
-        assert!(lib.save_job(&job("Brackets"), None).is_err());
+        assert!(lib.save_job(&job("Brackets"), SaveTo::New).is_err());
         assert_eq!(files(&dir), blocked, "a failed new save left files behind");
         assert!(lib.rescan().iter().all(|e| e.name != "Brackets"), "a failed save left a record");
         // Saving over a stored job: refused, and the stored job is as it was.
         let mut changed = frames.clone();
         changed.week = "W13".into();
-        assert!(lib.save_job(&changed, Some(first)).is_err());
+        assert!(lib.save_job(&changed, SaveTo::Over(first)).is_err());
         assert_eq!(lib.load_job(first).unwrap().week, "W12");
         assert_eq!(files(&dir), blocked, "a failed save over a record left files behind");
         // Once the list can be written again, saving again stores the job once.
         std::fs::remove_dir_all(dir.join(INDEX)).unwrap();
         lib.rebuild_index().unwrap();
         assert_eq!(files(&dir), before);
-        let again = lib.save_job(&job("Brackets"), None).unwrap();
+        let again = lib.save_job(&job("Brackets"), SaveTo::New).unwrap().id;
         assert_eq!(again, first + 1, "the failed save kept a record number");
         let list = lib.entries();
         assert_eq!(list.iter().filter(|e| e.name == "Brackets").count(), 1);
@@ -769,7 +991,7 @@ mod library_tests {
         let lib = Library::open(&dir, &Who::new("sam", "PROG-1"), &Clock::pc()).unwrap();
         let mut frames = job("Frames");
         frames.week = "W12".into();
-        let first = lib.save_job(&frames, None).unwrap();
+        let first = lib.save_job(&frames, SaveTo::New).unwrap().id;
         // The record's folder takes no new files (a read-only share folder).
         let folder = lib.path(Kind::Job, first).parent().unwrap().to_path_buf();
         std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o555)).unwrap();
@@ -781,7 +1003,7 @@ mod library_tests {
         }
         let mut changed = frames.clone();
         changed.week = "W13".into();
-        let r = lib.save_job(&changed, Some(first));
+        let r = lib.save_job(&changed, SaveTo::Over(first)).map(|r| r.id);
         std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert!(r.is_err(), "a save that wrote nothing was reported as saved: {r:?}");
         assert_eq!(lib.load_job(first).unwrap().week, "W12");
@@ -807,7 +1029,7 @@ mod library_tests {
         let lib = Library::open(&dir, &Who::new("sam", "PROG-1"), &Clock::pc()).unwrap();
         let mut frames = job("Frames");
         frames.week = "W12".into();
-        let first = lib.save_job(&frames, None).unwrap();
+        let first = lib.save_job(&frames, SaveTo::New).unwrap().id;
         // Saving over the job: just after this PC wrote the record, PROG-2
         // takes over and saves the job as W14.
         let rec = lib.path(Kind::Job, first);
@@ -821,7 +1043,7 @@ mod library_tests {
         }
         let mut changed = frames.clone();
         changed.week = "W13".into();
-        let r = lib.save_job(&changed, Some(first));
+        let r = lib.save_job(&changed, SaveTo::Over(first)).map(|r| r.id);
         shared::hooks::clear();
         assert_eq!(lib.load_job(first).unwrap().week, "W14", "this PC's failed save put its old copy back over PROG-2's newer save ({r:?})");
         // Its record was written before PROG-2 saved over it: the save counts.
@@ -838,7 +1060,7 @@ mod library_tests {
                 }
             });
         }
-        let r = lib.save_job(&job("Brackets"), None);
+        let r = lib.save_job(&job("Brackets"), SaveTo::New).map(|r| r.id);
         shared::hooks::clear();
         assert_eq!(lib.load_job(first + 1).map(|j| j.week), Ok("W15".to_string()), "this PC's failed save removed PROG-2's newer save ({r:?})");
         assert_eq!(r, Ok(first + 1));
@@ -856,9 +1078,9 @@ mod library_tests {
         let clock = Clock::at(NOV_9_0920);
         let prog1 = Library::open(&dir, &Who::new("sam", "PROG-1"), &clock).unwrap();
         let prog2 = Library::open(&dir, &Who::new("kim", "PROG-2"), &clock).unwrap();
-        let frames = prog1.save_job(&job("DEMO-001 frames"), None).unwrap();
+        let frames = prog1.save_job(&job("DEMO-001 frames"), SaveTo::New).unwrap().id;
         clock.advance(std::time::Duration::from_secs(25 * 60));
-        let brackets = prog2.save_job(&job("DEMO-002 brackets"), None).unwrap();
+        let brackets = prog2.save_job(&job("DEMO-002 brackets"), SaveTo::New).unwrap().id;
         let note = |lib: &Library, id: u64| lib.entries().into_iter().find(|e| e.kind == Kind::Job && e.id == id).map(|e| e.saved_note(&clock));
         for lib in [&prog1, &prog2] {
             assert_eq!(note(lib, frames).as_deref(), Some("Saved by sam on PROG-1, 9 Nov 09:20"));
@@ -866,7 +1088,7 @@ mod library_tests {
         }
         // PROG-2 saves over PROG-1's job: the job is now PROG-2's.
         clock.advance(std::time::Duration::from_secs(60));
-        prog2.save_job(&job("DEMO-001 frames"), Some(frames)).unwrap();
+        prog2.save_job(&job("DEMO-001 frames"), SaveTo::Over(frames)).unwrap();
         assert_eq!(note(&prog1, frames).as_deref(), Some("Saved by kim on PROG-2, 9 Nov 09:46"));
         // The record itself says so too: Rescan rebuilds the same list.
         assert_eq!(prog1.load_job(frames).unwrap().saved, Some(Saved { by: Who::new("kim", "PROG-2"), at: NOV_9_0920 + 26 * 60 }));
@@ -890,7 +1112,7 @@ mod library_tests {
         let (d, c) = (dir.clone(), clock.clone());
         let prog2 = std::thread::spawn(move || {
             let lib = Library::open(&d, &Who::new("kim", "PROG-2"), &c).unwrap();
-            (lib.save_job(&job("DEMO-002 brackets"), None), lib.save_product(&part, "Acme", 0, 3.0, None))
+            (lib.save_job(&job("DEMO-002 brackets"), SaveTo::New).map(|r| r.id), lib.save_product(&part, "Acme", 0, 3.0, SaveTo::New).map(|r| r.id))
         });
         std::thread::sleep(std::time::Duration::from_millis(400));
         clock.advance(std::time::Duration::from_secs(10 * 60));
@@ -941,7 +1163,7 @@ mod library_tests {
         lib.rebuild_index().unwrap();
         assert!(lib.entries().iter().all(|e| e.saved_by.is_none() && !e.saved_note(&clock).contains(" by ")), "{:?}", lib.entries());
         // Saved again, it's signed.
-        lib.save_job(&lib.load_job(1).unwrap(), Some(1)).unwrap();
+        lib.save_job(&lib.load_job(1).unwrap(), SaveTo::Over(1)).unwrap();
         let e = lib.entries().into_iter().find(|e| e.kind == Kind::Job).unwrap();
         assert_eq!(e.saved_note(&clock), "Saved by sam on PROG-1, 9 Nov 10:20");
         let _ = std::fs::remove_dir_all(&dir);
@@ -960,6 +1182,45 @@ mod library_tests {
         assert_eq!(Who::new("sam", "PROG-2").as_agent().label(), "sam on PROG-2 (agent)");
     }
 
+    /// LB7: PROG-1 and PROG-2 both read DEMO-7; PROG-1 saves it; PROG-2's
+    /// save of the copy it read is refused, naming who saved it and when,
+    /// and stores nothing. Saved again from what is there now, it goes.
+    #[test]
+    fn a_save_over_a_job_someone_saved_since_it_was_read_is_refused() {
+        let dir = scratch("changed_since");
+        let clock = Clock::at(NOV_9_0920);
+        let prog1 = Library::open(&dir, &Who::new("sam", "PROG-1"), &clock).unwrap();
+        let prog2 = Library::open(&dir, &Who::new("kim", "PROG-2"), &clock).unwrap();
+        let first = prog1.save_job(&job("DEMO-7"), SaveTo::New).unwrap();
+        let (mut on1, mut on2) = (prog1.load_job(first.id).unwrap(), prog2.load_job(first.id).unwrap());
+        clock.advance(std::time::Duration::from_secs(10 * 60));
+        on1.week = "W12".into();
+        let saved = prog1.save_job(&on1, SaveTo::Read(on1.library.unwrap())).unwrap();
+        assert_eq!(saved.id, first.id);
+        clock.advance(std::time::Duration::from_secs(5 * 60));
+        on2.week = "W13".into();
+        let stored = files(&dir);
+        let refused = prog2.save_job(&on2, SaveTo::Read(on2.library.unwrap())).unwrap_err();
+        let Refused::Changed(c) = &refused else { panic!("{refused:?}") };
+        assert_eq!((c.name.as_str(), c.saved_by(&clock).as_str()), ("DEMO-7", "sam on PROG-1, 9 Nov 09:30"));
+        assert_eq!(files(&dir), stored, "a refused save stored something");
+        assert_eq!(prog2.load_job(first.id).unwrap().week, "W12");
+        // LB8: what a save does before writing (the window books the stock
+        // there) never runs for a refused save.
+        let mut booked = false;
+        let r = prog2.save_job_with(SaveTo::Read(on2.library.unwrap()), &on2.name, None, || {
+            booked = true;
+            Ok(on2.clone())
+        });
+        assert!(matches!(r, Err(Refused::Changed(_))) && !booked, "{r:?}");
+        // PROG-2 reads it again: its save now goes over the same record.
+        let mut again = prog2.load_job(first.id).unwrap();
+        again.week = "W13".into();
+        assert_eq!(prog2.save_job(&again, SaveTo::Read(again.library.unwrap())).unwrap().id, first.id);
+        assert_eq!(prog1.entries().iter().filter(|e| e.kind == Kind::Job).count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// LB1: Rescan reads the records without the write lock, then takes it
     /// and reads again only what changed meanwhile, so a save another PC
     /// made while it was reading is in the list it writes.
@@ -967,16 +1228,16 @@ mod library_tests {
     fn a_rescan_takes_in_what_another_pc_saved_while_it_was_reading() {
         let dir = scratch("rescan");
         let lib = Library::open(&dir, &Who::new("sam", "PROG-1"), &Clock::pc()).unwrap();
-        let frames = lib.save_job(&job("Frames"), None).unwrap();
-        lib.save_job(&job("Brackets"), None).unwrap();
+        let frames = lib.save_job(&job("Frames"), SaveTo::New).unwrap().id;
+        lib.save_job(&job("Brackets"), SaveTo::New).unwrap();
         {
             let dir = dir.clone();
             shared::hooks::set(move |s| {
                 if s == "scanned" {
                     // PROG-2 renames one job and saves a new one.
                     let other = Library::at(&dir, &Who::new("kim", "PROG-2"), &Clock::pc());
-                    other.save_job(&job("Frames, second batch"), Some(frames)).unwrap();
-                    other.save_job(&job("Gussets"), None).unwrap();
+                    other.save_job(&job("Frames, second batch"), SaveTo::Over(frames)).unwrap();
+                    other.save_job(&job("Gussets"), SaveTo::New).unwrap();
                 }
             });
         }
@@ -1004,34 +1265,34 @@ mod library_tests {
         let lib = Library::open(&dir, &Who::new("kim", "PROG-2"), &clock).unwrap();
         let mut frames = job("DEMO-001 frames");
         frames.week = "Acme".into();
-        let frames_id = prog1.save_job(&frames, None).unwrap();
+        let frames_id = prog1.save_job(&frames, SaveTo::New).unwrap().id;
         let mut brackets = job("DEMO-002 brackets");
         brackets.week = "W12".into();
-        let brackets_id = lib.save_job(&brackets, None).unwrap();
+        let brackets_id = lib.save_job(&brackets, SaveTo::New).unwrap().id;
         let stored = files(&dir);
         // A new job under a name another job holds, in another folder and
         // in other capitals.
         let mut new = job("demo-001 FRAMES");
         new.week = "W12".into();
-        let e = lib.save_job(&new, None).unwrap_err();
+        let e = lib.save_job(&new, SaveTo::New).unwrap_err().to_string();
         assert!(e.contains("DEMO-001 frames") && e.contains("folder Acme") && e.contains("Nothing was saved"), "{e}");
         // Save as: the brackets job saved as a new record under that name.
         let mut copy = brackets.clone();
         copy.name = "DEMO-001 Frames".into();
-        let e = lib.save_job(&copy, None).unwrap_err();
+        let e = lib.save_job(&copy, SaveTo::New).unwrap_err().to_string();
         assert!(e.contains("folder Acme"), "{e}");
         // Rename: the brackets job saved over its own record under that name.
-        let e = lib.save_job(&copy, Some(brackets_id)).unwrap_err();
+        let e = lib.save_job(&copy, SaveTo::Over(brackets_id)).unwrap_err().to_string();
         assert!(e.contains("folder Acme"), "{e}");
         assert_eq!(files(&dir), stored, "a refused save stored something");
         assert_eq!(lib.load_job(brackets_id).unwrap().name, "DEMO-002 brackets");
         // Its own name in other capitals, or a free name: saved.
         brackets.name = "DEMO-002 BRACKETS".into();
-        lib.save_job(&brackets, Some(brackets_id)).unwrap();
+        lib.save_job(&brackets, SaveTo::Over(brackets_id)).unwrap();
         frames.name = "DEMO-003 frames".into();
-        lib.save_job(&frames, Some(frames_id)).unwrap();
+        lib.save_job(&frames, SaveTo::Over(frames_id)).unwrap();
         // The old name is free once its job has another.
-        assert!(lib.save_job(&new, None).is_ok());
+        assert!(lib.save_job(&new, SaveTo::New).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1065,16 +1326,16 @@ mod library_tests {
         // Each keeps saving under its own name.
         let mut first = lib.load_job(1).unwrap();
         first.parts.clear();
-        lib.save_job(&first, Some(1)).unwrap();
-        lib.save_job(&lib.load_job(2).unwrap(), Some(2)).unwrap();
+        lib.save_job(&first, SaveTo::Over(1)).unwrap();
+        lib.save_job(&lib.load_job(2).unwrap(), SaveTo::Over(2)).unwrap();
         // Neither takes the other's spelling of the name.
         let mut second = lib.load_job(2).unwrap();
         second.name = "DEMO-001 frames".into();
-        let e = lib.save_job(&second, Some(2)).unwrap_err();
+        let e = lib.save_job(&second, SaveTo::Over(2)).unwrap_err().to_string();
         assert!(e.contains("folder Acme"), "{e}");
         // Renamed, it's no longer marked.
         second.name = "DEMO-004 frames, second batch".into();
-        lib.save_job(&second, Some(2)).unwrap();
+        lib.save_job(&second, SaveTo::Over(2)).unwrap();
         assert_eq!(marked(&lib), vec![]);
         let _ = std::fs::remove_dir_all(&dir);
     }

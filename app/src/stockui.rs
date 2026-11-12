@@ -124,6 +124,13 @@ impl App {
     /// The new remnants as rows for the naming window, with suggested references.
     pub fn remnant_rows(&mut self) -> Vec<NameRow> {
         self.result.normalise(&self.spec);
+        // Overwrite (LB9) books this job as a new one once the save is under
+        // the write lock: every remnant it stores is new, so each is named.
+        if self.libui.overwrite.as_ref().is_some_and(|o| Some(o.id) == self.job_lib_id) {
+            let mut formats = self.result.formats.clone();
+            stockflow::forget_booking(&mut formats, &mut Default::default());
+            return stockflow::remnant_rows(&self.library_dir(), &self.job_sheets(), &formats, &self.cfg.stock, false);
+        }
         stockflow::remnant_rows(&self.library_dir(), &self.job_sheets(), &self.result.formats, &self.cfg.stock, false)
     }
 

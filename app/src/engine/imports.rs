@@ -259,6 +259,9 @@ pub fn job_sig(j: &JobFile) -> u64 {
     let mut c = j.clone();
     c.held = Default::default();
     c.saved = None;
+    // Which Library records it was read at isn't a change to the job (LB7).
+    c.library = None;
+    c.library_parts.clear();
     let mut h = std::collections::hash_map::DefaultHasher::new();
     serde_json::to_string(&c).unwrap_or_default().hash(&mut h);
     h.finish()

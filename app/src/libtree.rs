@@ -928,8 +928,9 @@ mod libtree_tests {
     }
 
     /// PK1: a part is found by its name, so saving a part whose name another
-    /// library part already has saves over that one, in its own folder; it
-    /// never moves. Add open job's products leaves it where it is too.
+    /// library part already has would go over that one: it asks first (LB7,
+    /// LB9), and Overwrite saves over it in its own folder; it never moves.
+    /// Add open job's products leaves it where it is too.
     #[test]
     fn a_part_saved_under_the_name_of_a_part_in_another_folder_stays_in_that_folder() {
         let dir = library("part_same_name");
@@ -937,9 +938,11 @@ mod libtree_tests {
         let mut pc1 = pc(&dir, "sam", "PROG-1", &clock);
         open_in(&mut pc1, 1, "Beta");
         let p1 = save_part(&mut pc1, 0, "DEMO-P1");
-        // The same name from a job in Acme.
+        // The same name from a job in Acme, not added from the Library: asked.
         open_in(&mut pc1, 2, "Acme");
         assert_eq!(save_part(&mut pc1, 0, "DEMO-P1"), p1);
+        assert!(matches!(pc1.libui.question, Some(crate::libui::SaveQuestion::Part { added: false, .. })), "{}", pc1.status);
+        pc1.overwrite_part();
         assert!(pc1.status.contains("Updated DEMO-P1") && pc1.status.contains("where it was: in part folder Beta"), "{}", pc1.status);
         assert_eq!(pc1.library_parts_outline(), ["Beta/", "Beta/DEMO-P1"]);
         // Add open job's products: the one already there stays, the others
@@ -1085,6 +1088,87 @@ mod libtree_tests {
             text = crate::ui_parts::shown_text(&out);
         }
         assert!(text.contains("DEMO-P1") && text.contains("Acme") && !text.contains("DEMO-P2"), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// LB9 with JX19: PROG-1 saved DEMO-P1 from its job in folder Acme;
+    /// PROG-2 added it to its own job in Acme; PROG-1 then moved it into
+    /// part folder Beta and saved it again. PROG-2's save of its copy asks.
+    /// Returns (PROG-1, PROG-2, PROG-2's part, DEMO-P1's record).
+    fn part_asked(dir: &Path, clock: &Clock) -> (App, App, usize, u64) {
+        let mut prog1 = pc(dir, "sam", "PROG-1", clock);
+        open_in(&mut prog1, 1, "Acme");
+        let id = save_part(&mut prog1, 0, "DEMO-P1");
+        let mut prog2 = pc(dir, "kim", "PROG-2", clock);
+        open_in(&mut prog2, 2, "Acme");
+        prog2.add_library_product(id);
+        let mine = prog2.parts.len() - 1;
+        let beta = part_folder(&mut prog1, TOP, "Beta");
+        prog1.lib_cut(Kind::Product, LibItem::Part(id));
+        assert!(prog1.lib_paste(Kind::Product, beta), "{}", prog1.status);
+        clock.advance(std::time::Duration::from_secs(10 * 60));
+        prog1.parts[0].qty += 1;
+        prog1.save_part_to_library(0);
+        assert!(prog1.libui.question.is_none(), "{}", prog1.status);
+        clock.advance(std::time::Duration::from_secs(5 * 60));
+        prog2.parts[mine].qty += 5;
+        prog2.lib_refresh();
+        prog2.save_part_to_library(mine);
+        assert!(matches!(prog2.libui.question, Some(crate::libui::SaveQuestion::Part { added: true, .. })), "{}", prog2.status);
+        assert_eq!(prog2.library_parts_outline(), ["Acme/", "Beta/", "Beta/DEMO-P1"]);
+        (prog1, prog2, mine, id)
+    }
+
+    /// Who last saved library part `id`, and its quantity.
+    fn part_saved(a: &App, id: u64) -> (String, u32) {
+        let pf = a.library().unwrap().load_product(id).unwrap();
+        (pf.saved.map(|s| s.by.label()).unwrap_or_default(), pf.part.qty)
+    }
+
+    #[test]
+    fn keep_theirs_moves_no_part_and_files_nothing() {
+        let dir = library("answer_keep");
+        let clock = Clock::at(NOV_9_0920);
+        let (_prog1, mut prog2, _, id) = part_asked(&dir, &clock);
+        let theirs = part_saved(&prog2, id);
+        prog2.keep_theirs();
+        assert!(prog2.libui.question.is_none(), "{}", prog2.status);
+        prog2.lib_refresh();
+        assert_eq!(prog2.library_parts_outline(), ["Acme/", "Beta/", "Beta/DEMO-P1"]);
+        assert_eq!(part_saved(&prog2, id), theirs);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_mine_under_a_new_name_files_the_copy_in_the_jobs_part_folder() {
+        let dir = library("answer_new_name");
+        let clock = Clock::at(NOV_9_0920);
+        let (_prog1, mut prog2, mine, id) = part_asked(&dir, &clock);
+        let theirs = part_saved(&prog2, id);
+        // Part folder Acme went meanwhile: the copy makes it again.
+        let acme = prog2.libui.parts.tree.find("Acme").unwrap();
+        assert!(prog2.lib_delete_folder(Kind::Product, acme), "{}", prog2.status);
+        prog2.save_part_under_new_name();
+        assert!(prog2.libui.question.is_none(), "{}", prog2.status);
+        assert_eq!(prog2.parts[mine].name, "DEMO-P1 (1)");
+        assert!(prog2.status.contains("Saved DEMO-P1 (1)") && prog2.status.contains("in part folder Acme"), "{}", prog2.status);
+        assert_eq!(prog2.library_parts_outline(), ["Acme/", "Acme/DEMO-P1 (1)", "Beta/", "Beta/DEMO-P1"]);
+        assert_eq!(part_saved(&prog2, id), theirs, "theirs changed");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn overwrite_saves_over_the_part_where_another_pc_put_it() {
+        let dir = library("answer_overwrite");
+        let clock = Clock::at(NOV_9_0920);
+        let (_prog1, mut prog2, mine, id) = part_asked(&dir, &clock);
+        let record = prog2.library().unwrap().path(Kind::Product, id);
+        prog2.overwrite_part();
+        assert!(prog2.libui.question.is_none(), "{}", prog2.status);
+        assert!(prog2.status.contains("Updated DEMO-P1") && prog2.status.contains("where it was: in part folder Beta"), "{}", prog2.status);
+        assert_eq!(prog2.library_parts_outline(), ["Acme/", "Beta/", "Beta/DEMO-P1"]);
+        assert_eq!(part_saved(&prog2, id), ("kim on PROG-2".to_string(), prog2.parts[mine].qty));
+        assert!(record.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

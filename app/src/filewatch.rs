@@ -93,6 +93,7 @@ impl App {
         self.spec = j.spec;
         self.result = { let mut r = crate::nest::NestResult { sheets: j.sheets, formats: j.formats, method: j.method, tried: 0 }; r.normalise(&self.spec); r };
         self.held = j.held;
+        self.lib_read.parts = j.library_parts;
         self.cut_lines = j.cut_lines;
         self.manual_cuts = j.manual_cuts;
         self.stale = j.stale;

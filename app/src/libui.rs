@@ -2,7 +2,7 @@
 //! app's own library (library.rs), browse and search it, open jobs and add
 //! stored products to the open job.
 
-use crate::library::{Entry, Kind, Library};
+use crate::library::{Changed, Entry, Kind, Library, Record, Refused, SaveTo};
 use crate::libtree::{TreeAct, TreeLook};
 use crate::theme::th;
 use crate::ui_parts::*;
@@ -25,6 +25,13 @@ pub struct LibUi {
     pub part_search: String,
     /// Show library parts of every material and thickness, not only the job's.
     pub part_all: bool,
+    /// A save the Library refused because someone else saved it since it was
+    /// read, waiting for this user's choice (LB9).
+    pub question: Option<SaveQuestion>,
+    /// Overwrite was chosen: the open job's next save replaces this save of
+    /// its record, their stock booking included (LB9). Nothing in the job
+    /// changes until that save is under the write lock.
+    pub overwrite: Option<Changed>,
     /// The Library's job folders (JX10), as last read.
     pub tree: crate::folders::Tree,
     /// A job or folder cut in the Library section, waiting for Paste (JX14).
@@ -42,6 +49,25 @@ pub struct LibUi {
     /// reached or holds no Library. The lists say this instead of looking
     /// empty.
     pub error: Option<String>,
+}
+
+/// What an open job read from the Library (LB7): the revision of its
+/// record, and the record and revision of each library part in it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LibRead {
+    pub revision: u64,
+    pub parts: std::collections::BTreeMap<String, Record>,
+}
+
+/// A save someone else's newer save stopped (LB7), and what it asks (LB9).
+#[derive(Clone, Debug, PartialEq)]
+pub enum SaveQuestion {
+    /// The open job: Reload theirs, Save mine as a copy, or Overwrite.
+    Job(Changed),
+    /// The job's part `part` (its index): Keep theirs, Overwrite, or Save
+    /// mine under a new name. `added`: the job's part was added from that
+    /// library part (else it only has its name).
+    Part { part: usize, changed: Changed, added: bool },
 }
 
 /// A job, part or folder in one of the Library's trees.
@@ -277,6 +303,8 @@ impl App {
             booked: true,
             erp: self.erp_job.clone(),
             saved: None,
+            library: self.job_lib_id.map(|id| Record { id, revision: self.lib_read.revision }),
+            library_parts: self.lib_read.parts.clone(),
         }
     }
 
@@ -289,8 +317,12 @@ impl App {
         self.stockui.loaded = false;
         self.stockui.sel = None;
         self.job_lib_id = None;
+        self.lib_read = Default::default();
+        self.libui.question = None;
+        self.libui.overwrite = None;
         for j in &mut self.jobs {
             j.lib_id = None;
+            j.lib_read = Default::default();
             // Its folder's number is the old Library's too (JX15).
             j.lib_folder = None;
         }
@@ -301,6 +333,24 @@ impl App {
         self.libui.parts = Default::default();
     }
 
+    /// Where the open job saves to in the Library: over its record as it was
+    /// read, or a new record.
+    fn job_save_to(&self) -> SaveTo {
+        self.job_lib_id.map_or(SaveTo::New, |id| {
+            // Overwrite (LB9) goes over their save as the question saw it.
+            let revision = self.libui.overwrite.as_ref().filter(|o| o.id == id).map_or(self.lib_read.revision, |o| o.revision);
+            SaveTo::Read(Record { id, revision })
+        })
+    }
+
+    /// A save that stopped before Overwrite changed any stock: the job is as
+    /// it was, and the question is back (LB9, LB13).
+    fn overwrite_not_done(&mut self) {
+        if let Some(c) = self.libui.overwrite.take().filter(|c| Some(c.id) == self.job_lib_id) {
+            self.libui.question = Some(SaveQuestion::Job(c));
+        }
+    }
+
     /// Save to library refused because the Library can't be reached (LB11):
     /// the lists say so, and the open job stays as it is, unsaved, and open
     /// (LB13).
@@ -309,58 +359,164 @@ impl App {
         self.status = format!("Couldn't save to the library: {e} Nothing was saved to it; Save job keeps a copy in a file on this PC.");
     }
 
-    /// Save the open job into the library (over its record if it came from there).
+    /// Save the open job into the library (over its record if it came from
+    /// there). When someone else saved that record since it was read, nothing
+    /// is saved and the window asks what to do (LB7, LB9): before remnants
+    /// are named, and under the write lock before any stock is booked (LB8).
     pub fn save_job_to_library(&mut self) {
         // A Library that can't be reached refuses the save before anything
         // else happens (LB11, LB13).
         let lib = match self.library() {
             Ok(l) => l,
-            Err(e) => return self.library_save_unreachable(e),
+            Err(e) => {
+                self.overwrite_not_done();
+                return self.library_save_unreachable(e);
+            }
         };
+        let to = self.job_save_to();
+        if let Err(c) = lib.check(Kind::Job, to) {
+            self.ask_about_job(c);
+            return;
+        }
         if !self.ready_to_save(crate::stockui::SaveTarget::Library) {
             return;
         }
         crate::shared::pause("library reached");
-        // A name another job holds is refused before any sheet is taken from
-        // stock (JX16), and the check, the stock and the save are one change
-        // under the Library's write lock (LB1), so no other PC can save the
-        // name in between.
-        let lock = match lib.lock() {
-            Ok(l) => l,
-            // Gone since it was found: said the same way, with nothing taken
-            // or made (LB11, LB13).
-            Err(e) => match crate::library::usable(&lib.dir) {
-                Err(gone) => return self.library_save_unreachable(gone),
-                Ok(()) => {
-                    self.status = format!("Couldn't save to the library: {e}.");
-                    return;
-                }
-            },
-        };
-        if let Err(e) = lib.check_job_name(&self.job_name, self.job_lib_id) {
-            self.status = format!("Couldn't save to the library: {e}. Nothing was saved.");
-            return;
-        }
-        let stock_note = self.stock_on_save();
-        let j = self.current_jobfile();
-        // A new record goes where the library job it came from is (JX15).
+        // Under the Library's write lock (LB1), held until the job is stored
+        // and filed: the revision (LB7), then the name, which no other job may
+        // hold (JX16), then the stock (LB8), then the record, a new one going
+        // into the folder of the library job it was opened or copied from
+        // (JX15). A save refused for either reason takes nothing from stock,
+        // and no other PC saves in between. The lock is let go before the
+        // lists are read again (LB2).
+        let mut stock_note = String::new();
+        let name = self.job_name.clone();
         let folder = self.jobs.get(self.cur_job).and_then(|j| j.lib_folder);
-        let r = lib.save_job_in(&j, self.job_lib_id, folder);
-        // Let other PCs write while the lists are read again (LB2).
-        drop(lock);
-        self.status = match r {
-            Ok(id) => {
-                self.job_lib_id = Some(id);
+        let r = lib.save_job_with(to, &name, folder, || {
+            // Overwrite (LB9): their sheets go back to stock and their unused
+            // remnants come out, then this job is booked as a new one. Done
+            // once: saving again after a failure books only what changed.
+            if let Some(o) = self.libui.overwrite.take().filter(|o| Some(o.id) == self.job_lib_id) {
+                let mut theirs = lib.load_job(o.id)?;
+                crate::engine::stockflow::release(&lib, &mut theirs.formats, &mut theirs.held)?;
+                crate::engine::stockflow::forget_booking(&mut self.result.formats, &mut self.held);
+                // From here the job goes over their save as Overwrite saw it:
+                // if storing it fails, saving again finishes it without
+                // asking, and gives their sheets back only this once.
+                self.lib_read.revision = o.revision;
+            }
+            stock_note = self.stock_on_save();
+            Ok(self.current_jobfile())
+        });
+        match r {
+            Ok(rec) => {
+                self.job_lib_id = Some(rec.id);
+                self.lib_read.revision = rec.revision;
                 self.mark_job_saved(self.cur_job);
                 self.lib_refresh();
-                let f = self.libui.tree.folder_of(id);
+                let f = self.libui.tree.folder_of(rec.id);
                 if let Some(j) = self.jobs.get_mut(self.cur_job) {
                     j.lib_folder = Some(f);
                 }
-                format!("Saved job {} to the library as {} ({}).{stock_note}", self.job_name, crate::library::auto_ref(Kind::Job, id), self.library_dir().display())
+                self.status = format!("Saved job {} to the library as {} ({}).{stock_note}", self.job_name, crate::library::auto_ref(Kind::Job, rec.id), self.library_dir().display());
             }
-            Err(e) => format!("Couldn't save to the library: {e}"),
+            Err(Refused::Changed(c)) => self.ask_about_job(c),
+            // Gone since it was found: said the same way, with nothing taken
+            // or made (LB11, LB13).
+            Err(Refused::Failed(e)) => {
+                self.overwrite_not_done();
+                match crate::library::usable(&lib.dir) {
+                    Err(gone) => self.library_save_unreachable(gone),
+                    Ok(()) => self.status = format!("Couldn't save to the library: {e}"),
+                }
+            }
+        }
+    }
+
+    /// Reload theirs (LB9): the open job becomes its record as saved now;
+    /// this window's changes to it are dropped. The stock isn't touched: the
+    /// job holds what their save holds.
+    pub fn reload_theirs(&mut self) {
+        let Some(c) = self.job_question() else { return };
+        let j = match self.library().and_then(|l| l.load_job(c.id)) {
+            Ok(j) => j,
+            Err(e) => {
+                self.status = format!("Couldn't reload {}: {e}", self.job_name);
+                return;
+            }
         };
+        let cur = self.cur_job;
+        let name = if self.jobs.iter().enumerate().any(|(k, o)| k != cur && o.name == j.name) { self.job_name.clone() } else { j.name.clone() };
+        let place = self.lib_place(c.id);
+        self.jobs[cur] = job_from_library(c.id, name, j, place);
+        self.cur_job = usize::MAX;
+        self.open_job_forced(cur);
+        self.mark_job_saved(cur);
+        self.lib_refresh();
+        self.status = format!("Reloaded {} as {} saved it; your changes were dropped.", self.job_name, c.saved_by(&self.clock));
+    }
+
+    /// Save mine as a copy (LB9): the open job is saved as a new job under
+    /// the first free name. Like Copy job, the copy takes its own sheets from
+    /// stock and stores its own remnants; their job keeps its own.
+    pub fn save_mine_as_copy(&mut self) {
+        let Some(c) = self.job_question() else { return };
+        let lib = match self.library() {
+            Ok(l) => l,
+            Err(e) => {
+                self.status = format!("Couldn't save to the library: {e}");
+                return;
+            }
+        };
+        let cur = self.cur_job;
+        let open: Vec<String> = self.jobs.iter().enumerate().filter(|(k, _)| *k != cur).map(|(_, j)| j.name.to_lowercase()).collect();
+        let theirs = self.job_name.clone();
+        self.job_name = lib.free_name(Kind::Job, &theirs, |n| open.contains(&n.to_lowercase()));
+        self.job_lib_id = None;
+        self.lib_read.revision = 0;
+        crate::engine::stockflow::forget_booking(&mut self.result.formats, &mut self.held);
+        if let Some(e) = self.erp_job.as_mut() {
+            e.work_order = None;
+            e.sent = None;
+        }
+        self.save_job_to_library();
+        if self.job_lib_id.is_some() {
+            self.status = format!("{} {theirs} stays as {} saved it.", self.status, c.saved_by(&self.clock));
+        }
+    }
+
+    /// Overwrite (LB9): the open job is saved over their save as it is now
+    /// (asked again if someone saves in between). Their sheets go back to
+    /// stock and their unused remnants come out; this job's are booked as
+    /// new.
+    pub fn overwrite_theirs(&mut self) {
+        let Some(c) = self.job_question() else { return };
+        self.libui.overwrite = Some(c);
+        self.save_job_to_library();
+    }
+
+    /// The job question being answered, while the open job is still the job
+    /// it's about (the window isn't modal: another job may be open by now).
+    fn job_question(&mut self) -> Option<Changed> {
+        match self.libui.question.take() {
+            Some(SaveQuestion::Job(c)) if self.job_lib_id == Some(c.id) => {
+                self.libui.overwrite = None;
+                Some(c)
+            }
+            Some(q @ SaveQuestion::Part { .. }) => {
+                self.libui.question = Some(q);
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Someone else saved the open job since it was read: nothing was saved;
+    /// ask (LB9).
+    fn ask_about_job(&mut self, c: Changed) {
+        self.libui.overwrite = None;
+        self.status = format!("{} was saved by {} since you opened it — nothing was saved. Reload theirs, save yours as a copy, or overwrite theirs.", self.job_name, c.saved_by(&self.clock));
+        self.libui.question = Some(SaveQuestion::Job(c));
     }
 
     /// Where a library part saved from the open job for the first time goes
@@ -398,9 +554,11 @@ impl App {
                 skipped += 1;
                 continue;
             }
-            if let Ok(id) = lib.save_product_in(p, &folder, self.spec.material, self.spec.thickness, None, &to) {
+            if let Ok(rec) = lib.save_product_in(p, &folder, self.spec.material, self.spec.thickness, SaveTo::New, &to) {
+                // The job's part is that library part now, as saved (LB7).
+                self.lib_read.parts.insert(p.name.clone(), rec);
                 added += 1;
-                last = Some(id);
+                last = Some(rec.id);
             }
         }
         self.lib_refresh();
@@ -411,31 +569,104 @@ impl App {
     /// Save one product (with its technology and texts) to the library,
     /// over the stored one with the same reference (its material and
     /// thickness become this job's, as one Lantek product has one of each).
+    /// When that library part was saved by someone else since it was added
+    /// to this job, or this job's part never came from it, nothing is saved
+    /// and the window asks what to do (LB7, LB9).
     pub fn save_part_to_library(&mut self, i: usize) {
+        let lib = match self.library() {
+            Ok(l) => l,
+            Err(e) => {
+                self.status = format!("Couldn't save to the library: {e}");
+                return;
+            }
+        };
+        let Some(name) = self.parts.get(i).map(|p| p.name.clone()) else { return };
+        let to = match lib.find_product(&name) {
+            None => SaveTo::New,
+            Some(id) => self.lib_read.parts.get(&name).filter(|r| r.id == id).map_or(SaveTo::Unread(id), |r| SaveTo::Read(*r)),
+        };
+        self.save_part_over(&lib, i, to);
+    }
+
+    /// Save the job's part `i` to the library (`to`), and take it as that
+    /// library part as saved; or ask, when someone else saved it (LB7).
+    fn save_part_over(&mut self, lib: &Library, i: usize, to: SaveTo) {
         let Some(p) = self.parts.get(i).cloned() else { return };
         let folder = self.jobs.get(self.cur_job).map_or(String::new(), |j| j.week.clone());
-        // A new part goes into the part folder named like the job's folder;
-        // saving over one never moves it (JX19).
-        let to = self.parts_folder_of_job();
-        let r = self.library().and_then(|l| {
-            let id = l.find_product(&p.name);
-            l.save_product_in(&p, &folder, self.spec.material, self.spec.thickness, id, &to).map(|n| (n, id.is_some()))
-        });
-        self.status = match r {
-            Ok((n, again)) => {
+        // A new part goes into the part folder named like the job's folder,
+        // in the same hold of the write lock as the revision check; saving
+        // over one never moves it (JX19).
+        let into = self.parts_folder_of_job();
+        match lib.save_product_in(&p, &folder, self.spec.material, self.spec.thickness, to, &into) {
+            Ok(rec) => {
+                self.lib_read.parts.insert(p.name.clone(), rec);
                 self.lib_refresh();
-                format!(
+                let new = to == SaveTo::New;
+                self.status = format!(
                     "{} {} as {}{}, {}{}.",
-                    if again { "Updated" } else { "Saved" },
+                    if new { "Saved" } else { "Updated" },
                     p.name,
-                    crate::library::auto_ref(Kind::Product, n),
+                    crate::library::auto_ref(Kind::Product, rec.id),
                     if p.tech.is_some() { " with its technology" } else { "" },
-                    if again { "where it was: " } else { "" },
-                    self.part_place_words(n)
-                )
+                    if new { "" } else { "where it was: " },
+                    self.part_place_words(rec.id)
+                );
             }
-            Err(e) => format!("Couldn't save to the library: {e}"),
+            Err(Refused::Changed(c)) => {
+                let added = !matches!(to, SaveTo::Unread(_));
+                self.status = format!("{} — nothing was saved. Keep theirs, overwrite it, or save yours under a new name.", part_changed(&c, added, &self.clock));
+                self.libui.question = Some(SaveQuestion::Part { part: i, changed: c, added });
+            }
+            Err(Refused::Failed(e)) => self.status = format!("Couldn't save to the library: {e}"),
+        }
+    }
+
+    /// The part a part question is about, while the job still has it under
+    /// that name.
+    fn part_question(&mut self) -> Option<(usize, Changed)> {
+        match self.libui.question.take() {
+            Some(SaveQuestion::Part { part, changed, .. }) if self.parts.get(part).is_some_and(|p| p.name == changed.name) => Some((part, changed)),
+            other => {
+                self.libui.question = other.filter(|q| matches!(q, SaveQuestion::Job(_)));
+                None
+            }
+        }
+    }
+
+    /// Keep theirs (LB9): nothing is saved, and the job's part stays as it
+    /// is; saving it again asks again.
+    pub fn keep_theirs(&mut self) {
+        if let Some((_, c)) = self.part_question() {
+            self.status = format!("Kept {} as {} saved it; yours wasn't saved.", c.name, c.saved_by(&self.clock));
+        }
+    }
+
+    /// Overwrite (LB9): the job's part replaces theirs, as saved now (asked
+    /// again if someone saves it in between).
+    pub fn overwrite_part(&mut self) {
+        let Some((i, c)) = self.part_question() else { return };
+        match self.library() {
+            Ok(lib) => self.save_part_over(&lib, i, SaveTo::Read(c.record())),
+            Err(e) => self.status = format!("Couldn't save to the library: {e}"),
+        }
+    }
+
+    /// Save mine under a new name (LB9): the job's part takes the first free
+    /// name ("DEMO-P1 (1)") and is saved as a new library part; theirs stays.
+    pub fn save_part_under_new_name(&mut self) {
+        let Some((i, c)) = self.part_question() else { return };
+        let lib = match self.library() {
+            Ok(l) => l,
+            Err(e) => {
+                self.status = format!("Couldn't save to the library: {e}");
+                return;
+            }
         };
+        let names: Vec<String> = self.parts.iter().map(|p| p.name.to_lowercase()).collect();
+        let name = lib.free_name(Kind::Product, &c.name, |n| names.contains(&n.to_lowercase()));
+        self.checkpoint();
+        self.parts[i].name = name;
+        self.save_part_over(&lib, i, SaveTo::New);
     }
 
     /// Open the Library window on its products.
@@ -443,6 +674,18 @@ impl App {
         self.libui.open = true;
         self.libui.tab = 1;
         self.lib_refresh();
+    }
+
+    /// Where library job `id` sits: its folder in the Library's job folders
+    /// and the name of that folder, which its Open jobs folder takes; a copy
+    /// of it saved into the Library goes into that folder too (JX15).
+    fn lib_place(&mut self, id: u64) -> (u64, String) {
+        if !self.libui.loaded {
+            self.lib_refresh();
+        }
+        let folder = self.libui.tree.folder_of(id);
+        let week = self.libui.tree.get(folder).map_or_else(|| "Library".to_string(), |f| f.name.clone());
+        (folder, week)
     }
 
     pub fn open_library_job(&mut self, id: u64) {
@@ -462,23 +705,10 @@ impl App {
         }
         let name = self.unique_job_name(&j.name).unwrap_or_else(|| j.name.clone());
         self.store_job();
-        // In Open jobs it sits in a folder named like its Library folder, and
-        // a copy of it is saved into that Library folder (JX15).
-        if !self.libui.loaded {
-            self.lib_refresh();
-        }
-        let folder = self.libui.tree.folder_of(id);
-        let week = self.libui.tree.get(folder).map_or_else(|| "Library".to_string(), |f| f.name.clone());
-        self.jobs.push(crate::Job { week, name, parts: j.parts, spec: j.spec.clone(), result: { let mut r = crate::nest::NestResult { sheets: j.sheets, formats: j.formats, method: j.method, tried: 0 }; r.normalise(&j.spec); r }, stale: j.stale, lib_id: Some(id), cut_lines: vec![], manual_cuts: vec![], cam_changed: None, held: j.held.clone(), erp: None, file: None, saved: None, lib_folder: Some(folder) });
+        let place = self.lib_place(id);
+        self.jobs.push(job_from_library(id, name, j, place));
         let i = self.jobs.len() - 1;
         self.open_job(i);
-        self.cut_lines = j.cut_lines;
-        self.manual_cuts = j.manual_cuts;
-        self.stale = j.stale;
-        self.erp_job = j.erp;
-        self.job_lib_id = Some(id);
-        self.job_path = None;
-        self.job_link = None;
         self.refresh();
         self.mark_job_saved(self.cur_job);
         self.status = format!("Opened library job {id}: {}.", self.job_name);
@@ -490,6 +720,13 @@ impl App {
                 let mut p = pf.part;
                 p.color = self.color_seq_next();
                 let name = p.name.clone();
+                // Saved back later, it goes over that part as read here (LB7).
+                // A part of that name already in the job keeps what it read:
+                // taken as read now, saving it would go over a newer save
+                // unasked.
+                if !self.parts.iter().any(|q| q.name == name) {
+                    self.lib_read.parts.insert(name.clone(), Record { id, revision: pf.revision });
+                }
                 self.parts.push(p);
                 self.sel_part = Some(self.parts.len() - 1);
                 self.stale = true;
@@ -723,6 +960,74 @@ impl App {
         }
     }
 
+    /// The question a save asks when someone else saved the job or library
+    /// part since it was read (LB9): who and when, and the choices.
+    pub fn save_question_window(&mut self, ctx: &egui::Context) {
+        let Some(q) = self.libui.question.clone() else { return };
+        let (title, text, choices): (&str, String, Vec<(&str, &str)>) = match &q {
+            SaveQuestion::Job(c) => (
+                "Someone else saved this job",
+                format!("{} was saved by {} since you opened it. Nothing was saved.", self.job_name, c.saved_by(&self.clock)),
+                vec![
+                    ("Reload theirs", "Open the job as they saved it. Your changes are dropped."),
+                    ("Save mine as a copy", "Save yours as a new job under a free name. Theirs stays as they saved it."),
+                    ("Overwrite", "Yours replaces theirs. Their sheets go back to stock; yours are taken."),
+                ],
+            ),
+            SaveQuestion::Part { changed: c, added, .. } => (
+                "Someone else saved this library part",
+                format!("{}. Nothing was saved.", part_changed(c, *added, &self.clock)),
+                vec![
+                    ("Keep theirs", "Save nothing. The part in this job stays as it is."),
+                    ("Overwrite", "Yours replaces theirs in the library."),
+                    ("Save mine under a new name", "This job's part takes a free name and is saved as a new library part."),
+                ],
+            ),
+        };
+        let mut pick: Option<usize> = None;
+        let mut cancel = false;
+        egui::Window::new(RichText::new(title).size(15.0).strong()).id(egui::Id::unique("save_question")).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+            ui.set_width(520.0);
+            egui::Frame::new().fill(th().warn_bg).corner_radius(4.0).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new(text).color(th().warn_fg));
+            });
+            ui.add_space(8.0);
+            for (k, (label, what)) in choices.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    let b = egui::Button::new(RichText::new(*label).strong()).min_size(egui::vec2(200.0, 28.0));
+                    if ui.add(b).clicked() {
+                        pick = Some(k);
+                    }
+                    ui.add_space(6.0);
+                    ui.add(egui::Label::new(RichText::new(*what).size(12.0).color(th().text_dim)).wrap());
+                });
+                ui.add_space(2.0);
+            }
+            if matches!(q, SaveQuestion::Job(_)) {
+                ui.add_space(4.0);
+                ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 28.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Cancel").on_hover_text("Close this and keep working; nothing is saved").clicked() {
+                        cancel = true;
+                    }
+                });
+            }
+        });
+        match (&q, pick) {
+            (SaveQuestion::Job(_), Some(0)) => self.reload_theirs(),
+            (SaveQuestion::Job(_), Some(1)) => self.save_mine_as_copy(),
+            (SaveQuestion::Job(_), Some(2)) => self.overwrite_theirs(),
+            (SaveQuestion::Part { .. }, Some(0)) => self.keep_theirs(),
+            (SaveQuestion::Part { .. }, Some(1)) => self.overwrite_part(),
+            (SaveQuestion::Part { .. }, Some(2)) => self.save_part_under_new_name(),
+            _ if cancel => {
+                self.libui.question = None;
+                self.status = format!("Not saved: {} has someone else's newer save.", self.job_name);
+            }
+            _ => {}
+        }
+    }
+
     /// The library's jobs in the Job Explorer, in the Library's folder tree
     /// (libtree.rs, JX10–JX15).
     pub fn library_job_tree(&mut self, ui: &mut egui::Ui) {
@@ -845,8 +1150,90 @@ fn lib_row(ui: &mut egui::Ui, e: &Entry, folder: Option<&str>, same_name: Option
     });
 }
 
+impl App {
+    /// Screenshots (`--save-question=job|part` with `--library-dir=` a new,
+    /// empty folder): sam on PROG-1 saved library job DEMO-7, or library part
+    /// DEMO-P1, after this window (kim on PROG-2) read it, and this window's
+    /// save asks (LB9). Made-up users and PCs on a clock set to 9 Nov 09:20.
+    pub fn demo_save_question(&mut self, what: &str) {
+        let dir = self.library_dir();
+        if self.cfg.library_dir.is_empty() || dir == crate::library::default_dir() || crate::library::holds_library(&dir) {
+            self.status = "--save-question needs --library-dir= set to a new, empty folder".into();
+            return;
+        }
+        let clock = crate::shared::Clock::at(1_794_216_000);
+        self.clock = clock.clone();
+        self.who = crate::shared::Who::new("kim", "PROG-2");
+        let r = (|| -> Result<(), String> {
+            // A new Library there, as Settings makes one (LB12).
+            crate::library::create(&dir)?;
+            let sam = Library::open(&dir, &crate::shared::Who::new("sam", "PROG-1"), &clock)?;
+            let later = |m: u64| clock.advance(std::time::Duration::from_secs(m * 60));
+            if what == "part" {
+                let mut p = self.parts.first().cloned().ok_or("no part")?;
+                p.name = "DEMO-P1".into();
+                let rec = sam.save_product(&p, "Acme", self.spec.material, self.spec.thickness, SaveTo::New)?;
+                self.add_library_product(rec.id);
+                later(10);
+                let pf = sam.load_product(rec.id)?;
+                let mut q = pf.part.clone();
+                q.qty += 1;
+                sam.save_product(&q, "Acme", pf.material, pf.thickness, SaveTo::Read(Record { id: rec.id, revision: pf.revision }))?;
+                later(5);
+                let i = self.parts.len() - 1;
+                self.parts[i].qty += 3;
+                self.save_part_to_library(i);
+            } else {
+                let mut j = self.current_jobfile();
+                j.name = "DEMO-7".into();
+                j.week = "Acme".into();
+                j.library = None;
+                j.held.clear();
+                let rec = sam.save_job(&j, SaveTo::New)?;
+                self.open_library_job(rec.id);
+                later(10);
+                let mut theirs = sam.load_job(rec.id)?;
+                if let Some(p) = theirs.parts.first_mut() {
+                    p.qty += 5;
+                }
+                sam.save_job(&theirs, SaveTo::Read(theirs.library.ok_or("no record")?))?;
+                later(5);
+                if let Some(p) = self.parts.first_mut() {
+                    p.qty += 2;
+                }
+                self.save_job_to_library();
+            }
+            Ok(())
+        })();
+        if let Err(e) = r {
+            self.status = format!("--save-question: {e}");
+        }
+    }
+}
+
+/// "DEMO-P1 in the library was saved by sam on PROG-1, 9 Nov 09:30 since it
+/// was added to this job" (LB7); for a part that wasn't added from it, that
+/// this job's part isn't that one.
+fn part_changed(c: &Changed, added: bool, clock: &crate::shared::Clock) -> String {
+    let why = if added { "since it was added to this job" } else { "and this job's part of that name didn't come from it" };
+    format!("{} in the library was saved by {} {why}", c.name, c.saved_by(clock))
+}
+
+/// An open job made from library job `id` as read (`j`), named `name`:
+/// linked to its record and the revisions read (LB7).
+/// `place`: its folder in the Library's job folders and that folder's name,
+/// the Open jobs folder it sits in (JX15).
+fn job_from_library(id: u64, name: String, j: crate::jobfile::JobFile, place: (u64, String)) -> crate::Job {
+    let lib_read = LibRead { revision: j.library.map_or(0, |r| r.revision), parts: j.library_parts };
+    let mut result = crate::nest::NestResult { sheets: j.sheets, formats: j.formats, method: j.method, tried: 0 };
+    result.normalise(&j.spec);
+    let (folder, week) = place;
+    crate::Job { week, name, parts: j.parts, spec: j.spec, result, stale: j.stale, lib_id: Some(id), cut_lines: j.cut_lines, manual_cuts: j.manual_cuts, cam_changed: None, held: j.held, erp: j.erp, file: None, saved: None, lib_read, lib_folder: Some(folder) }
+}
+
 #[cfg(test)]
 mod libui_tests {
+    use super::SaveQuestion;
     use crate::jobfile::JobFile;
     use crate::library::{self, Kind, Library};
     use crate::nest::{Part, Shape};
@@ -884,6 +1271,280 @@ mod libui_tests {
         let _ = std::fs::remove_dir_all(&dir);
         library::create(&dir).unwrap();
         dir
+    }
+
+    /// A window that keeps sheet stock in the Library (remnants stored on
+    /// save), with job DEMO-7 open: DEMO-P1 ×`qty` nested on sheets from
+    /// stock.
+    fn stock_window(dir: &std::path::Path, user: &str, pc: &str, clock: &Clock) -> App {
+        let mut a = window(dir, user, pc, clock);
+        a.cfg.stock = crate::stock::StockSettings { remnants_on_save: true, ..Default::default() };
+        a.group_nest = false;
+        a
+    }
+
+    /// PROG-1 makes DEMO-7 (DEMO-P1 ×20 on 10 mm steel) from a stock of twelve
+    /// 3000 × 1500 sheets, and saves it to the Library.
+    fn demo7(dir: &std::path::Path, clock: &Clock) -> App {
+        let mut s = crate::stock::Stock::default();
+        s.add_sheet(crate::stock::Item::sheet("S3000", 0, 10.0, 3000.0, 1500.0, 12), true).unwrap();
+        s.save(dir).unwrap();
+        let mut a = stock_window(dir, "sam", "PROG-1", clock);
+        a.job_name = "DEMO-7".into();
+        a.spec.material = 0;
+        a.spec.thickness = 10.0;
+        a.spec.w = 3000.0;
+        a.spec.h = 1500.0;
+        a.parts = vec![crate::nest::Part { name: "DEMO-P1".into(), shape: crate::nest::Shape::Rectangle, w: 600.0, h: 400.0, qty: 20, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
+        a.held.clear();
+        a.cut_lines.clear();
+        a.run_nesting();
+        a.save_job_to_library();
+        assert!(a.job_lib_id.is_some(), "{}", a.status);
+        a
+    }
+
+    /// The stock file as it is now.
+    fn stock_file(dir: &std::path::Path) -> Vec<u8> {
+        std::fs::read(crate::stock::Stock::file(dir)).unwrap()
+    }
+
+    /// A remnant line across the last sheet, right of its parts.
+    fn remnant_line(a: &mut App) {
+        let last = a.result.sheets.len() - 1;
+        let x = a.result.sheets[last].iter().map(|p| p.x + p.w).fold(0.0, f64::max) + 20.0;
+        a.cut_lines.resize(last + 1, vec![]);
+        a.cut_lines[last] = vec![crate::cutoff::CutLine { pts: vec![[x, 0.0], [x, 1500.0]], kind: crate::cutoff::CutKind::Remnant }];
+    }
+
+    /// Two PCs after a refused save (LB7): PROG-1 and PROG-2 opened library
+    /// job DEMO-7; PROG-1 saved it at 09:30 with 25 parts and a remnant
+    /// line; PROG-2's save at 09:35, with 40 parts and a remnant line, was
+    /// refused.
+    struct Refusal {
+        dir: std::path::PathBuf,
+        clock: Clock,
+        prog1: App,
+        prog2: App,
+        /// DEMO-7's record.
+        id: u64,
+        /// The stock file and DEMO-7's record just before PROG-2 saved.
+        stock: Vec<u8>,
+        record: Vec<u8>,
+    }
+
+    fn refusal(tag: &str) -> Refusal {
+        let dir = new_library(tag);
+        let clock = Clock::at(NOV_9_0920);
+        let mut prog1 = demo7(&dir, &clock);
+        let id = prog1.job_lib_id.unwrap();
+        let mut prog2 = stock_window(&dir, "kim", "PROG-2", &clock);
+        prog2.open_library_job(id);
+        assert_eq!(prog2.job_name, "DEMO-7");
+        clock.advance(Duration::from_secs(10 * 60));
+        prog1.parts[0].qty = 25;
+        prog1.run_nesting();
+        remnant_line(&mut prog1);
+        prog1.save_job_to_library();
+        assert!(prog1.result.formats.iter().any(|f| !f.made.is_empty()), "PROG-1 stored a remnant: {}", prog1.status);
+        let stock = stock_file(&dir);
+        let record = std::fs::read(prog1.library().unwrap().path(Kind::Job, id)).unwrap();
+        clock.advance(Duration::from_secs(5 * 60));
+        prog2.parts[0].qty = 40;
+        prog2.run_nesting();
+        remnant_line(&mut prog2);
+        prog2.save_job_to_library();
+        Refusal { dir, clock, prog1, prog2, id, stock, record }
+    }
+
+    /// How many of DEMO-7's 3000 × 1500 sheets are left in stock, and the
+    /// references of the remnants in stock.
+    fn in_stock(dir: &std::path::Path) -> (i32, Vec<String>) {
+        let s = crate::stock::Stock::load(dir).unwrap();
+        (s.get("S3000").map_or(0, |i| i.qty), s.items.iter().filter(|i| i.kind == crate::stock::Kind::NestRemnant).map(|i| i.reference.clone()).collect())
+    }
+
+    /// The remnants a window's job stored.
+    fn made(a: &App) -> Vec<String> {
+        a.result.formats.iter().flat_map(|f| f.made.iter().cloned()).collect()
+    }
+
+    /// How many of DEMO-7's 3000 × 1500 sheets a window's job holds (its
+    /// remnant sheets aside).
+    fn holds(a: &App) -> i32 {
+        a.held.get("S3000").copied().unwrap_or(0)
+    }
+
+    /// LB7, LB8: PROG-1 and PROG-2 open library job DEMO-7; PROG-1 saves;
+    /// PROG-2's save is refused, naming PROG-1 and the time, and asks what
+    /// to do. It took nothing from stock and stored no remnants.
+    #[test]
+    fn a_save_over_a_job_another_pc_saved_since_takes_nothing_from_stock() {
+        let r = refusal("refused_save");
+        assert!(r.prog2.status.contains("sam on PROG-1, 9 Nov 09:30"), "{}", r.prog2.status);
+        let q = r.prog2.libui.question.as_ref().expect("PROG-2 is asked what to do");
+        assert!(matches!(q, SaveQuestion::Job(c) if c.saved_by(&r.clock) == "sam on PROG-1, 9 Nov 09:30"), "{q:?}");
+        assert_eq!(stock_file(&r.dir), r.stock, "PROG-2's refused save changed the stock");
+        assert!(made(&r.prog2).is_empty(), "PROG-2's refused save stored remnants");
+        assert_eq!(std::fs::read(r.prog1.library().unwrap().path(Kind::Job, r.id)).unwrap(), r.record, "PROG-2's refused save wrote the job");
+        let _ = std::fs::remove_dir_all(&r.dir);
+    }
+
+    /// LB9 Reload theirs: PROG-2's job becomes the job as PROG-1 saved it,
+    /// with nothing unsaved; the stock stays as it is; PROG-2's next save
+    /// goes over the record.
+    #[test]
+    fn reload_theirs_takes_their_job_and_drops_mine() {
+        let Refusal { dir, clock, prog1, mut prog2, id, stock, .. } = refusal("reload");
+        prog2.reload_theirs();
+        assert!(prog2.libui.question.is_none());
+        assert_eq!((prog2.job_name.as_str(), prog2.parts[0].qty, prog2.job_lib_id), ("DEMO-7", 25, Some(id)));
+        assert_eq!((&prog2.held, made(&prog2)), (&prog1.held, made(&prog1)), "it holds what PROG-1's save holds");
+        assert!(!prog2.job_unsaved(prog2.cur_job));
+        assert!(prog2.status.contains("sam on PROG-1"), "{}", prog2.status);
+        assert_eq!(stock_file(&dir), stock);
+        clock.advance(Duration::from_secs(60));
+        prog2.parts[0].qty = 30;
+        prog2.run_nesting();
+        prog2.save_job_to_library();
+        assert!(prog2.libui.question.is_none(), "{}", prog2.status);
+        assert_eq!(prog2.job_lib_id, Some(id));
+        prog2.lib_refresh();
+        assert_eq!(listed(&prog2, Kind::Job), vec![("DEMO-7".to_string(), "Saved by kim on PROG-2, 9 Nov 09:36".to_string())]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// LB9 Save mine as a copy: PROG-2's job is saved as a new job under the
+    /// first free name, which takes its own sheets from stock and stores its
+    /// own remnant; PROG-1's DEMO-7 stays as PROG-1 saved it, with its
+    /// sheets and remnant.
+    #[test]
+    fn save_mine_as_a_copy_makes_a_new_job_with_its_own_sheets() {
+        let Refusal { dir, prog1, mut prog2, id, record, .. } = refusal("copy");
+        let (sheets, remnants) = in_stock(&dir);
+        prog2.save_mine_as_copy();
+        assert!(prog2.libui.question.is_none(), "{}", prog2.status);
+        assert_eq!((prog2.job_name.as_str(), prog2.parts[0].qty), ("DEMO-7 (1)", 40));
+        assert!(prog2.job_lib_id.is_some_and(|c| c != id), "{}", prog2.status);
+        assert_eq!(std::fs::read(prog1.library().unwrap().path(Kind::Job, id)).unwrap(), record, "PROG-1's DEMO-7 changed");
+        prog2.lib_refresh();
+        let mut names: Vec<String> = listed(&prog2, Kind::Job).into_iter().map(|(n, by)| format!("{n}: {by}")).collect();
+        names.sort();
+        assert_eq!(names, ["DEMO-7 (1): Saved by kim on PROG-2, 9 Nov 09:35", "DEMO-7: Saved by sam on PROG-1, 9 Nov 09:30"]);
+        // The copy took its own sheets and stored its own remnant.
+        let (left, now) = in_stock(&dir);
+        assert!(holds(&prog2) > 0);
+        assert_eq!(left, sheets - holds(&prog2));
+        assert_eq!(made(&prog2).len(), 1, "{}", prog2.status);
+        assert!(remnants.iter().all(|r| now.contains(r)) && now.contains(&made(&prog2)[0]), "{remnants:?} → {now:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// LB9 with JX16: a copy takes a name no other job in the Library holds,
+    /// whatever its capitals. With "demo-7 (1)" saved in another folder,
+    /// Save mine as a copy saves "DEMO-7 (2)".
+    #[test]
+    fn save_mine_as_a_copy_skips_a_name_another_job_holds() {
+        let Refusal { dir, mut prog2, id, .. } = refusal("copy_taken");
+        let taken = saved_elsewhere(&dir, "demo-7 (1)", "Acme");
+        prog2.save_mine_as_copy();
+        assert!(prog2.libui.question.is_none(), "{}", prog2.status);
+        assert_eq!(prog2.job_name, "DEMO-7 (2)", "{}", prog2.status);
+        assert!(prog2.job_lib_id.is_some_and(|c| c != id && c != taken), "{}", prog2.status);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// LB9 Overwrite: PROG-2's job replaces PROG-1's. PROG-1's sheets go back
+    /// to stock and its unused remnant comes out; PROG-2's are booked. If
+    /// someone saves again before it is saved, it asks again.
+    #[test]
+    fn overwrite_replaces_their_job_and_their_stock() {
+        let Refusal { dir, clock, mut prog1, mut prog2, id, .. } = refusal("overwrite");
+        // PROG-1 saves once more while PROG-2 is choosing: asked again.
+        clock.advance(Duration::from_secs(60));
+        prog1.parts[0].qty = 26;
+        prog1.run_nesting();
+        remnant_line(&mut prog1);
+        prog1.save_job_to_library();
+        prog2.overwrite_theirs();
+        let q = prog2.libui.question.as_ref().expect("asked again");
+        assert!(matches!(q, SaveQuestion::Job(c) if c.saved_by(&clock) == "sam on PROG-1, 9 Nov 09:36"), "{q:?}");
+        let theirs = made(&prog1);
+        assert!(!theirs.is_empty());
+        let (sheets, _) = in_stock(&dir);
+        let before = sheets + holds(&prog1);
+        prog2.overwrite_theirs();
+        assert!(prog2.libui.question.is_none(), "{}", prog2.status);
+        assert_eq!(prog2.job_lib_id, Some(id));
+        let lib = prog2.library().unwrap();
+        let rec = lib.load_job(id).unwrap();
+        assert_eq!((rec.parts[0].qty, rec.saved.map(|s| s.by.label())), (40, Some("kim on PROG-2".to_string())));
+        assert_eq!(lib.entries().iter().filter(|e| e.kind == Kind::Job).count(), 1);
+        let (left, now) = in_stock(&dir);
+        assert_eq!(left, before - holds(&prog2), "PROG-1's sheets went back, PROG-2's were taken");
+        assert!(theirs.iter().all(|r| !now.contains(r)), "PROG-1's remnants are still in stock: {theirs:?} in {now:?}");
+        assert_eq!(made(&prog2).len(), 1);
+        assert!(now.contains(&made(&prog2)[0]));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// LB9, JX15: DEMO-7 sits in folder Acme/2026-11. Each answer to PROG-2's
+    /// refused save leaves it there: Save mine as a copy files the copy next
+    /// to it, Overwrite saves over it where it is, and a job reloaded from
+    /// there saves over it where it is too.
+    #[test]
+    fn the_answers_keep_the_job_in_its_folder_and_file_the_copy_next_to_it() {
+        use crate::folders::TOP;
+        let dir = new_library("answer_folders");
+        let clock = Clock::at(NOV_9_0920);
+        let mut prog1 = demo7(&dir, &clock);
+        let id = prog1.job_lib_id.unwrap();
+        let acme = prog1.lib_new_folder(Kind::Job, TOP).unwrap();
+        assert!(prog1.lib_rename_folder(Kind::Job, acme, "Acme"), "{}", prog1.status);
+        let nov = prog1.lib_new_folder(Kind::Job, acme).unwrap();
+        assert!(prog1.lib_rename_folder(Kind::Job, nov, "2026-11"), "{}", prog1.status);
+        prog1.lib_cut(Kind::Job, super::LibItem::Job(id));
+        assert!(prog1.lib_paste(Kind::Job, nov), "{}", prog1.status);
+        let outline = |a: &mut App| {
+            a.lib_refresh();
+            // The jobs in Acme/2026-11 (the folder's own line left out).
+            a.library_outline().into_iter().filter(|l| l.starts_with("Acme/2026-11/") && !l.ends_with('/')).collect::<Vec<_>>()
+        };
+        // PROG-2 opens it from there; PROG-1 saves it; PROG-2's save is refused.
+        let mut prog2 = stock_window(&dir, "kim", "PROG-2", &clock);
+        let refused = |prog1: &mut App, prog2: &mut App| {
+            clock.advance(Duration::from_secs(60));
+            prog1.parts[0].qty += 1;
+            prog1.save_job_to_library();
+            assert!(prog1.libui.question.is_none(), "{}", prog1.status);
+            prog2.parts[0].qty += 2;
+            prog2.save_job_to_library();
+            assert!(matches!(prog2.libui.question, Some(SaveQuestion::Job(_))), "{}", prog2.status);
+        };
+        prog2.open_library_job(id);
+        refused(&mut prog1, &mut prog2);
+        // Save mine as a copy: next to theirs.
+        prog2.save_mine_as_copy();
+        assert_eq!(prog2.job_name, "DEMO-7 (1)", "{}", prog2.status);
+        assert_eq!(outline(&mut prog2), ["Acme/2026-11/DEMO-7", "Acme/2026-11/DEMO-7 (1)"]);
+        // Overwrite: over theirs, where it is.
+        prog2.open_library_job(id);
+        refused(&mut prog1, &mut prog2);
+        prog2.overwrite_theirs();
+        assert!(prog2.libui.question.is_none() && prog2.job_lib_id == Some(id), "{}", prog2.status);
+        assert_eq!(outline(&mut prog2), ["Acme/2026-11/DEMO-7", "Acme/2026-11/DEMO-7 (1)"]);
+        // Reload theirs (PROG-1, which still has DEMO-7 open): it sits in an
+        // Open jobs folder named like its Library folder, and its next save
+        // goes over it, where it is.
+        refused(&mut prog2, &mut prog1);
+        prog1.reload_theirs();
+        assert_eq!((prog1.job_lib_id, prog1.jobs[prog1.cur_job].week.as_str()), (Some(id), "2026-11"));
+        prog1.parts[0].qty += 1;
+        prog1.save_job_to_library();
+        assert!(prog1.libui.question.is_none() && prog1.job_lib_id == Some(id), "{}", prog1.status);
+        assert_eq!(outline(&mut prog1), ["Acme/2026-11/DEMO-7", "Acme/2026-11/DEMO-7 (1)"]);
+        assert_eq!(prog1.library().unwrap().entries().iter().filter(|e| e.kind == Kind::Job).count(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// LB5, LB6: two windows on two PCs, one Library: each saves a job, and
@@ -940,11 +1601,292 @@ mod libui_tests {
             menu.sort();
             assert_eq!(menu, want, "Add product's library list");
         }
-        // PROG-2 saves PROG-1's part again: it's PROG-2's now.
+        // PROG-2 saves its own part of that name over PROG-1's (asked first,
+        // LB7): it's PROG-2's now.
         clock.advance(Duration::from_secs(60));
         prog2.save_part_to_library(0);
+        prog2.overwrite_part();
         prog1.lib_refresh();
         assert!(listed(&prog1, Kind::Product).contains(&(first, "Saved by kim on PROG-2, 9 Nov 09:31".to_string())), "{:?}", listed(&prog1, Kind::Product));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The library part named `name`, as PROG-1 sees it: its width, and who
+    /// saved it when.
+    fn library_part(a: &App, name: &str) -> Option<(f64, String)> {
+        let lib = a.library().unwrap();
+        let e = lib.entries().into_iter().find(|e| e.kind == Kind::Product && e.name == name)?;
+        Some((lib.load_product(e.id).unwrap().part.w, e.saved_note(&a.clock)))
+    }
+
+    /// LB7: a library part added to a job a second time, after someone saved
+    /// it again, leaves the first one as it read it: saving that one asks,
+    /// and their save stays.
+    #[test]
+    fn a_library_part_added_twice_keeps_what_the_first_one_read() {
+        let dir = new_library("part_twice");
+        let clock = Clock::at(NOV_9_0920);
+        let mut prog1 = window(&dir, "sam", "PROG-1", &clock);
+        let mut prog2 = window(&dir, "kim", "PROG-2", &clock);
+        prog1.open_job(0);
+        prog1.parts[0].name = "DEMO-P1".into();
+        prog1.save_part_to_library(0);
+        let id = prog1.library().unwrap().find_product("DEMO-P1").unwrap();
+        prog2.open_job(0);
+        prog2.add_library_product(id);
+        let first = prog2.parts.len() - 1;
+        clock.advance(Duration::from_secs(10 * 60));
+        prog1.parts[0].w += 10.0;
+        prog1.save_part_to_library(0);
+        let theirs = library_part(&prog1, "DEMO-P1");
+        prog2.add_library_product(id);
+        prog2.save_part_to_library(first);
+        assert!(matches!(&prog2.libui.question, Some(SaveQuestion::Part { part, .. }) if *part == first), "{}", prog2.status);
+        assert_eq!(library_part(&prog1, "DEMO-P1"), theirs);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// LB7: a job saved to a file and opened again still knows the library
+    /// parts it read: saving one back goes over it without asking.
+    #[test]
+    fn a_job_file_remembers_the_library_parts_it_read() {
+        let dir = new_library("part_in_file");
+        let clock = Clock::at(NOV_9_0920);
+        let mut prog1 = window(&dir, "sam", "PROG-1", &clock);
+        let mut prog2 = window(&dir, "kim", "PROG-2", &clock);
+        prog1.open_job(0);
+        prog1.parts[0].name = "DEMO-P1".into();
+        prog1.save_part_to_library(0);
+        let id = prog1.library().unwrap().find_product("DEMO-P1").unwrap();
+        prog2.open_job(0);
+        prog2.add_library_product(id);
+        let path = dir.join("DEMO-8.snjob");
+        prog2.save_job_to(&path);
+        prog2.open_job_file(&path);
+        let mine = prog2.parts.iter().position(|p| p.name == "DEMO-P1").unwrap();
+        prog2.parts[mine].w += 50.0;
+        prog2.save_part_to_library(mine);
+        assert!(prog2.libui.question.is_none(), "{}", prog2.status);
+        assert_eq!(library_part(&prog1, "DEMO-P1").map(|t| t.0), Some(prog2.parts[mine].w));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// LB13: Overwrite answered once the Library can't be reached changes
+    /// nothing in the job, and the question stays.
+    #[test]
+    fn overwrite_once_the_library_cant_be_reached_changes_nothing() {
+        let dir = new_library("overwrite_gone");
+        let clock = Clock::at(NOV_9_0920);
+        let mut prog1 = demo7(&dir, &clock);
+        let id = prog1.job_lib_id.unwrap();
+        let mut prog2 = stock_window(&dir, "kim", "PROG-2", &clock);
+        prog2.open_library_job(id);
+        clock.advance(Duration::from_secs(60));
+        prog1.parts[0].qty += 1;
+        prog1.save_job_to_library();
+        prog2.parts[0].qty += 2;
+        prog2.save_job_to_library();
+        assert!(matches!(prog2.libui.question, Some(SaveQuestion::Job(_))), "{}", prog2.status);
+        let job = serde_json::to_string(&prog2.current_jobfile()).unwrap();
+        let away = dir.with_extension("away");
+        std::fs::rename(&dir, &away).unwrap();
+        prog2.overwrite_theirs();
+        assert!(prog2.status.contains("can't be reached"), "{}", prog2.status);
+        assert!(matches!(prog2.libui.question, Some(SaveQuestion::Job(_))), "the question went: {}", prog2.status);
+        assert_eq!(serde_json::to_string(&prog2.current_jobfile()).unwrap(), job, "the refused Overwrite changed the job");
+        let _ = std::fs::remove_dir_all(&away);
+    }
+
+    /// LB13: the share drops while Overwrite is saving, just after it found
+    /// the Library: the job, its stock and the question stay as they were.
+    #[test]
+    fn overwrite_cut_off_while_saving_changes_nothing() {
+        let dir = new_library("overwrite_cut_off");
+        let clock = Clock::at(NOV_9_0920);
+        let mut prog1 = demo7(&dir, &clock);
+        let id = prog1.job_lib_id.unwrap();
+        let mut prog2 = stock_window(&dir, "kim", "PROG-2", &clock);
+        prog2.open_library_job(id);
+        clock.advance(Duration::from_secs(60));
+        prog1.parts[0].qty += 1;
+        prog1.save_job_to_library();
+        prog2.parts[0].qty += 2;
+        prog2.save_job_to_library();
+        assert!(matches!(prog2.libui.question, Some(SaveQuestion::Job(_))), "{}", prog2.status);
+        let job = serde_json::to_string(&prog2.current_jobfile()).unwrap();
+        let stock = std::fs::read_to_string(Stock::file(&dir)).unwrap();
+        let away = dir.with_extension("away");
+        {
+            let (dir, away) = (dir.clone(), away.clone());
+            crate::shared::hooks::set(move |s| {
+                if s == "library reached" {
+                    std::fs::rename(&dir, &away).unwrap();
+                }
+            });
+        }
+        prog2.overwrite_theirs();
+        crate::shared::hooks::clear();
+        assert!(prog2.status.contains("can't be reached"), "{}", prog2.status);
+        assert!(matches!(prog2.libui.question, Some(SaveQuestion::Job(_))), "the question went: {}", prog2.status);
+        assert!(prog2.libui.overwrite.is_none());
+        assert_eq!(serde_json::to_string(&prog2.current_jobfile()).unwrap(), job, "the refused Overwrite changed the job");
+        assert_eq!(std::fs::read_to_string(Stock::file(&away)).unwrap(), stock, "the refused Overwrite changed the stock");
+        // Back again: a plain Save still asks, it doesn't overwrite unasked.
+        std::fs::rename(&away, &dir).unwrap();
+        prog2.libui.question = None;
+        prog2.save_job_to_library();
+        assert!(matches!(prog2.libui.question, Some(SaveQuestion::Job(_))), "{}", prog2.status);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// LB9: Overwrite gave their sheets back and booked this job, then its
+    /// record couldn't be stored (the Library's list was in the way). Saving
+    /// again finishes it without asking: their sheets went back once and
+    /// this job's were taken once.
+    #[test]
+    fn overwrite_whose_record_couldnt_be_stored_finishes_on_the_next_save() {
+        let Refusal { dir, prog1, mut prog2, id, .. } = refusal("overwrite_store_fails");
+        let (sheets, _) = in_stock(&dir);
+        let before = sheets + holds(&prog1);
+        {
+            let index = dir.join(crate::library::INDEX);
+            crate::shared::hooks::set(move |s| {
+                if s == "record written" && index.is_file() {
+                    std::fs::remove_file(&index).unwrap();
+                    std::fs::create_dir_all(index.join("in the way")).unwrap();
+                }
+            });
+        }
+        prog2.overwrite_theirs();
+        crate::shared::hooks::clear();
+        assert!(prog2.status.contains("Couldn't save"), "{}", prog2.status);
+        assert_eq!(prog2.library().unwrap().load_job(id).unwrap().parts[0].qty, 25, "their save was replaced");
+        std::fs::remove_dir_all(dir.join(crate::library::INDEX)).unwrap();
+        prog2.library().unwrap().rebuild_index().unwrap();
+        prog2.save_job_to_library();
+        assert!(prog2.libui.question.is_none(), "asked again: {}", prog2.status);
+        assert_eq!(prog2.library().unwrap().load_job(id).unwrap().parts[0].qty, 40);
+        let (left, _) = in_stock(&dir);
+        assert_eq!(left, before - holds(&prog2), "PROG-1's sheets went back once, PROG-2's were taken once");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// LB9 with Prompt for references: Overwrite books the job as a new one,
+    /// so the remnants it had stored are named again before anything is
+    /// saved.
+    #[test]
+    fn overwrite_asks_for_the_names_of_every_remnant_it_stores() {
+        let dir = new_library("overwrite_names");
+        let clock = Clock::at(NOV_9_0920);
+        let mut prog1 = demo7(&dir, &clock);
+        let id = prog1.job_lib_id.unwrap();
+        remnant_line(&mut prog1);
+        prog1.save_job_to_library();
+        assert!(!made(&prog1).is_empty(), "{}", prog1.status);
+        let mut prog2 = stock_window(&dir, "kim", "PROG-2", &clock);
+        prog2.open_library_job(id);
+        assert_eq!(made(&prog2), made(&prog1));
+        clock.advance(Duration::from_secs(60));
+        prog1.save_job_to_library();
+        prog2.save_job_to_library();
+        assert!(matches!(prog2.libui.question, Some(SaveQuestion::Job(_))), "{}", prog2.status);
+        prog2.cfg.stock.prompt_remnant_ref = true;
+        let stock = stock_file(&dir);
+        prog2.overwrite_theirs();
+        let nm = prog2.naming.as_ref().expect("asked for the remnants' names");
+        assert_eq!(nm.rows.len(), made(&prog2).len());
+        assert_eq!(stock_file(&dir), stock, "something was saved before they were named");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// LB7, LB9: PROG-1 and PROG-2 added library part DEMO-P1 to their jobs;
+    /// PROG-1 saved it again. PROG-2's Save to library of its DEMO-P1 asks,
+    /// naming PROG-1 and the time, and saves nothing until answered: Keep
+    /// theirs, Save mine under a new name, or Overwrite.
+    #[test]
+    fn saving_a_library_part_someone_saved_since_it_was_added_asks_first() {
+        let dir = new_library("part_question");
+        let clock = Clock::at(NOV_9_0920);
+        let mut prog1 = window(&dir, "sam", "PROG-1", &clock);
+        let mut prog2 = window(&dir, "kim", "PROG-2", &clock);
+        prog1.open_job(0);
+        prog1.parts[0].name = "DEMO-P1".into();
+        prog1.save_part_to_library(0);
+        let id = prog1.library().unwrap().find_product("DEMO-P1").unwrap();
+        prog2.open_job(0);
+        prog2.add_library_product(id);
+        let mine = prog2.parts.len() - 1;
+        // PROG-1 saves it again (its own, as it last saved it: no question).
+        clock.advance(Duration::from_secs(10 * 60));
+        prog1.parts[0].w += 10.0;
+        prog1.save_part_to_library(0);
+        assert!(prog1.libui.question.is_none(), "{}", prog1.status);
+        let theirs = library_part(&prog1, "DEMO-P1");
+        assert_eq!(theirs.as_ref().map(|t| t.1.as_str()), Some("Saved by sam on PROG-1, 9 Nov 09:30"));
+        // PROG-2 changes its copy and saves it: asked, nothing saved.
+        clock.advance(Duration::from_secs(5 * 60));
+        prog2.parts[mine].w += 50.0;
+        prog2.save_part_to_library(mine);
+        assert!(prog2.status.contains("sam on PROG-1, 9 Nov 09:30"), "{}", prog2.status);
+        assert!(matches!(&prog2.libui.question, Some(SaveQuestion::Part { part, changed, added: true }) if *part == mine && changed.name == "DEMO-P1"), "{:?}", prog2.libui.question);
+        assert_eq!(library_part(&prog1, "DEMO-P1"), theirs);
+        // Keep theirs: nothing saved, the job's part as it was; asked again
+        // on the next save.
+        let kept = prog2.parts[mine].clone();
+        prog2.keep_theirs();
+        assert!(prog2.libui.question.is_none());
+        assert_eq!(library_part(&prog1, "DEMO-P1"), theirs);
+        assert_eq!((prog2.parts[mine].name.as_str(), prog2.parts[mine].w), (kept.name.as_str(), kept.w));
+        prog2.save_part_to_library(mine);
+        assert!(prog2.libui.question.is_some(), "{}", prog2.status);
+        // Save mine under a new name: the job's part takes the first free
+        // name and is saved as a new library part; theirs stays.
+        prog2.save_part_under_new_name();
+        assert!(prog2.libui.question.is_none(), "{}", prog2.status);
+        assert_eq!(prog2.parts[mine].name, "DEMO-P1 (1)");
+        assert_eq!(library_part(&prog1, "DEMO-P1"), theirs);
+        assert_eq!(library_part(&prog1, "DEMO-P1 (1)"), Some((kept.w, "Saved by kim on PROG-2, 9 Nov 09:35".to_string())));
+        // Saved again, it goes over its own new record without asking.
+        prog2.parts[mine].w += 5.0;
+        prog2.save_part_to_library(mine);
+        assert!(prog2.libui.question.is_none(), "{}", prog2.status);
+        assert_eq!(library_part(&prog1, "DEMO-P1 (1)").map(|p| p.0), Some(kept.w + 5.0));
+        // Overwrite: PROG-2 adds DEMO-P1 again, PROG-1 saves it again, PROG-2
+        // saves its changed copy and overwrites theirs.
+        prog2.add_library_product(id);
+        let again = prog2.parts.len() - 1;
+        clock.advance(Duration::from_secs(60));
+        prog1.parts[0].w += 10.0;
+        prog1.save_part_to_library(0);
+        clock.advance(Duration::from_secs(60));
+        prog2.parts[again].w = 777.0;
+        prog2.save_part_to_library(again);
+        assert!(prog2.status.contains("sam on PROG-1, 9 Nov 09:36"), "{}", prog2.status);
+        prog2.overwrite_part();
+        assert!(prog2.libui.question.is_none(), "{}", prog2.status);
+        assert_eq!(library_part(&prog1, "DEMO-P1"), Some((777.0, "Saved by kim on PROG-2, 9 Nov 09:37".to_string())));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// LB7: a part that wasn't added from the Library, saved under a name a
+    /// library part already has, asks too: it would replace that part.
+    #[test]
+    fn saving_a_part_under_a_library_parts_name_asks_first() {
+        let dir = new_library("part_unread");
+        let clock = Clock::at(NOV_9_0920);
+        let mut prog1 = window(&dir, "sam", "PROG-1", &clock);
+        let mut prog2 = window(&dir, "kim", "PROG-2", &clock);
+        prog1.open_job(0);
+        prog1.save_part_to_library(0);
+        let name = prog1.parts[0].name.clone();
+        let theirs = library_part(&prog1, &name);
+        prog2.open_job(0);
+        assert_eq!(prog2.parts[0].name, name);
+        prog2.parts[0].w += 50.0;
+        prog2.save_part_to_library(0);
+        assert!(matches!(&prog2.libui.question, Some(SaveQuestion::Part { part: 0, added: false, .. })), "{}", prog2.status);
+        assert!(prog2.status.contains("sam on PROG-1, 9 Nov 09:20"), "{}", prog2.status);
+        assert_eq!(library_part(&prog1, &name), theirs);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1017,7 +1959,7 @@ mod libui_tests {
         assert!(!dir.exists(), "looking at the lists made the Library folder");
         // The share is back: Try again lists what's there.
         library::create(&dir).unwrap();
-        Library::open(&dir, &a.who, &a.clock).unwrap().save_job(&crate::jobfile::JobFile::new_job("DEMO-001", a.spec.clone()), None).unwrap();
+        Library::open(&dir, &a.who, &a.clock).unwrap().save_job(&crate::jobfile::JobFile::new_job("DEMO-001", a.spec.clone()), crate::library::SaveTo::New).unwrap();
         a.lib_retry();
         assert!(a.libui.error.is_none());
         assert!(a.libui.entries.iter().any(|e| e.kind == Kind::Job && e.name == "DEMO-001"));
@@ -1135,7 +2077,7 @@ mod libui_tests {
     fn saved_elsewhere(dir: &Path, name: &str, folder: &str) -> u64 {
         let mut j = JobFile::new_job(name, crate::nest::SheetSpec { w: 3000.0, h: 1500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 10.0, level: 3, machine: Default::default(), kerf: Default::default() });
         j.week = folder.into();
-        Library::open(dir, &Who::new("kim", "PROG-3"), &Clock::at(NOV_9_0920)).unwrap().save_job(&j, None).unwrap()
+        Library::open(dir, &Who::new("kim", "PROG-3"), &Clock::at(NOV_9_0920)).unwrap().save_job(&j, crate::library::SaveTo::New).unwrap().id
     }
 
     /// JX16: saving the open job into the Library under a name another job
