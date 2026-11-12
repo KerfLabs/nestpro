@@ -3460,6 +3460,53 @@ fn a_hole_picked_in_manual_cutting_goes_first_and_the_rest_go_nearest_from_it() 
     let _ = std::fs::remove_dir_all(&d);
 }
 
+/// DEMO-HOLES as drawn at (20, 20) with hole 2 (its lower left) set by
+/// hand, and on the sheet hole 2 picked, then hole 4 (its lower right): the
+/// head stands at hole 4 when the rest of the part comes (CO10, CO14).
+fn hand_set_hole_picked_then_another(d: &Path) -> Session {
+    let mut s = scattered_job(d, false, &[(20.0, 20.0, 0, false, "")]);
+    call(&mut s, "part-cut-order", None, json!({"part": 1, "mode": "add", "contours": "2"}));
+    call(&mut s, "cut-order", None, json!({"mode": "pick", "sheet": 1, "x": 65, "y": 70, "tol": 1}));
+    call(&mut s, "cut-order", None, json!({"mode": "pick", "sheet": 1, "x": 265, "y": 70, "tol": 1}));
+    s
+}
+
+/// By proximity from the pick on hole 4's left edge (265, 70): hole 6 at
+/// (170, 69.5), 3 above it, then 1 and 5 exactly as far (1 met first). Taken
+/// from hole 2, where the order set by hand put it before the picks, the
+/// rest would be 5, 3, 1, 6.
+const AFTER_THE_PICKS: [u64; 7] = [2, 4, 6, 3, 1, 5, 7];
+
+#[test]
+fn after_picks_the_rest_of_a_part_follows_from_the_last_pick_not_from_a_hand_set_hole_already_cut() {
+    let d = dir("holes_after_picks");
+    let mut s = hand_set_hole_picked_then_another(&d);
+    let copies = [copy_at(20.0, 20.0, 0, false)];
+    assert_eq!(scattered_program(&mut s, 1, &copies), vec![(1, AFTER_THE_PICKS.to_vec())]);
+    verify_clean(&mut s);
+    // None: the rest in the part's own order, as before.
+    let _m = on_machine("B565 0\n");
+    assert_eq!(scattered_program(&mut s, 1, &copies), vec![(1, vec![2, 4, 1, 3, 5, 6, 7])]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn the_rest_of_a_part_taken_whole_after_picks_follows_from_the_last_pick() {
+    let d = dir("holes_whole_after_picks");
+    let copies = [copy_at(20.0, 20.0, 0, false)];
+    // A box round the part, then a sweep across it, each after the picks
+    // (MM8, MM9): the part is cut whole there, from the last pick.
+    for parts in [json!({"mode": "parts", "sheet": 1, "box": "10,10; 330,230"}), json!({"mode": "parts", "sheet": 1, "points": "10,120; 330,120"})] {
+        let mut s = hand_set_hole_picked_then_another(&d);
+        call(&mut s, "cut-order", None, parts.clone());
+        let info = call(&mut s, "info", None, json!({}));
+        assert_eq!(info["data"]["sheets"][0]["manual_cuts"], 3, "{parts}: {info}");
+        assert_eq!(scattered_program(&mut s, 1, &copies), vec![(1, AFTER_THE_PICKS.to_vec())], "{parts}");
+        verify_clean(&mut s);
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 #[test]
 fn a_frames_holes_follow_the_setting_and_the_part_in_its_window_still_goes_before_the_window() {
     let d = dir("holes_frame");

@@ -798,23 +798,24 @@ struct Picks<'a> {
 }
 
 impl Picks<'_> {
-    /// Placed part `i`'s contours (holes first, the outline last, as
-    /// `sheet_contours` numbers them) in its cut order (CO8, CO14), each
-    /// once: the holes set by hand, then the others not yet cut (`jobs`) as
-    /// the machine's hole order takes them where the copy sits, from where
-    /// the head is, then the outline.
+    /// Placed part `i`'s holes not yet cut (`jobs`), then its outline (as
+    /// `sheet_contours` numbers them), in its cut order (CO8, CO14), each
+    /// once: the holes set by hand, then the others as the machine's hole
+    /// order takes them where the copy sits, from where the head is.
     fn cuts(&self, i: usize, jobs: &[CutJob]) -> Vec<usize> {
         let pl = &self.placed[i];
         let list = sheet_contours(&self.parts[pl.part], pl);
         let n = list.len();
+        // The holes set by hand still to cut: one the sheet has cut already
+        // (picked in Manual cutting) has no place left in the part's run.
         let mut hand: Vec<usize> = vec![];
         for &c in &self.hand[pl.part] {
-            if c + 1 < n && !hand.contains(&c) {
+            if c + 1 < n && !hand.contains(&c) && !job_done(jobs, i, c) {
                 hand.push(c);
             }
         }
-        // The head after the holes set by hand, else where the sheet's last
-        // cut was (CO27; MAC-61).
+        // The head after those holes, else where the sheet's last cut was
+        // (CO14, CO27; MAC-61).
         let head = match hand.last() {
             Some(&c) => self.point(i, c, &list[c].0),
             None => self.head(jobs),
