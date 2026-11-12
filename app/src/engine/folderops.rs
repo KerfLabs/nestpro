@@ -94,7 +94,7 @@ pub fn run(ctx: &Ctx, a: &Args, kind: Kind) -> Result<Outcome, String> {
     let (op, noun) = (folders::op_name(kind), if kind == Kind::Job { "job" } else { "part" });
     // A Library that can't be reached is refused as agents' saves are (LB11).
     super::ops::reach_library(ctx, &format!("Nothing was read from the Library, and no {noun} folder was made, changed or moved"))?;
-    let lib = Library::open(&ctx.library_dir, &ctx.who, &ctx.clock)?;
+    let lib = Library::open(&ctx.library_dir, &ctx.who, &ctx.clock)?.watching(&ctx.watch);
     let mode = a.str("mode").unwrap_or_default();
     let records = |l: &Library| -> Vec<Entry> { l.entries().into_iter().filter(|e| e.kind == kind).collect() };
     let now = folders::load(&lib, kind)?;

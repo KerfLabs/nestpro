@@ -10,6 +10,7 @@ pub mod arrange;
 pub mod contours;
 pub mod folderops;
 pub mod imports;
+pub mod inuse;
 pub mod librarycheck;
 pub mod ops;
 pub mod readback;
@@ -45,6 +46,9 @@ pub struct Ctx {
     /// clock it goes by: what it saves to the Library records them (LB5).
     pub who: crate::shared::Who,
     pub clock: crate::shared::Clock,
+    /// What this session has seen of the holds on jobs in use, to judge when
+    /// one is gone (CU7). Agents never hold a job (CU12).
+    pub watch: inuse::Watch,
 }
 
 /// The post library of a machine (built-in values when it has none or it can't be read).
@@ -133,7 +137,7 @@ impl Ctx {
         let tech = install_machine(&m, &cfg.lantek_dir);
         install_material_keys(&cfg);
         let library_dir = if cfg.library_dir.is_empty() { crate::library::default_dir() } else { PathBuf::from(&cfg.library_dir) };
-        Ctx { post: load_post(&m), blm: blm_base(&m), tech, library_dir, cfg, who: crate::shared::Who::this_pc().as_agent(), clock: crate::shared::Clock::pc() }
+        Ctx { post: load_post(&m), blm: blm_base(&m), tech, library_dir, cfg, who: crate::shared::Who::this_pc().as_agent(), clock: crate::shared::Clock::pc(), watch: Default::default() }
     }
 
     /// Built-in values only (tests).

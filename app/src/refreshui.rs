@@ -205,6 +205,9 @@ impl App {
         if self.libui.error.take().is_some() {
             self.libui.status.clear();
         }
+        // The jobs other PCs have in use, for the same lists (CU10): looked
+        // at in the background, read-only.
+        self.look_at_holds();
         ok
     }
 

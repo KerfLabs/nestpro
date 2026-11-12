@@ -6,7 +6,10 @@
 //! everything it and every other run wrote is there and whole, and prints a
 //! plain pass/fail report. Each round also makes, renames, nests, moves and
 //! deletes job folders and files its new job in one (JX10–JX15), and the
-//! check finds every folder and every job where its run left it.
+//! check finds every folder and every job where its run left it. Each round
+//! also takes, renews and lets go of holds (CU5–CU12): on its new job, and
+//! on one job every run shares, so a hold taken from under a run without
+//! Take over shows, and so does a hold a finished run left behind.
 //!
 //! It only works in an empty folder or one it made itself (it leaves
 //! `library-check.json` there), and refuses a real Library.
@@ -88,7 +91,110 @@ struct Log {
     /// (JX19); runs of versions before part folders didn't.
     #[serde(default)]
     parts_filed: bool,
+    /// Holds taken on its own jobs, renewals, holds let go; and how often
+    /// the job every run shares was taken by this run, or busy with another
+    /// (CU12).
+    #[serde(default)]
+    holds_taken: u64,
+    #[serde(default)]
+    holds_renewed: u64,
+    #[serde(default)]
+    holds_released: u64,
+    #[serde(default)]
+    shared_taken: u64,
+    #[serde(default)]
+    shared_busy: u64,
     errors: Vec<String>,
+}
+
+/// The job every run takes turns holding.
+const SHARED_JOB: &str = "DEMO-CHECK shared job";
+
+/// The job every run shares, made by the first run to need it.
+fn shared_job(lib: &Library) -> Result<u64, String> {
+    let find = || lib.entries().into_iter().find(|e| e.kind == Kind::Job && e.name == SHARED_JOB).map(|e| e.id);
+    if let Some(id) = find() {
+        return Ok(id);
+    }
+    match lib.save_job(&demo_job(SHARED_JOB, 0), SaveTo::New) {
+        Ok(r) => Ok(r.id),
+        // Another run made it at the same moment (JX16).
+        Err(e) => find().ok_or_else(|| format!("making the shared job reported an error: {e}")),
+    }
+}
+
+/// One round of holds (CU5–CU12): take a hold on this round's new job; the
+/// job every run shares is tried when this run doesn't hold it, and kept
+/// through the next round when taken (so the other runs meet it in use);
+/// renew everything held, then let go of the shared job held since the
+/// round before and of its own jobs but the last two. A hold taken from
+/// under the run without Take over (two PCs holding one job at once) is a
+/// problem.
+fn hold_round(lib: &Library, log: &mut Log, held: &mut Vec<(u64, String)>, shared: Option<u64>, shared_held: &mut bool) {
+    use super::inuse::{self, NotTaken, Renewed, Want};
+    let n = log.rounds;
+    if let Some(j) = log.jobs.iter().find(|j| j.name.ends_with(&format!(" job {n}"))).cloned() {
+        match inuse::take(lib, j.id, &j.name) {
+            Ok(_) => {
+                log.holds_taken += 1;
+                held.push((j.id, j.name.clone()));
+            }
+            Err(NotTaken::InUse(u)) => log.errors.push(format!("Its own new job '{}' was refused a hold: {}", j.name, u.said(&lib.clock))),
+            Err(NotTaken::Failed(e)) => log.errors.push(format!("taking a hold on '{}' reported an error: {e}", j.name)),
+        }
+    }
+    let mut wants: Vec<Want> = held.iter().map(|(job, name)| Want { job: *job, name: name.clone(), held: true }).collect();
+    let let_go_shared = *shared_held;
+    if let Some(s) = shared {
+        if !*shared_held {
+            match inuse::take(lib, s, SHARED_JOB) {
+                Ok(_) => {
+                    log.shared_taken += 1;
+                    *shared_held = true;
+                }
+                Err(NotTaken::InUse(_)) => log.shared_busy += 1,
+                Err(NotTaken::Failed(e)) => log.errors.push(format!("taking a hold on the shared job reported an error: {e}")),
+            }
+        }
+        if *shared_held {
+            wants.push(Want { job: s, name: SHARED_JOB.into(), held: true });
+        }
+    }
+    match inuse::renew(lib, &wants) {
+        Ok(found) => {
+            for (job, r) in found {
+                let name = wants.iter().find(|w| w.job == job).map_or_else(String::new, |w| w.name.clone());
+                match r {
+                    Renewed::Held(_) => log.holds_renewed += 1,
+                    Renewed::Lost(u) => {
+                        if Some(job) == shared {
+                            *shared_held = false;
+                        }
+                        log.errors.push(format!("Its hold on '{name}' was taken from under it without Take over ({}): two PCs held one job at once, or this run went 2 minutes without renewing.", u.note(&lib.clock)));
+                    }
+                    Renewed::Busy(_) => {}
+                    Renewed::JobGone => log.errors.push(format!("'{name}' (record {job}), which this run held, is gone from the Library.")),
+                }
+            }
+        }
+        Err(e) => log.errors.push(format!("renewing its holds reported an error: {e}")),
+    }
+    let mut go: Vec<u64> = vec![];
+    if let (Some(s), true) = (shared, let_go_shared && *shared_held) {
+        go.push(s);
+        *shared_held = false;
+    }
+    while held.len() > 2 {
+        go.push(held.remove(0).0);
+    }
+    release_holds(lib, log, &go);
+}
+
+fn release_holds(lib: &Library, log: &mut Log, jobs: &[u64]) {
+    match super::inuse::release(lib, jobs) {
+        Ok(()) => log.holds_released += jobs.len() as u64,
+        Err(e) => log.errors.push(format!("letting go of its holds reported an error: {e}")),
+    }
 }
 
 /// The report: passed or not, and the plain text.
@@ -137,8 +243,25 @@ pub fn refuse_real_library(folder: &Path, this_library: &Path) -> Result<(), Str
     // the write lock's files come and go while another run is saving.
     let passing = |n: &str| n.ends_with(".tmp") || n.starts_with(shared::LOCK_FILE);
     let (tree, part_tree) = (folders::file_name(Kind::Job), folders::file_name(Kind::Product));
-    if let Some(n) = top.iter().find(|n| ![MARKER, LOGS, crate::library::INDEX, tree, part_tree, "Jobs", "Products", "Sheets"].contains(&n.as_str()) && !passing(n)) {
+    let holds = super::inuse::FOLDER;
+    if let Some(n) = top.iter().find(|n| ![MARKER, LOGS, crate::library::INDEX, tree, part_tree, "Jobs", "Products", "Sheets", holds].contains(&n.as_str()) && !passing(n)) {
         return Err(real(format!("'{n}'")));
+    }
+    // Holds (CU5): only on the check's own jobs.
+    if folder.join(holds).is_dir() {
+        for n in names(&folder.join(holds))? {
+            if passing(&n) {
+                continue;
+            }
+            // A hold, or a let-go hold's takeover (CU9).
+            if n.strip_suffix(".over.json").or_else(|| n.strip_suffix(".json")).and_then(|s| s.parse::<u64>().ok()).is_none() {
+                return Err(real(format!("'{holds}/{n}'")));
+            }
+            let h = std::fs::read(folder.join(holds).join(&n)).ok().and_then(|b| serde_json::from_slice::<super::inuse::Hold>(&b).ok());
+            if let Some(h) = h.filter(|h| !h.name.starts_with(TAG)) {
+                return Err(real(format!("a hold on '{}'", h.name)));
+            }
+        }
     }
     if let Some(n) = folder.join("Sheets").is_dir().then(|| names(&folder.join("Sheets"))).transpose()?.unwrap_or_default().iter().find(|n| *n != "stock.json" && !passing(n)) {
         return Err(real(format!("'Sheets/{n}'")));
@@ -368,8 +491,22 @@ pub fn run(folder: &Path, this_library: &Path, opt: &Options) -> Result<Report, 
         deleted: vec![],
         folder_changes: 0,
         parts_filed: true,
+        holds_taken: 0,
+        holds_renewed: 0,
+        holds_released: 0,
+        shared_taken: 0,
+        shared_busy: 0,
         errors: vec![],
     };
+    let shared = match shared_job(&lib) {
+        Ok(id) => Some(id),
+        Err(e) => {
+            log.errors.push(e);
+            None
+        }
+    };
+    let mut held: Vec<(u64, String)> = vec![];
+    let mut shared_held = false;
     let until = started + Duration::from_secs_f64(opt.minutes.max(0.0) * 60.0);
     let (mut job_overs, mut part_overs) = (0u64, 0u64);
     while opt.rounds.map_or(Instant::now() < until, |n| log.rounds < n) {
@@ -409,6 +546,7 @@ pub fn run(folder: &Path, this_library: &Path, opt: &Options) -> Result<Report, 
             }
         }
         folder_round(&lib, &mut log, n, &format!("{TAG} {pc} {stamp}"));
+        hold_round(&lib, &mut log, &mut held, shared, &mut shared_held);
         // A stock change on this run's own sheet: one more on the rack.
         let sheet = log.sheet.clone();
         let changed = Stock::update(&lib, |st| {
@@ -435,6 +573,9 @@ pub fn run(folder: &Path, this_library: &Path, opt: &Options) -> Result<Report, 
             log.errors.push(format!("writing this run's log: {e}"));
         }
     }
+    // Every hold it took goes with it.
+    let last: Vec<u64> = held.iter().map(|(j, _)| *j).chain(shared.filter(|_| shared_held)).collect();
+    release_holds(&lib, &mut log, &last);
     log.finished = true;
     if let Err(e) = write_log(folder, &log) {
         log.errors.push(format!("writing this run's log: {e}"));
@@ -444,7 +585,7 @@ pub fn run(folder: &Path, this_library: &Path, opt: &Options) -> Result<Report, 
     problems.extend(checked.problems);
     let took = started.elapsed().as_secs_f64();
     let mut text = format!(
-        "Library check of {} by {pc} ({}): {} round(s) in {}.\nThis run: {} job(s) and {} library part(s) saved, {job_overs} job(s) and {part_overs} part(s) saved over again, {} stock change(s), {} job folder change(s).\nChecked: {} job(s), {} library part(s), {} stock sheet(s) and {} job folder(s) from {} run(s) ({}).\n",
+        "Library check of {} by {pc} ({}): {} round(s) in {}.\nThis run: {} job(s) and {} library part(s) saved, {job_overs} job(s) and {part_overs} part(s) saved over again, {} stock change(s), {} job folder change(s); {} hold(s) taken, {} renewed and {} let go, and the job every run shares held {} time(s) and found in use {} time(s).\nChecked: {} job(s), {} library part(s), {} stock sheet(s) and {} job folder(s) from {} run(s) ({}).\n",
         folder.display(),
         who.user,
         log.rounds,
@@ -453,6 +594,11 @@ pub fn run(folder: &Path, this_library: &Path, opt: &Options) -> Result<Report, 
         log.parts.len(),
         log.sheet_changes,
         log.folder_changes,
+        log.holds_taken,
+        log.holds_renewed,
+        log.holds_released,
+        log.shared_taken,
+        log.shared_busy,
         checked.jobs,
         checked.parts,
         checked.sheets,
@@ -652,6 +798,27 @@ fn verify(folder: &Path, lib: &Library, own: &Log) -> Checked {
             if let Err(e) = r {
                 add(rel(p), damaged(*kind, *id, p, &rel(p), &e));
             }
+        }
+    }
+    // Holds: whole, and none left by a run that finished (each lets go of
+    // every hold it took, CU5).
+    let running: Vec<(String, String)> = logs.iter().filter(|l| !l.finished).map(|l| (l.user.to_lowercase(), l.pc.to_lowercase())).collect();
+    for f in std::fs::read_dir(folder.join(super::inuse::FOLDER)).into_iter().flatten().flatten() {
+        let n = f.file_name().to_string_lossy().into_owned();
+        if !n.ends_with(".json") {
+            continue;
+        }
+        let r = format!("{}/{n}", super::inuse::FOLDER);
+        match std::fs::read(f.path()).map_err(|e| e.to_string()).and_then(|b| serde_json::from_slice::<super::inuse::Hold>(&b).map_err(|e| e.to_string())) {
+            Ok(h) => {
+                let by = (h.by.user.to_lowercase(), h.by.pc.to_lowercase());
+                let finished = logs.iter().any(|l| l.finished && (l.user.to_lowercase(), l.pc.to_lowercase()) == by);
+                if finished && !running.contains(&by) {
+                    add(r.clone(), format!("A hold on '{}' ({r}) was left by {}, whose run has finished: letting go of a hold was lost.", h.name, h.by.label()));
+                }
+            }
+            Err(e) if std::fs::metadata(f.path()).is_ok() => add(r.clone(), format!("The hold {r} is half-written or damaged ({e}).")),
+            Err(_) => {}
         }
     }
     let sheets = logs.iter().filter(|l| l.sheet_changes > 0).count();

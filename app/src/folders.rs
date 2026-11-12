@@ -85,12 +85,16 @@ pub enum Refused {
     Taken { name: String, place: String },
     /// No name.
     NoName,
-    /// Delete: the folder still holds jobs (parts) or folders (JX13).
-    NotEmpty { name: String, records: usize, folders: usize },
+    /// Delete: the folder (`id`) still holds jobs (parts) or folders (JX13).
+    NotEmpty { id: u64, name: String, records: usize, folders: usize },
     /// Move: into the folder itself or one of its own folders (JX12).
     IntoItself { name: String },
     /// "New folder (1)" … "(9)" are all taken (JX7).
     NoDefaultName { place: String },
+    /// A job someone else has in use would move, or a folder holding one be
+    /// renamed, moved or deleted (CU11; for an agent, a job anyone holds,
+    /// CU12): what and who, in words.
+    InUse(String),
     /// The tree couldn't be read or written.
     Failed(String),
 }
@@ -108,7 +112,7 @@ impl Refused {
             Refused::Gone(what) => format!("{what} is no longer in the Library: another PC may have deleted it. {again}."),
             Refused::Taken { name, place } => format!("A folder called '{name}' is already in {place} (names are compared without case, error {NAME_TAKEN}). Pick another name."),
             Refused::NoName => "A folder needs a name.".into(),
-            Refused::NotEmpty { name, records, folders } => {
+            Refused::NotEmpty { name, records, folders, .. } => {
                 let mut what = vec![];
                 if *records > 0 {
                     what.push(noun(kind, *records));
@@ -120,6 +124,7 @@ impl Refused {
             }
             Refused::IntoItself { name } => format!("'{name}' can't go into itself or one of its own folders. Paste it somewhere outside '{name}'."),
             Refused::NoDefaultName { place } => format!("'{} (1)' to '(9)' are all taken in {place}. Rename one of them first.", crate::jobtree::NEW_FOLDER_NAME),
+            Refused::InUse(said) => format!("{said} {}", if agent { "Try again later. Nothing was changed." } else { "Try again when they've closed it." }),
             Refused::Failed(e) => e.clone(),
         }
     }
@@ -276,7 +281,7 @@ impl Tree {
         let name = self.need(id)?.name.clone();
         let (records, folders) = (self.records_in(id, entries).len(), self.children(id).len());
         if records > 0 || folders > 0 {
-            return Err(Refused::NotEmpty { name, records, folders });
+            return Err(Refused::NotEmpty { id, name, records, folders });
         }
         self.folders.retain(|f| f.id != id);
         self.placed.retain(|_, f| *f != id);
@@ -429,9 +434,55 @@ pub fn change<T>(lib: &Library, kind: Kind, f: impl FnOnce(&mut Tree, &[Entry]) 
     let lock = lib.lock().map_err(Refused::Failed)?;
     let mut t = load(lib, kind).map_err(|e| Refused::Failed(format!("{e}. Nothing was changed")))?;
     let entries = of_kind(lib, kind);
-    let out = f(&mut t, &entries)?;
+    let before = t.clone();
+    let out = match f(&mut t, &entries) {
+        // A folder that isn't empty, holding a job in use: said with who
+        // has it (CU11).
+        Err(Refused::NotEmpty { id, name, records, folders }) if kind == Kind::Job => {
+            let not_empty = Refused::NotEmpty { id, name, records, folders };
+            return Err(match in_use_within(lib, &crate::engine::inuse::look(lib).unwrap_or_default(), &before, id, &entries) {
+                Some(said) => Refused::InUse(format!("{said} And only an empty folder can be deleted: {}", not_empty.say(kind, false))),
+                None => not_empty,
+            });
+        }
+        r => r?,
+    };
+    if kind == Kind::Job {
+        in_use_refusal(lib, &before, &t, &entries)?;
+    }
     write(lib, kind, &t, &lock).map_err(|e| Refused::Failed(format!("Couldn't change the Library's folders: {e}")))?;
     Ok(out)
+}
+
+/// "'Acme' holds DEMO-7, which is in use by Sam on PROG-2 since 09:14.":
+/// the first job in folder `id` of `t` (at any depth) that this PC may not
+/// change because someone has it in use (CU11, CU12).
+fn in_use_within(lib: &Library, held: &std::collections::BTreeMap<u64, crate::engine::inuse::InUse>, t: &Tree, id: u64, entries: &[Entry]) -> Option<String> {
+    entries.iter().filter(|e| t.is_within(t.folder_of(e.id), id)).find_map(|e| held.get(&e.id).map(|u| format!("'{}' holds {}, which is in use by {}.", t.path(id), e.name, u.by_since(&lib.clock))))
+}
+
+/// A change to the jobs' tree (`before` → `after`) may not move a job
+/// someone else has in use, nor rename or move a folder holding one at any
+/// depth (CU11); for an agent, a job anyone holds (CU12). Read under the
+/// change's write lock, so no hold is taken between the check and the
+/// change. New folders and new jobs filed are no one's yet.
+fn in_use_refusal(lib: &Library, before: &Tree, after: &Tree, entries: &[Entry]) -> Result<(), Refused> {
+    // Holds that can't be read now: nothing goes past them (CU11).
+    let held = crate::engine::inuse::look(lib).map_err(Refused::Failed)?;
+    if held.is_empty() {
+        return Ok(());
+    }
+    for e in entries.iter().filter(|e| before.folder_of(e.id) != after.folder_of(e.id)) {
+        if let Some(u) = held.get(&e.id) {
+            return Err(Refused::InUse(format!("{} It can't be moved while it's in use.", u.said(&lib.clock))));
+        }
+    }
+    for f in before.folders.iter().filter(|f| after.get(f.id).is_none_or(|g| g.name != f.name || g.parent != f.parent)) {
+        if let Some(said) = in_use_within(lib, &held, before, f.id, entries) {
+            return Err(Refused::InUse(said));
+        }
+    }
+    Ok(())
 }
 
 /// The part folder a library part saved into the Library for the first

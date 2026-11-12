@@ -253,8 +253,9 @@ impl App {
     }
 
     /// The Library, as whoever works at this window (LB5).
+    /// Holds are judged by what this window has seen of them (CU7).
     pub fn library(&self) -> Result<Library, String> {
-        Library::open(&self.library_dir(), &self.who, &self.clock)
+        Library::open(&self.library_dir(), &self.who, &self.clock).map(|l| l.watching(&self.inuse.watch))
     }
 
     pub fn lib_refresh(&mut self) {
@@ -265,6 +266,8 @@ impl App {
                 self.libui.products = self.libui.entries.iter().filter(|e| e.kind == Kind::Product).filter_map(|e| l.load_product(e.id).ok().map(|pf| (e.clone(), pf.part))).collect();
                 self.libui.products.sort_by(|a, b| b.0.updated.cmp(&a.0.updated));
                 self.libui.error = None;
+                // Which jobs other PCs have in use, for the lists (CU10).
+                self.look_at_holds();
             }
             // The lists show the Library as unreachable, not empty (LB11).
             // Not tried again every frame (a share that's down can take
@@ -316,6 +319,10 @@ impl App {
     /// one, so saving would replace whatever has that number in the new one.
     /// They become new records there.
     pub fn library_folder_changed(&mut self) {
+        // The holds belong to the old Library: let go of them there (CU5).
+        self.release_holds();
+        self.inuse.watch.done_with_all();
+        self.inuse = crate::inuseui::InUseUi { watch: self.inuse.watch.clone(), ..Default::default() };
         self.libui.loaded = false;
         // The Sheet stock window lists the new Library's stock (LB12).
         self.stockui.loaded = false;
@@ -380,6 +387,16 @@ impl App {
             }
         };
         let to = self.job_save_to();
+        // Not over a job taken over from this PC, nor under a new name over
+        // one someone else has in use (CU9, CU11): asked first, before
+        // anything else, and checked again under the write lock. A job
+        // opened anyway, or with warn off, saves as usual (CU3).
+        if let Some(id) = to.id() {
+            if let Err(u) = crate::engine::inuse::may_save_as(&lib, id, &self.job_name) {
+                self.ask_in_use(u);
+                return;
+            }
+        }
         if let Err(c) = lib.check(Kind::Job, to) {
             self.ask_about_job(c);
             return;
@@ -425,8 +442,14 @@ impl App {
                     j.lib_folder = Some(f);
                 }
                 self.status = format!("Saved job {} to the library as {} ({}).{stock_note}", self.job_name, crate::library::auto_ref(Kind::Job, rec.id), self.library_dir().display());
+                // Saved over a job taken over from here once it was free again:
+                // it's this PC's to hold again. A new record (a copy) is in
+                // use now, and held (CU5).
+                self.inuse.lost.remove(&rec.id);
+                self.sync_holds();
             }
             Err(Refused::Changed(c)) => self.ask_about_job(c),
+            Err(Refused::InUse(u)) => self.ask_in_use(u),
             // Gone since it was found: said the same way, with nothing taken
             // or made (LB11, LB13).
             Err(Refused::Failed(e)) => {
@@ -467,11 +490,21 @@ impl App {
     /// stock and stores its own remnants; their job keeps its own.
     pub fn save_mine_as_copy(&mut self) {
         let Some(c) = self.job_question() else { return };
+        let theirs = self.job_name.clone();
+        if self.save_copy() {
+            self.status = format!("{} {theirs} stays as {} saved it.", self.status, c.saved_by(&self.clock));
+        }
+    }
+
+    /// Save the open job as a new job under the first free name (LB9; also
+    /// for a job someone else has in use, CU9). Like Copy job, the copy takes
+    /// its own sheets from stock and stores its own remnants. Saved or not.
+    pub fn save_copy(&mut self) -> bool {
         let lib = match self.library() {
             Ok(l) => l,
             Err(e) => {
                 self.status = format!("Couldn't save to the library: {e}");
-                return;
+                return false;
             }
         };
         let cur = self.cur_job;
@@ -486,9 +519,7 @@ impl App {
             e.sent = None;
         }
         self.save_job_to_library();
-        if self.job_lib_id.is_some() {
-            self.status = format!("{} {theirs} stays as {} saved it.", self.status, c.saved_by(&self.clock));
-        }
+        self.job_lib_id.is_some()
     }
 
     /// Overwrite (LB9): the open job is saved over their save as it is now
@@ -624,6 +655,8 @@ impl App {
                 self.libui.question = Some(SaveQuestion::Part { part: i, changed: c, added });
             }
             Err(Refused::Failed(e)) => self.status = format!("Couldn't save to the library: {e}"),
+            // Library parts have no in-use state (spec #44): never said.
+            Err(r @ Refused::InUse(_)) => self.status = r.words(&self.clock),
         }
     }
 
@@ -692,7 +725,9 @@ impl App {
         place_in(&self.libui.tree, id)
     }
 
-    pub fn open_library_job(&mut self, id: u64) {
+    /// Open library job `id` now, whoever has it in use (asked before,
+    /// `open_library_job`, CU8).
+    pub fn open_library_job_now(&mut self, id: u64) {
         let j = match self.library().and_then(|l| l.load_job(id)) {
             Ok(j) => j,
             Err(e) => {
@@ -864,7 +899,7 @@ impl App {
                 let parts = self.lib_records(Kind::Product);
                 let (cut, clock) = (self.libui.parts.cut, self.clock.clone());
                 let row = move |ui: &mut egui::Ui, e: &Entry, path: Option<&str>, act: &mut Option<TreeAct>| {
-                    lib_row(ui, e, path, None, &record_info(e, un), &e.saved_note(&clock), cut == Some(LibItem::Part(e.id)), act);
+                    lib_row(ui, e, path, None, None, &record_info(e, un), &e.saved_note(&clock), cut == Some(LibItem::Part(e.id)), act);
                 };
                 let look = TreeLook {
                     title: format!("📦 Library parts ({})", parts.len()),
@@ -912,7 +947,9 @@ impl App {
                             which.join(", ")
                         )
                     });
-                    lib_row(ui, e, Some(&folder(e)), same.as_deref(), &record_info(e, un), &e.saved_note(&self.clock), false, &mut act);
+                    // Another PC has it in use (CU10).
+                    let in_use = self.in_use_note(e.id);
+                    lib_row(ui, e, Some(&folder(e)), same.as_deref(), in_use.as_deref(), &record_info(e, un), &e.saved_note(&self.clock), false, &mut act);
                 }
             });
             if let Some(a) = act {
@@ -947,21 +984,37 @@ impl App {
         match acted {
             Some((Kind::Job, TreeAct::Open(id))) => self.open_library_job(id),
             Some((Kind::Product, TreeAct::Open(id))) => self.add_library_product(id),
+            // A job someone else has in use is refused, naming them (CU11).
             Some((k, TreeAct::Remove(id))) => {
-                if let Ok(l) = self.library() {
-                    let _ = l.delete(k, id);
+                if self.delete_from_library(k, id) {
+                    let v = self.libui.view(k);
+                    if *v.cut == Some(LibItem::record(k, id)) {
+                        *v.cut = None;
+                    }
                 }
-                if k == Kind::Job && self.job_lib_id == Some(id) {
-                    self.job_lib_id = None;
-                }
-                let v = self.libui.view(k);
-                if *v.cut == Some(LibItem::record(k, id)) {
-                    *v.cut = None;
-                }
-                self.lib_refresh();
             }
             _ => {}
         }
+    }
+
+    /// Delete a record from the Library (the Library window's 🗑). A job
+    /// someone else has in use is refused, naming who and since when
+    /// (CU11). Deleted or not.
+    pub fn delete_from_library(&mut self, k: Kind, id: u64) -> bool {
+        let done = match self.library().and_then(|l| l.delete(k, id)) {
+            Err(e) => {
+                self.status = e;
+                false
+            }
+            Ok(()) => {
+                if k == Kind::Job && self.job_lib_id == Some(id) {
+                    self.job_lib_id = None;
+                }
+                true
+            }
+        };
+        self.lib_refresh();
+        done
     }
 
     /// The question a save asks when someone else saved the job or library
@@ -1114,12 +1167,13 @@ fn record_info(e: &Entry, un: crate::units::LenUnit) -> String {
 }
 
 /// One record's row in the Library window: its reference, name and chips
-/// ("same name", JX17, with `same_name` on hover), its folder's path when
-/// given (JX10, JX20), what it is (`info`), then its buttons and who last
+/// ("same name", JX17, with `same_name` on hover; a job another PC has in
+/// use, `in_use`, CU10), its folder's path when given (JX10, JX20), what it
+/// is (`info`), then its buttons and who last
 /// saved it (`saved`, LB6). A part's name has a menu: Add to job, Cut
 /// (`cut`: shown cut), Delete from the library (JX20).
 #[allow(clippy::too_many_arguments)]
-fn lib_row(ui: &mut egui::Ui, e: &Entry, folder: Option<&str>, same_name: Option<&str>, info: &str, saved: &str, cut: bool, act: &mut Option<TreeAct>) {
+fn lib_row(ui: &mut egui::Ui, e: &Entry, folder: Option<&str>, same_name: Option<&str>, in_use: Option<&str>, info: &str, saved: &str, cut: bool, act: &mut Option<TreeAct>) {
     let part = e.kind == Kind::Product;
     ui.horizontal(|ui| {
         ui.set_min_height(28.0);
@@ -1147,6 +1201,9 @@ fn lib_row(ui: &mut egui::Ui, e: &Entry, folder: Option<&str>, same_name: Option
         }
         if let Some(words) = same_name {
             chip(ui, "same name", th().warn_bg, th().warn_fg).on_hover_text(words);
+        }
+        if let Some(note) = in_use {
+            crate::inuseui::in_use_chip(ui, note);
         }
         if let Some(f) = folder.filter(|f| !f.is_empty()) {
             ui.label(RichText::new(f).size(11.5).color(th().accent_fg));
@@ -1275,9 +1332,13 @@ pub(crate) mod libui_tests {
     /// 2026-11-09 09:20 UTC: a test clock shows UTC.
     pub(crate) const NOV_9_0920: u64 = 1_794_216_000;
 
-    /// A window on PC `pc`, working on the Library in `dir`.
+    /// A window on PC `pc`, working on the Library in `dir`. Its warn switch
+    /// is off (CU1): these PCs hold nothing, so two of them can open one job
+    /// and what's tested is the save check alone, which stays on whatever
+    /// the holds say (LB7–LB10). With holds: `inuseui.rs`.
     pub(crate) fn window(dir: &Path, user: &str, pc: &str, clock: &Clock) -> App {
         let mut a = App::new(None);
+        a.cfg.in_use_warn = false;
         a.cfg.library_dir = dir.display().to_string();
         a.who = Who::new(user, pc);
         a.clock = clock.clone();

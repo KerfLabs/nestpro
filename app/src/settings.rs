@@ -118,6 +118,13 @@ pub struct AppSettings {
     pub theme: String,
     /// Ask before changing a part that has its own technology.
     pub warn_tech: bool,
+    /// Concurrency management (CU1), kept on this PC only: warn when a job
+    /// is in use by someone else (on in a new install: the rebuild's own
+    /// default, spec #44), and allow opening it anyway (the original's
+    /// default, on). With warn off this PC neither holds the jobs it opens
+    /// nor checks anyone else's on opening.
+    pub in_use_warn: bool,
+    pub in_use_allow: bool,
     /// Show the original's commands that aren't built yet (greyed).
     pub show_unbuilt: bool,
     /// At start-up, load the active database's jobs into the Job Explorer
@@ -281,6 +288,8 @@ impl Default for AppSettings {
             material_refs: default_material_refs(),
             theme: "system".into(),
             warn_tech: true,
+            in_use_warn: true,
+            in_use_allow: true,
             show_unbuilt: false,
             auto_db: true,
             ui_size: 0,
@@ -393,6 +402,7 @@ impl AppSettings {
         }
         s += &format!("import_preview = {}\n", self.import_preview);
         s += &format!("theme = {}\nwarn_tech = {}\nshow_unbuilt = {}\nauto_db = {}\n", self.theme, self.warn_tech, self.show_unbuilt, self.auto_db);
+        s += &format!("in_use_warn = {}\nin_use_allow = {}\n", self.in_use_warn, self.in_use_allow);
         s += &format!("ui_size = {}\nscroll_speed = {}\n", self.ui_size, self.scroll_speed);
         s += &format!("refresh_minutes = {}\n", self.refresh_minutes);
         s += &format!("stock = {}\n", serde_json::to_string(&self.stock).unwrap_or_default());
@@ -493,6 +503,8 @@ impl AppSettings {
                     "active_machine" => st.active_machine = v.parse().unwrap_or(0),
                     "theme" => st.theme = if ["light", "dark", "system"].contains(&v.as_str()) { v } else { "system".into() },
                     "warn_tech" => st.warn_tech = v != "false",
+                    "in_use_warn" => st.in_use_warn = v != "false",
+                    "in_use_allow" => st.in_use_allow = v != "false",
                     "show_unbuilt" => st.show_unbuilt = v == "true",
                     "auto_db" => st.auto_db = v != "false",
                     "ui_size" => st.ui_size = ui_size_from(v.parse().unwrap_or(0)),
@@ -827,6 +839,8 @@ mod settings_tests {
             material_refs: vec!["10".into(), "AISI304".into(), String::new()],
             theme: "dark".into(),
             warn_tech: false,
+            in_use_warn: false,
+            in_use_allow: false,
             show_unbuilt: true,
             auto_db: false,
             ui_size: 2,
@@ -868,5 +882,12 @@ mod settings_tests {
         let e = AppSettings::parse("");
         assert_eq!(e.machines.len(), 1);
         assert!(e.connections.is_empty() && e.conn().is_none());
+        // CU1: a new install warns when a job is in use (the rebuild's own
+        // default) and allows opening it anyway (the original's); settings
+        // saved before the switches get the same.
+        assert!(AppSettings::default().in_use_warn && AppSettings::default().in_use_allow);
+        assert!(e.in_use_warn && e.in_use_allow);
+        let off = AppSettings::parse("[general]\nin_use_warn = false\nin_use_allow = false\n");
+        assert!(!off.in_use_warn && !off.in_use_allow);
     }
 }

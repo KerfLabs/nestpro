@@ -182,6 +182,8 @@ pub enum Since {
 pub enum Refused {
     /// Someone saved the record since it was read (LB7).
     Changed(Changed),
+    /// Someone else has the job in use (an agent: anyone), CU11, CU12.
+    InUse(crate::engine::inuse::InUse),
     /// It couldn't be saved (the share, the write lock, a name taken…).
     Failed(String),
 }
@@ -210,6 +212,7 @@ impl Refused {
     pub fn words(&self, clock: &Clock) -> String {
         match self {
             Refused::Changed(c) => format!("{} was saved by {} since it was read here. Nothing was saved", c.name, c.saved_by(clock)),
+            Refused::InUse(u) => format!("{} Nothing was saved", u.said(clock)),
             Refused::Failed(e) => e.clone(),
         }
     }
@@ -282,6 +285,9 @@ pub struct Library {
     pub dir: PathBuf,
     pub who: Who,
     pub clock: Clock,
+    /// What this PC has seen of the holds on jobs in use, to judge when one
+    /// is gone (CU7). Each window and agent session keeps its own.
+    pub watch: crate::engine::inuse::Watch,
 }
 
 /// Said when the Library folder isn't there (LB11): the share, the server or
@@ -339,7 +345,13 @@ impl Library {
     /// The Library in `dir`, as `who` going by `clock`, without setting
     /// anything up (reading).
     pub fn at(dir: &Path, who: &Who, clock: &Clock) -> Library {
-        Library { dir: dir.to_path_buf(), who: who.clone(), clock: clock.clone() }
+        Library { dir: dir.to_path_buf(), who: who.clone(), clock: clock.clone(), watch: Default::default() }
+    }
+
+    /// The same Library, judging holds by what `watch` has seen (CU7).
+    pub fn watching(mut self, watch: &crate::engine::inuse::Watch) -> Library {
+        self.watch = watch.clone();
+        self
     }
 
     /// Open the Library in a folder, as `who` going by `clock`, setting up
@@ -642,6 +654,14 @@ impl Library {
     /// folder tree that can't be written leaves the job at the top, saved.
     pub fn save_job_with(&self, to: SaveTo, name: &str, folder: Option<u64>, job: impl FnOnce() -> Result<JobFile, String>) -> Result<Record, Refused> {
         let _lock = self.lock()?;
+        // Not over a job taken over from this PC, nor under a new name over
+        // one someone else has in use (an agent: not over any job in use),
+        // CU9, CU11, CU12: checked first, under the lock, so nothing is
+        // booked. A job opened anyway, or with warn off, saves as usual
+        // (CU3), through the save check below (LB7).
+        if let Some(id) = to.id() {
+            crate::engine::inuse::may_save_as(self, id, name).map_err(Refused::InUse)?;
+        }
         let job = || {
             self.check_job_name(name, to.id())?;
             job()
@@ -720,10 +740,22 @@ impl Library {
         (1..).map(|k| format!("{base} ({k})")).find(|n| !used.contains(&n.trim().to_lowercase()) && !taken(n)).unwrap_or_else(|| base.to_string())
     }
 
+    /// Delete a record. A job someone else has in use (an agent: anyone) is
+    /// refused, naming who and since when (CU11); a deleted job's holds go
+    /// with it (CU2).
     pub fn delete(&self, kind: Kind, id: u64) -> Result<(), String> {
         let lock = self.lock()?;
+        if kind == Kind::Job {
+            crate::engine::inuse::may_change(self, id).map_err(|u| match u.unreadable {
+                Some(_) => format!("{} Nothing was deleted.", u.said(&self.clock)),
+                None => format!("{} It can't be deleted while it's in use: try again when it's closed. Nothing was deleted.", u.said(&self.clock)),
+            })?;
+        }
         lock.still_held()?;
         let _ = std::fs::remove_file(self.path(kind, id));
+        if kind == Kind::Job {
+            crate::engine::inuse::forget_job(self, id, &lock);
+        }
         let mut all = self.entries();
         all.retain(|x| !(x.kind == kind && x.id == id));
         self.write_index(&all, &lock)?;

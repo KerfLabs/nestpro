@@ -145,6 +145,11 @@ impl App {
         // (JX16). Checked again under the write lock when it's saved.
         let lib_id = if i == self.cur_job { self.job_lib_id } else { self.jobs.get(i).and_then(|j| j.lib_id) };
         if let Some((id, Ok(lib))) = lib_id.map(|id| (id, self.library())) {
+            // Not a job someone else has in use (CU11).
+            if let Err(u) = crate::engine::inuse::may_change(&lib, id) {
+                self.status = format!("Can't rename it: {} Try again when they've closed it.", u.said(&self.clock));
+                return false;
+            }
             if let Err(e) = lib.check_job_name(n, Some(id)) {
                 self.status = format!("Can't rename to '{n}': {e}.");
                 return false;
@@ -212,6 +217,8 @@ impl App {
         self.undo.clear();
         self.redo.clear();
         self.refresh();
+        // A closed job lets go of its hold; the job now in front takes one (CU5).
+        self.sync_holds();
     }
 
     /// Close a job: it leaves the open jobs; its saved copy stays in the library
@@ -325,6 +332,9 @@ impl App {
             if !names.is_empty() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 self.quit_ask = Some(names);
+            } else {
+                // Quitting lets go of every hold (CU5).
+                self.release_holds_on_quit();
             }
         }
         let Some(names) = self.quit_ask.clone() else { return };
@@ -340,6 +350,7 @@ impl App {
                 if ui.button("Close without saving").clicked() {
                     self.quit_ask = None;
                     self.quit_confirmed = true;
+                    self.release_holds_on_quit();
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
             });

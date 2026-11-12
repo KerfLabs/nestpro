@@ -41,6 +41,7 @@ mod textedit;
 mod dxf;
 mod formats;
 mod importui;
+mod inuseui;
 mod jobfile;
 mod jobs;
 mod libui;
@@ -343,6 +344,9 @@ pub struct App {
     pub job_lib_id: Option<u64>,
     /// What the open job read from the Library (LB7).
     pub lib_read: libui::LibRead,
+    /// Jobs in use: this window's holds, other PCs' jobs in use, and what
+    /// opening one asks (CU5–CU11).
+    pub inuse: inuseui::InUseUi,
     /// Who is working at this window, and the clock it goes by: what it
     /// saves to the Library records them (LB5). This PC's user and clock;
     /// tests set their own to play two PCs.
@@ -635,6 +639,7 @@ impl App {
             stockui: Default::default(),
             job_lib_id: None,
             lib_read: Default::default(),
+            inuse: Default::default(),
             who: shared::Who::this_pc(),
             clock: shared::Clock::pc(),
             autorefresh: Default::default(),
@@ -743,6 +748,9 @@ impl App {
         self.jobs_reindexed();
         self.refresh();
         self.status = format!("Opened job {}.", self.job_name);
+        // The job in front is in use; the one left keeps its hold only with
+        // unsaved changes (CU5).
+        self.sync_holds();
     }
 
     /// Open a nesting from machine programs (.zip / .XML / .SPF, see
@@ -990,6 +998,13 @@ impl App {
                     }
                 });
                 ui.label(RichText::new(detail).size(11.5).color(th().text_dim));
+                // Another PC has it in use (CU10).
+                if let Some(n) = match src {
+                    Src::Lib(id) => self.in_use_note(*id),
+                    Src::File(_) => None,
+                } {
+                    crate::inuseui::in_use_chip(ui, &n);
+                }
                 ui.add_space(2.0);
             }
         });
@@ -2653,6 +2668,13 @@ impl eframe::App for App {
         self.erp_window(&ctx);
         self.naming_window(&ctx);
         self.save_question_window(&ctx);
+        self.in_use_window(&ctx);
+        self.taken_over_window(&ctx);
+        // Holds on the jobs in use here, renewed about every 30 s (CU5, CU6).
+        // Not for screenshots, which never write to a Library by themselves.
+        if self.shot.is_none() {
+            self.hold_frame(&ctx);
+        }
         self.reload_note_card(&ctx);
         self.db_browser(&ctx);
         self.nest_verify_window(&ctx);
@@ -3104,6 +3126,11 @@ fn main() -> eframe::Result {
             }
             if let Some(what) = std::env::args().find_map(|a| a.strip_prefix("--save-question=").map(str::to_string)) {
                 app.demo_save_question(&what);
+            }
+            // --in-use=note|ask|warning|taken (screenshots, with --library-dir=
+            // a new, empty folder): jobs in use on made-up PCs (CU8–CU10).
+            if let Some(what) = std::env::args().find_map(|a| a.strip_prefix("--in-use=").map(str::to_string)) {
+                app.demo_in_use(&what);
             }
             // --reload-note (screenshots, with --library-dir= a new, empty
             // folder): an open library job another PC saved reloads by
