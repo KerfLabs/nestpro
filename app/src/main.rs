@@ -48,6 +48,7 @@ mod libui;
 mod library;
 mod folders;
 mod libtree;
+mod refreshui;
 mod shared;
 mod region;
 mod remline;
@@ -351,6 +352,8 @@ pub struct App {
     /// tests set their own to play two PCs.
     pub who: shared::Who,
     pub clock: shared::Clock,
+    /// Lists and open jobs that update by themselves (JX8, LB14–LB16).
+    pub autorefresh: refreshui::AutoRefresh,
     /// The Drawing module's view state (axes, colours, simulation, measuring…).
     pub dv: drawing::DrawView,
     /// The cut technology panel on the part's drawing screen (CS6).
@@ -639,6 +642,7 @@ impl App {
             inuse: Default::default(),
             who: shared::Who::this_pc(),
             clock: shared::Clock::pc(),
+            autorefresh: Default::default(),
             dv: drawing::DrawView::default(),
             cut_panel: Default::default(),
             ssim: None,
@@ -2637,6 +2641,8 @@ impl eframe::App for App {
         }
         // An agent or script may change the open job's file (CLI / MCP).
         self.watch_job_file(&ctx);
+        // Other PCs' saves to the shared Library (JX8, LB14–LB16).
+        self.auto_refresh(&ctx);
         if ctx.input(|i| i.modifiers.command && !i.modifiers.shift && i.key_pressed(egui::Key::S)) {
             self.save_job(false);
         }
@@ -2669,6 +2675,7 @@ impl eframe::App for App {
         if self.shot.is_none() {
             self.hold_frame(&ctx);
         }
+        self.reload_note_card(&ctx);
         self.db_browser(&ctx);
         self.nest_verify_window(&ctx);
         if self.follow_system {
@@ -3124,6 +3131,17 @@ fn main() -> eframe::Result {
             // a new, empty folder): jobs in use on made-up PCs (CU8–CU10).
             if let Some(what) = std::env::args().find_map(|a| a.strip_prefix("--in-use=").map(str::to_string)) {
                 app.demo_in_use(&what);
+            }
+            // --reload-note (screenshots, with --library-dir= a new, empty
+            // folder): an open library job another PC saved reloads by
+            // itself, with its note (LB15).
+            // --reload-note=ask: it has unsaved changes here, so it asks.
+            if let Some(a) = std::env::args().find(|a| a == "--reload-note" || a == "--reload-note=ask") {
+                app.demo_reload_note(a.ends_with("=ask"));
+            }
+            // --refresh-minutes=N (screenshots): the auto-refresh setting (JX8).
+            if let Some(m) = std::env::args().find_map(|a| a.strip_prefix("--refresh-minutes=").and_then(|v| v.parse::<i64>().ok())) {
+                app.cfg.refresh_minutes = engine::refresh::period(m);
             }
             // --lib-tree-open: every Library folder opened out, and the Job
             // Explorer the whole height (screenshots).

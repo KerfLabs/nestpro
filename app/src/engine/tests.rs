@@ -2875,3 +2875,30 @@ fn agents_are_refused_a_job_in_use_and_never_hold_one() {
     assert!(std::fs::read_dir(lib.join(inuse::FOLDER)).map_or(0, |d| d.count()) == 0, "a hold is left");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// LB16: agents never wait for a refresh. Every `library` read reads the
+/// Library as it is now, so a job another PC saved a moment ago is listed,
+/// and opened as saved now, at once.
+#[test]
+fn an_agent_sees_another_pcs_save_at_once() {
+    let d = dir("refresh_agent");
+    let clock = Clock::at(1_794_216_000);
+    let mut ctx = stock_ctx(&d);
+    ctx.who = Who::new("kim", "PROG-2").as_agent();
+    ctx.clock = clock.clone();
+    let lib = crate::library::Library::open(&ctx.library_dir, &Who::new("sam", "PROG-1"), &clock).unwrap();
+    let mut s = Session::new(ctx);
+    let jp = d.join("DEMO-7.snjob");
+    let jp = jp.to_str().unwrap();
+    call(&mut s, "new", Some(jp), json!({"w": 3000, "h": 1500, "thickness": 10}));
+    let names = |s: &mut Session| call(s, "library", None, json!({"mode": "list"}))["data"].as_array().unwrap().iter().map(|e| format!("{} ({})", e["name"].as_str().unwrap(), e["saved_by"].as_str().unwrap_or("-"))).collect::<Vec<_>>();
+    assert!(names(&mut s).is_empty());
+    let mut j = JobFile::new_job("DEMO-7", crate::nest::SheetSpec { w: 3000.0, h: 1500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 10.0, level: 3, machine: Default::default(), kerf: Default::default() });
+    let rec = lib.save_job(&j, crate::library::SaveTo::New).unwrap();
+    assert_eq!(names(&mut s), ["DEMO-7 (sam on PROG-1)"]);
+    j.parts = vec![crate::nest::Part { name: "DEMO-P1".into(), shape: crate::nest::Shape::Rectangle, w: 600.0, h: 400.0, qty: 4, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
+    lib.save_job(&j, crate::library::SaveTo::Read(rec)).unwrap();
+    call(&mut s, "library", None, json!({"mode": "open", "name": "DEMO-7"}));
+    assert_eq!(jobfile::load(Path::new(jp)).unwrap().parts.iter().map(|p| p.qty).collect::<Vec<_>>(), [4], "opened as saved now");
+    let _ = std::fs::remove_dir_all(&d);
+}

@@ -57,6 +57,9 @@ pub struct InUseUi {
     pub again: bool,
     /// Do hold work in this thread, as it's asked for (tests, screenshots).
     pub inline: bool,
+    /// A look at every hold for the lists, running in the background
+    /// (CU10): read-only, no lock.
+    pub looking: Option<std::sync::mpsc::Receiver<Result<BTreeMap<u64, InUse>, String>>>,
     /// The last renewal couldn't reach the Library: said once (LB11).
     pub out_of_reach: bool,
     /// The job in front, how many jobs were open and whether warn was on, at
@@ -255,6 +258,19 @@ impl App {
             self.inuse.next = self.clock.now() + inuse::RENEW_EVERY.as_secs();
             self.start_hold_work(true);
         }
+        // A look at the holds for the lists (CU10).
+        if let Some(rx) = &self.inuse.looking {
+            match rx.try_recv() {
+                Ok(r) => {
+                    self.inuse.looking = None;
+                    if let Ok(o) = r {
+                        self.inuse.others = o;
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.inuse.looking = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
         ctx.request_repaint_after(std::time::Duration::from_secs(1));
     }
 
@@ -321,12 +337,26 @@ impl App {
         }
     }
 
-    /// Look at the holds again (with the lists): every job someone else has
-    /// in use (CU10).
-    pub fn look_at_holds(&mut self, lib: &Library) {
-        if let Ok(o) = inuse::look(lib) {
-            self.inuse.others = o;
+    /// Look at the holds again, with the lists (their reading, and the
+    /// auto-refresh's, LB14): every job someone else has in use (CU10). In
+    /// the background, one look at a time, as the renewal is: read-only,
+    /// taking no lock; in this thread for tests and screenshots.
+    pub fn look_at_holds(&mut self) {
+        let lib = Library::at(&self.library_dir(), &self.who, &self.clock).watching(&self.inuse.watch);
+        if self.inuse.inline {
+            if let Ok(o) = inuse::look(&lib) {
+                self.inuse.others = o;
+            }
+            return;
         }
+        if self.inuse.looking.is_some() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(inuse::look(&lib));
+        });
+        self.inuse.looking = Some(rx);
     }
 
     /// "In use by Sam on PROG-2 since 09:14" for library job `id`, when
@@ -1075,6 +1105,29 @@ mod inuseui_tests {
         pc.inuse.ask = Some(super::Ask { what: super::Opening::Save, u: inuse::InUse { job: 999, name: "DEMO-9".into(), ..Default::default() }, warning: true });
         pc.take_over_job();
         assert!(pc.status.contains("DEMO-9 isn't open here any more"), "{}", pc.status);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// CU10, LB14: with auto-refresh on, a look that reads the lists again
+    /// looks at the holds too, so a job another PC opened since shows its
+    /// in-use note without Refresh.
+    #[test]
+    fn the_auto_refresh_shows_a_job_another_pc_opened() {
+        let dir = new_library("refresh_note");
+        let id = saved(&dir, "DEMO-7");
+        let clock = Clock::at(NOV_9_0914);
+        let mut pc2 = window(&dir, "sam", "PROG-1", &clock, true, true);
+        pc2.cfg.refresh_minutes = 1;
+        pc2.lib_refresh();
+        pc2.refresh_tick(false);
+        assert_eq!(pc2.in_use_note(id), None);
+        // On PC 1, Sam opens DEMO-7 and saves another job.
+        inuse::take(&Library::at(&dir, &Who::new("Sam", "PROG-2"), &clock), id, "DEMO-7").unwrap();
+        saved(&dir, "DEMO-8");
+        clock.advance(Duration::from_secs(6));
+        pc2.refresh_tick(false);
+        assert!(pc2.libui.entries.iter().any(|e| e.name == "DEMO-8"), "the lists weren't read again");
+        assert_eq!(pc2.in_use_note(id).as_deref(), Some("In use by Sam on PROG-2 since 09:14"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

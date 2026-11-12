@@ -14,6 +14,7 @@ pub mod inuse;
 pub mod librarycheck;
 pub mod ops;
 pub mod readback;
+pub mod refresh;
 pub mod render;
 pub mod session;
 pub mod stockflow;

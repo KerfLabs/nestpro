@@ -5191,6 +5191,96 @@
   "source": "MECHANICS LB13; estimated"
  },
  {
+  "name": "quick check while auto-refresh is on, seconds",
+  "group": "shared library",
+  "value": 5,
+  "source": "MECHANICS LB14; estimated"
+ },
+ {
+  "name": "what the quick check looks at",
+  "group": "shared library",
+  "value": "the date and size of the Library's list, its job and part folder trees and its sheet stock; nothing is read, no lock taken",
+  "source": "MECHANICS LB14; estimated"
+ },
+ {
+  "name": "a quick check also runs",
+  "group": "shared library",
+  "value": "at once when the window comes back to the front",
+  "source": "MECHANICS LB14; estimated"
+ },
+ {
+  "name": "what a look reads again",
+  "group": "shared library",
+  "value": "what changed: the Job Explorer's saved jobs, the Library window, Add product's library parts (only those whose line changed), with their job and part folder trees, and the Sheet stock",
+  "source": "MECHANICS LB14; estimated"
+ },
+ {
+  "name": "full reload",
+  "group": "shared library",
+  "value": "once per period (whole minutes, 1 to 1440): every list, every library part and every open Library job's record",
+  "source": "MECHANICS LB14; estimated"
+ },
+ {
+  "name": "a save landing during a look",
+  "group": "shared library",
+  "value": "shows at the next look (the dates are taken before reading)",
+  "source": "MECHANICS LB14; estimated"
+ },
+ {
+  "name": "refreshing writes to the Library",
+  "group": "shared library",
+  "value": false,
+  "source": "MECHANICS LB14; estimated"
+ },
+ {
+  "name": "with auto-refresh off",
+  "group": "shared library",
+  "value": "nothing reloads by itself; Refresh and this PC's own changes read the lists again",
+  "source": "MECHANICS LB14; estimated"
+ },
+ {
+  "name": "an open job someone else saved, unchanged here",
+  "group": "shared library",
+  "value": "reloads by itself as saved now (the stock untouched), with a note: \"Sam on PROG-2 saved this job at 09:20\"",
+  "source": "MECHANICS LB15; estimated"
+ },
+ {
+  "name": "an open job someone else saved, changed here",
+  "group": "shared library",
+  "value": "asks: Reload theirs, Keep mine, Save mine as a copy",
+  "source": "MECHANICS LB15; estimated"
+ },
+ {
+  "name": "Keep mine",
+  "group": "shared library",
+  "value": "keeps the changes, isn't asked again about that save, and the job's next save still asks (its remembered revision stays)",
+  "source": "MECHANICS LB15; estimated"
+ },
+ {
+  "name": "questions at once",
+  "group": "shared library",
+  "value": 1,
+  "source": "MECHANICS LB15; estimated"
+ },
+ {
+  "name": "an open job deleted on another PC",
+  "group": "shared library",
+  "value": "stays open with its changes and its link; said once; Save to library saves it again",
+  "source": "MECHANICS LB16; estimated"
+ },
+ {
+  "name": "an open job moved to another folder on another PC",
+  "group": "shared library",
+  "value": "isn't reloaded or asked about; shows in its new folder; saving it leaves it there",
+  "source": "MECHANICS LB16; estimated"
+ },
+ {
+  "name": "the Library can't be reached during a look",
+  "group": "shared library",
+  "value": "the lists say so in LB11's words, once; later looks are made in the background until it's back, then everything is read again",
+  "source": "MECHANICS LB16; estimated"
+ },
+ {
   "name": "warn when a job is in use (fresh install)",
   "group": "jobs in use",
   "value": false,
@@ -5373,6 +5463,13 @@
   "group": "jobs in use",
   "value": true,
   "source": "MECHANICS CU3, CU11"
+ },
+ {
+  "name": "in-use notes looked at again when the auto-refresh reads the lists (background, no lock)",
+  "group": "jobs in use",
+  "value": true,
+  "estimated": true,
+  "source": "MECHANICS CU10"
  },
  {
   "name": "in-use note shown in the Job Explorer, the Library window and the Open job menu",
