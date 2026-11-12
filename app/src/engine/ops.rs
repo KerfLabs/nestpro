@@ -987,7 +987,9 @@ fn hole_order_json(h: &crate::ct1::HoleOrder) -> Value {
 
 /// Where an order setting in use comes from (CO16, CO17): a change made in
 /// Settings → Machines, the machine file (it sets one of `codes`), or the
-/// default.
+/// default. `changed` reads `MachineTech::order_changes`, which holds only
+/// the changes used (`OrderChanges::valid`), so a saved value the setting
+/// can't take is reported as the file's, as it is cut.
 fn order_from(t: &crate::ct1::MachineTech, changed: bool, codes: &[&str]) -> &'static str {
     if changed {
         "Settings → Machines"
@@ -1058,7 +1060,7 @@ fn machines(ctx: &Ctx) -> Value {
         "active": ctx.cfg.active_machine + 1,
         "machines": ctx.cfg.machines.iter().enumerate().map(|(i, m)| json!({
             "machine": i + 1, "name": m.name, "does": m.kind.key(), "output": m.output.key(), "post_lib": m.post_lib, "blm_ps1": m.blm_ps1, "blm_cf1": m.blm_cf1, "gas": m.gas_name,
-            "order_changes": m.order,
+            "order_changes": m.order.valid(),
         })).collect::<Vec<_>>(),
         "technology": {
             "source": t.source.as_ref().map_or("built-in values".to_string(), |p| p.display().to_string()),

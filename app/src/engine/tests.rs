@@ -3844,3 +3844,38 @@ fn the_machines_report_shows_each_order_setting_in_use_and_where_it_comes_from()
     assert!(sheet["note"].is_null(), "{sheet}");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn a_saved_order_value_the_machine_cant_take_is_reported_from_the_file_and_cut_as_the_file_says() {
+    use crate::ct1::OrderChanges;
+    let d = dir("settings_order_rejected");
+    // The machine file: By direction from the upper right, 0.5 mm.
+    let codes = "# Demo laser\nB565 2\nB566 3\nB568 0.5\n";
+    // Saved changes the settings can't take (a mode and a corner they don't
+    // have, a negative tolerance, too many zones) beside one they can.
+    let bad = OrderChanges { hole_mode: Some(9), hole_start_corner: Some(9), orthogonality_tolerance: Some(-1.0), zones_x: Some(100_000), hole_columns: Some(true), ..Default::default() };
+    let columns = OrderChanges { hole_columns: Some(true), ..Default::default() };
+    let copies = [copy_at(20.0, 20.0, 0, false)];
+    let mut s = scattered_job(&d, false, &[(20.0, 20.0, 0, false, "")]);
+    let on = |s: &mut Session, c: OrderChanges| {
+        s.ctx.cfg = shop_settings(&d.join("Lantek"), codes, vec![demo_machine_with("Demo laser", false, c)]);
+        let _m = apply_machine(s);
+        let r = call(s, "machines", None, json!({}))["data"].clone();
+        (r, scattered_program(s, 1, &copies))
+    };
+    let (r, cut) = on(&mut s, bad);
+    // The program cuts as the file says, with the one change it can take.
+    assert_eq!(cut, on(&mut s, columns).1);
+    assert_ne!(cut, on(&mut s, OrderChanges::default()).1, "the columns change is used");
+    // The report says the same: the file's values, from the file.
+    let (h, sheet) = (&r["technology"]["hole_order"], &r["technology"]["sheet_order"]);
+    assert_eq!((h["mode"].clone(), h["start_corner"].clone(), h["orthogonality_tolerance_mm"].clone(), h["direction"].clone()), (json!("by direction"), json!("upper right"), json!(0.5), json!("columns")), "{h}");
+    assert_eq!(
+        (h["from"]["mode"].clone(), h["from"]["start_corner"].clone(), h["from"]["orthogonality_tolerance_mm"].clone(), h["from"]["direction"].clone()),
+        (json!("machine file"), json!("machine file"), json!("machine file"), json!("Settings → Machines")),
+        "{h}"
+    );
+    assert_eq!((sheet["zones"].clone(), sheet["from"]["zones"].clone()), (json!([20, 10]), json!("default")), "{sheet}");
+    assert_eq!(r["machines"][0]["order_changes"], json!({"hole_columns": true}), "{r}");
+    let _ = std::fs::remove_dir_all(&d);
+}

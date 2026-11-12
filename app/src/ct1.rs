@@ -69,8 +69,10 @@ pub struct MachineTech {
     /// ordered them by hand (CO20, CO14, CO15), with any change made in
     /// Settings → Machines (CO17).
     pub hole_order: HoleOrder,
-    /// The order settings changed in Settings → Machines (CO16, CO17): kept
-    /// so a material section's values (`for_job`) take them too.
+    /// The order settings changed in Settings → Machines that are used
+    /// (CO16, CO17, `OrderChanges::valid`): kept so a material section's
+    /// values (`for_job`) take them too, and so reports say where each value
+    /// comes from.
     pub order_changes: OrderChanges,
     /// B134: test parts inside holes (nest small parts in the holes of big ones).
     pub parts_in_holes: bool,
@@ -686,6 +688,9 @@ impl MachineTech {
     /// These values with the order settings changed in Settings → Machines
     /// laid over the file's (CO16, CO17).
     pub fn with_order_changes(mut self, c: OrderChanges) -> MachineTech {
+        // Only the changes used are kept, so `order_changes` says which
+        // values come from Settings → Machines.
+        let c = c.valid();
         let o = c.apply(self.order());
         self.sheet_order = o.sheet;
         self.hole_order = o.holes;
@@ -1093,7 +1098,12 @@ mod ct1_tests {
         // Values the settings don't have leave the file's; zones are capped.
         let odd = OrderChanges { hole_mode: Some(9), hole_start_corner: Some(5), orthogonality_tolerance: Some(-1.0), big_hole_min_length: Some(f64::NAN), zones_x: Some(100_000), ..Default::default() };
         let o = odd.apply(file);
-        assert_eq!((o.holes.mode, o.holes.corner, o.holes.ortho_tol, o.holes.big_length, o.sheet.zones_x), (HoleMode::Direction, 3, 0.5, 0.0, MAX_ZONES));
+        assert_eq!((o.holes.mode, o.holes.corner, o.holes.ortho_tol, o.holes.big_length, o.sheet.zones_x), (HoleMode::Direction, 3, 0.5, 0.0, 20));
+        assert!(odd.valid().is_empty(), "none of them is used");
+        assert_eq!(OrderChanges { zones_x: Some(MAX_ZONES), ..odd }.valid(), OrderChanges { zones_x: Some(MAX_ZONES), ..Default::default() });
+        // The settings file is read value by value: a bad one is left out.
+        assert_eq!(OrderChanges::read(r#"{"zones_x":-1,"rows":true,"hole_mode":9,"zigzag":"on"}"#), OrderChanges { rows: Some(true), ..Default::default() });
+        assert!(OrderChanges::read("[1, 2]").is_empty() && OrderChanges::read("").is_empty());
         // Saved as only the values changed; a line from a newer or older app
         // with keys this one doesn't know still reads.
         assert_eq!(serde_json::to_string(&OrderChanges { rows: Some(true), ..Default::default() }).unwrap(), r#"{"rows":true}"#);
@@ -1242,45 +1252,52 @@ impl OrderSettings {
 /// The sheet and hole order settings changed for one machine in Settings →
 /// Machines (CO16, CO17), saved with the machine. Each value set wins over
 /// the machine file's; None = the file's. Empty = every value from the file
-/// ("Use the machine file").
+/// ("Use the machine file"). Saved values are read one by one (`read`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct OrderChanges {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "one_value")]
     pub start_left: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "one_value")]
     pub start_bottom: Option<bool>,
     /// Rows (along X), else columns.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "one_value")]
     pub rows: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "one_value")]
     pub zigzag: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "one_value")]
     pub zones_x: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "one_value")]
     pub zones_y: Option<u32>,
     /// Order mode of the holes by its number in the machine file (B565).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "one_value")]
     pub hole_mode: Option<u8>,
     /// By direction's start corner (B566: 0 nearest the head, 1–4).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "one_value")]
     pub hole_start_corner: Option<u8>,
     /// By direction in columns (B567 2), else rows.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "one_value")]
     pub hole_columns: Option<bool>,
     /// B568, mm.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "one_value")]
     pub orthogonality_tolerance: Option<f64>,
     /// B587.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "one_value")]
     pub small_holes_first: Option<bool>,
     /// B588 / B589 / B590, mm.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "one_value")]
     pub big_hole_min_length: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "one_value")]
     pub big_hole_min_width: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "one_value")]
     pub big_hole_offset: Option<f64>,
+}
+
+/// One saved value of `OrderChanges`: None when it can't be read as one
+/// (a word for a switch, a negative count), so the others are still read.
+fn one_value<'de, D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned>(d: D) -> Result<Option<T>, D::Error> {
+    let v = <serde_json::Value as serde::Deserialize>::deserialize(d)?;
+    Ok(T::deserialize(v).ok())
 }
 
 /// `wanted` when it isn't `file`.
@@ -1299,27 +1316,54 @@ impl OrderChanges {
         *self == OrderChanges::default()
     }
 
-    /// The order settings with these changes laid over `file`'s. A value
-    /// the setting can't take (a mode or corner number it doesn't have, a
-    /// negative or endless length) leaves the file's; zones are capped at
-    /// `MAX_ZONES`.
+    /// The changes as saved in the settings file (CO16, CO17): each value
+    /// read on its own, and one that can't be read or that the setting
+    /// can't take (`valid`) left out, so the machine's other changes are
+    /// kept. A line that isn't a list of values at all gives none.
+    pub fn read(text: &str) -> OrderChanges {
+        serde_json::from_str::<OrderChanges>(text).map(OrderChanges::valid).unwrap_or_default()
+    }
+
+    /// Only the changes the settings can take (CO16, CO17): a mode or start
+    /// corner number the setting doesn't have, more than `MAX_ZONES` zones,
+    /// a negative or endless length or an endless offset is left out, and
+    /// the file's value stays. Reading the settings, laying the changes
+    /// over the file (`apply`) and saying where a value comes from
+    /// (`MachineTech::order_changes`) all go through it.
+    pub fn valid(self) -> OrderChanges {
+        let len = |v: Option<f64>| v.filter(|x| x.is_finite() && *x >= 0.0);
+        OrderChanges {
+            zones_x: self.zones_x.filter(|n| *n <= MAX_ZONES),
+            zones_y: self.zones_y.filter(|n| *n <= MAX_ZONES),
+            hole_mode: self.hole_mode.filter(|c| HoleMode::from_code(*c).is_some()),
+            hole_start_corner: self.hole_start_corner.filter(|c| *c <= 4),
+            orthogonality_tolerance: len(self.orthogonality_tolerance),
+            big_hole_min_length: len(self.big_hole_min_length),
+            big_hole_min_width: len(self.big_hole_min_width),
+            big_hole_offset: self.big_hole_offset.filter(|x| x.is_finite()),
+            ..self
+        }
+    }
+
+    /// The order settings with these changes laid over `file`'s; a value
+    /// the setting can't take (`valid`) leaves the file's.
     pub fn apply(&self, file: OrderSettings) -> OrderSettings {
+        let c = self.valid();
         let (mut s, mut h) = (file.sheet, file.holes);
-        let len = |v: Option<f64>, def: f64| v.filter(|x| x.is_finite() && *x >= 0.0).unwrap_or(def);
-        s.start_left = self.start_left.unwrap_or(s.start_left);
-        s.start_bottom = self.start_bottom.unwrap_or(s.start_bottom);
-        s.horizontal = self.rows.unwrap_or(s.horizontal);
-        s.zigzag = self.zigzag.unwrap_or(s.zigzag);
-        s.zones_x = self.zones_x.map_or(s.zones_x, |n| n.min(MAX_ZONES));
-        s.zones_y = self.zones_y.map_or(s.zones_y, |n| n.min(MAX_ZONES));
-        h.mode = self.hole_mode.and_then(HoleMode::from_code).unwrap_or(h.mode);
-        h.corner = self.hole_start_corner.filter(|c| *c <= 4).unwrap_or(h.corner);
-        h.columns = self.hole_columns.unwrap_or(h.columns);
-        h.ortho_tol = len(self.orthogonality_tolerance, h.ortho_tol);
-        h.small_first = self.small_holes_first.unwrap_or(h.small_first);
-        h.big_length = len(self.big_hole_min_length, h.big_length);
-        h.big_width = len(self.big_hole_min_width, h.big_width);
-        h.big_offset = self.big_hole_offset.filter(|x| x.is_finite()).unwrap_or(h.big_offset);
+        s.start_left = c.start_left.unwrap_or(s.start_left);
+        s.start_bottom = c.start_bottom.unwrap_or(s.start_bottom);
+        s.horizontal = c.rows.unwrap_or(s.horizontal);
+        s.zigzag = c.zigzag.unwrap_or(s.zigzag);
+        s.zones_x = c.zones_x.unwrap_or(s.zones_x);
+        s.zones_y = c.zones_y.unwrap_or(s.zones_y);
+        h.mode = c.hole_mode.and_then(HoleMode::from_code).unwrap_or(h.mode);
+        h.corner = c.hole_start_corner.unwrap_or(h.corner);
+        h.columns = c.hole_columns.unwrap_or(h.columns);
+        h.ortho_tol = c.orthogonality_tolerance.unwrap_or(h.ortho_tol);
+        h.small_first = c.small_holes_first.unwrap_or(h.small_first);
+        h.big_length = c.big_hole_min_length.unwrap_or(h.big_length);
+        h.big_width = c.big_hole_min_width.unwrap_or(h.big_width);
+        h.big_offset = c.big_hole_offset.unwrap_or(h.big_offset);
         OrderSettings { sheet: s, holes: h }
     }
 

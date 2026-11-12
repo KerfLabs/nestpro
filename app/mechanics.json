@@ -2859,7 +2859,7 @@
   {
    "name": "order settings changed per machine",
    "group": "cut order",
-   "value": "kept in the app's settings with the machine (only the values changed), winning over the machine file and its material sections; a value set back to the file's isn't kept; Use the machine file puts every sheet and hole order value back; settings saved before have none",
+   "value": "kept in the app's settings with the machine (only the values changed), winning over the machine file and its material sections; a value set back to the file's isn't kept; a saved value the setting can't take (mode or corner number it doesn't have, more than 500 zones, negative length, unreadable) is left out on reading and the other changes kept; Use the machine file puts every sheet and hole order value back; settings saved before have none",
    "source": "CO16",
    "estimated": true
   },

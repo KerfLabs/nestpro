@@ -592,8 +592,9 @@ impl AppSettings {
                             "gas_id" => m.gas_id = v.parse().unwrap_or(1),
                             "gas_name" => m.gas_name = v,
                             "kind" => m.kind = crate::machine::MachineKind::from_key(&v).unwrap_or_default(),
-                            // A line that can't be read leaves every value the file's.
-                            "order" => m.order = serde_json::from_str(&v).unwrap_or_default(),
+                            // Each value on its own: one that can't be read or
+                            // taken is left out, the others kept (CO16).
+                            "order" => m.order = crate::ct1::OrderChanges::read(&v),
                             _ => {}
                         }
                     }
@@ -907,6 +908,34 @@ mod settings_tests {
         let s = AppSettings::read_from(&path).unwrap();
         assert_eq!((in_use(&s.machines[0]), in_use(&s.machines[1])), (file, b));
         assert_eq!(file_order(&s.machines[1]), file, "the file's own values stay the file's");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_saved_order_value_that_cant_be_taken_is_left_out_and_the_machines_other_changes_are_kept() {
+        use crate::ct1::OrderChanges;
+        let d = std::env::temp_dir().join(format!("nestpro_settings_bad_order_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let path = d.join("settings.ini");
+        // A hand-edited line: a negative zone count, a mode and a corner the
+        // settings don't have, a negative tolerance, too many zones, a word
+        // for a switch; and two changes that are fine.
+        let line = r#"{"start_bottom":false,"zones_x":-1,"zones_y":100000,"hole_mode":0,"hole_start_corner":9,"orthogonality_tolerance":-1.0,"zigzag":"yes","big_hole_offset":2.5}"#;
+        std::fs::write(&path, format!("[machine]\nname = Demo laser\noutput = iso\norder = {line}\n[machine]\nname = Demo plasma\norder = not a list\n")).unwrap();
+        let s = AppSettings::read_from(&path).unwrap();
+        let kept = OrderChanges { start_bottom: Some(false), hole_mode: Some(0), big_hole_offset: Some(2.5), ..Default::default() };
+        assert_eq!(s.machines[0].order, kept);
+        // A line that can't be read at all leaves every value the file's.
+        assert!(s.machines[1].order.is_empty());
+        // Saved and read again, the good changes are still there, and only them.
+        s.save_to(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains(r#"order = {"start_bottom":false,"hole_mode":0,"big_hole_offset":2.5}"#), "{text}");
+        assert_eq!(AppSettings::read_from(&path).unwrap().machines[0].order, kept);
+        // Settings with no changes save back exactly as they were read.
+        let old = AppSettings::default().to_text();
+        assert_eq!(AppSettings::parse(&old).to_text(), old);
         let _ = std::fs::remove_dir_all(&d);
     }
 }
