@@ -434,7 +434,7 @@
   {
    "name": "a sheet cuts each part",
    "group": "part cut order",
-   "value": "in its cut order: the contours set by hand first, then the automatic order, the outline last; the same on every sheet and copy, turned or mirrored",
+   "value": "in its cut order: the contours set by hand first, then the automatic order, the outline last; the order set by hand is the same on every sheet and copy, turned or mirrored, and the automatic holes are ordered where each copy sits (CO14)",
    "source": "CO8",
    "estimated": true
   },
