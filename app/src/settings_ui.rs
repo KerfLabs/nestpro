@@ -976,7 +976,9 @@ impl App {
                         (HoleMode::Proximity, "The nearest hole next, from where the head is"),
                         (HoleMode::Direction, "In rows or columns from a start corner, every other one back"),
                     ];
-                    if h.mode == HoleMode::MinimumHeat {
+                    // Offered while in use or set by the machine file (MAC-62), so
+                    // choosing another mode can be taken back here.
+                    if h.mode == HoleMode::MinimumHeat || f.mode == HoleMode::MinimumHeat {
                         modes.push((HoleMode::MinimumHeat, "Not built yet: the part's own contour order"));
                     }
                     for (md, tip) in modes {
