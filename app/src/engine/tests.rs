@@ -1203,15 +1203,22 @@ fn an_agents_stock_change_waits_for_another_pcs_change_and_both_count() {
     // The window on another PC is in the middle of a stock change: it has
     // read the stock (1 on the rack) and is about to store 6.
     let (read, go) = std::sync::mpsc::channel();
+    let (waiting, agent_waits) = std::sync::mpsc::channel::<()>();
     let other = std::thread::spawn(move || {
         crate::stock::Stock::update(&crate::library::Library::at(&lib, &Who::new("kim", "PROG-2"), &Clock::pc()), |st| {
             read.send(()).unwrap();
-            std::thread::sleep(std::time::Duration::from_millis(400));
+            agent_waits.recv_timeout(std::time::Duration::from_secs(60)).expect("the agent waits for the lock");
             st.change_qty("S1", 5)
         })
     });
     go.recv().unwrap();
+    crate::shared::hooks::set(move |s| {
+        if s == "lock busy" {
+            let _ = waiting.send(());
+        }
+    });
     let r = call(&mut s, "stock", None, json!({"mode": "add", "ref": "S1", "qty": 1}));
+    crate::shared::hooks::clear();
     other.join().unwrap().unwrap();
     // The agent's change waited for the other one and counted on top of it.
     assert_eq!(r["message"], "'S1': 7 in stock.", "{r}");

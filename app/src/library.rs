@@ -1200,11 +1200,19 @@ mod library_tests {
         // PROG-1 holds the lock; PROG-2's saves wait while the clock moves on 10 minutes.
         let held = prog1.lock().unwrap();
         let (d, c) = (dir.clone(), clock.clone());
+        let (waiting, waiting_rx) = std::sync::mpsc::channel::<()>();
         let prog2 = std::thread::spawn(move || {
+            crate::shared::hooks::set(move |s| {
+                if s == "lock busy" {
+                    let _ = waiting.send(());
+                }
+            });
             let lib = Library::open(&d, &Who::new("kim", "PROG-2"), &c).unwrap();
-            (lib.save_job(&job("DEMO-002 brackets"), SaveTo::New).map(|r| r.id), lib.save_product(&part, "Acme", 0, 3.0, SaveTo::New).map(|r| r.id))
+            let saved = (lib.save_job(&job("DEMO-002 brackets"), SaveTo::New).map(|r| r.id), lib.save_product(&part, "Acme", 0, 3.0, SaveTo::New).map(|r| r.id));
+            crate::shared::hooks::clear();
+            saved
         });
-        std::thread::sleep(std::time::Duration::from_millis(400));
+        waiting_rx.recv_timeout(std::time::Duration::from_secs(60)).expect("PROG-2 waits for the lock");
         clock.advance(std::time::Duration::from_secs(10 * 60));
         drop(held);
         let (j, p) = prog2.join().unwrap();

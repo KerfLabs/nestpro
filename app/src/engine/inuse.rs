@@ -904,9 +904,17 @@ mod inuse_tests {
                 if s == "revision checked" {
                     // PROG-2 takes over while PROG-1's save holds the lock.
                     let (dir, clock) = (dir.clone(), clock.clone());
-                    let t = std::thread::spawn(move || take_over(&pc(&dir, "Sam", "PROG-2", &clock), id, "DEMO-7"));
-                    std::thread::sleep(Duration::from_millis(300));
-                    assert!(!t.is_finished(), "Take over didn't wait for the save");
+                    let (waiting, waiting_rx) = std::sync::mpsc::channel::<()>();
+                    let t = std::thread::spawn(move || {
+                        shared::hooks::set(move |s| {
+                            if s == "lock busy" {
+                                let _ = waiting.send(());
+                            }
+                        });
+                        take_over(&pc(&dir, "Sam", "PROG-2", &clock), id, "DEMO-7")
+                    });
+                    let waits = waiting_rx.recv_timeout(Duration::from_secs(60));
+                    assert!(waits.is_ok() && !t.is_finished(), "Take over didn't wait for the save");
                     *taking.lock().unwrap() = Some(t);
                 }
             });

@@ -1833,7 +1833,7 @@ pub(crate) mod libui_tests {
         prog1.save_job_to(&file);
         assert!(prog1.job_path.is_none() && prog1.job_link.is_none(), "the copy became the job's own file");
         // An agent adds a part to the file (the CLI's way); the window looks.
-        std::thread::sleep(Duration::from_millis(1100));
+        crate::filewatch::filewatch_tests::wait_tick(&file);
         let mut s = crate::engine::session::Session::new(crate::engine::Ctx::builtin());
         s.call("add-shape", Some(file.to_str().unwrap()), &serde_json::json!({"shape": "disc", "w": 150, "qty": 2, "name": "From agent"})).unwrap();
         prog1.disk_poll = -10.0;
@@ -2358,6 +2358,7 @@ pub(crate) mod libui_tests {
         stock_of_two(&dir);
         let clock = Clock::at(NOV_9_0920);
         let (checked, checked_rx) = channel::<()>();
+        let (waiting, waiting_rx) = channel::<()>();
         let prog1 = {
             let (dir, clock) = (dir.clone(), clock.clone());
             std::thread::spawn(move || {
@@ -2368,7 +2369,8 @@ pub(crate) mod libui_tests {
                 crate::shared::hooks::set(move |s| {
                     if s == "job name checked" && std::mem::take(&mut first) {
                         let _ = checked.send(());
-                        std::thread::sleep(Duration::from_millis(500));
+                        // Held here until PROG-2 waits for the write lock.
+                        let _ = waiting_rx.recv_timeout(Duration::from_secs(10));
                     }
                 });
                 a.save_job_to_library();
@@ -2383,7 +2385,13 @@ pub(crate) mod libui_tests {
                 a.jobs[a.cur_job].week = "W12".into();
                 a.run_nesting();
                 checked_rx.recv_timeout(Duration::from_secs(60)).expect("PROG-1 checked the name");
+                crate::shared::hooks::set(move |s| {
+                    if s == "lock busy" {
+                        let _ = waiting.send(());
+                    }
+                });
                 a.save_job_to_library();
+                crate::shared::hooks::clear();
                 (a.job_lib_id, a.status)
             })
         };

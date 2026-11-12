@@ -1047,14 +1047,16 @@ mod inuseui_tests {
         };
         settle(&mut pc);
         assert_eq!((holder(&dir, a).as_deref(), holder(&dir, b).as_deref()), (Some("Sam on PROG-2"), Some("Sam on PROG-2")));
-        // Another PC sits on the write lock for 10 s.
+        // Another PC sits on the write lock until the switch is over (10 s at
+        // most).
         let (tx, rx) = std::sync::mpsc::channel();
+        let (done, done_rx) = std::sync::mpsc::channel::<()>();
         let held_by_other = {
             let dir = dir.clone();
             std::thread::spawn(move || {
                 let lock = crate::shared::WriteLock::take(&dir).unwrap();
                 tx.send(()).unwrap();
-                std::thread::sleep(Duration::from_secs(10));
+                let _ = done_rx.recv_timeout(Duration::from_secs(10));
                 drop(lock);
             })
         };
@@ -1064,6 +1066,8 @@ mod inuseui_tests {
         pc.switch_to_job(i);
         assert!(started.elapsed() < Duration::from_secs(5), "switching waited {:?} for the write lock", started.elapsed());
         assert_eq!(pc.job_lib_id, Some(a));
+        assert!(!held_by_other.is_finished(), "the other PC let go of the lock before the switch was over");
+        let _ = done.send(());
         held_by_other.join().unwrap();
         settle(&mut pc);
         assert_eq!((holder(&dir, a).as_deref(), holder(&dir, b)), (Some("Sam on PROG-2"), None));
