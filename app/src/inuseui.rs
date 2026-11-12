@@ -822,16 +822,16 @@ mod inuseui_tests {
         let mut pc2 = window(&dir, "sam", "PROG-1", &clock, true, true);
         pc2.lib_refresh();
         let folder = |a: &mut App, parent: u64, name: &str| {
-            let f = a.lib_new_folder(parent).unwrap();
-            assert!(a.lib_rename_folder(f, name), "{}", a.status);
+            let f = a.lib_new_folder(Kind::Job, parent).unwrap();
+            assert!(a.lib_rename_folder(Kind::Job, f, name), "{}", a.status);
             f
         };
         // Saved from its Open jobs folder Acme, DEMO-7 is filed in Acme (JX15).
         let acme = pc2.libui.tree.find("Acme").unwrap();
         let nov = folder(&mut pc2, acme, "2026-11");
         let week = folder(&mut pc2, nov, "Week 46");
-        pc2.lib_cut(LibItem::Job(id));
-        assert!(pc2.lib_paste(week), "{}", pc2.status);
+        pc2.lib_cut(Kind::Job, LibItem::Job(id));
+        assert!(pc2.lib_paste(Kind::Job, week), "{}", pc2.status);
         let outline = ["Acme/", "Acme/2026-11/", "Acme/2026-11/Week 46/", "Acme/2026-11/Week 46/DEMO-7"];
         assert_eq!(pc2.library_outline(), outline);
         let mut pc1 = window(&dir, "Sam", "PROG-2", &clock, true, true);
@@ -842,15 +842,15 @@ mod inuseui_tests {
             pc2.cfg.in_use_warn = warn;
             assert!(!pc2.delete_from_library(Kind::Job, id));
             assert!(pc2.status.contains(said) && pc2.status.contains("Nothing was deleted"), "{}", pc2.status);
-            pc2.lib_cut(LibItem::Job(id));
-            assert!(!pc2.lib_paste(TOP));
+            pc2.lib_cut(Kind::Job, LibItem::Job(id));
+            assert!(!pc2.lib_paste(Kind::Job, TOP));
             assert!(pc2.status.contains(said) && pc2.status.contains("can't be moved"), "{}", pc2.status);
-            assert!(!pc2.lib_rename_folder(acme, "Acme Ltd"));
+            assert!(!pc2.lib_rename_folder(Kind::Job, acme, "Acme Ltd"));
             assert_eq!(pc2.status, "'Acme' holds DEMO-7, which is in use by Sam on PROG-2 since 09:14. Try again when they've closed it.");
-            pc2.lib_cut(LibItem::Folder(nov));
-            assert!(!pc2.lib_paste(TOP));
+            pc2.lib_cut(Kind::Job, LibItem::Folder(nov));
+            assert!(!pc2.lib_paste(Kind::Job, TOP));
             assert!(pc2.status.starts_with("'Acme/2026-11' holds DEMO-7, which is in use by Sam on PROG-2 since 09:14."), "{}", pc2.status);
-            assert!(!pc2.lib_delete_folder(week));
+            assert!(!pc2.lib_delete_folder(Kind::Job, week));
             assert!(pc2.status.starts_with("'Acme/2026-11/Week 46' holds DEMO-7, which is in use by Sam on PROG-2 since 09:14.") && pc2.status.contains("only an empty folder"), "{}", pc2.status);
             assert_eq!(pc2.library_outline(), outline);
         }
@@ -863,8 +863,8 @@ mod inuseui_tests {
         assert!(pc2.status.contains(said), "{}", pc2.status);
         // PC 1 moves its own job in use freely.
         pc1.lib_refresh();
-        pc1.lib_cut(LibItem::Job(id));
-        assert!(pc1.lib_paste(nov), "{}", pc1.status);
+        pc1.lib_cut(Kind::Job, LibItem::Job(id));
+        assert!(pc1.lib_paste(Kind::Job, nov), "{}", pc1.status);
         // Closed on PC 1: PC 2 may delete it, and no hold is left.
         let k = pc1.jobs.iter().position(|j| j.lib_id == Some(id)).unwrap();
         pc1.close_job(k);

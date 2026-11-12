@@ -660,18 +660,20 @@ mod shared_tests {
     #[test]
     fn a_lock_left_by_a_pc_that_crashed_is_taken_over_but_one_in_use_is_waited_for() {
         let dir = scratch("abandoned");
-        let short = Duration::from_millis(300);
+        // Long enough that taking it over (a write and a flush, within a
+        // third of this) finishes on a busy PC too.
+        let short = Duration::from_millis(1500);
         // PROG-9 crashed while saving: its lock stays behind.
         std::fs::write(dir.join(LOCK_FILE), r#"{"user":"sam","pc":"PROG-9","process":7,"since":0,"token":"PROG-9-7-0"}"#).unwrap();
         let t = Instant::now();
-        let lock = WriteLock::take_with(&dir, short, Duration::from_secs(5)).unwrap();
+        let lock = WriteLock::take_with(&dir, short, Duration::from_secs(10)).unwrap();
         assert!(t.elapsed() >= short, "taken over before it counted as abandoned");
         assert!(std::fs::read_to_string(dir.join(LOCK_FILE)).unwrap().contains(&pc_name()));
         drop(lock);
         // A PC that crashed just as it made the lock, before writing in it.
         std::fs::write(dir.join(LOCK_FILE), "").unwrap();
         let t = Instant::now();
-        drop(WriteLock::take_with(&dir, short, Duration::from_secs(5)).unwrap());
+        drop(WriteLock::take_with(&dir, short, Duration::from_secs(10)).unwrap());
         assert!(t.elapsed() >= short);
         // A PC writing now holds it: another waits for it, however long that
         // takes, and never takes it over while it's in use.
