@@ -31,3 +31,10 @@ ureq = { version = "3.5.1", default-features = false, features = ["rustls"] }
 [build-dependencies]
 embed-resource = "3.0.12"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
+
+# Tests build lightly optimised. Most of their time is the nesting engine
+# (every window a test opens nests the five sample jobs), which runs about 7x
+# faster than unoptimised; rebuilding after an edit takes about as long.
+# Debug assertions, overflow checks and debug info stay as in dev.
+[profile.test]
+opt-level = 1

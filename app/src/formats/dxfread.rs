@@ -397,7 +397,7 @@ impl Builder {
                     dr: r.n(45, 0.0),
                 }
             }
-            // Annotations: not part geometry, not reported (as before, D5).
+            // Annotations: not part geometry, not reported (as before, DF5).
             "DIMENSION" | "POINT" | "HATCH" | "ATTRIB" | "ATTDEF" | "VIEWPORT" | "LEADER" | "MLEADER" | "MULTILEADER" | "TOLERANCE" | "WIPEOUT" | "IMAGE" => {
                 Kind::Skip { name: r.name.to_string(), annotation: true }
             }

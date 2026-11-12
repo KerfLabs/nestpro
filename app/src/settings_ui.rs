@@ -386,6 +386,15 @@ impl App {
             }
         });
         ui.add_space(10.0);
+        // CU1: the original's Concurrency management, kept on this PC only.
+        card(ui, "Jobs in use", "When several PCs share one Library, a job open on one of them is in use there: the others see who has it and since when. Kept on this PC only.", |ui| {
+            ui.checkbox(&mut self.cfg.in_use_warn, "Warn when opening a job someone else has in use").on_hover_text("Also marks the jobs open here as in use for the other PCs. Off: this PC neither marks its jobs nor asks; a job someone else has in use still can't be deleted, renamed or moved from here.");
+            // Allow is only shown while warn is on (CU1).
+            if self.cfg.in_use_warn {
+                ui.checkbox(&mut self.cfg.in_use_allow, "Allow opening it anyway").on_hover_text("Off: a job someone else has in use can only be taken over, after a warning, or left closed.");
+            }
+        });
+        ui.add_space(10.0);
         card(ui, "Part data from the file name", "When DXF names follow a pattern, the reference and quantity are read from the name. Fields: [Reference] [Quantity] [Material] [Thickness], * skips text; the text between fields is the separator.", |ui| {
             ui.horizontal(|ui| {
                 ui.add(egui::TextEdit::singleline(&mut self.cfg.name_format).hint_text("[Reference]_[Quantity]_[Material]").desired_width(320.0));
@@ -1100,7 +1109,11 @@ impl App {
         });
     }
 
-    fn settings_folders(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn settings_folders(&mut self, ui: &mut egui::Ui) {
+        // Looked for once, as the lists do; Try again looks again (LB11).
+        if !self.libui.loaded {
+            self.lib_refresh();
+        }
         ui.label(RichText::new("Folders").size(18.0).strong().color(th().text_strong));
         ui.add_space(8.0);
         card(ui, "Export folder", "Where Export CNC writes programs (a sub-folder per job). Empty = Documents\\Sheet Nesting.", |ui| {
@@ -1119,28 +1132,69 @@ impl App {
         ui.add_space(10.0);
         card(ui, "Library folder", "This app's own product and job database. Put it on a shared drive and everyone in the shop sees the same products and jobs. Empty = Documents\\Sheet Nesting\\Library.", |ui| {
             row(ui, "Folder", |ui| {
-                let r = ui.add(egui::TextEdit::singleline(&mut self.cfg.library_dir).desired_width(380.0).hint_text("Documents\\Sheet Nesting\\Library"));
-                // Typed: it counts as another folder once the typing is done.
-                if r.gained_focus() {
-                    self.lib_dir_typed_from = Some(self.cfg.library_dir.clone());
+                // Typed: it's another folder once the typing is done, never
+                // while half a name is in the box (LB12).
+                let mut text = self.lib_dir_edit.clone().unwrap_or_else(|| self.cfg.library_dir.clone());
+                let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(380.0).hint_text("Documents\\Sheet Nesting\\Library"));
+                if r.has_focus() || r.changed() {
+                    self.lib_dir_edit = Some(text);
                 }
-                if r.lost_focus() && self.lib_dir_typed_from.take().is_some_and(|d| d != self.cfg.library_dir) {
-                    self.library_folder_changed();
-                }
-                if r.changed() {
-                    self.libui.loaded = false;
+                if r.lost_focus() {
+                    if let Some(t) = self.lib_dir_edit.take() {
+                        self.pick_library_folder(t);
+                    }
                 }
                 if ui.button("Browse…").clicked() {
                     if let Some(d) = rfd::FileDialog::new().pick_folder() {
-                        self.cfg.library_dir = d.display().to_string();
-                        self.library_folder_changed();
+                        self.pick_library_folder(d.display().to_string());
                     }
                 }
-                if !self.cfg.library_dir.is_empty() && ui.small_button("✖").clicked() {
-                    self.cfg.library_dir.clear();
-                    self.library_folder_changed();
+                if !self.cfg.library_dir.is_empty() && ui.small_button("✖").on_hover_text("Back to Documents\\Sheet Nesting\\Library on this PC").clicked() {
+                    self.pick_library_folder(String::new());
                 }
             });
+            // The Library can't be reached or isn't there (LB11, LB12).
+            if let Some(e) = self.libui.error.clone() {
+                ui.add_space(4.0);
+                ui.label(RichText::new(format!("⚠ {e}")).size(11.5).color(th().warn_fg));
+                ui.horizontal(|ui| {
+                    if ui.small_button("Try again").clicked() {
+                        self.lib_retry();
+                    }
+                    // Asked first, as for any folder that holds no Library.
+                    if ui.small_button("Make a new Library here…").on_hover_text("Only for a new Library: the shop's own may just be out of reach").clicked() {
+                        self.lib_new_ask = Some(self.cfg.library_dir.clone());
+                    }
+                });
+            }
+        });
+        ui.add_space(10.0);
+        // JX8, JX9: one setting, off on a new install; ticking it starts the
+        // period at 1 minute; whole minutes, 1 to 1440. LB14: while it's on,
+        // a quick look every few seconds shows other PCs' saves.
+        card(ui, "Auto-refresh", "Show what other PCs save to the Library without pressing Refresh: the Job Explorer, the Library window, Add product, the sheet stock, and open jobs someone else saved. Off on a new install. Each PC sets its own.", |ui| {
+            let mut on = self.cfg.refresh_minutes > 0;
+            row(ui, "Auto-refresh", |ui| {
+                if ui.checkbox(&mut on, "Update the lists and open jobs by themselves").changed() {
+                    self.cfg.refresh_minutes = if on { 1 } else { 0 };
+                }
+            });
+            row(ui, "Full reload every", |ui| {
+                let mut m = self.cfg.refresh_minutes.max(1);
+                let r = ui.add_enabled(on, egui::DragValue::new(&mut m).range(1..=crate::engine::refresh::PERIOD_MAX).speed(1.0).suffix(" min"));
+                if on && r.changed() {
+                    self.cfg.refresh_minutes = crate::engine::refresh::period(m as i64);
+                }
+                ui.label(RichText::new("whole minutes, 1 to 1440").size(11.5).color(th().text_dim));
+            });
+            ui.label(
+                RichText::new(format!(
+                    "While it's on, the program also looks every {} seconds whether another PC saved something, and at once when this window comes back to the front; the period reads everything again.",
+                    crate::engine::refresh::QUICK_S
+                ))
+                .size(11.5)
+                .color(th().text_dim),
+            );
         });
         ui.add_space(10.0);
         card(ui, "Lantek Expert install (optional)", "Only used to import its database connection, machines and post files.", |ui| {

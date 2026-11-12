@@ -81,3 +81,25 @@ _Avoid_: travel, jump, idle move
 **Sweep**:
 Holding the mouse button down and dragging across contours or parts as if the pointer were the head; each is taken in the order the pointer passes over it.
 _Avoid_: drag-select, paint stroke
+
+## Sharing the Library
+
+**Library**:
+The shop's one store of saved jobs, job folders, products and sheet stock, which every programming PC opens.
+_Avoid_: database (that word is kept for the original program's database)
+
+**Folder**:
+A named place in the Library's tree that holds jobs, or products, and other folders. Every PC sees the same tree.
+_Avoid_: week, group, directory
+
+**In use**:
+Said of a job a programmer has open on their PC; others are warned or kept out, as the shop's setting says.
+_Avoid_: locked, blocked (a locked sheet is a different thing: one nesting won't use)
+
+**Hold**:
+The Library's note that a job is in use: who has it, on which PC, and since when. One per job; it lapses when its PC stops renewing it.
+_Avoid_: lock (the Library's write lock is a different thing: a moment's turn to write)
+
+**Take over**:
+Moving a job's hold to this PC from whoever has it, after a warning; the PC that had it is told and keeps its changes only as a copy.
+_Avoid_: steal, force open

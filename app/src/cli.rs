@@ -166,6 +166,10 @@ fn parse(op: &ops::Op, rest: &[String]) -> Result<(Option<String>, Value, bool),
             }
         } else if job.is_none() && op.kind != Kind::Global {
             job = Some(w.clone());
+        } else if let Some(p) = op.args.iter().find(|a| op.kind == Kind::Global && a.required && a.ty == ops::Ty::Path && !m.contains_key(a.name)) {
+            // An operation without a job takes its file or folder first:
+            // `nestpro library-check D:\check`.
+            m.insert(p.name.into(), Value::String(w.clone()));
         } else {
             return Err(format!("unexpected '{w}'"));
         }
@@ -184,7 +188,8 @@ fn usage() -> String {
         "Sheet Nesting (nestpro) — window app, command line and MCP server.\n\n\
          USAGE\n  nestpro                         open the window\n  nestpro <file.snjob>            open a job in the window\n  \
          nestpro <operation> <job.snjob> [--arg=value …] [--text]\n  nestpro mcp                     MCP server on stdin/stdout (for AI agents)\n  \
-         nestpro ops [--json|--gui]      list every operation (--gui: the GUI command each stands for)\n  nestpro help <operation>        one operation's arguments\n\n\
+         nestpro ops [--json|--gui]      list every operation (--gui: the GUI command each stands for)\n  nestpro help <operation>        one operation's arguments\n  \
+         nestpro library-check <folder> --minutes 10 --text   the two-PC Library check (start it on two PCs at once)\n\n\
          A typical job:\n  nestpro new jobs/frames.snjob --w=3000 --h=1500 --material=steel --thickness=5\n  \
          nestpro import-dxf jobs/frames.snjob --path=\"bracket.dxf\" --qty=20\n  nestpro add-shape jobs/frames.snjob --shape=disc --w=300 --qty=8\n  \
          nestpro nest jobs/frames.snjob\n  nestpro leads jobs/frames.snjob --mode=machine\n  nestpro remnant jobs/frames.snjob --mode=auto --sheet=1\n  \

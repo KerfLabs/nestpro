@@ -76,6 +76,19 @@ nestpro ops --gui      # which GUI ribbon command each operation stands for
   `stock-book --mode=book` (saving the job in the window books it too); a booked
   job keeps the stock in step with every later change, and `--mode=release`
   gives it all back.
+- **One Library for several PCs.** Every change to the Library's records, its
+  list and the sheet stock is made under one write lock in the Library folder,
+  so PCs and agents saving at the same moment never lose each other's work.
+  Before sharing a folder, start `nestpro library-check <test folder>
+  --minutes 10 --text` on two PCs at once: it saves made-up jobs, parts and
+  stock changes there and reports PASS or FAIL in plain words. It refuses a
+  real Library.
+- **Job folders** are the Library's, the same on every PC: `job-folders
+  --mode=list` shows the tree, and `new`, `rename`, `delete` (empty folders
+  only) and `move` (a saved job or a folder) change it, as the Job Explorer's
+  Library section does. **Part folders** are a tree of their own:
+  `part-folders` does the same for library parts (`move --library_part=…`),
+  as the Library window's Products tab does.
 - Agents may create and change jobs, use the Library, and write programs to the
   export folder. They never send anything to a machine and don't change
   settings (machines, posts, materials are set in the app).

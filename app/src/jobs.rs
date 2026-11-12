@@ -309,7 +309,8 @@ impl App {
             });
         });
         match act {
-            Some(Act::Open(i)) => self.open_job(i),
+            // A library job someone else has in use asks first (CU8).
+            Some(Act::Open(i)) => self.switch_to_job(i),
             Some(Act::NewJob(w)) => self.new_job_in_week(w),
             Some(Act::NewFolder) => self.new_folder(),
             Some(Act::EditFolder(f)) => self.tree_edit = Some(crate::jobtree::TreeEdit::Folder { old: f.clone(), text: f }),

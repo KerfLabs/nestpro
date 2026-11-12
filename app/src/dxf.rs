@@ -2,10 +2,10 @@
 //!
 //! Rules taken from the original (see MECHANICS.md, "DXF"):
 //! - joining tolerance 0.01 mm and arc smoothness 0.1 mm
-//!   (D4);
+//!   (DF4);
 //! - every drawing object is looked up by its **layer** and given a machining
 //!   role; the default role (code 13) is a normal cut contour, other layers can
-//!   be marking or left out (D5).
+//!   be marking or left out (DF5).
 //!
 //! Reads lines, arcs, circles, polylines (with bulges, old and new style),
 //! ellipses, splines, texts and block inserts, each in its own plane, from model

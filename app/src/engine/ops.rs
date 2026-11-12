@@ -81,9 +81,11 @@ pub struct Op {
 }
 
 impl Op {
-    /// Changes a file: the job, or (the stock operation) the sheet stock.
+    /// Changes a file: the job, the sheet stock (`stock`), the Library's job
+    /// or part folders (`job-folders`, `part-folders`) or a test Library
+    /// folder (`library-check`).
     pub fn writes(&self) -> bool {
-        matches!(self.kind, Kind::Write | Kind::Create) || self.name == "stock"
+        matches!(self.kind, Kind::Write | Kind::Create) || matches!(self.name, "stock" | "library-check" | "job-folders" | "part-folders")
     }
 
     /// MCP tool name (underscores).
@@ -193,10 +195,11 @@ pub static OPS: &[Op] = &[
         c("quality", CUT_QUALITIES, "all-quality: the machine's cut quality 1-12, as part-info shows each contour's"),
     ] },
     Op { name: "export-part-dxf", group: "Parts", kind: Kind::Read, help: "Save a part as DXF (outline and holes on CUT, marking on MARK).", args: &[PART, r("out", Ty::Path, "DXF file to write")] },
-    Op { name: "library", group: "Parts", kind: Kind::Write, help: "The product/job library: list it, add a library product to the job, or save parts / the job into it.", args: &[
-        Arg { name: "mode", ty: Ty::Str, required: true, help: "What to do", choices: &["list", "add", "save-part", "save-job"] },
-        a("find", Ty::Str, "list: text to look for"), a("id", Ty::Int, "add: the product's record number"), a("name", Ty::Str, "add: the product's name"),
-        a("qty", Ty::Int, "add: quantity"), a("parts", Ty::Parts, "save-part: which parts"), a("folder", Ty::Str, "save-part: product folder/group"),
+    Op { name: "library", group: "Parts", kind: Kind::Write, help: "The product/job library: list it (each record with who last saved it and when: saved_by, e.g. \"sam on PROG-2 (agent)\", and saved_at in this PC's local time), open a library job into this job file, add a library product to the job, or save parts / the job into it (recorded as saved by this PC's user, marked (agent)). A job opened from the library, or saved into it, saves over its own record; a save over a job or library part someone else saved since this job file read it is refused, saying who and when (LB7, LB10).", args: &[
+        Arg { name: "mode", ty: Ty::Str, required: true, help: "What to do. open: this job file becomes the library job (its own changes are dropped; it leaves the stock alone: its sheets are booked when someone saves it in the window). save-job: over the job's own record, or a new record; a job file booked with stock-book hands its booking to the record and no longer follows the stock (LB10); job names are unique across the Library, whatever their capitals; list marks old jobs that share a name (same_name_as)", choices: &["list", "open", "add", "save-part", "save-job"] },
+        a("find", Ty::Str, "list: text to look for"), a("id", Ty::Int, "add: the product's record number; open: the job's"), a("name", Ty::Str, "add: the product's name; open: the job's"),
+        a("qty", Ty::Int, "add: quantity"), a("parts", Ty::Parts, "save-part: which parts"), a("folder", Ty::Str, "save-part: the part folder a new library part goes into, its path (\"Acme/2026-11\", made if missing; default: the one named like the job's week); a part already in the Library stays where it is"),
+        a("copy", Ty::Bool, "save-job: save as a new job under the first free name (\"DEMO-7 (1)\") instead of over its record; the copy holds no stock of the original (default false)"),
     ] },
     // --- sheet and nesting ---
     Op { name: "set-sheet", group: "Nesting", kind: Kind::Write, help: "Change the sheet: size, margin, gap, material, thickness, nesting level, machine. A new material or thickness with nested sheets needs nestings=keep or nestings=remove.", args: &[
@@ -307,7 +310,7 @@ pub static OPS: &[Op] = &[
     Op { name: "program", group: "Machining", kind: Kind::Read, help: "The CNC program of a sheet (the active machine's post), returned and optionally written to a file.", args: &[SHEET, a("out", Ty::Path, "Also write it here")] },
     Op { name: "export", group: "Machining", kind: Kind::Read, help: "Write every sheet's program (G-code, or BLM LC5 sets) and a CSV parts report into <folder>\\<job>. Never sends anything to the machine.", args: &[a("dir", Ty::Path, "Folder (default Settings → export folder, else Documents\\Sheet Nesting)")] },
     // --- stock ---
-    Op { name: "stock", group: "Stock", kind: Kind::Global, help: "The sheet stock (the Library folder's Sheets\\stock.json, shared with the window's Sheet stock): list sheets and remnants, create a sheet, add or remove quantity (0 deletes), lock or unlock, edit, delete, or read the Do All / Sheet Remnants options (rules; set in the window).", args: &[
+    Op { name: "stock", group: "Stock", kind: Kind::Global, help: "The sheet stock (the Library folder's Sheets\\stock.json, shared with the window's Sheet stock): list sheets and remnants (each with who changed it last and when: changed_by, changed_at in this PC's local time), create a sheet, add or remove quantity (0 deletes), lock or unlock, edit, delete, or read the Do All / Sheet Remnants options (rules; set in the window). Every change is recorded as this PC's user, marked (agent).", args: &[
         Arg { name: "mode", ty: Ty::Str, required: true, help: "What to do", choices: &["list", "create", "add", "remove", "block", "unblock", "edit", "delete", "rules"] },
         a("ref", Ty::Str, "Sheet reference (create: optional, else the next number; block/unblock: optional, else every listed sheet)"),
         a("material", Ty::Str, "list/create/block: material name or number"), a("thickness", Ty::Num, "list/create/block: thickness, mm"),
@@ -317,9 +320,29 @@ pub static OPS: &[Op] = &[
         a("min_w", Ty::Num, "list: shortest length"), a("max_w", Ty::Num, "list: longest length"), a("min_h", Ty::Num, "list: narrowest width"), a("max_h", Ty::Num, "list: widest width"),
         a("show_zero", Ty::Bool, "list: also items at quantity 0"), a("remnants", Ty::Str, "list: \"only\", \"none\" or \"all\" (default)"),
     ] },
-    Op { name: "stock-book", group: "Stock", kind: Kind::Write, help: "Book the job against the stock, as the window does when it saves a job: take the sheets its nestings use out of stock and store the remnants its remnant lines leave (named <sheet>-<n>, or by refs=; below the minimum area they are scrap). A sheet whose remnant lines changed since gets its remnants made again, unless one of them has been used. Once booked, every later change keeps the stock in step. release gives the sheets back and takes its unused remnants out again.", args: &[
+    Op { name: "stock-book", group: "Stock", kind: Kind::Write, help: "Book the job against the stock, as the window does when it saves a job: take the sheets its nestings use out of stock and store the remnants its remnant lines leave (named <sheet>-<n>, or by refs=; below the minimum area they are scrap). A sheet whose remnant lines changed since gets its remnants made again, unless one of them has been used. Once booked, every later change keeps the stock in step. When a sheet the job is nested on has gone (another PC or job took it), nothing is booked and the reply says who took it and when: nest again to use what's in stock now. release gives the sheets back and takes its unused remnants out again. A job file that is a library job (opened from the Library, or saved into it) isn't booked or released here: its sheets are booked when someone saves it in the window, and a booked job file saved into the Library (library mode=save-job) hands its booking to the record (LB10).", args: &[
         Arg { name: "mode", ty: Ty::Str, required: true, help: "book, release or status", choices: &["book", "release", "status"] },
         a("refs", Ty::Str, "book: references for the new remnants, comma-separated, in the order status lists them (default: numbered <sheet>-<n>)"),
+    ] },
+    // --- the shared Library ---
+    Op { name: "library-check", group: "Library", kind: Kind::Global, help: "The two-PC Library check (run it on two or more programming PCs at once before sharing one Library folder): saves made-up DEMO-CHECK jobs and library parts, saves over them again and changes the sheet stock in a loop in a test folder, tagged with this PC's name, then checks that everything this run and every other run saved there is present and whole, and reports PASS or FAIL in plain words. Only an empty folder (made if missing) or one it made itself; a real Library is refused. `nestpro library-check <folder> --minutes 10 --text`.", args: &[
+        r("folder", Ty::Path, "The test folder: empty or missing, or one the check made before (e.g. a folder next to the Library on the share). Never the Library itself"),
+        a("minutes", Ty::Num, "How long to keep saving, minutes (default 1)"), a("rounds", Ty::Int, "Stop after this many rounds instead (each round: 2 job saves, 2 library part saves, 1 stock change)"),
+        a("pc", Ty::Str, "Name to tag this run with (default: this PC's name)"),
+    ] },
+    Op { name: "job-folders", group: "Library", kind: Kind::Global, help: "The Library's job folders, the same on every PC that shares the Library (the Job Explorer's Library section): list the tree (each folder's path and #number, what it holds, and every saved job's folder), make a folder (new), change a folder's name (rename), delete an empty folder (delete), or move a saved job or a folder into another folder or to the top (move). Folder names are unique within their folder, without case (error 9); a folder never goes into itself or one of its own folders; a folder that still holds jobs or folders isn't deleted.", args: &[
+        Arg { name: "mode", ty: Ty::Str, required: true, help: "What to do", choices: &["list", "new", "rename", "delete", "move"] },
+        a("folder", Ty::Str, "The folder: its path from the top, names separated by / (\"Acme/2026-11\", without case), or #<number> from list. new: the folder to make it in (default: the top); rename, delete: the folder; move: the folder to move"),
+        a("name", Ty::Str, "new: the new folder's name (default \"New folder\", then \"New folder (1)\"…); rename: its new name"),
+        a("saved_job", Ty::Str, "move: the saved job to move: its reference (JOB000012) or record number from list, or its name when no other saved job has it"),
+        a("to", Ty::Str, "move: where to: a folder's path or #<number>, or \"/\" for the top of the Library"),
+    ] },
+    Op { name: "part-folders", group: "Library", kind: Kind::Global, help: "The Library's part folders, apart from its job folders and the same on every PC that shares the Library (the Library window's Products tab): list the tree (each folder's path and #number, what it holds, and every library part's folder), make a folder (new), change a folder's name (rename), delete an empty folder (delete), or move a library part or a folder into another folder or to the top (move). A part saved into the Library for the first time goes into the part folder named like its job's folder (`library save-part`). Folder names are unique within their folder, without case (error 9); a folder never goes into itself or one of its own folders; a folder that still holds parts or folders isn't deleted.", args: &[
+        Arg { name: "mode", ty: Ty::Str, required: true, help: "What to do", choices: &["list", "new", "rename", "delete", "move"] },
+        a("folder", Ty::Str, "The folder: its path from the top, names separated by / (\"Acme/2026-11\", without case), or #<number> from list. new: the folder to make it in (default: the top); rename, delete: the folder; move: the folder to move"),
+        a("name", Ty::Str, "new: the new folder's name (default \"New folder\", then \"New folder (1)\"…); rename: its new name"),
+        a("library_part", Ty::Str, "move: the library part to move: its reference (SHP000012) or record number from list, or its name when no other library part has it"),
+        a("to", Ty::Str, "move: where to: a folder's path or #<number>, or \"/\" for the top of the Library"),
     ] },
     // --- looking at it ---
     Op { name: "render", group: "View", kind: Kind::Read, help: "Draw a sheet (parts, numbers, cut path, leads, joints, cut lines) or one part (numbered elements, leads, joints) to PNG or SVG.", args: &[
@@ -1164,8 +1187,13 @@ pub fn create(ctx: &Ctx, op_name: &str, default_name: &str, args: &Value) -> Res
 /// `import-xml`: one job file per material and thickness.
 fn import_xml(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
     let path = PathBuf::from(a.need_str("path")?);
-    let lib = library(ctx).ok();
-    let im = imports::xml_import(&ctx.cfg, lib.as_ref(), &path, 0)?;
+    let lib = library(ctx);
+    let mut im = imports::xml_import(&ctx.cfg, lib.as_ref().ok(), &path, 0)?;
+    // Products without a drawing come from the Library: say why it wasn't
+    // looked in (LB11).
+    if let Err(e) = &lib {
+        im.notes.insert(0, format!("Library parts weren't looked up: {e}"));
+    }
     let dir = a.str("dir").map(PathBuf::from).unwrap_or_else(|| path.parent().map(Path::to_path_buf).unwrap_or_default());
     let force = a.bool("force")?.unwrap_or(false);
     let files: Vec<PathBuf> = im.jobs.iter().map(|j| dir.join(format!("{}.{}", safe_name(&j.name), jobfile::EXT))).collect();
@@ -1245,6 +1273,22 @@ pub fn run_global(ctx: &Ctx, name: &str, args: &Value) -> Result<Outcome, String
         "stock" => stock_op(ctx, &a),
         "machines" => Ok(Outcome::read(format!("Active machine: {}.", ctx.cfg.machine().name), machines(ctx))),
         "import-xml" => import_xml(ctx, &a),
+        "job-folders" => super::folderops::run(ctx, &a, crate::library::Kind::Job),
+        "part-folders" => super::folderops::run(ctx, &a, crate::library::Kind::Product),
+        "library-check" => {
+            let rounds = match a.int("rounds")? {
+                Some(n) if n < 1 => return Err(format!("rounds {n}: at least 1")),
+                n => n.map(|n| n as u64),
+            };
+            let minutes = a.num("minutes")?.unwrap_or(1.0);
+            if !(minutes > 0.0) {
+                return Err(format!("minutes {minutes}: above 0"));
+            }
+            let opt = super::librarycheck::Options { minutes, rounds, pc: a.str("pc").unwrap_or_default() };
+            let rep = super::librarycheck::run(Path::new(&a.need_str("folder")?), &ctx.library_dir, &opt)?;
+            // The report is the plain text (`--text` prints just it); FAIL is a refusal (exit code 1).
+            if rep.passed { Ok(Outcome::read(rep.text, Value::Null)) } else { Err(rep.text) }
+        }
         "drawing-layers" => {
             let path = a.need_str("path")?;
             let parts = read_drawing(ctx, Path::new(&path), &a)?;
@@ -1313,9 +1357,17 @@ fn read_drawing(ctx: &Ctx, path: &Path, a: &Args) -> Result<Vec<crate::formats::
     crate::formats::read_file_with(path, fmt, &ctx.cfg, opts)
 }
 
+/// The Library, as the agent's user (LB5).
 fn library(ctx: &Ctx) -> Result<crate::library::Library, String> {
-    let dir = if ctx.cfg.library_dir.is_empty() { crate::library::default_dir() } else { PathBuf::from(&ctx.cfg.library_dir) };
-    crate::library::Library::open(&dir)
+    reach_library(ctx, "Nothing was read from or saved to the Library, and the job is as it was")?;
+    Ok(crate::library::Library::open(&ctx.library_dir, &ctx.who, &ctx.clock)?.watching(&ctx.watch))
+}
+
+/// The Library folder can be used, or the refusal naming it, what was left
+/// as it was (`kept`) and what to do instead (LB11, LB12, LB13). Nothing is
+/// made either way.
+pub(super) fn reach_library(ctx: &Ctx, kept: &str) -> Result<(), String> {
+    crate::library::usable(&ctx.library_dir).map_err(|e| format!("{e} {kept}: try again once it can be reached."))
 }
 
 fn who(job: &JobFile, t: &[usize]) -> String {
@@ -1386,11 +1438,13 @@ pub fn auto_remnant_lines(parts: &[Part], sheet: &[Placed], spec: &SheetSpec, ls
     (!lines.is_empty() && lines.iter().all(|l| cutoff::path_hits_part(parts, sheet, &l.pts).is_none())).then_some(lines)
 }
 
-fn stock_json(s: &crate::stock::Item) -> Value {
+fn stock_json(s: &crate::stock::Item, clock: &crate::shared::Clock) -> Value {
     json!({
         "ref": s.reference, "kind": s.kind.label(), "material": cnc::MATERIALS.get(s.material).copied().unwrap_or("?"), "thickness": s.thickness, "w": r1(s.length), "h": r1(s.width), "qty": s.qty,
         "priority": s.priority, "blocked": s.locked, "remnant": s.kind.is_remnant(), "area_m2": (s.area_m2() * 1000.0).round() / 1000.0,
         "origin": s.origin, "job": s.from_job, "irregular": s.outline.is_some(), "user": s.user_data, "created": s.created,
+        // Who changed it last, and when (SV9); null for a stock from before.
+        "changed_by": s.changed.as_ref().map(|c| c.by.label()), "changed_at": s.changed.as_ref().map(|c| clock.stamp(c.at)),
     })
 }
 
@@ -1408,9 +1462,7 @@ fn rules_json(st: &crate::stock::StockSettings) -> Value {
 }
 
 fn stock_op(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
-    let dir = ctx.library_dir.clone();
-    let file = Stock::file(&dir);
-    let mut st = ctx.stock()?;
+    let file = Stock::file(&ctx.library_dir);
     let mat = match a.str("material") {
         Some(m) => Some(material_from(&m, &ctx.cfg)?),
         None => None,
@@ -1427,14 +1479,15 @@ fn stock_op(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
     let need_ref = || a.str("ref").ok_or_else(|| "give the sheet's ref".to_string());
     let matches = |it: &crate::stock::Item| mat.is_none_or(|m| it.material == m) && thk.is_none_or(|t| (it.thickness - t).abs() <= crate::stock::TOL);
     let describe = |it: &crate::stock::Item| format!("{} {} ({:.0} × {:.0} mm)", it.kind.label().to_lowercase(), it.reference, it.length, it.width);
-    let out = |st: &Stock, m: String| -> Result<Outcome, String> {
-        st.save(&dir)?;
-        let mut o = Outcome::read(m, Value::Null);
-        o.files.push(file.clone());
-        Ok(o)
-    };
-    match a.need_str("mode")?.as_str() {
+    let mode = a.need_str("mode")?;
+    // The stock is the Library's: none to read or change while it can't be
+    // reached (LB11). The options are this PC's settings.
+    if mode != "rules" {
+        reach_library(ctx, "The sheet stock was not read or changed")?;
+    }
+    match mode.as_str() {
         "list" => {
+            let st = ctx.stock()?;
             let mut crit = crate::stock::Criteria {
                 min_length: a.num("min_w")?.unwrap_or(0.0),
                 max_length: a.num("max_w")?.unwrap_or(0.0),
@@ -1454,10 +1507,21 @@ fn stock_op(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
                 Some("all") | None => {}
                 Some(x) => return Err(format!("remnants '{x}': only, none or all")),
             }
-            let list: Vec<Value> = st.items.iter().filter(|it| matches(it) && crit.admits(it)).map(stock_json).collect();
+            let list: Vec<Value> = st.items.iter().filter(|it| matches(it) && crit.admits(it)).map(|it| stock_json(it, &ctx.clock)).collect();
             let n: i64 = st.items.iter().map(|s| s.qty.max(0) as i64).sum();
-            Ok(Outcome::read(format!("{} stock item(s) listed ({} sheet(s) and remnant(s) in stock in all). Stock file: {}", list.len(), n, file.display()), json!({ "sheets": list, "rules": rules_json(&ctx.cfg.stock) })))
+            return Ok(Outcome::read(format!("{} stock item(s) listed ({} sheet(s) and remnant(s) in stock in all). Stock file: {}", list.len(), n, file.display()), json!({ "sheets": list, "rules": rules_json(&ctx.cfg.stock) })));
         }
+        "rules" => {
+            return Ok(Outcome::read(
+                "The Do All and Sheet Remnants options nesting and saving follow. They are the window's settings (Sheet stock → Options) and aren't changed from here.",
+                rules_json(&ctx.cfg.stock),
+            ))
+        }
+        _ => {}
+    }
+    // Every change re-reads the stock, changes it and saves it under the
+    // Library's write lock, as the window does (LB1, STK-9).
+    let m = Stock::update(&ctx.library_at(), |st| match mode.as_str() {
         "create" => {
             let (Some(w), Some(h)) = (a.num("w")?, a.num("h")?) else { return Err("create needs w and h (mm)".into()) };
             if w <= 0.0 || h <= 0.0 {
@@ -1474,7 +1538,7 @@ fn stock_op(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
             let r = st.add_sheet(it, ctx.cfg.stock.with_references)?;
             let it = st.get(&r).ok_or("the new sheet went missing")?;
             let msg = format!("Stock: {} {} {} mm — {} on the rack.", describe(it), cnc::MATERIALS.get(m).copied().unwrap_or("?"), t, it.qty);
-            out(&st, msg)
+            Ok(msg)
         }
         "add" | "remove" => {
             let r = need_ref()?;
@@ -1484,7 +1548,7 @@ fn stock_op(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
                 None => format!("'{r}' is used up and removed from stock."),
                 Some(it) => format!("'{r}': {} in stock.", it.qty),
             };
-            out(&st, msg)
+            Ok(msg)
         }
         "block" | "unblock" => {
             let on = a.need_str("mode")? == "block";
@@ -1503,7 +1567,7 @@ fn stock_op(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
                     n
                 }
             };
-            out(&st, format!("{} {n} stock item(s) — {}", if on { "Locked" } else { "Unlocked" }, if on { "Do All won't use them." } else { "Do All may use them." }))
+            Ok(format!("{} {n} stock item(s) — {}", if on { "Locked" } else { "Unlocked" }, if on { "Do All won't use them." } else { "Do All may use them." }))
         }
         "edit" => {
             let r = need_ref()?;
@@ -1528,20 +1592,19 @@ fn stock_op(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
                 }
             }
             let msg = format!("Stock: {} updated.", describe(it));
-            out(&st, msg)
+            Ok(msg)
         }
         "delete" => {
             let r = need_ref()?;
             let it = st.get(&r).cloned().ok_or_else(|| format!("No sheet '{r}' in stock."))?;
             st.delete(&r);
-            out(&st, format!("{} removed from stock ({} on the rack).", describe(&it), it.qty))
+            Ok(format!("{} removed from stock ({} on the rack).", describe(&it), it.qty))
         }
-        "rules" => Ok(Outcome::read(
-            "The Do All and Sheet Remnants options nesting and saving follow. They are the window's settings (Sheet stock → Options) and aren't changed from here.",
-            rules_json(&ctx.cfg.stock),
-        )),
         m => Err(format!("stock mode '{m}'?")),
-    }
+    })?;
+    let mut o = Outcome::read(m, Value::Null);
+    o.files.push(file);
+    Ok(o)
 }
 
 
@@ -1692,7 +1755,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             }
             if resized && d.tech.is_some() {
                 // The original asks: edit a copy (keeps this part's technology) or
-                // edit the part and remove its technology (T2).
+                // edit the part and remove its technology (PT2).
                 match a.str("tech").as_deref() {
                     Some("copy") => {
                         let base = job.parts[i].name.clone();
@@ -1793,17 +1856,76 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             Ok(o)
         }
         "library" => {
+            use crate::library::{Entry, Refused, SaveTo};
             let lib = library(ctx)?;
             match a.need_str("mode")?.as_str() {
                 "list" => {
                     let find = a.str("find").unwrap_or_default().to_lowercase();
-                    let list: Vec<Value> = lib
+                    // A job's folder is its place in the Library's job folders
+                    // (JX10), a part's in its part folders (JX20).
+                    let (jobs, parts) = (crate::folders::load(&lib, crate::library::Kind::Job)?, crate::folders::load(&lib, crate::library::Kind::Product)?);
+                    let folder = |e: &crate::library::Entry| {
+                        let tree = if e.kind == crate::library::Kind::Job { &jobs } else { &parts };
+                        tree.path(tree.folder_of(e.id))
+                    };
+                    let mut list: Vec<Value> = lib
                         .entries()
                         .into_iter()
-                        .filter(|e| find.is_empty() || e.name.to_lowercase().contains(&find) || e.folder.to_lowercase().contains(&find))
-                        .map(|e| json!({"id": e.id, "kind": format!("{:?}", e.kind).to_lowercase(), "name": e.name, "folder": e.folder, "material": cnc::MATERIALS.get(e.material).copied().unwrap_or("?"), "thickness": e.thickness, "w": r1(e.w), "h": r1(e.h), "preprogrammed": e.tech}))
+                        .filter(|e| find.is_empty() || e.name.to_lowercase().contains(&find) || folder(e).to_lowercase().contains(&find))
+                        // Who last saved it and when, in this PC's local time (LB6);
+                        // no one for a record saved before saves recorded it.
+                        .map(|e| json!({"id": e.id, "kind": format!("{:?}", e.kind).to_lowercase(), "name": e.name, "folder": folder(&e), "material": cnc::MATERIALS.get(e.material).copied().unwrap_or("?"), "thickness": e.thickness, "w": r1(e.w), "h": r1(e.h), "preprogrammed": e.tech, "saved_by": e.saved_by.as_ref().map(|w| w.label()), "saved_at": (e.updated > 0).then(|| ctx.clock.stamp(e.updated))}))
                         .collect();
+                    // Jobs that share their name with another job (JX17:
+                    // Libraries saved before names were unique): the others'
+                    // numbers, so one can be renamed.
+                    let all = lib.entries();
+                    let twins = crate::library::shared_job_names(&all);
+                    // Jobs someone has in use (CU10): who, and since when.
+                    let in_use = crate::engine::inuse::look(&lib).unwrap_or_default();
+                    for v in list.iter_mut().filter(|v| v["kind"] == "job") {
+                        if let Some(others) = v["id"].as_u64().and_then(|id| twins.get(&id)) {
+                            v["same_name_as"] = json!(others.iter().map(|e| e.id).collect::<Vec<_>>());
+                        }
+                        if let Some(u) = v["id"].as_u64().and_then(|id| in_use.get(&id)) {
+                            v["in_use"] = json!(u.by_since(&ctx.clock));
+                            v["in_use_since"] = json!(u.hold.as_ref().map(|h| ctx.clock.stamp(h.since)));
+                        }
+                    }
                     Ok(Outcome::read(format!("{} library record(s).", list.len()), json!(list)))
+                }
+                "open" => {
+                    // The file's own stock booking would be left taken with no
+                    // job: refused while it holds any.
+                    let (sheets, remnants) = (job.held.values().sum::<i32>(), job.formats.iter().map(|f| f.made.len()).sum::<usize>());
+                    if job.booked && (sheets > 0 || remnants > 0) {
+                        return Err(format!("This job file holds stock it booked ({sheets} sheet(s), {remnants} remnant(s)); opening a library job into it would leave them taken with no job. Open it into a new job file (new, then library mode=open), or give them back first (stock-book mode=release)."));
+                    }
+                    let id = match (a.int("id")?, a.str("name")) {
+                        (Some(id), _) => id as u64,
+                        (None, Some(n)) => {
+                            let jobs: Vec<Entry> = lib.entries().into_iter().filter(|e| e.kind == crate::library::Kind::Job).collect();
+                            match jobs.iter().find(|e| e.name == n).or_else(|| jobs.iter().find(|e| e.name.eq_ignore_ascii_case(&n))) {
+                                Some(e) => e.id,
+                                None => return Err(format!("no library job is called '{n}' — see library mode=list")),
+                            }
+                        }
+                        _ => return Err("library open needs the job's 'id' or 'name' (library mode=list)".into()),
+                    };
+                    // The job as saved now, linked to its record and revision
+                    // (LB10). Its stock booking stays the record's: this file
+                    // leaves the stock alone (stock-book refuses it).
+                    let mut j = lib.load_job(id)?;
+                    j.booked = false;
+                    let saved = j.saved.as_ref().map(|s| format!(", saved by {} at {}", s.by.label(), ctx.clock.stamp(s.at))).unwrap_or_default();
+                    // Reading a job in use is allowed; saving over it isn't (CU12).
+                    let busy = match crate::engine::inuse::in_use(&lib, id) {
+                        Ok(Some(u)) => format!(" {} Saving over it is refused until it's free (library mode=list says in_use); save-job copy=true saves this job file as a new job.", u.said(&ctx.clock)),
+                        _ => String::new(),
+                    };
+                    let m = format!("Opened library job '{}' ({}){saved}. library mode=save-job saves over it.{busy}", j.name, crate::library::auto_ref(crate::library::Kind::Job, id));
+                    *job = j;
+                    Ok(Outcome::msg(m))
                 }
                 "add" => {
                     let id = match (a.int("id")?, a.str("name")) {
@@ -1812,6 +1934,11 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                         _ => return Err("library add needs 'id' or 'name'".into()),
                     };
                     let pf = lib.load_product(id)?;
+                    // Saved back, it goes over that part as read here (LB7). A
+                    // part of that name already in the job keeps what it read.
+                    if !job.parts.iter().any(|q| q.name == pf.part.name) {
+                        job.library_parts.insert(pf.part.name.clone(), crate::library::Record { id, revision: pf.revision });
+                    }
                     let mut p = pf.part;
                     p.color = next_color(&job.parts);
                     if let Some(q) = a.int("qty")? {
@@ -1828,17 +1955,128 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                 }
                 "save-part" => {
                     let t = parts_sel(&job.parts, a.get("parts"), true)?;
-                    let folder = a.str("folder").unwrap_or_default();
-                    let mut ids = vec![];
-                    for &i in &t {
-                        let existing = lib.find_product(&job.parts[i].name);
-                        ids.push(lib.save_product(&job.parts[i], &folder, job.spec.material, job.spec.thickness, existing)?);
+                    // A new part goes into the part folder `folder` names, else
+                    // the one named like the job's folder (its place in the
+                    // Library now, else its week), made if missing; saving
+                    // over a part never moves it (JX19).
+                    let into = match a.str("folder") {
+                        Some(f) => crate::folders::PartsFolder::Path(f),
+                        None => crate::folders::PartsFolder::LikeJob { record: job.library.map(|r| r.id), folder: None, week: job.week.clone() },
+                    };
+                    let folder = a.str("folder").unwrap_or_else(|| job.week.clone());
+                    // Two parts of one reference would save over each other.
+                    for (k, &i) in t.iter().enumerate() {
+                        if let Some(&j) = t[..k].iter().find(|&&j| job.parts[j].name == job.parts[i].name) {
+                            return Err(format!("Parts {} and {} are both '{}'. Nothing was saved. Give one a new reference (edit-part name=…) or take it out (remove-part), then save-part again.", j + 1, i + 1, job.parts[i].name));
+                        }
                     }
-                    Ok(Outcome::read(format!("Saved {} into the library.", who(job, &t)), json!({ "ids": ids })))
+                    // Over each library part as this job read it, or a new
+                    // one (LB7); every part is checked before any is saved.
+                    let to: Vec<SaveTo> = t
+                        .iter()
+                        .map(|&i| {
+                            let name = &job.parts[i].name;
+                            lib.find_product(name).map_or(SaveTo::New, |id| job.library_parts.get(name).filter(|r| r.id == id).map_or(SaveTo::Unread(id), |r| SaveTo::Read(*r)))
+                        })
+                        .collect();
+                    // To work on theirs, this job's parts of that reference go
+                    // first: one still in the job keeps what it read (LB7).
+                    let parts = &job.parts;
+                    let refused = |c: crate::library::Changed, read: bool, i: usize| {
+                        let name = &parts[i].name;
+                        let out: Vec<String> = (0..parts.len()).rev().filter(|&k| parts[k].name == *name).map(|k| format!("remove-part part={}", k + 1)).collect();
+                        format!(
+                            "Library part '{}' ({}) was saved by {}{}. Nothing was saved. To work on theirs, take this job's '{name}' out ({}) and add theirs (library mode=add id={}); to keep yours, give the part a new reference (edit-part name=…) and save-part again.",
+                            c.name,
+                            crate::library::auto_ref(crate::library::Kind::Product, c.id),
+                            c.saved_by_stamp(&ctx.clock),
+                            if read { " since this job added it" } else { ", and this job's part of that name didn't come from it" },
+                            out.join(", then "),
+                            c.id
+                        )
+                    };
+                    for (&i, &to) in t.iter().zip(&to) {
+                        if let Err(c) = lib.check(crate::library::Kind::Product, to) {
+                            return Err(refused(c, matches!(to, SaveTo::Read(_)), i));
+                        }
+                    }
+                    let mut ids = vec![];
+                    for (&i, &to) in t.iter().zip(&to) {
+                        match lib.save_product_in(&job.parts[i], &folder, job.spec.material, job.spec.thickness, to, &into) {
+                            Ok(rec) => {
+                                job.library_parts.insert(job.parts[i].name.clone(), rec);
+                                ids.push(rec.id);
+                            }
+                            Err(Refused::Changed(c)) => return Err(refused(c, matches!(to, SaveTo::Read(_)), i)),
+                            Err(r) => return Err(r.words(&ctx.clock)),
+                        }
+                    }
+                    // Where each is now in the part folders. The parts are
+                    // saved by now: a part tree that can't be read only
+                    // leaves the place out, and the job keeps what it saved.
+                    let (places, at) = match crate::folders::load(&lib, crate::library::Kind::Product) {
+                        Ok(tree) => {
+                            let places: Vec<String> = ids.iter().map(|&id| tree.path(tree.folder_of(id))).collect();
+                            let mut shown: Vec<String> = places.iter().map(|p| if p.is_empty() { "the top of the part folders".to_string() } else { format!("part folder '{p}'") }).collect();
+                            shown.dedup();
+                            (json!(places), format!(", in {}", shown.join(", ")))
+                        }
+                        Err(e) => (Value::Null, format!(" (its part folder can't be shown: {e})")),
+                    };
+                    Ok(Outcome { message: format!("Saved {} into the library{at}.", who(job, &t)), data: json!({ "ids": ids, "folders": places }), changed: true, files: vec![] })
                 }
                 "save-job" => {
-                    let id = lib.save_job(job, None)?;
-                    Ok(Outcome::read(format!("Saved job '{}' into the library as record {id}.", job.name), json!({ "id": id })))
+                    // Over the job's own record as this file read it (LB10),
+                    // or, as a copy, a new job under a free name that holds
+                    // none of the original's stock (LB9).
+                    let copy = a.bool("copy")?.unwrap_or(false);
+                    let mut folder = None;
+                    if let Some(from) = job.library.filter(|_| copy) {
+                        // Filed in the folder of the job it was copied from
+                        // (LB9, JX15); that job gone, by its folder name.
+                        if lib.entries().iter().any(|e| e.kind == crate::library::Kind::Job && e.id == from.id) {
+                            folder = crate::folders::load(&lib, crate::library::Kind::Job).ok().map(|t| t.folder_of(from.id));
+                        }
+                        job.name = lib.free_name(crate::library::Kind::Job, &job.name, |_| false);
+                        job.library = None;
+                        stockflow::forget_booking(&mut job.formats, &mut job.held);
+                        job.booked = false;
+                        if let Some(e) = job.erp.as_mut() {
+                            e.work_order = None;
+                            e.sent = None;
+                        }
+                    }
+                    let to = job.library.filter(|_| !copy).map_or(SaveTo::New, SaveTo::Read);
+                    // A name another job in the Library holds is refused (JX16);
+                    // checked again under the write lock as it's saved.
+                    lib.check_job_name(&job.name, to.id()).map_err(|e| format!("{e} (rename name=…), then save-job again. Nothing was saved"))?;
+                    match lib.save_job_in(job, to, folder) {
+                        Ok(rec) => {
+                            job.library = Some(rec);
+                            let mut m = if to == SaveTo::New { format!("Saved job '{}' into the library as record {}.", job.name, rec.id) } else { format!("Saved job '{}' over its library record {}.", job.name, rec.id) };
+                            // A booked job file hands its booking to the record
+                            // and stops following the stock, as one opened from
+                            // the Library does (LB10): following it still, a
+                            // later save refused because someone saved the job
+                            // since would leave its changes taken twice.
+                            if job.booked {
+                                job.booked = false;
+                                m.push_str(" The record keeps the stock this job file booked; from now on its sheets are booked when someone saves it in the window, so this job file no longer changes the stock.");
+                            }
+                            Ok(Outcome { message: m, data: json!({ "id": rec.id }), changed: true, files: vec![] })
+                        }
+                        Err(Refused::Changed(c)) => Err(format!(
+                            "Library job '{}' ({}) was saved by {} since this job file read it. Nothing was saved. To work on theirs, read it again with library mode=open id={} (this file's changes are dropped); to keep yours, save it as a new job with library mode=save-job copy=true.",
+                            c.name,
+                            crate::library::auto_ref(crate::library::Kind::Job, c.id),
+                            c.saved_by_stamp(&ctx.clock),
+                            c.id
+                        )),
+                        // Someone has the job in use: agents never change it
+                        // then, and never hold it themselves (CU12).
+                        Err(Refused::InUse(u)) => Err(crate::engine::inuse::agent_refusal(&u, &ctx.clock, "Nothing was saved. To keep this job file's changes now, save it as a new job with library mode=save-job copy=true; library mode=list says which jobs are in use (in_use).")),
+                        Err(Refused::Failed(e)) => Err(e),
+                    }
                 }
                 m => Err(format!("library mode '{m}'?")),
             }
@@ -1859,7 +2097,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                 m = format!("{m} {s}");
             }
             if nested && mat_change {
-                // The original asks once: keep the nestings, or remove them and free the sheets (T4).
+                // The original asks once: keep the nestings, or remove them and free the sheets (PT4).
                 match a.str("nestings").as_deref() {
                     Some("remove") => {
                         m.push_str(&format!(" Removed {} nested sheet(s); nest again.", job.sheets.len()));
@@ -1897,6 +2135,8 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             }
             let stock = (mode != "off").then(|| stockflow::StockUse { st: &st, ..ctx.stock_use(job) });
             let r = nest_all(&job.parts, &job.spec, group, stock.as_ref());
+            let grouped = group && nest::part_groups(&job.parts).len() > 1;
+            let unreachable = stock.as_ref().filter(|_| !grouped).and_then(stockflow::stock_unreachable_note).unwrap_or_default();
             drop(stock);
             job.sheets = r.sheets;
             job.formats = r.formats;
@@ -1926,7 +2166,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                 format!("{placed} of {need} parts nested on {} sheet(s){from} — some are larger than the sheet.", job.sheets.len())
             };
             let usage: Vec<Value> = job.sheets.iter().enumerate().map(|(k, s)| { let f = job.format(k); json!({"sheet": k + 1, "parts": s.len(), "usage_pct": r1(sheet_usage(&job.parts, s, &job.spec, &f).0), "stock_ref": (!f.stock_ref.is_empty()).then(|| f.stock_ref.clone())}) }).collect();
-            let mut o = Outcome::msg(m);
+            let mut o = Outcome::msg(m + &unreachable);
             o.data = json!({ "sheets": usage, "method": job.method });
             Ok(o)
         }
@@ -1963,8 +2203,22 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             Ok(Outcome::msg(format!("Sheet {} deleted — {n} part(s) are no longer nested.", s + 1)))
         }
         "stock-book" => {
+            reach_library(ctx, "Nothing was booked or given back, and the job is as it was")?;
             let file = Stock::file(&ctx.library_dir);
-            match a.need_str("mode")?.as_str() {
+            let mode = a.need_str("mode")?;
+            // A job file that is a library job (opened from the Library or
+            // saved into it) leaves the stock to the window, which books the
+            // job's sheets when someone saves it there (LB10). Booked here as
+            // well, a save refused because someone saved it since would leave
+            // them taken twice.
+            if let (Some(rec), "book" | "release") = (job.library, mode.as_str()) {
+                return Err(format!(
+                    "Job file '{}' is library job {} (opened from the Library or saved into it): its sheets are booked when someone saves it in the window, so stock-book mode={mode} is refused here. Nothing was changed in the stock. To take its sheets from stock, open the job in the window and save it there; stock-book mode=status shows what that would take.",
+                    job.name,
+                    crate::library::auto_ref(crate::library::Kind::Job, rec.id)
+                ));
+            }
+            match mode.as_str() {
                 "status" => {
                     let st = ctx.stock()?;
                     job.normalise_formats();
@@ -2009,13 +2263,20 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                         }
                     };
                     let note = job.book_stock_named(ctx, true, names.as_ref());
-                    let mut o = Outcome::msg(if note.is_empty() { "Booked: the stock already matches the job.".to_string() } else { format!("Booked: {note}.") });
+                    // Its sheets couldn't be taken (another PC took one, SV10):
+                    // said so, not "Booked".
+                    let booked = stockflow::sheets_used(&job.formats, job.sheets.len()) == job.held;
+                    let mut o = Outcome::msg(match (note.is_empty(), booked) {
+                        (true, _) => "Booked: the stock already matches the job.".to_string(),
+                        (false, true) => format!("Booked: {note}."),
+                        (false, false) => format!("Not booked: {note}."),
+                    });
                     o.files.push(file);
                     Ok(o)
                 }
                 "release" => {
                     job.normalise_formats();
-                    let (back, removed, kept) = stockflow::release(&ctx.library_dir, &mut job.formats, &mut job.held)?;
+                    let (back, removed, kept) = stockflow::release(&ctx.library_at(), &mut job.formats, &mut job.held)?;
                     job.booked = false;
                     let mut m = format!("Released: {back} sheet(s) given back to stock, {removed} remnant(s) taken out again.");
                     if !kept.is_empty() {

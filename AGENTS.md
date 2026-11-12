@@ -139,7 +139,8 @@ Settings for running a spec's tickets with agents (`babysit-tickets`):
 - **Max implementers:** 2, with `CARGO_BUILD_JOBS=2` each (the build machine has 4 cores).
 - **Idle limit:** 45 minutes.
 - **Risky paths:** anything that changes a machine program (`app/src/cnc.rs`, `app/src/post.rs`,
-  `app/src/blm.rs`). The final PR stops for the user.
+  `app/src/blm.rs`, `app/src/kerf.rs`, `app/src/leads.rs`, `app/src/joints.rs`), and the public
+  check (`tools/public-check.sh`, `tools/public-images.txt`). The final PR stops for the user.
 - **Hotspot files:** `FEATURES.md`, `app/MECHANICS.md`, `app/mechanics.json`, `app/ROADMAP.md`,
   `GUI_MAP` and `OPS` in `app/src/engine/ops.rs`, `app/src/engine/tests.rs`. Add only the IDs a
   ticket assigns; keep both sides' rows on a merge.

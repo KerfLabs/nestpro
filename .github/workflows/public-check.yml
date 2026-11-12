@@ -1,7 +1,9 @@
 name: Public check
 
 # Runs on every push, docs included: docs are where customer names and e-mail
-# addresses are most likely to slip in. It takes seconds.
+# addresses are most likely to slip in. It takes seconds. The rule and
+# feature IDs and the line endings are checked here too (tools/check.sh runs
+# the same scripts locally).
 on:
   push:
     branches-ignore: [cla-signatures]
@@ -12,5 +14,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The line endings are compared with where the branch left its
+          # base, so the history and the base branch are needed.
+          fetch-depth: 0
       - name: No research evidence, shop data or unreviewed images
         run: tools/public-check.sh
+      - name: Rule and feature IDs used once each
+        run: tools/unique-ids.sh
+      - name: Line endings kept as committed
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          # A push compares with the branch as it was before the push (on
+          # main, origin/main is the pushed commit itself); a new branch, or
+          # a force-push whose old commit is gone, with main.
+          BEFORE: ${{ github.event.before }}
+        run: |
+          tools/line-endings-test.sh
+          if [ -n "$BASE_REF" ]; then tools/line-endings.sh "origin/$BASE_REF"
+          elif [ -n "$BEFORE" ] && [ "${BEFORE//0/}" != "" ]; then tools/line-endings.sh "$BEFORE" origin/main
+          else tools/line-endings.sh; fi
