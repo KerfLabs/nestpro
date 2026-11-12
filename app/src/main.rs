@@ -877,7 +877,17 @@ impl App {
         };
         match jobfile::save(path, &j) {
             Ok(()) => {
-                self.link_job_file(path, &j);
+                if library_job {
+                    // The file is a copy (LB13): the window doesn't follow
+                    // it, or an agent's change to it, reloaded, would drop
+                    // the job's booking and the next Save to library would
+                    // take its sheets again.
+                    self.job_path = Some(path.to_path_buf());
+                    self.job_link = None;
+                    self.store_job();
+                } else {
+                    self.link_job_file(path, &j);
+                }
                 self.mark_job_saved(self.cur_job);
                 // An agent's one-step undo copy is from before this save: undoing
                 // to it would drop what was just saved.

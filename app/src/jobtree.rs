@@ -216,6 +216,11 @@ impl App {
         self.sel_part = if self.parts.is_empty() { None } else { Some(0) };
         self.undo.clear();
         self.redo.clear();
+        // A question about the closed or deleted job's library part goes
+        // with it (LB9), as in open_job.
+        if matches!(self.libui.question, Some(crate::libui::SaveQuestion::Part { .. })) {
+            self.libui.question = None;
+        }
         self.refresh();
         // A closed job lets go of its hold; the job now in front takes one (CU5).
         self.sync_holds();

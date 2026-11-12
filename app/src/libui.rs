@@ -1789,6 +1789,62 @@ pub(crate) mod libui_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// LB9: a part question goes with the job it was asked in, also when
+    /// that job is deleted or closed: the next job's part of the same name
+    /// never replaces the library part.
+    #[test]
+    fn a_part_question_dropped_with_its_deleted_job_saves_nothing() {
+        let dir = new_library("part_question_deleted_job");
+        let clock = Clock::at(NOV_9_0920);
+        let mut prog1 = window(&dir, "sam", "PROG-1", &clock);
+        let mut prog2 = window(&dir, "kim", "PROG-2", &clock);
+        prog1.open_job(0);
+        prog1.parts[0].name = "DEMO-P1".into();
+        prog1.save_part_to_library(0);
+        let theirs = library_part(&prog1, "DEMO-P1");
+        prog2.open_job(1);
+        prog2.parts[0].name = "DEMO-P1".into();
+        prog2.parts[0].w += 70.0;
+        prog2.open_job(0);
+        prog2.parts[0].name = "DEMO-P1".into();
+        prog2.save_part_to_library(0);
+        assert!(matches!(prog2.libui.question, Some(SaveQuestion::Part { part: 0, .. })), "{}", prog2.status);
+        prog2.delete_job(0);
+        assert_eq!(prog2.parts[0].name, "DEMO-P1", "the next job's part has the same name");
+        prog2.overwrite_part();
+        assert_eq!(library_part(&prog1, "DEMO-P1"), theirs, "the next job's part replaced the library part");
+        prog2.save_part_under_new_name();
+        assert_eq!((prog2.parts[0].name.as_str(), library_part(&prog1, "DEMO-P1 (1)")), ("DEMO-P1", None));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// LB13: a Library job's file is a copy; the window doesn't follow it.
+    /// An agent's change to the copy never reaches the Library job, so its
+    /// next Save to library takes from stock only what the change needs, not
+    /// its sheets again.
+    #[test]
+    fn an_agents_change_to_a_library_jobs_file_copy_takes_no_sheets_twice() {
+        let dir = new_library("lib_job_file_agent");
+        let clock = Clock::at(NOV_9_0920);
+        let mut prog1 = demo7(&dir, &clock);
+        let held = holds(&prog1);
+        assert_eq!(12 - in_stock(&dir).0, held, "DEMO-7 took its sheets");
+        let file = std::env::temp_dir().join(format!("nestpro_libui_lib_job_file_agent_{}.snjob", std::process::id()));
+        prog1.save_job_to(&file);
+        // An agent adds a part to the file (the CLI's way); the window looks.
+        std::thread::sleep(Duration::from_millis(1100));
+        let mut s = crate::engine::session::Session::new(crate::engine::Ctx::builtin());
+        s.call("add-shape", Some(file.to_str().unwrap()), &serde_json::json!({"shape": "disc", "w": 150, "qty": 2, "name": "From agent"})).unwrap();
+        prog1.disk_poll = -10.0;
+        prog1.watch_job_file(&egui::Context::default());
+        assert!(!prog1.parts.iter().any(|p| p.name == "From agent"), "the window followed the copy: {}", prog1.status);
+        assert_eq!(holds(&prog1), held, "the job's booking was dropped");
+        prog1.save_job_to_library();
+        assert_eq!(12 - in_stock(&dir).0, holds(&prog1), "the sheets were taken twice: {}", prog1.status);
+        let _ = std::fs::remove_file(&file);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// LB7: a job saved to a file and opened again still knows the library
     /// parts it read: saving one back goes over it without asking.
     #[test]
