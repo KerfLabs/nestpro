@@ -179,6 +179,8 @@ impl App {
     /// button still pan, and a straight cut line under the pointer moves.
     fn manual_gestures(&mut self, ui: &egui::Ui, painter: &egui::Painter, resp: &egui::Response, to_s: &dyn Fn(P) -> Pos2, to_w: &dyn Fn(Pos2) -> P, half: f64) {
         if ui.input(|i| i.key_down(egui::Key::Space)) || self.cut_drag.is_some() {
+            // Panning takes over: a sweep still held goes in first, as on Esc.
+            self.manual_sweep_end();
             return;
         }
         let s = self.cur_sheet;
@@ -277,6 +279,12 @@ mod tests {
     /// The pointer goes down at `path[0]`, through the rest, and up at the
     /// last point, one frame each (sheet mm drawn 1:1 in screen pixels).
     fn drag(a: &mut App, path: &[[f32; 2]]) {
+        drag_with(a, path, None);
+    }
+
+    /// As `drag`, with Space pressed before the pointer reaches
+    /// `path[space]` and let go only after the button.
+    fn drag_with(a: &mut App, path: &[[f32; 2]], space: Option<usize>) {
         let ctx = egui::Context::default();
         let n = path.len();
         let mut t = 0.0;
@@ -291,12 +299,19 @@ mod tests {
         };
         let pos = |k: usize| Pos2::new(path[k][0], path[k][1]);
         let button = |k: usize, pressed| Event::PointerButton { pos: pos(k), button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+        let key = |pressed| Event::Key { key: egui::Key::Space, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE };
         frame(a, vec![Event::PointerMoved(pos(0))]);
         frame(a, vec![button(0, true)]);
         for k in 1..n {
+            if space == Some(k) {
+                frame(a, vec![key(true)]);
+            }
             frame(a, vec![Event::PointerMoved(pos(k))]);
         }
         frame(a, vec![button(n - 1, false)]);
+        if space.is_some() {
+            frame(a, vec![key(false)]);
+        }
         frame(a, vec![]);
     }
 
@@ -317,6 +332,15 @@ mod tests {
         // One Ctrl+Z step takes the whole sweep back.
         a.undo();
         assert_eq!(picks(&a), vec![]);
+    }
+
+    #[test]
+    fn space_pressed_during_a_sweep_keeps_the_parts_swept_so_far() {
+        let mut a = app();
+        // From #3's right edge over #2, then Space to pan before #1: the
+        // button comes up while Space is still held.
+        drag_with(&mut a, &[[600.0, 125.0], [560.0, 125.0], [380.0, 125.0], [150.0, 125.0], [80.0, 125.0]], Some(3));
+        assert_eq!(picks(&a), vec![(2, Some(1)), (1, Some(1))], "{}", a.status);
     }
 
     #[test]
