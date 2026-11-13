@@ -962,12 +962,59 @@ fn an_agent_arranges_parts_by_hand() {
     assert!(r["message"].as_str().unwrap().contains("#4–#6"), "{r}");
     let j = jobfile::load(Path::new(jp)).unwrap();
     assert_eq!(j.sheets[0].len(), 6);
-    assert_eq!(j.parts[0].qty, 6, "each copy adds one to the order");
+    assert_eq!(j.parts[0].qty, 6, "none were left, so each copy adds one to the order");
     for (i, a) in j.sheets[0].iter().enumerate() {
         for b in &j.sheets[0][i + 1..] {
             assert!(!crate::nest::clash_exact(&j.parts, a, b, 6.35 - 1e-6), "{a:?} {b:?}");
         }
     }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_agent_repeats_a_pattern_using_the_pieces_left() {
+    // HM18–HM20 through `repeat`: copies of a pair take the pieces still to
+    // place; a short copy is refused until extras says what to do.
+    let d = dir("repeat");
+    let jp = d.join("a.snjob");
+    let jp = jp.to_str().unwrap();
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(jp), json!({"w": 1000, "h": 500, "margin": 10, "gap": 5}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 100, "h": 40, "qty": 7}));
+    call(&mut s, "place", None, json!({"part": 1, "x": 10, "y": 10}));
+    call(&mut s, "place", None, json!({"part": 1, "x": 10, "y": 55}));
+    let job = || jobfile::load(Path::new(jp)).unwrap();
+    // Five left: two whole copies of the pair, the order stays at seven.
+    let r = call(&mut s, "repeat", None, json!({"items": "1,2"}));
+    assert!(r["message"].as_str().unwrap().contains("Placed 2 copies"), "{r}");
+    assert!(r["message"].as_str().unwrap().contains("still to place: 1 "), "{r}");
+    let j = job();
+    assert_eq!((j.sheets[0].len(), j.parts[0].qty), (6, 7));
+    for (i, a) in j.sheets[0].iter().enumerate() {
+        for b in &j.sheets[0][i + 1..] {
+            assert!(!crate::nest::clash_exact(&j.parts, a, b, 5.0 - 1e-6), "{a:?} {b:?}");
+        }
+    }
+    // One left: the next copy is short and is refused, saying what to do.
+    let e = err(&mut s, "repeat", json!({"items": "1,2"}));
+    assert!(e.contains("needs 2") && e.contains("extras=true") && e.contains("extras=false"), "{e}");
+    let e = err(&mut s, "repeat", json!({"items": "1,2", "times": 1}));
+    assert!(e.contains("would be short") || e.contains("needs 2"), "{e}");
+    assert_eq!(job().sheets[0].len(), 6, "nothing changed");
+    // Only those left: one piece, the order stays.
+    let r = call(&mut s, "repeat", None, json!({"items": "1,2", "extras": false}));
+    assert!(r["message"].as_str().unwrap().contains("(1 piece)"), "{r}");
+    assert_eq!((job().sheets[0].len(), job().parts[0].qty), (7, 7));
+    // None left: extras add whole copies and grow the order.
+    assert!(err(&mut s, "repeat", json!({"items": "1,2", "extras": true})).contains("Nothing"));
+    let r = call(&mut s, "repeat", None, json!({"items": "1,2", "times": 1, "extras": true}));
+    assert!(r["message"].as_str().unwrap().contains("2 beyond the order"), "{r}");
+    assert_eq!((job().sheets[0].len(), job().parts[0].qty), (9, 9));
+    // HM10: `copy` counts the same way — with pieces left the order stays.
+    call(&mut s, "edit-part", None, json!({"part": 1, "qty": 11}));
+    let r = call(&mut s, "copy", None, json!({"item": 1}));
+    assert!(r["message"].as_str().unwrap().contains("from the pieces still to place"), "{r}");
+    assert_eq!((job().sheets[0].len(), job().parts[0].qty), (10, 11));
     let _ = std::fs::remove_dir_all(&d);
 }
 

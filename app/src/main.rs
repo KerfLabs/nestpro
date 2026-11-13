@@ -1603,8 +1603,11 @@ impl App {
 
     /// Remember the current state so the next change can be undone.
     pub fn checkpoint(&mut self) {
-        // Any other change ends a copy carried on the pointer (QR4).
-        self.carry = None;
+        // Any other change ends a copy carried on the pointer (QR4); a
+        // pattern goes along with the sheet as the change leaves it (HM21).
+        if !self.pattern_on() {
+            self.carry = None;
+        }
         let s = self.snapshot();
         self.push_undo(s);
     }
@@ -1697,7 +1700,7 @@ impl App {
     }
 
     /// Place a copy of the selected parts in the first free spot (left first),
-    /// keeping their layout (HM10).
+    /// keeping their layout; it uses pieces still to place first (HM10).
     pub fn duplicate_selected(&mut self) {
         let sel = self.selection();
         let ci = self.cur_sheet;
@@ -1709,18 +1712,11 @@ impl App {
             Some(d) => {
                 self.checkpoint();
                 let n = self.result.sheets[ci].len();
-                for c in engine::arrange::copies(&self.result.sheets[ci], &sel, d) {
-                    self.parts[c.part].qty += 1;
-                    self.result.sheets[ci].push(c);
-                }
+                let copies = engine::arrange::copies(&self.result.sheets[ci], &sel, d);
+                let extras = engine::pattern::put(&mut self.parts, &mut self.result.sheets, ci, &copies);
                 self.set_selection((n..self.result.sheets[ci].len()).collect());
                 self.refresh();
-                let c = self.result.sheets[ci][n];
-                self.status = if sel.len() == 1 {
-                    format!("Copied {} to X {}  Y {}.", self.parts[c.part].name, self.len_txt(c.x), self.len_txt(c.y))
-                } else {
-                    format!("Copied {} parts; the copies are selected.", sel.len())
-                };
+                self.status = self.copied_status(n, extras);
             }
             None => self.status = "No free spot on this sheet for a copy.".into(),
         }
@@ -1933,8 +1929,11 @@ impl App {
 
     pub fn select_sheet(&mut self, i: usize) {
         if i < self.result.sheets.len() && i != self.cur_sheet {
-            // A copy on the pointer belongs to the sheet it was made on.
-            self.carry = None;
+            // A copy on the pointer belongs to the sheet it was made on; a
+            // pattern goes along to the next (HM21).
+            if !self.pattern_on() {
+                self.carry = None;
+            }
             self.cur_sheet = i;
             self.ssim = None;
             self.sel_placed = None;
@@ -2804,7 +2803,8 @@ impl eframe::App for App {
             self.import_drawings(dropped);
         }
         // A copy on the pointer ends when its sheet changes, the screen
-        // changes or another tool starts (QR4).
+        // changes or another tool starts (QR4); a pattern follows the sheet
+        // shown while it can (HM21).
         self.check_carry();
         if self.workspace == Workspace::Nesting {
             // Alt/Ctrl + arrows, Ctrl+Q/W, M, Ctrl+E… on the selected parts.
@@ -2823,10 +2823,13 @@ impl eframe::App for App {
             if redo {
                 self.redo();
             }
-            if dup {
+            // With a pattern on the pointer the keys for the selected parts
+            // wait (the selection is the copy dropped last, not what is held).
+            let held = self.pattern_on();
+            if dup && !held {
                 self.duplicate_selected();
             }
-            let (f5, r, del) = ctx.input(|i| (i.key_pressed(Key::F5), i.key_pressed(Key::R) && i.modifiers.is_none(), i.key_pressed(Key::Delete)));
+            let (f5, r, del) = ctx.input(|i| (i.key_pressed(Key::F5), i.key_pressed(Key::R) && i.modifiers.is_none() && !held, i.key_pressed(Key::Delete) && !held));
             if f5 {
                 self.run_nesting();
             }
@@ -2927,6 +2930,7 @@ impl eframe::App for App {
         self.dock_overlay(&ctx);
         self.times_window(&ctx);
         self.step_window(&ctx);
+        self.pattern_window(&ctx);
         self.pending_dialog(&ctx);
         self.joint_sizes_window(&ctx);
     }

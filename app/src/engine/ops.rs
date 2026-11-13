@@ -247,7 +247,12 @@ pub static OPS: &[Op] = &[
         SHEET, ITEM_ONE, ITEMS,
         Arg { name: "axis", ty: Ty::Str, required: false, help: "x = left↔right (default), y = top↔bottom", choices: &["x", "y"] },
     ] },
-    Op { name: "copy", group: "Nesting", kind: Kind::Write, help: "Copy a placed part (item), or several keeping their layout (items), into the first free spot on its sheet (each part's order grows by one per copy).", args: &[SHEET, ITEM_ONE, ITEMS] },
+    Op { name: "copy", group: "Nesting", kind: Kind::Write, help: "Copy a placed part (item), or several keeping their layout (items), into the first free spot on its sheet. Copies use pieces still to place first; only a piece beyond the order makes it grow by one.", args: &[SHEET, ITEM_ONE, ITEMS] },
+    Op { name: "repeat", group: "Nesting", kind: Kind::Write, help: "Repeat a pattern (Ctrl+C on the sheet): copies of placed parts (items), keeping their layout, into the first free spots on their sheet. Copies use the pieces still to place, so the order doesn't grow. Without times it makes as many whole copies as the pieces left allow. A copy that needs more pieces than are left is refused unless extras says what to do: true places it whole and the order grows by the pieces beyond it; false places only the pieces left.", args: &[
+        SHEET, ITEM_ONE, ITEMS,
+        a("times", Ty::Int, "How many copies (default: as many whole copies as the pieces left allow, plus one with the rest when extras is given)"),
+        a("extras", Ty::Bool, "For a copy short of pieces: true = add extras to the order, false = place only the pieces left (default: refuse, saying how many are short)"),
+    ] },
     Op { name: "unplace", group: "Nesting", kind: Kind::Write, help: "Take one placed part off its sheet.", args: &[SHEET, ITEM] },
     // --- technology ---
     Op { name: "leads", group: "Technology", kind: Kind::Write, help: "Lead-ins: auto (placed by contour class — round, rectangular or other part or hole: round ones at the keypad position's angle, rectangles at its corner or nearest side, other shapes at the nearest valid corner, else the middle of the nearest long-enough line), machine (lengths and position from the machine's CT1), or delete.", args: &[
@@ -2480,17 +2485,81 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             let f = job.format(s);
             let d = arrange::copy_spot(&job.sheets[s], &sel, &job.spec, &f).ok_or("No free spot on this sheet for a copy.")?;
             let first = job.sheets[s].len() + 1;
-            for c in arrange::copies(&job.sheets[s], &sel, d) {
-                job.parts[c.part].qty += 1;
-                job.sheets[s].push(c);
-            }
+            let copies = arrange::copies(&job.sheets[s], &sel, d);
+            let extras = pattern::put(&mut job.parts, &mut job.sheets, s, &copies);
             job.sheet_changed(s);
             let c = job.sheets[s][first - 1];
+            let grew = if extras > 0 { format!("; {extras} beyond the order, which grew to match") } else { "; from the pieces still to place".to_string() };
             Ok(Outcome::msg(if sel.len() == 1 {
-                format!("Copied {} to X {:.0} Y {:.0} as #{first} (quantity now {}).", job.parts[c.part].name, c.x, c.y, job.parts[c.part].qty)
+                format!("Copied {} to X {:.0} Y {:.0} as #{first} (quantity {}{grew}).", job.parts[c.part].name, c.x, c.y, job.parts[c.part].qty)
             } else {
-                format!("Copied {} as #{first}–#{} (each part's quantity grew by one per copy).", names(&sel), job.sheets[s].len())
+                format!("Copied {} as #{first}–#{}{grew}.", names(&sel), job.sheets[s].len())
             }))
+        }
+        "repeat" => {
+            let s = sheet_idx(job, &a)?;
+            let sel = items_idx(job, s, &a)?;
+            let over = a.bool("extras")?.map(|b| if b { pattern::Over::Extras } else { pattern::Over::OnlyLeft });
+            let times = match a.int("times")? {
+                Some(t) if t < 1 => return Err(format!("times: {t} — at least 1 copy.")),
+                t => t.map(|t| t as u32),
+            };
+            let pat: Vec<Placed> = sel.iter().map(|&i| job.sheets[s][i]).collect();
+            let u = pattern::uses(&job.parts, &job.sheets, &pat);
+            let whole = pattern::copies_left(&u);
+            // How many copies: as asked, or what the pieces left make — whole
+            // copies, or with an answer for a short one, until none is left (HM19, HM20).
+            let all = u.iter().map(|x| x.left.div_ceil(x.per)).max().unwrap_or(0);
+            let want = times.unwrap_or(if over.is_some() { all } else { whole });
+            if over.is_none() && whole == 0 {
+                let q = pattern::question(&job.parts, &u).replacen("This copy", &format!("A copy of {}", names(&sel)), 1);
+                return Err(format!("{q} Say extras=true to add the missing pieces to the order, or extras=false to place only the pieces left."));
+            }
+            if over.is_none() && want > whole {
+                return Err(format!(
+                    "Copy {} of {} would be short: the pieces left make {whole} whole cop{}. Say times={whole}, extras=true to add the missing pieces to the order, or extras=false to place only the pieces left.",
+                    whole + 1,
+                    names(&sel),
+                    if whole == 1 { "y" } else { "ies" }
+                ));
+            }
+            if want == 0 {
+                return Err(format!("Nothing of {} is left to place. To add copies beyond the order say times=N with extras=true.", names(&sel)));
+            }
+            let f = job.format(s);
+            let first = job.sheets[s].len() + 1;
+            let (mut done, mut placed, mut extras, mut full) = (0u32, 0usize, 0u32, false);
+            while done < want {
+                let u = pattern::uses(&job.parts, &job.sheets, &pat);
+                let pick = pattern::pick(&u, &pat, 0, over).unwrap_or_default();
+                if pick.is_empty() {
+                    break;
+                }
+                let sub: Vec<usize> = pick.iter().map(|&k| sel[k]).collect();
+                let Some(d) = arrange::copy_spot(&job.sheets[s], &sub, &job.spec, &f) else {
+                    full = true;
+                    break;
+                };
+                let pieces = arrange::copies(&job.sheets[s], &sub, d);
+                placed += pieces.len();
+                extras += pattern::put(&mut job.parts, &mut job.sheets, s, &pieces);
+                done += 1;
+            }
+            if done == 0 {
+                return Err(format!("No free spot on sheet {} for a copy of {}.", s + 1, names(&sel)));
+            }
+            job.sheet_changed(s);
+            let u = pattern::uses(&job.parts, &job.sheets, &pat);
+            let left: Vec<String> = u.iter().map(|x| format!("{} {}", x.left, job.parts[x.part].name)).collect();
+            let mut msg = format!("Placed {done} cop{} of {} as #{first}–#{} ({placed} piece{}", if done == 1 { "y" } else { "ies" }, names(&sel), job.sheets[s].len(), if placed == 1 { "" } else { "s" });
+            if extras > 0 {
+                msg += &format!(", {extras} beyond the order — it grew");
+            }
+            msg += &format!("); still to place: {}.", left.join(", "));
+            if full {
+                msg += &format!(" Sheet {} has no room for more.", s + 1);
+            }
+            Ok(Outcome::msg(msg))
         }
         "unplace" => {
             let s = sheet_idx(job, &a)?;
@@ -2944,6 +3013,7 @@ pub const GUI_MAP: &[(&str, &str)] = &[
     ("Modify/Collision", "gui: agents always place with collision checking on"),
     ("Modify/Snap", "gui: snapping only steers a mouse drag; agents give exact places (move, or slide to meet the next part)"),
     ("Modify/Copy part", "copy"),
+    ("Modify/Copy pattern", "repeat"),
     ("Modify/Rotate 90°", "rotate"),
     ("Modify/Mirror", "mirror"),
     ("Modify/Remove part", "unplace"),
