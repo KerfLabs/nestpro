@@ -6447,16 +6447,29 @@
   "source": "GS5"
  },
  {
-  "name": "machine configurations offered when",
+  "name": "machine configurations offered",
   "group": "gas",
-  "value": "the machine shows lens, gas and power (A086) or the alias (A099) in its material/thickness sections, or has custom configuration sets",
+  "value": "the machine's custom configuration sets that cover the part's material and thickness, when it has such sets; otherwise its own fitting material/thickness sections, only when it shows lens, gas and power (A086) or the alias (A099) in them",
   "source": "GS5"
  },
  {
   "name": "job grouped by",
   "group": "gas",
-  "value": "machine, material, thickness, machine configuration (none fits any; case and default mark ignored)",
+  "value": "machine, material, thickness, machine configuration; two configurations match when either is empty, or equal apart from case and the default mark",
   "source": "GS6"
+ },
+ {
+  "name": "nesting in a group with a configuration",
+  "group": "gas",
+  "value": "takes the group's configuration when its own differs",
+  "source": "GS6"
+ },
+ {
+  "name": "group a part joins when several fit",
+  "group": "gas",
+  "value": "the first whose configuration matches",
+  "source": "GS6",
+  "estimated": true
  },
  {
   "name": "new part's configuration",
@@ -6465,17 +6478,24 @@
   "source": "GS7"
  },
  {
-  "name": "gas picked from the technology records by itself",
+  "name": "part's or group's configuration filled from the technology records",
   "group": "gas",
   "value": false,
   "source": "GS7",
   "estimated": true
  },
  {
-  "name": "report templates print the gas",
+  "name": "shipped report templates and help mention the gas",
   "group": "gas",
   "value": false,
   "source": "GS8"
+ },
+ {
+  "name": "a report of the original prints the gas",
+  "group": "gas",
+  "value": false,
+  "source": "GS8",
+  "estimated": true
  },
  {
   "name": "library part carries a gas",
