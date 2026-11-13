@@ -1028,7 +1028,7 @@ fn overlapping_parts_are_reported_and_the_export_warns() {
     let d = dir("overlap");
     let p = Part { name: "Plate".into(), shape: Shape::Rectangle, w: 100.0, h: 100.0, qty: 3, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
     let at = |x: f64| Placed { part: 0, x, y: 10.0, w: 100.0, h: 100.0, turns: 0, mirror: false };
-    let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
+    let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None };
     let parts = vec![p];
     let clear = vec![at(10.0), at(115.0)];
     assert!(overlapping(&parts, &clear, &spec).is_empty());
@@ -1110,7 +1110,7 @@ fn parts_of_one_file_keep_their_own_names() {
     // must not read as reference DEMO, quantity 2: part data comes from the file name.
     let mut cfg = AppSettings::default();
     cfg.name_format = "[Reference]-[Quantity]".into();
-    let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
+    let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None };
     let square = |x: f64| crate::dxf::Piece { layer: "0".into(), pts: vec![[x, 0.0], [x + 10.0, 0.0], [x + 10.0, 10.0], [x, 10.0]], closed: true };
     let part = |x: f64| crate::formats::ReadPart { drawing: crate::dxf::Drawing { pieces: vec![square(x)], ..Default::default() }, meta: Default::default(), mark_layers: vec![] };
     let inc = crate::formats::incoming("DEMO", vec![part(0.0), part(50.0)]);
@@ -1299,7 +1299,7 @@ fn an_agent_saving_into_the_library_under_a_name_another_job_holds_is_refused() 
     let d = dir("unique_job_names");
     let mut s = Session::new(stock_ctx(&d));
     // A programmer saved DEMO-001 frames in folder Acme.
-    let spec = SheetSpec { w: 3000.0, h: 1500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
+    let spec = SheetSpec { w: 3000.0, h: 1500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None };
     let mut theirs = JobFile::new_job("DEMO-001 frames", spec);
     theirs.week = "Acme".into();
     crate::library::Library::open(&s.ctx.library_dir, &Who::new("sam", "PROG-1"), &Clock::pc()).unwrap().save_job(&theirs, crate::library::SaveTo::New).unwrap();
@@ -1333,7 +1333,7 @@ fn the_library_check_refuses_a_real_library() {
     let mut s = Session::new(Ctx::builtin());
     // A Library with a real job in it.
     let real = d.join("Library");
-    let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
+    let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None };
     crate::library::create(&real).unwrap();
     crate::library::Library::open(&real, &Who::new("sam", "PROG-1"), &Clock::pc()).unwrap().save_job(&JobFile::new_job("Frames", spec), crate::library::SaveTo::New).unwrap();
     let before = listing(&real);
@@ -1417,7 +1417,7 @@ fn check_folder(s: &mut Session, d: &Path, name: &str) -> PathBuf {
 fn the_library_check_refuses_a_folder_it_cant_read_or_recognise() {
     let d = dir("check_unsure");
     let mut s = Session::new(Ctx::builtin());
-    let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
+    let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None };
     let refused = |s: &mut Session, f: &Path, why: &str| {
         let before = listing(f);
         let e = err(s, "library-check", json!({"folder": f.to_str().unwrap(), "rounds": 1}));
@@ -3177,7 +3177,7 @@ fn an_agent_moves_one_contours_lead_by_hand_and_puts_it_back() {
 fn dragging_a_lead_end_in_the_part_view_moves_that_lead_only() {
     // A plate with a hole and no technology of its own: the machine's leads.
     let mut parts = vec![Part { name: "P".into(), shape: Shape::PlateHole, w: 200.0, h: 150.0, qty: 1, rotate: false, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
-    let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
+    let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None };
     let before = cnc::plan_part(&parts, 0, &spec);
     let hole0 = before.contours.iter().find(|c| c.contour == 0).unwrap().lead_path.clone();
     // Drag the outline's pierce (it starts at the bottom-left corner) out to the left.
@@ -4791,7 +4791,7 @@ fn an_agent_sees_another_pcs_save_at_once() {
     call(&mut s, "new", Some(jp), json!({"w": 3000, "h": 1500, "thickness": 10}));
     let names = |s: &mut Session| call(s, "library", None, json!({"mode": "list"}))["data"].as_array().unwrap().iter().map(|e| format!("{} ({})", e["name"].as_str().unwrap(), e["saved_by"].as_str().unwrap_or("-"))).collect::<Vec<_>>();
     assert!(names(&mut s).is_empty());
-    let mut j = JobFile::new_job("DEMO-7", crate::nest::SheetSpec { w: 3000.0, h: 1500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 10.0, level: 3, machine: Default::default(), kerf: Default::default() });
+    let mut j = JobFile::new_job("DEMO-7", crate::nest::SheetSpec { w: 3000.0, h: 1500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 10.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None });
     let rec = lib.save_job(&j, crate::library::SaveTo::New).unwrap();
     assert_eq!(names(&mut s), ["DEMO-7 (sam on PROG-1)"]);
     j.parts = vec![crate::nest::Part { name: "DEMO-P1".into(), shape: crate::nest::Shape::Rectangle, w: 600.0, h: 400.0, qty: 4, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
@@ -4864,6 +4864,8 @@ fn programs_of_job_saved_before_gas(post: &str, blm: bool, gas: (u32, &str)) -> 
     // Opened afresh, as on the next day.
     let (mut s, _on) = gas_session(&d, blm, gas);
     call(&mut s, "info", Some(job.to_str().unwrap()), json!({}));
+    // It opens with the machine's gas, as saved in Settings → Machines.
+    assert_eq!(info_gas(&mut s), (gas.1.to_string(), gas.0 as u64, "machine".to_string()), "{post}");
     let text = programs(&mut s).remove(0);
     let xml = blm.then(|| {
         let e = call(&mut s, "export", None, json!({"dir": d.join("cnc").to_str().unwrap()}));
@@ -5054,6 +5056,8 @@ fn changing_the_gas_of_a_nested_job_keeps_every_sheet_and_says_what_changed() {
     let d = dir("gas_nested");
     let (mut s, _on) = gas_session(&d, true, (1, "Nitrogen"));
     let job = gas_job(&d, &mut s);
+    // Nested afresh, so nothing is marked changed since.
+    call(&mut s, "nest", None, json!({"stock": "off"}));
     let placed = |job: &Path| jobfile::load(job).unwrap().sheets.iter().map(|sh| sh.iter().map(|p| (p.x, p.y, p.turns)).collect::<Vec<_>>()).collect::<Vec<_>>();
     let before = placed(&job);
     let (hand, _) = gas_leads(&mut s);
@@ -5061,7 +5065,7 @@ fn changing_the_gas_of_a_nested_job_keeps_every_sheet_and_says_what_changed() {
     let r = call(&mut s, "set-sheet", None, json!({"gas": "oxygen"}));
     let m = r["message"].as_str().unwrap();
     assert!(m.contains("Gas: Nitrogen (1) → Oxygen (3)"), "{m}");
-    assert!(m.contains("2 nested sheet(s) kept"), "{m}");
+    assert!(m.contains(&format!("{} nested sheet(s) kept", before.len())), "{m}");
     assert!(m.contains("0010 mild steel 2.2–3.2 mm, Nitrogen (1)") && m.contains("0010 mild steel 2.2–3.2 mm, Oxygen (3)"), "{m}");
     assert!(m.contains("lead") && m.contains("time"), "{m}");
     assert_eq!(placed(&job), before, "every sheet and part stays where it was");

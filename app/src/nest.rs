@@ -1315,6 +1315,10 @@ pub struct SheetSpec {
     /// the machine file's (KC1).
     #[serde(default)]
     pub kerf: crate::kerf::KerfChoice,
+    /// The job's gas, kept as its number (GS10). None = a job saved before
+    /// jobs carried a gas: it is cut with the machine's (GS11).
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "crate::gas::number")]
+    pub gas: Option<crate::gas::Gas>,
 }
 
 impl SheetSpec {
@@ -2423,7 +2427,7 @@ mod tests {
             Part { name: "A".into(), shape: Shape::Rectangle, w: 400.0, h: 300.0, qty: 12, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] },
             Part { name: "B".into(), shape: Shape::Disc, w: 250.0, h: 250.0, qty: 9, rotate: true, color: 1, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] },
         ];
-        let spec = SheetSpec { w: 1500.0, h: 1000.0, margin: 10.0, gap: 8.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
+        let spec = SheetSpec { w: 1500.0, h: 1000.0, margin: 10.0, gap: 8.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None };
         let res = nest(&parts, &spec);
         let total: usize = res.sheets.iter().map(|s| s.len()).sum();
         assert_eq!(total, 21);
@@ -2444,7 +2448,7 @@ mod tests {
     #[test]
     fn a_remnant_is_used_first_and_parts_stay_inside_its_shape() {
         let parts = vec![Part { name: "A".into(), shape: Shape::Rectangle, w: 300.0, h: 200.0, qty: 30, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
-        let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 10.0, gap: 8.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
+        let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 10.0, gap: 8.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None };
         // An L-shaped remnant: 1000 × 1000 with the top-left 600 × 600 gone.
         let l = crate::stock::Outline { outer: vec![[0.0, 0.0], [1000.0, 0.0], [1000.0, 1000.0], [600.0, 1000.0], [600.0, 400.0], [0.0, 400.0]], holes: vec![] };
         let rem = SheetFormat { w: 1000.0, h: 1000.0, outline: Some(l.clone()), stock_ref: "2-16".into(), remnant: true, made: vec![], made_from: 0 };
@@ -2467,7 +2471,7 @@ mod tests {
     fn best_combination_takes_a_smaller_format_when_the_next_would_be_poorly_used() {
         // Four 450 squares: 18 % of a 3000 × 1500 sheet, 81 % of a 1000 × 1000 one.
         let parts = vec![Part { name: "Q".into(), shape: Shape::Rectangle, w: 450.0, h: 450.0, qty: 4, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
-        let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 10.0, gap: 8.0, material: 0, thickness: 3.0, level: 1, machine: Default::default(), kerf: Default::default() };
+        let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 10.0, gap: 8.0, material: 0, thickness: 3.0, level: 1, machine: Default::default(), kerf: Default::default(), gas: None };
         let big = SheetFormat { stock_ref: "BIG".into(), ..SheetFormat::rect(3000.0, 1500.0) };
         let small = SheetFormat { stock_ref: "SMALL".into(), ..SheetFormat::rect(1000.0, 1000.0) };
         let plan = [FormatSlot { format: big, qty: Some(2) }, FormatSlot { format: small, qty: Some(2) }];
@@ -2488,7 +2492,7 @@ mod tests {
         // every outline stays inside the remnant's shape, at least the margin from
         // its edge, and the parts keep the gap.
         let parts = vec![Part { name: "L".into(), shape: Shape::LBracket, w: 220.0, h: 180.0, qty: 25, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
-        let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 10.0, gap: 8.0, material: 0, thickness: 3.0, level: 1, machine: Default::default(), kerf: Default::default() };
+        let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 10.0, gap: 8.0, material: 0, thickness: 3.0, level: 1, machine: Default::default(), kerf: Default::default(), gas: None };
         let l = crate::stock::Outline { outer: vec![[0.0, 0.0], [1000.0, 0.0], [1000.0, 1000.0], [600.0, 1000.0], [600.0, 400.0], [0.0, 400.0]], holes: vec![] };
         let rem = SheetFormat { w: 1000.0, h: 1000.0, outline: Some(l.clone()), stock_ref: "R".into(), remnant: true, made: vec![], made_from: 0 };
         let plan = [FormatSlot { format: rem, qty: Some(1) }, FormatSlot { format: SheetFormat::rect(2000.0, 1000.0), qty: None }];
@@ -2526,7 +2530,7 @@ mod level_tests {
         assert!(clash_exact(&parts, &at(1, 140.0, 40.0, 20.0), &ring, 5.0), "on the ring");
     }
     fn spec(level: u8) -> SheetSpec {
-        SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level, machine: Default::default(), kerf: Default::default() }
+        SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level, machine: Default::default(), kerf: Default::default(), gas: None }
     }
     fn check_no_overlap(parts: &[Part], res: &NestResult, sp: &SheetSpec) {
         for s in &res.sheets {
@@ -2718,7 +2722,7 @@ mod band_tests {
         Part { name: name.into(), shape, w, h, qty, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }
     }
     fn spec(w: f64, h: f64, level: u8) -> SheetSpec {
-        SheetSpec { w, h, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level, machine: Default::default(), kerf: Default::default() }
+        SheetSpec { w, h, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level, machine: Default::default(), kerf: Default::default(), gas: None }
     }
     /// Every pair keeps the gap by the exact contour test, and every part stays
     /// inside the margins.
@@ -2867,7 +2871,7 @@ mod nesting_bench {
         let net: f64 = parts.iter().map(|p| p.net_area() * p.qty as f64).sum();
         let need: u32 = parts.iter().map(|p| p.qty).sum();
         for lv in [1u8, 3, 5] {
-            let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: lv, machine: Default::default(), kerf: Default::default() };
+            let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: lv, machine: Default::default(), kerf: Default::default(), gas: None };
             let t = std::time::Instant::now();
             let mut r = nest(&parts, &spec);
             let t_nest = t.elapsed();

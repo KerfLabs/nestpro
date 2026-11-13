@@ -3908,7 +3908,7 @@
  {
   "name": "job gas / lens / nozzle keys",
   "group": "machine file sections",
-  "value": "not given (jobs carry none)",
+  "value": "gas: the job's (GS13); lens, nozzle and the rest: not given (jobs carry none)",
   "source": "MECHANICS MTL4; own design"
  },
  {
@@ -6378,6 +6378,54 @@
   "group": "sheet stock",
   "value": true,
   "source": "MECHANICS ST17"
+ },
+ {
+  "name": "gas list",
+  "group": "gas",
+  "value": "1 Nitrogen, 2 Air, 3 Oxygen, 4 Argon, 5 Water",
+  "source": "MECHANICS GS10"
+ },
+ {
+  "name": "job file gas",
+  "group": "gas",
+  "value": "the gas's number, beside material and thickness; none = saved before jobs carried a gas",
+  "source": "MECHANICS GS10"
+ },
+ {
+  "name": "job without a gas",
+  "group": "gas",
+  "value": "the machine's gas number and name as saved, even off the list; file unchanged until a gas is picked",
+  "source": "MECHANICS GS11"
+ },
+ {
+  "name": "new job gas",
+  "group": "gas",
+  "value": "the active machine's when its number and name are the list's pair, else none of its own",
+  "source": "MECHANICS GS12"
+ },
+ {
+  "name": "section and record keys",
+  "group": "gas",
+  "value": "the job's gas; a section or record with no gas fits any job; no gas of its own: none for the section, the machine's for the record",
+  "source": "MECHANICS GS13"
+ },
+ {
+  "name": "default-technology rule with a gas",
+  "group": "gas",
+  "value": false,
+  "source": "MECHANICS GS13"
+ },
+ {
+  "name": "gas change keeps the nested sheets",
+  "group": "gas",
+  "value": true,
+  "source": "MECHANICS GS14"
+ },
+ {
+  "name": "gas change marks the sheets changed",
+  "group": "gas",
+  "value": false,
+  "source": "MECHANICS GS14"
  }
 ]
 }

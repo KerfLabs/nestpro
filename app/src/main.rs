@@ -10,6 +10,7 @@ mod cli;
 mod cnc;
 mod engine;
 mod filewatch;
+mod gas;
 mod mcp;
 mod ct1;
 mod cutpanel;
@@ -555,7 +556,7 @@ impl App {
             job_name: "Sample job 1-3.0000".into(),
             parts: demo_parts(),
             sel_part: Some(1),
-            spec: SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() },
+            spec: SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None },
             result: NestResult::default(),
             plans: vec![],
             program: String::new(),

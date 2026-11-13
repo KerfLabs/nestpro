@@ -602,7 +602,7 @@ Nesting screen. Code: `engine/arrange.rs` (rules), `arrange_ui.rs` (mouse and ke
 | HM10 | **Copying a selection**: Ctrl+D (ribbon Copy) puts a copy of all selected parts, keeping their layout, at the first free spot by their boxes, left first, then lowest; Ctrl + drag drags a copy instead. Each copy adds one to its part's order. | Copy command: observed; spot order and Ctrl+drag: rebuild |
 | HM11 | Parts being dragged can show the **part gap** as a dashed outline around them (the original's option to draw the moving parts grown by the part gap). Off at the factory; on first start the rebuild takes the install's setting. | observed option and default; look: rebuild |
 | HM13 | **Plain arrow keys move the view** (left/right/up/down) and **Page Down / Page Up zoom in / out**; the mouse wheel issues the same commands in the original. The rebuild pans 80 px per press and zooms by 2 (the original's default keyboard zoom factor). | keys: observed; pan step: estimate |
-| HM12 | **Settings → Nesting**: the units (mm or inches) every length in the app is shown and typed in (UN1); new jobs start with the part gap and edge margin set there; the movement value, snapping, snap reach and the gap outline are set there too. | rebuild |
+| HM12 | **Settings → Nesting**: the units (mm or inches) every length in the app is shown and typed in (UN1); new jobs start with the part gap and edge margin set there (and with the machine's gas, GS12); the movement value, snapping, snap reach and the gap outline are set there too. | rebuild |
 
 How the rebuild uses them:
 
@@ -1352,7 +1352,7 @@ The rebuild (src/blm.rs): **Machining -> Post settings -> "BLM LC5 output"** (on
 is an LC5/BLM) makes Export CNC write `<NEST>.XML` and `<NEST>.zip` (sheet SPF, part SPFs, LIS) per sheet
 following BL1–BL5, zipped in-app with deflate. Estimated / not built: when `LASTLINE` starts `1,<lead-arc radius>,0` instead of `0,0,0` (BL27),
 micro-joints (refused, BL39), the FINAL_CUT / remnant-line subprogram (`HD_DWN_OFF`), part rotation through ORIG's angle
-(each rotation gets its own subprogram instead), and gas defaults.
+(each rotation gets its own subprogram instead). The gas lines and the XML's gas fields name the job's gas (GS10, GS11).
 
 
 ### BLM LC5 — arcs and cut-off lines
@@ -2409,10 +2409,11 @@ that falls between two ranges keeps the machine's own values. `ct1.rs` (`parse_f
   steel `0010`, stainless `0100`, aluminium `0210` (the aluminium-magnesium grades its
   aliases name; pure aluminium is `0200`). Our choice, editable. A bare number is our
   shorthand for the catalogue reference; empty = the material's name in programs.
-- **Gas, lens, nozzle and the other keys** (MTL4): our jobs carry none, so they count as
-  not given and only material and thickness decide. The machine's gas setting is a BLM
-  output number, not the file's gas number, so it is not used as a key. Design choice
-  (FEATURES TEC-10).
+- **Gas** (MTL4): the job's gas is a key, and a section without a gas fits a job of any gas
+  (GS13); a job saved before jobs carried a gas gives none, so only material and thickness
+  decide for it, as before.
+- **Lens, nozzle and the other keys** (MTL4): our jobs carry none, so they count as not
+  given. Design choice (FEATURES TEC-10).
 - **Where the section is used**: the cut plan (automatic leads by contour class and
   quality, joint distances, size classes), Technology → Lead-ins → Machine, Micro-joints →
   Automatic and Settings → Machine values, and the agents' `leads mode=machine` /
@@ -2432,6 +2433,24 @@ that falls between two ranges keeps the machine's own values. `ct1.rs` (`parse_f
   **pierce radius, Y gap** are read and shown only (`machine-tech`).
 - The applied section shows on the Sheet tab (under the material) and in the Part view's
   status line: "Machine table 0010 mild steel 2.2–3.2 mm", or "global".
+
+## A job's gas
+
+In shop terms: every job is cut with one gas, kept with its material and thickness. Every
+LC5 program of the job names it, and it picks the machine file's material × thickness
+section and the technology table's record, so leads, joints, kerf, speeds and times follow
+it. Jobs saved before jobs carried a gas write what they wrote before. `gas.rs`,
+`engine::job_gas`, `engine::new_job_gas`, `engine::gas_change_note`; agents: `new` and
+`set-sheet` with `gas=`, `info` (`sheet.gas`), `machine-tech` (`gas`, the section and record
+it picks).
+
+| ID | Rule (our words) | Observed / estimated |
+|---|---|---|
+| GS10 | **The gas list**: 1 Nitrogen, 2 Air, 3 Oxygen, 4 Argon, 5 Water, the numbers and names the LC5 programs write (`;IDGAS=` and `;NOMEGAS=` in the sheet program, `GasId` and `GasName` in the XML job sheet; BL2, BL4). Oxygen is 3. A job keeps its gas as the number, beside its material and thickness, in the job file. | Observed (the list); keeping it in the job file: rebuild |
+| GS11 | **One gas per job**: every program of a job names the job's gas. A job saved before jobs carried a gas has none of its own: it shows and is cut with the machine's gas, its number and name as saved in Settings → Machines, even a pair that isn't the list's (such as 2 named Oxygen), and its file is left as it is until someone picks a gas. | Rebuild (spec #100) |
+| GS12 | **A new job's gas** is the active machine's (Settings → Machines), kept in the job, so a later change in Settings doesn't change it. A job made from scratch takes it: New job, the agents' `new`, a job per material from an XML import, a job from the ERP link. A machine whose saved number and name aren't one of the list's pairs gives a new job no gas of its own, so it is cut with the machine's as saved (GS11). | Estimated: how the original gives a new job its gas is still being studied (FEATURES MAC-39); the machine that isn't on the list: MAC-69 |
+| GS13 | **The gas picks the technology**: the job's gas joins material and thickness in picking the machine file's section (MTL4) and the technology table's record (TT9). A section or record without a gas (0) fits a job of any gas. A job that gives its gas gives more than material and thickness, so the default-technology rule (MTL5) doesn't apply to it. A job without a gas of its own picks as before: no gas for the section, the machine's for the record. | Observed (TT9; MTL4 for equal gases; MTL5); a section without a gas fitting any gas: spec #100, while MTL4 as read lets a gas the job gives meet only an equal one (MAC-69); the job without a gas: rebuild |
+| GS14 | **Changing the gas** (agents: `set-sheet gas=`, a name in any case or a number; anything else is refused with the list) keeps every nested sheet, part and lead moved by hand, without the question a new thickness asks; the section and the record are picked again, so automatic leads change only where the new section's lead tables differ, and speeds and times follow the new record. The sheets aren't marked changed. The reply names the old and new gas, section and record, whether the automatic lead tables changed, and the job's cut time before and after. | Rebuild (spec #100); not marking the sheets changed: estimate (MAC-69) |
 
 ## Kerf compensation
 
@@ -2513,7 +2532,7 @@ the plan's time by kind), `sheetsim.rs` (the simulation uses the same times). Ag
 | TT6 | Cutting speed = the quality's field; marking speed = C009, the same for every quality. An empty field (≤ 0.001) means no speed. | Observed |
 | TT7 | Corner feed reductions (L601–L612: quality, angle range, acceleration, time) apply only when the time file asks for them (CTM8 mode 3). Not built (FEATURES MAC-22). | Observed (format) |
 | TT8 | A technology index becomes a cut quality: 1 → 2, 2 → 3, 10–12 → 4–6, 100–102 → 7–9, 110–112 → 10–12, anything else → 1. | Observed |
-| TT9 | The record for a job: the first, in file order, whose material, thickness (from − 0.005 ≤ t ≤ to + 0.005, never the nearest range), gas (equal, or the record's is 0 = any), lens, power, angle and alias fit; else the **last** default record (A008) for the material and thickness; else none. Our jobs carry the machine's gas (Settings → Machines) and no lens, power, angle or alias, which fit any record. | Observed (order and fallbacks); the keys our jobs don't carry are our choice (like TEC-10) |
+| TT9 | The record for a job: the first, in file order, whose material, thickness (from − 0.005 ≤ t ≤ to + 0.005, never the nearest range), gas (equal, or the record's is 0 = any), lens, power, angle and alias fit; else the **last** default record (A008) for the material and thickness; else none. Our jobs carry their own gas (GS13; a job saved before jobs carried one, the machine's from Settings → Machines) and no lens, power, angle or alias, which fit any record. | Observed (order and fallbacks); the keys our jobs don't carry are our choice (like TEC-10) |
 | TT10 | No record, or a quality without a speed: the original would time those cuts as almost instant; the app uses the machine's default cutting speed instead (A058, or the section's Z003), and says so on the times card. A machine speed of 0 counts as none. | Our choice (FEATURES MAC-20) |
 
 ### The time file and the calculation

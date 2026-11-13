@@ -1161,7 +1161,7 @@ mod lead_tests {
         for sh in Shape::ALL {
             let parts = vec![Part { name: "P".into(), shape: sh, w: 150.0, h: 120.0, qty: 1, rotate: false, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
             let pl = Placed { part: 0, x: 10.0, y: 10.0, w: 150.0, h: 120.0, turns: 0, mirror: false };
-            let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
+            let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None };
             let plan = crate::cnc::plan(&parts, &[pl], &spec);
             let (o, holes) = placed_shape(&parts, &pl);
             for c in &plan.contours {

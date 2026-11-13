@@ -170,9 +170,11 @@ impl BlmSettings {
     pub fn for_spec(spec: &SheetSpec, machine: &str, job: &str) -> Self {
         let (n, id) = material_codes(spec.material);
         let blm = machine.to_uppercase().contains("LC5") || machine.to_uppercase().contains("BLM");
-        // Nitrogen for stainless and aluminium, oxygen for mild steel.
-        let (gid, gname) = if spec.material == 0 { (2, "Oxygen") } else { (1, "Nitrogen") };
-        BlmSettings { on: blm, machine: machine.to_string(), job: job.to_string(), mat_name: n.into(), mat_id: id.into(), gas_id: gid, gas_name: gname.into() }
+        // The job's gas from the list (GS10); a job without one takes the
+        // machine's in `engine::blm_for` (GS11), nitrogen until then, as for
+        // a machine with no job open.
+        let g = spec.gas.unwrap_or(crate::gas::Gas::Nitrogen);
+        BlmSettings { on: blm, machine: machine.to_string(), job: job.to_string(), mat_name: n.into(), mat_id: id.into(), gas_id: g.number(), gas_name: g.name().into() }
     }
 }
 
@@ -944,7 +946,7 @@ mod blm_tests {
     #[test]
     fn margins_are_the_room_left_around_what_is_written() {
         // BL17: lead-ins and marks count; a line to the edge leaves no room.
-        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
+        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None };
         let mut plan = crate::cnc::plan(&[], &[], &spec);
         plan.marks.push((1, vec![[20.0, 30.0], [40.0, 30.0]]));
         assert_eq!(sheet_margins(&plan, &[], 1000.0, 500.0), [960.0, 470.0, 20.0, 30.0]);
@@ -1060,7 +1062,7 @@ mod blm_tests {
         let p = |name: &str, shape, w, h, custom| Part { name: name.into(), shape, w, h, qty: 1, rotate: false, color: 0, tech: None, custom, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
         let parts = vec![p("FRAME", Shape::Custom, 400.0, 200.0, Some(std::sync::Arc::new(g))), p("TAB", Shape::Rectangle, 50.0, 50.0, None)];
         let sheet = vec![Placed { part: 0, x: 10.0, y: 10.0, w: 400.0, h: 200.0, turns: 0, mirror: false }, Placed { part: 1, x: 285.0, y: 85.0, w: 50.0, h: 50.0, turns: 0, mirror: false }];
-        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
+        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None };
         let picks = [crate::cnc::ManualCut { placed: 0, contour: 0, start: [30.0, 100.0], reverse: false, whole: None }, crate::cnc::ManualCut { placed: 0, contour: 2, start: [10.0, 100.0], reverse: false, whole: None }];
         let plan = crate::cnc::plan_manual(&parts, &sheet, &spec, &picks);
         let s = sheet_set(1, &parts, &sheet, &spec, &plan, &[], &BlmSettings::for_spec(&spec, "LC5", "J-1"));
@@ -1069,10 +1071,21 @@ mod blm_tests {
     }
 
     #[test]
+    fn the_lc5_settings_name_the_jobs_gas_and_never_call_oxygen_2() {
+        // GS10, GS11: the job's gas from the list; mild steel isn't oxygen by
+        // itself any more (the old fallback numbered it 2).
+        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: Some(crate::gas::Gas::Oxygen) };
+        let s = BlmSettings::for_spec(&spec, "LC5", "J-1");
+        assert_eq!((s.gas_id, s.gas_name.as_str()), (3, "Oxygen"));
+        let s = BlmSettings::for_spec(&SheetSpec { gas: None, ..spec }, "LC5", "J-1");
+        assert_eq!((s.gas_id, s.gas_name.as_str()), (1, "Nitrogen"));
+    }
+
+    #[test]
     fn writes_the_lc5_set_and_a_readable_zip() {
         let parts = vec![Part { name: "BLANK".into(), shape: Shape::Rectangle, w: 100.0, h: 50.0, qty: 2, rotate: false, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
         let sheet = vec![Placed { part: 0, x: 10.0, y: 10.0, w: 100.0, h: 50.0, turns: 0, mirror: false }, Placed { part: 0, x: 10.0, y: 70.0, w: 100.0, h: 50.0, turns: 0, mirror: false }];
-        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 10.0, material: 1, thickness: 6.35, level: 3, machine: Default::default(), kerf: Default::default() };
+        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 10.0, material: 1, thickness: 6.35, level: 3, machine: Default::default(), kerf: Default::default(), gas: None };
         let plan = crate::cnc::plan(&parts, &sheet, &spec);
         let set = BlmSettings::for_spec(&spec, "LC5 YLS6000", "J-1");
         let s = sheet_set(1, &parts, &sheet, &spec, &plan, &[], &set);

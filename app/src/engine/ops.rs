@@ -138,10 +138,11 @@ const CONTOUR_STATES: &[&str] = &["cut", "mark", "no-cut", "bend-line", "leave-o
 
 pub static OPS: &[Op] = &[
     // --- job ---
-    Op { name: "new", group: "Job", kind: Kind::Create, help: "Make a new, empty job file with its sheet (size, material, thickness).", args: &[
+    Op { name: "new", group: "Job", kind: Kind::Create, help: "Make a new, empty job file with its sheet (size, material, thickness, gas).", args: &[
         a("name", Ty::Str, "Job name (default: the file name)"), a("week", Ty::Str, "Folder/week the job belongs to"),
         a("w", Ty::Num, "Sheet length X, mm (default 2000)"), a("h", Ty::Num, "Sheet width Y, mm (default 1000)"),
         a("material", Ty::Str, "Material name or number (see catalog), default mild steel"), a("thickness", Ty::Num, "Thickness, mm (default 3)"),
+        a("gas", Ty::Str, "Gas the job is cut with: its name or number (1 Nitrogen, 2 Air, 3 Oxygen, 4 Argon, 5 Water); default the machine's (Settings → Machines)"),
         a("margin", Ty::Num, "Sheet margin, mm (default 5)"), a("gap", Ty::Num, "Gap between parts, mm (default 5)"),
         a("level", Ty::Int, "Automatic nesting level 1-5 (default 3)"), c("machine", MACHINES, "Machine type (default laser)"),
         a("force", Ty::Bool, "Overwrite an existing file"),
@@ -202,9 +203,9 @@ pub static OPS: &[Op] = &[
         a("copy", Ty::Bool, "save-job: save as a new job under the first free name (\"DEMO-7 (1)\") instead of over its record; the copy holds no stock of the original (default false)"),
     ] },
     // --- sheet and nesting ---
-    Op { name: "set-sheet", group: "Nesting", kind: Kind::Write, help: "Change the sheet: size, margin, gap, material, thickness, nesting level, machine. A new material or thickness with nested sheets needs nestings=keep or nestings=remove.", args: &[
+    Op { name: "set-sheet", group: "Nesting", kind: Kind::Write, help: "Change the sheet: size, margin, gap, material, thickness, gas, nesting level, machine. A new material or thickness with nested sheets needs nestings=keep or nestings=remove. A new gas keeps the nested sheets and picks the machine file's section and the technology record again (leads, speeds, times follow it); the reply says what changed.", args: &[
         a("w", Ty::Num, "Length X, mm"), a("h", Ty::Num, "Width Y, mm"), a("margin", Ty::Num, "Margin, mm"), a("gap", Ty::Num, "Gap between parts, mm"),
-        a("material", Ty::Str, "Material name or number"), a("thickness", Ty::Num, "Thickness, mm"), a("level", Ty::Int, "Nesting level 1-5"), c("machine", MACHINES, "Machine type"),
+        a("material", Ty::Str, "Material name or number"), a("thickness", Ty::Num, "Thickness, mm"), a("gas", Ty::Str, "Gas the job is cut with: its name or number (1 Nitrogen, 2 Air, 3 Oxygen, 4 Argon, 5 Water)"), a("level", Ty::Int, "Nesting level 1-5"), c("machine", MACHINES, "Machine type"),
         c("nestings", &["keep", "remove"], "What happens to nested sheets on a material/thickness change"),
         a("machine_spacing", Ty::Bool, "true = take the part gap and margin from the machine file for the (new) material and thickness (see machine-tech); gap/margin given here still win"),
     ] },
@@ -263,8 +264,9 @@ pub static OPS: &[Op] = &[
         Arg { name: "mode", ty: Ty::Str, required: true, help: "auto or delete", choices: &["auto", "delete"] }, PARTS,
         a("every", Ty::Num, "auto: one joint per this many mm of each contour (default: the machine's maximum distance for the part's quality)"),
     ] },
-    Op { name: "machine-tech", group: "Technology", kind: Kind::Read, help: "Which material × thickness section of the machine's technology file applies to the job (or to another material/thickness), and the values it gives: lead and joint tables, joint gap, pierce and loop radius, kerf, part gap and margins (compare with the sheet's; take them with set-sheet machine_spacing=true), the cutting speeds, pierce times and time settings that time the job (from the machine's technology table and time file), and the machine's 12 cut qualities by name and colour (offered = listed in the window's pickers).", args: &[
+    Op { name: "machine-tech", group: "Technology", kind: Kind::Read, help: "Which material × thickness section of the machine's technology file applies to the job (or to another material/thickness/gas), picked by the job's material, thickness and gas, and the values it gives: lead and joint tables, joint gap, pierce and loop radius, kerf, part gap and margins (compare with the sheet's; take them with set-sheet machine_spacing=true), the cutting speeds, pierce times and time settings that time the job (from the machine's technology table and time file), and the machine's 12 cut qualities by name and colour (offered = listed in the window's pickers).", args: &[
         a("material", Ty::Str, "Look at this material instead of the job's (name or number)"), a("thickness", Ty::Num, "Look at this thickness instead of the job's, mm"),
+        a("gas", Ty::Str, "Look at this gas instead of the job's (name or number: 1 Nitrogen, 2 Air, 3 Oxygen, 4 Argon, 5 Water)"),
     ] },
     Op { name: "compensation", group: "Machining", kind: Kind::Write, help: "Kerf compensation: how the beam is kept half a kerf on the scrap side of each cut — control (the program writes G41/G42 and the corrector number, the CNC offsets) and/or system (the program carries the already-offset path). Shows the machine's settings, the job's choice and, per contour of a sheet, its side, corrector and radius, plus the contours system compensation can't cut (holes no bigger than the kerf, slots narrower than it). control/system set the job's choice (on, off, or machine = the machine file's).", args: &[
         c("control", &["on", "off", "machine"], "Control compensation (G41/G42 + corrector) for this job"),
@@ -702,12 +704,25 @@ pub fn tech_json(t: &Option<PartTech>) -> Value {
     }
 }
 
-fn spec_json(spec: &SheetSpec) -> Value {
-    json!({
+/// The job's sheet settings; its gas (GS11) as the job's own, or the
+/// machine's as saved (`base`) for a job without one.
+fn spec_json(spec: &SheetSpec, base: &crate::blm::BlmSettings) -> Value {
+    let gas = job_gas(spec, base);
+    let mut v = json!({
         "w": spec.w, "h": spec.h, "margin": spec.margin, "gap": spec.gap,
         "material": cnc::MATERIALS.get(spec.material).copied().unwrap_or("?"), "material_no": spec.material, "thickness": spec.thickness,
+        "gas": gas.name, "gas_no": gas.number, "gas_from": if gas.own { "job" } else { "machine" },
         "level": spec.nest_level().name, "machine": spec.machine.label(),
-    })
+    });
+    if gas.listed().is_none() {
+        v["gas_note"] = json!(format!("The machine's gas as saved in Settings → Machines; {} isn't one of the gases ({}). Pick one with set-sheet gas=.", gas.label(), crate::gas::list_words()));
+    }
+    v
+}
+
+/// The gas as a job's machine-tech shows it.
+fn gas_json(g: &crate::gas::JobGas) -> Value {
+    json!({"number": g.number, "name": g.name, "label": g.label(), "from": if g.own { "job" } else { "machine" }})
 }
 
 fn placed_json(job: &JobFile, s: usize) -> Value {
@@ -776,7 +791,7 @@ pub fn info(job: &JobFile, ctx: &Ctx, detail_sheet: Option<usize>) -> Value {
         }
     }
     json!({
-        "job": job.name, "week": job.week, "changed_since_nest": job.stale, "sheet": spec_json(&job.spec),
+        "job": job.name, "week": job.week, "changed_since_nest": job.stale, "sheet": spec_json(&job.spec, &ctx.blm),
         "machine": { "name": ctx.cfg.machine().name, "output": if ctx.blm.on { "BLM LC5 (Siemens 840D set)" } else { "ISO G-code" } },
         "parts": parts, "sheets": sheets,
         "totals": { "ordered": need, "nested": placed, "sheets": job.sheets.len(), "cut_len_mm": r1(tot.0), "rapid_len_mm": r1(tot.1), "pierces": tot.2, "time_s": r1(tot.3), "method": job.method },
@@ -876,10 +891,11 @@ fn catalog() -> Value {
     })
 }
 
-/// The machine's values for a sheet's material and thickness (MTL1–MTL9):
-/// which section applies and what it gives, beside the job's own spacing.
-fn machine_tech_report(spec: &SheetSpec, job: &SheetSpec) -> (String, Value) {
+/// The machine's values for a sheet's material, thickness and gas (MTL1–MTL9,
+/// GS13): which section applies and what it gives, beside the job's own spacing.
+fn machine_tech_report(spec: &SheetSpec, job: &SheetSpec, base: &crate::blm::BlmSettings) -> (String, Value) {
     let t = crate::ct1::for_spec(spec);
+    let gas = job_gas(spec, base);
     let q1 = t.leads.quality(1);
     let opt = |v: Option<f64>| v.map_or(Value::Null, |x| json!(r1(x * 1000.0) / 1000.0));
     let section = t.applied().map(|s| {
@@ -889,7 +905,7 @@ fn machine_tech_report(spec: &SheetSpec, job: &SheetSpec) -> (String, Value) {
         })
     });
     let mat = cnc::MATERIALS.get(spec.material).copied().unwrap_or("?");
-    let mut msg = format!("{mat} {} mm: {}.", spec.thickness, t.table_label());
+    let mut msg = format!("{mat} {} mm, {}: {}.", spec.thickness, gas.label(), t.table_label());
     match (t.part_gap, t.sheet_margin()) {
         (None, None) => msg.push_str(" The machine file gives no part gap or margins."),
         (g, m) => msg.push_str(&format!(
@@ -901,7 +917,7 @@ fn machine_tech_report(spec: &SheetSpec, job: &SheetSpec) -> (String, Value) {
         )),
     }
     let data = json!({
-        "material": mat, "material_key": t.picked_for.as_ref().map(|p| p.0.clone()), "thickness": spec.thickness,
+        "material": mat, "material_key": t.picked_for.as_ref().map(|p| p.0.clone()), "thickness": spec.thickness, "gas": gas_json(&gas),
         "table": t.table_label(), "section": section, "sections_in_file": t.file.sections.len(),
         "default_rule": t.default_rule,
         "source": t.source.as_ref().map_or("built-in values".to_string(), |p| p.display().to_string()),
@@ -940,7 +956,7 @@ fn speeds_json(spec: &crate::nest::SheetSpec, t: &crate::ct1::MachineTech) -> Va
     let name = |p: &Option<std::path::PathBuf>| p.as_ref().map(|p| p.display().to_string());
     json!({
         "source": sp.label(), "time_settings": tm.settings.label(),
-        "table_file": f.table.as_ref().and_then(|t| name(&t.source)), "time_file": name(&f.time.source), "gas": f.gas,
+        "table_file": f.table.as_ref().and_then(|t| name(&t.source)), "time_file": name(&f.time.source), "gas": crate::techtable::Keys::for_spec(spec, f.gas).gas,
         "cut_mm_min_by_quality": (1..=12).map(|q| r1(sp.cut_for(q))).collect::<Vec<_>>(),
         "pierce_s_by_quality": (1..=12).map(|q| (sp.pierce_for(q) * 1000.0).round() / 1000.0).collect::<Vec<_>>(),
         "pierce_mode_by_quality": (1..=12).map(|q| sp.pierce_mode(q)).collect::<Vec<_>>(),
@@ -1180,7 +1196,7 @@ pub fn create(ctx: &Ctx, op_name: &str, default_name: &str, args: &Value) -> Res
     set_spec_fields(&mut spec, &a, ctx)?;
     let mut job = JobFile::new_job(&a.str("name").unwrap_or_else(|| default_name.to_string()), spec);
     job.week = a.str("week").unwrap_or_default();
-    let m = format!("New job '{}' — sheet {} × {} mm, {} {} mm. Add parts next.", job.name, job.spec.w, job.spec.h, cnc::MATERIALS.get(job.spec.material).copied().unwrap_or("?"), job.spec.thickness);
+    let m = format!("New job '{}' — sheet {} × {} mm, {} {} mm, {}. Add parts next.", job.name, job.spec.w, job.spec.h, cnc::MATERIALS.get(job.spec.material).copied().unwrap_or("?"), job.spec.thickness, job_gas(&job.spec, &ctx.blm).label());
     Ok((job, m))
 }
 
@@ -1250,6 +1266,9 @@ fn set_spec_fields(spec: &mut SheetSpec, a: &Args, ctx: &Ctx) -> Result<(), Stri
     }
     if let Some(v) = a.num("thickness")? {
         spec.thickness = pos("thickness", v, 0.01)?;
+    }
+    if let Some(v) = a.str("gas") {
+        spec.gas = Some(crate::gas::Gas::parse(&v)?);
     }
     if let Some(v) = a.int("level")? {
         if !(1..=5).contains(&v) {
@@ -2092,7 +2111,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             };
             let mat_change = spec.material != job.spec.material || (spec.thickness - job.spec.thickness).abs() > 1e-9;
             let nested = !job.sheets.is_empty();
-            let mut m = format!("Sheet: {} × {} mm, {} {} mm, {}, gap {} mm, margin {} mm.", spec.w, spec.h, cnc::MATERIALS.get(spec.material).copied().unwrap_or("?"), spec.thickness, spec.nest_level().name, spec.gap, spec.margin);
+            let mut m = format!("Sheet: {} × {} mm, {} {} mm, {}, {}, gap {} mm, margin {} mm.", spec.w, spec.h, cnc::MATERIALS.get(spec.material).copied().unwrap_or("?"), spec.thickness, job_gas(&spec, &ctx.blm).label(), spec.nest_level().name, spec.gap, spec.margin);
             if let Some(s) = spacing {
                 m = format!("{m} {s}");
             }
@@ -2106,6 +2125,12 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                     Some("keep") => m.push_str(" Kept the nested sheets; they're marked changed."),
                     _ => return Err(format!("{} sheet(s) are nested in the old material/thickness. Say nestings=keep or nestings=remove.", job.sheets.len())),
                 }
+            }
+            // GS14: a new gas keeps the nested sheets, unmarked; the section
+            // and the technology record are picked again. Say what changed.
+            if a.str("gas").is_some() {
+                m.push(' ');
+                m.push_str(&gas_change_note(&job.parts, &job.sheets, &job.formats, &job.manual_cuts, &job.spec, &spec, &ctx.blm));
             }
             let changed = spec.w != job.spec.w || spec.h != job.spec.h || spec.margin != job.spec.margin || spec.gap != job.spec.gap || mat_change || spec.machine != job.spec.machine;
             job.spec = spec;
@@ -2578,7 +2603,10 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                 }
                 spec.thickness = v;
             }
-            let (msg, data) = machine_tech_report(&spec, &job.spec);
+            if let Some(v) = a.str("gas") {
+                spec.gas = Some(crate::gas::Gas::parse(&v)?);
+            }
+            let (msg, data) = machine_tech_report(&spec, &job.spec, &ctx.blm);
             Ok(Outcome::read(msg, data))
         }
         "compensation" => {
