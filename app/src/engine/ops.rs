@@ -2141,11 +2141,14 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                 m.push_str(&gas_change_note(&job.parts, &job.sheets, &job.formats, &job.manual_cuts, &job.spec, &spec, &ctx.blm));
             }
             let changed = spec.w != job.spec.w || spec.h != job.spec.h || spec.margin != job.spec.margin || spec.gap != job.spec.gap || mat_change || spec.machine != job.spec.machine;
+            // The sheet as it was (the same gas, thickness … again): nothing
+            // to save, back up or undo.
+            let unchanged = spec == job.spec;
             job.spec = spec;
             if changed && !job.sheets.is_empty() {
                 job.stale = true;
             }
-            Ok(Outcome::msg(m))
+            Ok(if unchanged { Outcome::read(m, Value::Null) } else { Outcome::msg(m) })
         }
         "nest" => {
             if let Some(l) = a.int("level")? {

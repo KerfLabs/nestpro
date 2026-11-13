@@ -510,9 +510,12 @@ impl JobKeys {
         JobKeys { gas: crate::gas::section_gas(gas), ..JobKeys::new(material, thickness) }
     }
 
-    /// Nothing but material and thickness given (the default-technology rule, MTL5).
-    pub fn unset(&self) -> bool {
-        self.gas == 0 && self.torch_gas == 0 && self.numbers.iter().all(|&v| v <= NOT_GIVEN) && (self.abrasive.is_empty() || self.abrasive == "*") && self.alias.is_empty()
+    /// Nothing but material, thickness and gas given: the default-technology
+    /// rule applies (MTL5). The gas counts as not given here (GS13): our jobs
+    /// carry it without lens or power, which the original never meets (our
+    /// estimate, FEATURES MAC-69). The gas still filters the sections (MTL4).
+    pub fn only_material_thickness_gas(&self) -> bool {
+        self.torch_gas == 0 && self.numbers.iter().all(|&v| v <= NOT_GIVEN) && (self.abrasive.is_empty() || self.abrasive == "*") && self.alias.is_empty()
     }
 }
 
@@ -549,7 +552,7 @@ pub fn section_fits(s: &Section, k: &JobKeys) -> bool {
 /// a fallback: the first such one is kept while the search goes on, and a later
 /// fitting section marked default wins. None = no section fits (MTL6).
 pub fn pick_section(sections: &[Section], k: &JobKeys, default_rule: bool) -> Option<usize> {
-    let defaults = default_rule && k.unset();
+    let defaults = default_rule && k.only_material_thickness_gas();
     let mut fallback = None;
     for (i, s) in sections.iter().enumerate() {
         if !section_fits(s, k) {
@@ -998,12 +1001,32 @@ mod ct1_tests {
         for g in Gas::ALL {
             assert_eq!(any.for_job(&JobKeys::for_job("0010", 3.0, Some(g))).part_gap, Some(5.0), "{g:?}");
         }
-        // A gas given is more than material and thickness: the default-technology
-        // rule (MTL5) no longer passes over a fitting section that isn't the default.
+        // MTL5 with a gas (GS13): a job giving only material, thickness and
+        // gas still prefers, among the sections its gas fits, a later one
+        // marked default over an earlier one that isn't.
         let def = |gas: i32, on: bool, gap: f64| format!("Z000 \"##MATEXP0010##\"\nZ001 2.2\nZ002 3.2\nZ343 {gas}\nZ006 {gap}\nZ350 {}\nZ999 0\n", if on { "ON" } else { "OFF" });
-        let rule = MachineTech::from_text(&format!("A093 ON\n{}{}", def(1, false, 4.0), def(1, true, 6.0)));
-        assert_eq!(rule.for_job(&JobKeys::for_job("0010", 3.0, None)).part_gap, Some(6.0));
-        assert_eq!(rule.for_job(&JobKeys::for_job("0010", 3.0, Some(Gas::Nitrogen))).part_gap, Some(4.0));
+        let gap = |m: &MachineTech, k: JobKeys| m.for_job(&k).part_gap;
+        let job = |gas| JobKeys::for_job("0010", 3.0, gas);
+        let two = MachineTech::from_text(&format!("A093 ON\n{}{}", def(1, false, 4.0), def(1, true, 6.0)));
+        assert_eq!(gap(&two, job(Some(Gas::Nitrogen))), Some(6.0));
+        assert_eq!(gap(&two, job(None)), Some(6.0), "a job without a gas, as before");
+        // A later default-marked section without a gas wins too.
+        let any = MachineTech::from_text(&format!("A093 ON\n{}{}", def(1, false, 4.0), def(0, true, 7.0)));
+        assert_eq!(gap(&any, job(Some(Gas::Nitrogen))), Some(7.0));
+        // A default-marked section of another gas never wins: the nitrogen one is kept.
+        let other = MachineTech::from_text(&format!("A093 ON\n{}{}", def(1, false, 4.0), def(3, true, 9.0)));
+        assert_eq!(gap(&other, job(Some(Gas::Nitrogen))), Some(4.0));
+        assert_eq!(gap(&other, job(Some(Gas::Oxygen))), Some(9.0));
+        let off = MachineTech::from_text(&format!("A093 OFF\n{}{}", def(1, false, 4.0), def(1, true, 6.0)));
+        assert_eq!(gap(&off, job(Some(Gas::Nitrogen))), Some(4.0), "A093 off: the first that fits");
+        // More than material, thickness and gas given (a lens): the first that fits.
+        let lensed = |m: &MachineTech| {
+            let mut k = job(Some(Gas::Nitrogen));
+            k.numbers[0] = 5.0;
+            m.for_job(&k).section
+        };
+        let with_lens = MachineTech::from_text(&format!("A093 ON\n{}{}", def(1, false, 4.0), def(1, true, 6.0)).replace("Z343 1\n", "Z343 1\nZ342 5\n"));
+        assert_eq!(lensed(&with_lens), Some(0), "a job giving a lens takes the first that fits");
         // A section's gas off the list is shown by its number.
         assert!(MachineTech::from_text(&sec(7, 1.0)).for_job(&JobKeys::new("0010", 3.0)).table_label().ends_with("3.2 mm, gas 7"));
     }

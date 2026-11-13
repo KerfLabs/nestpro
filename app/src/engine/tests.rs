@@ -5188,10 +5188,15 @@ fn changing_the_gas_of_a_nested_job_keeps_every_sheet_and_says_what_changed() {
     let d = dir("gas_nested");
     let (mut s, _on) = gas_session(&d, true, (1, "Nitrogen"));
     let job = gas_job(&d, &mut s);
-    // Nested afresh, so nothing is marked changed since.
+    // Nested afresh on a larger sheet, so nothing is marked changed since;
+    // the first piece then turned by hand to 30° (NST-14).
+    call(&mut s, "set-sheet", None, json!({"w": 2000, "h": 1000}));
     call(&mut s, "nest", None, json!({"stock": "off"}));
-    let placed = |job: &Path| jobfile::load(job).unwrap().sheets.iter().map(|sh| sh.iter().map(|p| (p.x, p.y, p.turns)).collect::<Vec<_>>()).collect::<Vec<_>>();
+    call(&mut s, "turn", None, json!({"sheet": 1, "item": 1, "angle": 30}));
+    let placed = |job: &Path| jobfile::load(job).unwrap().sheets.iter().map(|sh| sh.iter().map(|p| (p.x, p.y, p.turns, p.spin)).collect::<Vec<_>>()).collect::<Vec<_>>();
     let before = placed(&job);
+    let (spin, turned_hand, turned_auto) = piece_leads(&job, 1);
+    assert!(spin.deg > 0.0, "{spin:?}");
     let (hand, _) = gas_leads(&mut s);
     // No question about the nestings, unlike a thickness change.
     let r = call(&mut s, "set-sheet", None, json!({"gas": "oxygen"}));
@@ -5200,8 +5205,14 @@ fn changing_the_gas_of_a_nested_job_keeps_every_sheet_and_says_what_changed() {
     assert!(m.contains(&format!("{} nested sheet(s) kept", before.len())), "{m}");
     assert!(m.contains("0010 mild steel 2.2–3.2 mm, Nitrogen (1)") && m.contains("0010 mild steel 2.2–3.2 mm, Oxygen (3)"), "{m}");
     assert!(m.contains("lead") && m.contains("time"), "{m}");
-    assert_eq!(placed(&job), before, "every sheet and part stays where it was");
+    assert_eq!(placed(&job), before, "every sheet and part stays where it was, turned as it was");
     assert_eq!(gas_leads(&mut s).0, hand, "the lead moved by hand stays");
+    // The turned piece keeps its turn and its lead moved by hand, point for
+    // point; its automatic leads follow the oxygen section.
+    let (spin_after, hand_after, auto_after) = piece_leads(&job, 1);
+    assert_eq!(spin_after, spin);
+    assert_eq!(hand_after, turned_hand, "the turned piece's lead moved by hand stays");
+    assert!(auto_after > turned_auto, "oxygen leads {auto_after} mm vs nitrogen {turned_auto} mm on the turned piece");
     let i = call(&mut s, "info", None, json!({}));
     assert_eq!(i["data"]["changed_since_nest"], false, "{i}");
     // The same gas again: nothing changes.
@@ -5210,6 +5221,51 @@ fn changing_the_gas_of_a_nested_job_keeps_every_sheet_and_says_what_changed() {
     // With a thickness change too, the nestings question still comes first.
     assert!(err(&mut s, "set-sheet", json!({"gas": "nitrogen", "thickness": 2})).contains("nestings=keep"));
     assert_eq!(info_gas(&mut s).1, 3, "a refused change changed the gas");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Sheet 1's piece `item` (from 1) as planned: its turn beyond the quarter
+/// turns, the path of its lead-in moved by hand, and its longest other lead-in, mm.
+fn piece_leads(job: &Path, item: usize) -> (crate::nest::Spin, Vec<P>, f64) {
+    let j = jobfile::load(job).unwrap();
+    let plan = j.plans().remove(0);
+    let mine: Vec<&crate::cnc::Contour> = plan.contours.iter().filter(|c| c.part_no == item).collect();
+    let hand = mine.iter().find(|c| c.lead_hand).unwrap_or_else(|| panic!("no lead moved by hand on #{item}")).lead_path.clone();
+    let auto = mine.iter().filter(|c| !c.lead_hand).map(|c| crate::leads::path_len(&c.lead_path)).fold(0.0, f64::max);
+    (j.sheets[0][item - 1].spin, hand, auto)
+}
+
+#[test]
+fn setting_the_sheet_a_job_already_has_saves_nothing_and_adds_no_undo_step() {
+    let d = dir("gas_same");
+    let job = d.join("DEMO-SAME.snjob");
+    let jp = job.to_str().unwrap();
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(jp), json!({"material": "mild steel", "thickness": 3}));
+    call(&mut s, "set-sheet", None, json!({"gas": "oxygen"}));
+    let backup = backup_path(&job);
+    let (file, kept) = (std::fs::read(&job).unwrap(), std::fs::read(&backup).unwrap());
+    // The gas it has, then the material and thickness it has: nothing to save.
+    let r = call(&mut s, "set-sheet", None, json!({"gas": "OXYGEN"}));
+    assert!(r["message"].as_str().unwrap().contains("Gas: already Oxygen (3)."), "{r}");
+    call(&mut s, "set-sheet", None, json!({"material": "mild steel", "thickness": 3}));
+    assert_eq!(std::fs::read(&job).unwrap(), file, "the job file was written");
+    assert_eq!(std::fs::read(&backup).unwrap(), kept, "the backup was replaced");
+    // No undo step either: undo takes back the last real change, oxygen.
+    call(&mut s, "undo", None, json!({}));
+    assert_eq!(info_gas(&mut s), ("Nitrogen".into(), 1, "job".into()));
+    // A job saved before jobs carried a gas: picking the gas it shows (the
+    // machine's) is a change, and the job keeps it.
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&job).unwrap()).unwrap();
+    v["spec"].as_object_mut().unwrap().remove("gas");
+    std::fs::write(&job, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+    call(&mut s, "info", Some(jp), json!({}));
+    assert_eq!(info_gas(&mut s), ("Nitrogen".into(), 1, "machine".into()));
+    let r = call(&mut s, "set-sheet", None, json!({"gas": "nitrogen"}));
+    assert!(r["message"].as_str().unwrap().contains("Gas: Nitrogen (1) (the machine's) → Nitrogen (1);"), "{r}");
+    assert_eq!(info_gas(&mut s), ("Nitrogen".into(), 1, "job".into()));
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(&job).unwrap()).unwrap();
+    assert_eq!(v["spec"]["gas"].as_u64(), Some(1));
     let _ = std::fs::remove_dir_all(&d);
 }
 

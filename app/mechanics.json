@@ -6669,8 +6669,9 @@
  {
   "name": "default-technology rule with a gas",
   "group": "gas",
-  "value": false,
-  "source": "MECHANICS GS13"
+  "value": "applies when the job gives only material, thickness and gas (among the sections its gas fits)",
+  "source": "MECHANICS GS13",
+  "estimated": true
  },
  {
   "name": "gas change keeps the nested sheets",

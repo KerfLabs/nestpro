@@ -1394,7 +1394,7 @@ pub fn pocket_points(c1: P, r1: f64, c2: P, r2: f64, r: f64, gap: f64) -> Vec<P>
     vec![[m[0] - uy * h, m[1] + ux * h], [m[0] + uy * h, m[1] - ux * h]]
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SheetSpec {
     pub w: f64,
     pub h: f64,
