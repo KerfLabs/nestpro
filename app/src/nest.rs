@@ -374,6 +374,10 @@ pub struct LeadEdit {
     /// Lead-out: (straight distance from where the lead-out leaves the
     /// contour to its end, mm; angle from the contour ahead, into the scrap).
     pub lead_out: Option<(f64, f64)>,
+    /// Set for every hole of the same shape (LE8): each one without its own
+    /// lead moved by hand is cut with this lead, at the same place on it.
+    #[serde(default)]
+    pub same: bool,
 }
 
 /// One row of the automatic cut technology list (rule CT1): the technology

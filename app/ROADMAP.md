@@ -53,7 +53,7 @@ is **`FEATURES.md`** at the top of the repo; keep both in step.
 
 | Original | Rebuild | Pri |
 |---|---|---|
-| Lead-in/outs: Automatic, Semi-automatic, Delete, 16 lead types, dynamic, custom, move point, lead-out like lead-in, bisector | Part — automatic leads from the machine's CT1 tables by contour class and quality (types 1–13, zones, corner rules, round-hole clipping, collision test; `leads.rs`, MECHANICS AL1–AL11); one lead's free end dragged by hand in the Part view (MECHANICS LE1–LE7); moving a lead's start by drag (TEC-27), types 14–16, force placement, dynamic/custom leads missing | ★★ |
+| Lead-in/outs: Automatic, Semi-automatic, Delete, 16 lead types, dynamic, custom, move point, lead-out like lead-in, bisector | Part — automatic leads from the machine's CT1 tables by contour class and quality (types 1–13, zones, corner rules, round-hole clipping, collision test; `leads.rs`, MECHANICS AL1–AL11); one lead's free end dragged by hand in the Part view, on one hole or every hole of the same shape (MECHANICS LE1–LE8); moving a lead's start by drag (TEC-27), types 14–16, force placement, dynamic/custom leads missing | ★★ |
 | Micro-joints: Automatic, Semi-auto, 6 types, corner lead-in, nano-joints, move point, to geometry | Part — Lantek's automatic count (ceil P/F150, size-class min/max, even), holes too, centred on elements, corner joints straddle corners, joint leads (`joints.rs`, MECHANICS AM1–AM6); lead and joint tables per material × thickness section of the machine file (MTL7); per-class V records, zone modes, nano-joints missing | ★ |
 | Loops (2 types), Round angles | Part — loops | ★ |
 | **Bridges** (join parts so they cut as one) | Missing | ★★ |

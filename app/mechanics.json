@@ -6428,6 +6428,24 @@
   "source": "MECHANICS LE7"
  },
  {
+  "name": "All the same contours for hand-moved leads, on by default",
+  "group": "leads",
+  "value": false,
+  "source": "MECHANICS LE8"
+ },
+ {
+  "name": "hand-moved lead shared by holes of one shape: places it takes of the 16",
+  "group": "leads",
+  "value": 1,
+  "source": "MECHANICS LE8"
+ },
+ {
+  "name": "hand-moved lead shared with turned or mirrored holes",
+  "group": "leads",
+  "value": false,
+  "source": "MECHANICS LE8"
+ },
+ {
   "name": "area unit with inches",
   "group": "units",
   "value": "ft²",
