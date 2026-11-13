@@ -171,6 +171,28 @@ pub fn with_alpha(c: Color32, a: u8) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a)
 }
 
+/// A selection window while it is dragged (SW4), as CAD programs draw it: a
+/// window (dragged to the right, takes what is wholly inside) with a solid
+/// light indigo edge, a crossing window (to the left, takes what it touches)
+/// with a dashed green edge. The drawing canvas is dark in both themes, so
+/// both take the dark theme's bright colours.
+pub fn paint_select_window(painter: &egui::Painter, r: Rect, take: crate::engine::selection::Take) {
+    use crate::engine::selection::Take;
+    let col = match take {
+        Take::Inside => crate::theme::DARK.accent_fg,
+        Take::Touching => crate::theme::DARK.ok_fg,
+    };
+    painter.rect_filled(r, CornerRadius::ZERO, with_alpha(col, 28));
+    let ring = [r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom(), r.left_top()];
+    let edge = Stroke::new(1.5, col);
+    match take {
+        Take::Inside => {
+            painter.add(EShape::line(ring.to_vec(), edge));
+        }
+        Take::Touching => painter.extend(EShape::dashed_line(&ring, edge, 6.0, 4.0)),
+    }
+}
+
 /// Draw a part's geometry with a mapping from part coordinates to the screen.
 pub fn paint_part(painter: &egui::Painter, part: &Part, map: impl Fn(P) -> Pos2, fill: Color32, edge: Stroke, hole: Color32) {
     paint_part_ex(painter, part, map, fill, edge, hole, true);
@@ -2972,7 +2994,7 @@ mod selection_halo_tests {
     #[test]
     fn a_disc_glows_in_a_circle_not_a_square() {
         let disc = part(Shape::Disc, 100.0, 100.0);
-        let pl = Placed { part: 0, x: 200.0, y: 50.0, w: 100.0, h: 100.0, turns: 0, mirror: false };
+        let pl = Placed { part: 0, x: 200.0, y: 50.0, w: 100.0, h: 100.0, turns: 0, mirror: false, spin: Default::default() };
         for ring in rings(&disc, &pl) {
             for q in ring {
                 assert!(((q - Pos2::new(250.0, 100.0)).length() - 50.0).abs() < 0.5, "{q:?} is off the disc's edge");
@@ -2987,7 +3009,7 @@ mod selection_halo_tests {
         // 100 × 60, legs 24 thick, turned a quarter: a 60 × 100 footprint
         // with the notch at the bottom left.
         let l = part(Shape::LBracket, 100.0, 60.0);
-        let pl = Placed { part: 0, x: 0.0, y: 0.0, w: 60.0, h: 100.0, turns: 1, mirror: false };
+        let pl = Placed { part: 0, x: 0.0, y: 0.0, w: 60.0, h: 100.0, turns: 1, mirror: false, spin: Default::default() };
         let near = |ring: &[Pos2], p: Pos2| ring.iter().any(|&q| (q - p).length() < 0.01);
         for ring in rings(&l, &pl) {
             assert_eq!(ring.len(), 6, "an L has six corners");

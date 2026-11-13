@@ -218,7 +218,9 @@ pub struct App {
     pub turn_text: String,
     pub turn_custom: f64,
     pub turn_focus: bool,
-    /// A selection window being drawn on the sheet: corners (mm) and whether it adds.
+    /// A selection window being drawn on the sheet: where the drag started and
+    /// where it is now (mm; the direction says what it takes, SW1), and
+    /// whether it adds to the selection.
     pub window_sel: Option<(P, P, bool)>,
     /// The movement value window (Ctrl+R) is open.
     pub step_popup: bool,
@@ -3464,6 +3466,17 @@ fn main() -> eframe::Result {
                 }
                 app.refresh();
             }
+            // --window="x,y;x,y" (screenshots): a selection window on sheet 1
+            // being dragged from the first corner to the second, sheet mm, with
+            // the parts it takes selected (HM7, SW1).
+            if let Some(w) = args.iter().find_map(|a| a.strip_prefix("--window=")) {
+                let c: Vec<P> = w.split(';').filter_map(|q| q.split_once(',')).filter_map(|(x, y)| Some([x.trim().parse().ok()?, y.trim().parse().ok()?])).collect();
+                if let (2, Some(sheet)) = (c.len(), app.result.sheets.first()) {
+                    let sel = engine::arrange::window_select(&app.parts, sheet, &engine::selection::Window::dragged(c[0], c[1]));
+                    app.set_selection(sel);
+                    app.window_sel = Some((c[0], c[1], false));
+                }
+            }
             if want_radial {
                 // The Part view's ring, or on the sheet the part ring with a
                 // selection (--select=…) and the sheet ring without.
@@ -3616,7 +3629,7 @@ fn main() -> eframe::Result {
                     app.order_click(i, q, 1.0);
                 }
                 if let Some(q) = boxed.as_deref().map(pts).filter(|q| q.len() == 2) {
-                    app.order_box(i, q[0], q[1]);
+                    app.order_box(i, &crate::engine::selection::Window::dragged(q[0], q[1]));
                 }
                 let sweeps: Vec<Vec<[f64; 2]>> = sweep.as_deref().map_or(vec![], |s| s.split('|').map(pts).collect());
                 for (k, q) in sweeps.iter().enumerate() {

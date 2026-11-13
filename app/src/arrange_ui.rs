@@ -5,6 +5,7 @@
 //! `engine::arrange`; MECHANICS.md "Moving parts by hand" (HM1–HM12).
 
 use crate::engine::arrange::{self, Dir};
+use crate::engine::selection::{Take, Window};
 use crate::nest::{self, Placed, P};
 use crate::theme::th;
 use crate::App;
@@ -350,7 +351,9 @@ impl App {
                     self.start_drag(i, w, mods.command);
                     self.panning = false;
                 } else {
-                    // Empty sheet: a selection window (HM7).
+                    // Empty sheet: a selection window (HM7), from where the
+                    // button went down; which way it is dragged says what it
+                    // takes (SW1).
                     self.window_sel = Some((w, w, mods.shift || mods.command));
                     self.panning = false;
                 }
@@ -373,7 +376,10 @@ impl App {
             self.cut_drag_end();
             self.end_drag();
             if let Some((a, b, add)) = self.window_sel.take() {
-                let mut v = arrange::window_select(&self.result.sheets[si], a, b);
+                // Where the button came up, which says the direction (SW1).
+                let b = resp.interact_pointer_pos().map(to_w).unwrap_or(b);
+                let win = Window::dragged(a, b);
+                let mut v = arrange::window_select(&self.parts, &self.result.sheets[si], &win);
                 if add {
                     let mut cur = self.selection();
                     cur.retain(|i| !v.contains(i));
@@ -381,7 +387,11 @@ impl App {
                 }
                 let n = v.len();
                 self.set_selection(v);
-                self.status = if n == 0 { "No part lies wholly inside the window.".into() } else { format!("{n} part(s) selected — Alt+arrows move them by the step, Ctrl+arrows slide them to the next part.") };
+                self.status = match (n, win.take) {
+                    (0, Take::Inside) => "No part lies wholly inside the window — drag to the left to take the parts it touches.".into(),
+                    (0, Take::Touching) => "The window touches no part.".into(),
+                    _ => format!("{n} part(s) selected — Alt+arrows move them by the step, Ctrl+arrows slide them to the next part."),
+                };
             }
             self.panning = false;
         }
@@ -628,9 +638,7 @@ impl App {
             }
         }
         if let Some((a, b, _)) = self.window_sel {
-            let r = Rect::from_two_pos(to_s(a), to_s(b));
-            painter.rect_filled(r, CornerRadius::ZERO, th().accent.gamma_multiply(0.12));
-            painter.rect_stroke(r, CornerRadius::ZERO, Stroke::new(1.0, th().accent), egui::StrokeKind::Middle);
+            crate::ui_parts::paint_select_window(painter, Rect::from_two_pos(to_s(a), to_s(b)), Take::of_drag(a[0], b[0]));
         }
     }
 

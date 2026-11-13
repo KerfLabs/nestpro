@@ -10,6 +10,7 @@ use crate::cutpanel::{self, Gesture};
 use crate::dxf::{self, Contour, ContourState};
 use crate::engine::contours;
 use crate::engine::cutorder::{self, Command};
+use crate::engine::selection::Window;
 use crate::nest::{CutQuality, Part, P};
 use crate::qualities::CutQualities;
 use crate::theme::th;
@@ -63,13 +64,14 @@ impl Gathered {
     }
 }
 
-/// The contours a box from `a` to `b` (part mm) adds (CO12): the cut and
-/// marked ones wholly inside it, in the order `shown` (the part's cut order
+/// The contours a box `w` (part mm) adds (CO12, SW2): the cut and marked
+/// ones wholly inside it, or with a crossing window (dragged to the left)
+/// those it touches, in the order `shown` (the part's cut order
 /// as the part screen numbers it, `cutorder::order`: the automatic part with
 /// its holes in the machine's hole order, CO14); those already ordered by
 /// hand (`ordered`) are skipped, named in number order.
-pub fn box_picks(list: &[Contour], shown: &[usize], a: P, b: P, ordered: &[usize]) -> Gathered {
-    let inside = cutpanel::contours_in_box(&drawn(list), a, b);
+pub fn box_picks(list: &[Contour], shown: &[usize], w: &Window, ordered: &[usize]) -> Gathered {
+    let inside = cutpanel::contours_in_window(&drawn(list), w);
     let (mut already, add): (Vec<usize>, Vec<usize>) = shown.iter().copied().filter(|k| inside.contains(k)).partition(|k| ordered.contains(k));
     already.sort_unstable();
     Gathered { add, already }
@@ -420,15 +422,15 @@ impl App {
         self.cut_order(part, &Command::Contours(vec![k]))
     }
 
-    /// A box from `a` to `b` (part mm) on part `part` while picking (CO12):
-    /// the contours wholly inside it go in, in the automatic order among
-    /// themselves. True when the order changed.
-    pub fn order_box(&mut self, part: usize, a: P, b: P) -> bool {
+    /// A box `w` (part mm) on part `part` while picking (CO12, SW1): the
+    /// contours it takes go in, in the automatic order among themselves.
+    /// True when the order changed.
+    pub fn order_box(&mut self, part: usize, w: &Window) -> bool {
         let Some(p) = self.parts.get(part) else { return false };
         let shown: Vec<usize> = cutorder::order(p).into_iter().map(|o| o.0).collect();
-        let got = box_picks(&contours::list(p), &shown, a, b, &cutorder::hand(p));
+        let got = box_picks(&contours::list(p), &shown, w, &cutorder::hand(p));
         if got.is_empty() {
-            self.status = "No cut or marked contour lies wholly inside the box.".into();
+            self.status = cutpanel::none_in_window(w.take, "cut or marked contour");
             return false;
         }
         self.cut_order(part, &got.command())
@@ -522,8 +524,8 @@ impl App {
                 Gesture::SweepEnd => {
                     self.order_sweep_end();
                 }
-                Gesture::Box(a, b) => {
-                    self.order_box(idx, a, b);
+                Gesture::Box(w) => {
+                    self.order_box(idx, &w);
                 }
             }
         }
@@ -636,11 +638,12 @@ mod tests {
         // With no order set by hand and the holes as drawn (Order mode of
         // the holes None, CO14), the automatic order is by number.
         let auto = cutorder::automatic(&list);
-        let all = box_picks(&list, &auto, [-5.0, -5.0], [330.0, 170.0], &[]);
+        let all = box_picks(&list, &auto, &Window::dragged([-5.0, -5.0], [330.0, 170.0]), &[]);
         assert_eq!(all.add, [vec![MARK], holes_in_order.clone(), vec![OUTLINE]].concat());
-        // Drawn from the other corner, the same; with two holes already
-        // ordered by hand, those are skipped and named.
-        let some = box_picks(&list, &auto, [330.0, 170.0], [-5.0, -5.0], &[h.top_right, h.big]);
+        // Drawn from the other corner (a crossing window round all of it),
+        // the same; with two holes already ordered by hand, those are
+        // skipped and named.
+        let some = box_picks(&list, &auto, &Window::dragged([330.0, 170.0], [-5.0, -5.0]), &[h.top_right, h.big]);
         let mut rest: Vec<usize> = holes_in_order.iter().copied().filter(|&k| k != h.top_right && k != h.big).collect();
         rest.sort_unstable();
         assert_eq!(some.add, [vec![MARK], rest, vec![OUTLINE]].concat());
@@ -648,7 +651,10 @@ mod tests {
         // Round the four small holes only.
         let mut four = vec![h.low_left, h.low_right, h.top_left, h.top_right];
         four.sort_unstable();
-        assert_eq!(box_picks(&list, &auto, [235.0, 15.0], [305.0, 145.0], &[]).add, four);
+        assert_eq!(box_picks(&list, &auto, &Window::dragged([235.0, 15.0], [305.0, 145.0]), &[]).add, four);
+        // A box reaching past the plate's right edge, dragged to the left:
+        // the outline it crosses too, last.
+        assert_eq!(box_picks(&list, &auto, &Window::dragged([330.0, 145.0], [235.0, 15.0]), &[]).add, [four, vec![OUTLINE]].concat());
     }
 
     #[test]
@@ -719,7 +725,7 @@ mod tests {
         by_number.sort_unstable();
         assert_ne!(nearest, by_number, "nearest-first differs from the number order here");
         a.order_pick_start();
-        assert!(a.order_box(0, [-5.0, -5.0], [330.0, 170.0]));
+        assert!(a.order_box(0, &Window::dragged([-5.0, -5.0], [330.0, 170.0])));
         assert_eq!(by_hand(&a), before);
     }
 
@@ -738,7 +744,7 @@ mod tests {
         assert_eq!(by_hand(&a), [h.low_right], "nothing changes until the button is let go");
         assert!(a.order_sweep_end());
         assert_eq!(by_hand(&a), [h.low_right, h.low_left, h.top_left]);
-        assert!(a.order_box(0, [280.0, 110.0], [300.0, 140.0]));
+        assert!(a.order_box(0, &Window::dragged([280.0, 110.0], [300.0, 140.0])));
         assert_eq!(by_hand(&a), [h.low_right, h.low_left, h.top_left, h.top_right]);
         // All Marks and All Cut add the rest, the outline last.
         assert!(a.cut_order(0, &Command::AllMarks));
@@ -765,9 +771,11 @@ mod tests {
         // Open space: nothing, and the status line keeps the hint.
         assert!(!a.order_click(0, [150.0, 120.0], 1.0));
         assert_eq!(a.status, status);
-        // A box with nothing in it says so.
-        assert!(!a.order_box(0, [140.0, 100.0], [160.0, 130.0]));
-        assert!(a.status.contains("No cut or marked contour"), "{}", a.status);
+        // A box with nothing in it says so, and which way to drag instead.
+        assert!(!a.order_box(0, &Window::dragged([140.0, 100.0], [160.0, 130.0])));
+        assert!(a.status.contains("No cut or marked contour") && a.status.contains("drag to the left"), "{}", a.status);
+        assert!(!a.order_box(0, &Window::dragged([160.0, 130.0], [140.0, 100.0])));
+        assert_eq!(a.status, "The box touches no cut or marked contour.");
         // The same hole twice: the second time it is already in the order.
         assert!(a.order_click(0, [290.0, 41.4], 1.0));
         assert!(!a.order_click(0, [290.0, 41.4], 1.0));
@@ -906,7 +914,7 @@ mod tests {
         a.order_sweep_start(0, [244.0, 35.0], 1.0);
         a.order_sweep_to([244.0, 125.0], 1.0);
         a.order_sweep_end();
-        a.order_box(0, [40.0, 50.0], [100.0, 110.0]);
+        a.order_box(0, &Window::dragged([40.0, 50.0], [100.0, 110.0]));
         a.cut_order(0, &Command::AllMarks);
         // The agent, the same commands by number.
         for args in [json!({"mode": "add", "contours": "5"}), json!({"mode": "add", "contours": "2, 3"}), json!({"mode": "add", "contours": "1"}), json!({"mode": "all-marks"})] {

@@ -17,6 +17,7 @@ pub mod ops;
 pub mod readback;
 pub mod refresh;
 pub mod render;
+pub mod selection;
 pub mod session;
 pub mod sheetpick;
 pub mod stockflow;
