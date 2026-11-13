@@ -108,23 +108,29 @@ const SAME_TOL: f64 = dxf::JOIN_TOL;
 /// 0.01 mm, run either way and, closed, from any point. A turned or mirrored
 /// copy is not the same.
 pub fn same_shape(a: &Contour, b: &Contour) -> bool {
-    let n = a.pts.len();
-    if a.closed != b.closed || n != b.pts.len() || n == 0 {
+    a.closed == b.closed && same_points(&a.pts, &b.pts, a.closed)
+}
+
+/// Whether two runs of points, both closed or both open, are the same shape
+/// in another place (CS5): see `same_shape`.
+pub fn same_points(a: &[P], b: &[P], closed: bool) -> bool {
+    let n = a.len();
+    if n != b.len() || n == 0 {
         return false;
     }
-    let (ba, bb) = (crate::nest::bbox_of(&a.pts), crate::nest::bbox_of(&b.pts));
+    let (ba, bb) = (crate::nest::bbox_of(a), crate::nest::bbox_of(b));
     if ((ba[2] - ba[0]) - (bb[2] - bb[0])).abs() > SAME_TOL || ((ba[3] - ba[1]) - (bb[3] - bb[1])).abs() > SAME_TOL {
         return false;
     }
-    let pa: Vec<P> = a.pts.iter().map(|p| [p[0] - ba[0], p[1] - ba[1]]).collect();
-    let pb: Vec<P> = b.pts.iter().map(|p| [p[0] - bb[0], p[1] - bb[1]]).collect();
+    let pa: Vec<P> = a.iter().map(|p| [p[0] - ba[0], p[1] - ba[1]]).collect();
+    let pb: Vec<P> = b.iter().map(|p| [p[0] - bb[0], p[1] - bb[1]]).collect();
     let near = |p: P, q: P| (p[0] - q[0]).abs() <= SAME_TOL && (p[1] - q[1]).abs() <= SAME_TOL;
     // Each way round, from each point of `b` that lies on `a`'s first point.
-    let starts: Vec<usize> = if a.closed { (0..n).filter(|&j| near(pa[0], pb[j])).collect() } else { vec![0, n - 1] };
+    let starts: Vec<usize> = if closed { (0..n).filter(|&j| near(pa[0], pb[j])).collect() } else { vec![0, n - 1] };
     starts.into_iter().any(|j| {
-        let fwd = |i: usize| if a.closed { pb[(j + i) % n] } else if j == 0 { pb[i] } else { pb[n - 1 - i] };
+        let fwd = |i: usize| if closed { pb[(j + i) % n] } else if j == 0 { pb[i] } else { pb[n - 1 - i] };
         let back = |i: usize| pb[(j + n - i) % n];
-        (0..n).all(|i| near(pa[i], fwd(i))) || (a.closed && (0..n).all(|i| near(pa[i], back(i))))
+        (0..n).all(|i| near(pa[i], fwd(i))) || (closed && (0..n).all(|i| near(pa[i], back(i))))
     })
 }
 
@@ -227,6 +233,7 @@ pub fn set_state(part: &mut Part, picks: &[usize], state: ContourState, same: bo
         }
     }
     let after = dxf::cut_order(&list);
+    let pts: Vec<Vec<P>> = list.iter().map(|c| c.pts.clone()).collect();
     store(part, list);
     super::cutorder::forget(part, &moved);
     let cut_moved: Vec<Option<usize>> = before.iter().map(|c| after.iter().position(|a| a == c)).collect();
@@ -238,9 +245,27 @@ pub fn set_state(part: &mut Part, picks: &[usize], state: ContourState, same: bo
         };
         t.starts.iter_mut().for_each(follow);
         t.joint_picks.iter_mut().for_each(follow);
-        // So does a lead moved by hand (LE1).
+        // So does a lead moved by hand (LE1). One shared by the holes of its
+        // shape (LE8) whose own contour is no longer cut stays on the others:
+        // on the first of them still cut without a lead or start of its own.
+        let mut lost = vec![];
         for e in t.lead_edits.iter_mut() {
-            *e = e.and_then(|x| cut_moved.get(x.contour as usize).copied().flatten().map(|n| crate::nest::LeadEdit { contour: n as u8, ..x }));
+            *e = e.and_then(|x| match cut_moved.get(x.contour as usize).copied().flatten() {
+                Some(n) => Some(crate::nest::LeadEdit { contour: n as u8, ..x }),
+                None => {
+                    lost.extend(Some(x).filter(|x| x.same));
+                    None
+                }
+            });
+        }
+        for x in lost {
+            let Some(&k) = before.get(x.contour as usize) else { continue };
+            let free = |n: usize| !t.lead_edits.iter().flatten().any(|e| e.contour as usize == n) && !t.starts.iter().flatten().any(|s| s.0 as usize == n);
+            let holes = &after[..after.len().saturating_sub(1)];
+            let heir = holes.iter().enumerate().filter(|&(n, _)| free(n)).find_map(|(n, &j)| super::moved_onto(&x, &pts[k], &pts[j], n));
+            if let (Some(h), Some(slot)) = (heir, t.lead_edits.iter_mut().find(|s| s.is_none())) {
+                *slot = Some(h);
+            }
         }
     }
     Ok(StateChange { contours: chosen, cut_changed: before != after, cut_moved })

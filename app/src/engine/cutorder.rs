@@ -106,10 +106,11 @@ pub fn order_with(part: &Part, holes: &HoleOrder) -> Vec<(usize, bool)> {
 
 /// Where cut contour `ci` (holes first, the outline last, as the sheet
 /// numbers them) starts when that is set on the part by hand: a lead moved
-/// by hand, else a start picked on an element. Part coordinates.
+/// by hand (its own, or one shared by the holes of its shape, LE8), else a
+/// start picked on an element. Part coordinates.
 pub fn hand_start(part: &Part, ci: usize) -> Option<P> {
     let tech = part.tech.as_ref()?;
-    tech.lead_edit(ci).map(|e| e.at).or_else(|| tech.starts.iter().flatten().find(|s| s.0 as usize == ci).map(|s| s.1))
+    super::hand_lead(part, ci).map(|(e, _)| e.at).or_else(|| tech.starts.iter().flatten().find(|s| s.0 as usize == ci).map(|s| s.1))
 }
 
 /// The box of a contour: [x0, y0, x1, y1].

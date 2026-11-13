@@ -41,6 +41,9 @@ pub const PART_VIEW_PAUSE_S: f64 = 0.4;
 /// Colour of the beam's centre path under system compensation.
 pub const KERF_PATH: Color32 = Color32::from_rgb(56, 220, 230);
 
+/// The Part view's technology card (top left), screen px.
+const INFO_CARD: Vec2 = Vec2::new(400.0, 101.0);
+
 pub fn wheel_factor(scroll: f32) -> f32 {
     (scroll * WHEEL_ZOOM).exp()
 }
@@ -626,6 +629,9 @@ impl App {
         // A lead end dragged (contour, end, pointer) or double-clicked (contour) (LE2, LE6).
         let mut lead_drag: Option<(usize, crate::engine::LeadEnd, P)> = None;
         let mut lead_reset: Option<usize> = None;
+        // A lead end let go (contour), and the leads shared by the holes of a shape (LE8).
+        let mut lead_drop: Option<usize> = None;
+        let shared_leads = crate::engine::hand_leads(&self.parts[idx]);
         let lead_out_col = Color32::from_rgb(129, 140, 248);
         let pierce_col = Color32::from_rgb(248, 80, 90);
         let punch_col = Color32::from_rgb(255, 140, 60);
@@ -736,13 +742,31 @@ impl App {
                     if end == LeadEnd::Out || !self.dv.machining {
                         painter.circle_filled(h, 2.5, col);
                     }
+                    // LE8: a lead shared by every hole of this shape.
+                    let shared = shared_leads.get(c.contour).copied().flatten().is_some_and(|e| e.same);
                     let tip = format!(
-                        "{} {} at {ang:.0}° from the contour{}.\nDrag to swing or stretch this {}{}.",
+                        "{} {} at {ang:.0}° from the contour{}.\nDrag to swing or stretch this {}{}.{}",
                         if end == LeadEnd::In { "Lead-in" } else { "Lead-out" },
                         u.len(len, 1),
-                        if ends.hand { " (moved by hand)" } else { "" },
+                        if shared {
+                            " (moved by hand, on every hole of this shape)"
+                        } else if ends.hand {
+                            " (moved by hand)"
+                        } else {
+                            ""
+                        },
                         end.label(),
-                        if ends.hand { "; double-click to put it back" } else { "" }
+                        if shared {
+                            "; double-click to put it back on all of them"
+                        } else if ends.hand {
+                            "; double-click to put it back"
+                        } else {
+                            ""
+                        },
+                        match (shared, self.lead_same) {
+                            (true, false) => "\nAll the same contours is off: a drag gives this hole a lead of its own.",
+                            _ => "",
+                        }
                     );
                     let hr = ui.interact(Rect::from_center_size(h, Vec2::splat(14.0)), ui.scope_id().with(("lead_end", c.contour, end == LeadEnd::In)), Sense::click_and_drag()).on_hover_text(tip);
                     if hr.hovered() || hr.dragged() {
@@ -752,6 +776,10 @@ impl App {
                     if hr.drag_started() {
                         self.checkpoint();
                         self.part_ext_lock = Some((idx, ext));
+                        self.lead_offer = None;
+                    }
+                    if hr.drag_stopped() {
+                        lead_drop = Some(c.contour);
                     }
                     if let (true, Some(pp)) = (hr.dragged(), hr.interact_pointer_pos()) {
                         lead_drag = Some((c.contour, end, to_w(pp)));
@@ -867,7 +895,7 @@ impl App {
                 if plan.kerf_issues.is_empty() { String::new() } else { format!("  ·  {} contour(s) not fully cut", plan.kerf_issues.len()) }
             ),
         ];
-        let card = Rect::from_min_size(rect.left_top() + Vec2::new(12.0, 12.0), Vec2::new(400.0, 101.0));
+        let card = Rect::from_min_size(rect.left_top() + Vec2::new(12.0, 12.0), INFO_CARD);
         if self.dv.info {
             painter.rect_filled(card, CornerRadius::same(10), th().overlay);
         }
@@ -894,23 +922,37 @@ impl App {
         // A lead end was dragged: that contour's lead takes it (LE2).
         if let Some((ci, end, p)) = lead_drag {
             let u = self.unit();
-            self.status = match crate::engine::drag_lead_end(&mut self.parts, idx, &self.spec, ci, end, p, u) {
+            self.status = match crate::engine::drag_lead_end(&mut self.parts, idx, &self.spec, ci, end, p, self.lead_same, u) {
                 Ok(m) => format!("{m} Double-click its end to put it back."),
                 Err(e) => e,
             };
             self.refresh();
         }
+        // A lead let go on one hole alone: offer it to the holes of its shape (LE8).
+        if let Some(ci) = lead_drop.filter(|_| !self.lead_same) {
+            let n = crate::engine::same_holes(&self.parts[idx], ci).len();
+            self.lead_offer = (n > 0 && lead_alone(&self.parts[idx], ci)).then_some((idx, ci, n));
+        }
         if let Some(ci) = lead_reset {
             let no = crate::engine::contour_number(&self.parts[idx], ci);
-            if self.parts[idx].tech.is_some_and(|t| t.lead_edit(ci).is_some()) {
+            // Tried on a copy first, so a double-click that changes nothing leaves no undo step.
+            let mut part = self.parts[idx].clone();
+            let n = crate::engine::reset_lead_edits(&mut part, Some(ci), self.lead_same);
+            if n > 0 {
                 self.checkpoint();
-                crate::engine::reset_lead_edits(&mut self.parts[idx], Some(ci));
+                self.parts[idx] = part;
                 self.refresh();
-                self.status = format!("Contour {no}'s lead is back where the technology puts it.");
+                let follows = crate::engine::hand_lead(&self.parts[idx], ci).map(|(_, k)| crate::engine::contour_number(&self.parts[idx], k));
+                self.status = match (follows, n) {
+                    (Some(k), _) => format!("Contour {no}'s lead is back to the one the holes of its shape share (set on contour {k})."),
+                    (None, 1) => format!("Contour {no}'s lead is back where the technology puts it."),
+                    (None, n) => format!("Contour {no}'s lead and {} more of the same shape are back where the technology puts them.", n - 1),
+                };
             } else {
                 self.status = format!("Contour {no}'s lead wasn't moved by hand — drag its end to move it.");
             }
         }
+        self.lead_same_overlay(ui, rect, idx, painting);
         // A joint lead was dragged: all joints of the part take the new lead.
         if let Some((len, ang)) = joint_edit {
             // The lead's distance off the contour is what the joint record keeps (D, AM6).
@@ -1010,6 +1052,64 @@ impl App {
         p.galley(Pos2::new(hint.left() + 10.0, hint.center().y - g.size().y / 2.0), g, Color32::WHITE);
     }
 
+    /// All the same contours for leads (LE8), top left of the Part view (under
+    /// the technology card) when two or more of the part's holes are the same
+    /// shape, and under it the offer to put a lead just moved on one of them
+    /// on the others.
+    fn lead_same_overlay(&mut self, ui: &mut egui::Ui, rect: Rect, idx: usize, painting: bool) {
+        let card = |ui: &mut egui::Ui, add: &mut dyn FnMut(&mut egui::Ui)| {
+            egui::Frame::new()
+                .fill(th().overlay)
+                .stroke(Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 40)))
+                .corner_radius(CornerRadius::same(10))
+                .inner_margin(egui::Margin::symmetric(10, 5))
+                .show(ui, |ui| ui.horizontal(|ui| add(ui)));
+        };
+        // Below the technology card (INFO_CARD) when it is shown.
+        let mut at = rect.left_top() + Vec2::new(12.0, if self.dv.info { 12.0 + INFO_CARD.y + 8.0 } else { 12.0 });
+        if !painting && crate::engine::has_same_holes(&self.parts[idx]) {
+            let shown = egui::Area::new(egui::Id::unique("lead_same_chip")).order(egui::Order::Foreground).fixed_pos(at).show(ui.ctx(), |ui| {
+                card(ui, &mut |ui| {
+                    let r = ui.checkbox(&mut self.lead_same, RichText::new("All the same contours").color(Color32::WHITE)).on_hover_text(
+                        "Leads moved by hand: dragging the end of a hole's lead moves the lead on every hole of the same shape (moved, not turned or mirrored), at the same place on each; double-clicking puts all of them back. Off: only the hole you drag.",
+                    );
+                    if r.changed() {
+                        self.lead_offer = None;
+                    }
+                });
+            });
+            at.y = shown.response.rect.bottom() + 6.0;
+        }
+        let Some((pi, ci, n)) = self.lead_offer else { return };
+        // Gone once the lead is (undo, put back, shared) or another part is shown.
+        if pi != idx || painting || !lead_alone(&self.parts[idx], ci) {
+            self.lead_offer = None;
+            return;
+        }
+        let no = crate::engine::contour_number(&self.parts[idx], ci);
+        let (mut apply, mut close) = (false, false);
+        egui::Area::new(egui::Id::unique("lead_offer")).order(egui::Order::Foreground).fixed_pos(at).show(ui.ctx(), |ui| {
+            card(ui, &mut |ui| {
+                let holes = if n == 1 { "1 other hole".to_string() } else { format!("{n} other holes") };
+                ui.label(RichText::new(format!("Contour {no}'s lead moved · {holes} like this one")).color(Color32::WHITE));
+                let b = egui::Button::new(RichText::new("Apply to them").color(Color32::WHITE).strong()).fill(th().accent);
+                apply = ui.add(b).on_hover_text(format!("Put this lead on the {holes} of the same shape too, at the same place on each (Ctrl+Z takes it back)")).clicked();
+                close = ui.add(egui::Button::new(RichText::new("✖").color(Color32::from_rgb(200, 205, 220))).frame(false)).on_hover_text("Keep it on this hole only").clicked();
+            });
+        });
+        if apply {
+            self.checkpoint();
+            self.status = match crate::engine::lead_to_same(&mut self.parts[idx], ci) {
+                Ok(m) => m,
+                Err(e) => e,
+            };
+            self.refresh();
+        }
+        if apply || close {
+            self.lead_offer = None;
+        }
+    }
+
     /// Status line: the original's product format plus the position in the set.
     pub fn part_status_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
@@ -1034,7 +1134,13 @@ impl App {
                 ui.label(RichText::new(mt.applied().map_or("Machine table: global".to_string(), |s| format!("Machine table {}", s.label()))).color(th().text_dim)).on_hover_text(mt.table_label());
             }
             ui.add_space(12.0);
-            ui.label(RichText::new(&self.status).color(th().text_dim));
+            // Leave room for the pointer's X / Y on the right; a longer message
+            // is cut short and shows whole on hover.
+            let room = (ui.available_width() - 260.0).max(80.0);
+            ui.scope(|ui| {
+                ui.set_max_width(room);
+                ui.add(egui::Label::new(RichText::new(&self.status).color(th().text_dim)).truncate());
+            });
             let u = self.cfg.nesting.units;
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(u.suffix());
@@ -1049,6 +1155,12 @@ impl App {
 }
 
 /// Circle through three points: (centre, radius).
+/// Whether cut contour `ci` has a lead moved by hand of its own that the
+/// holes of its shape don't share (LE8): what *Apply to them* is offered for.
+fn lead_alone(part: &crate::nest::Part, ci: usize) -> bool {
+    crate::engine::hand_lead(part, ci).is_some_and(|(e, k)| k == ci && !e.same)
+}
+
 pub fn circle_through(a: P, b: P, c: P) -> Option<(P, f64)> {
     let d = 2.0 * (a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1]));
     if d.abs() < 1e-9 {

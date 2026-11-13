@@ -1054,6 +1054,9 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
     let mut mark_done: Vec<Vec<bool>> = placed.iter().map(|pl| vec![false; parts[pl.part].custom.as_ref().map_or(0, |g| g.marks.len())]).collect();
     // Each part's qualities set by hand, by cut contour (CQ6).
     let hand: Vec<Vec<Option<CutQuality>>> = parts.iter().map(Part::cut_qualities).collect();
+    // Each placed part's leads moved by hand, by cut contour: its own, or one
+    // shared by the holes of its shape (LE1, LE8).
+    let hand_leads = by_part(parts, placed, crate::engine::hand_leads);
     for (i, ci, man) in jobs {
         let pl = &placed[i];
         let part = &parts[pl.part];
@@ -1111,7 +1114,7 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
             // A manual pick sets the start and direction; then a lead moved by
             // hand (LE4); then a lead-in picked on an element; otherwise the
             // automatic placement by contour class.
-            let edit = tech.lead_edit(ci).filter(|_| man.is_none());
+            let edit = hand_leads[pl.part].get(ci).copied().flatten().filter(|_| man.is_none());
             let picked = tech.starts.iter().flatten().find(|s| s.0 as usize == ci).map(|s| pl.map(s.1)).filter(|_| edit.is_none());
             let (class, circle) = crate::leads::classify(&pts, inner);
             let recs = lead_recs(&tech, &lq);
@@ -2462,7 +2465,7 @@ mod hand_lead_tests {
     fn a_lead_moved_by_hand_keeps_its_start_and_lean_when_the_part_is_turned_or_mirrored() {
         // Plate with a hole: contour 0 the hole, 1 the outline. The outline's
         // lead-in swung round its bottom-left corner to −45° (LE1, LE2).
-        let e = LeadEdit { contour: 1, at: [0.0, 0.0], rec: 3, lead_in: Some((10.0, -45.0)), lead_out: None };
+        let e = LeadEdit { contour: 1, at: [0.0, 0.0], rec: 3, lead_in: Some((10.0, -45.0)), lead_out: None, same: false };
         let parts = vec![part(Shape::PlateHole, 200.0, 150.0, Some(with_edit(e)))];
         for (turns, mirror) in [(0, false), (1, false), (2, true), (3, true)] {
             let (w, h) = if turns % 2 == 1 { (150.0, 200.0) } else { (200.0, 150.0) };
@@ -2484,7 +2487,7 @@ mod hand_lead_tests {
     #[test]
     fn a_lead_moved_by_hand_is_shortened_not_moved_when_it_would_hit_a_neighbour() {
         // A 20 mm lead-in square off the right side, toward a part 5 mm away (LE5).
-        let e = LeadEdit { contour: 0, at: [100.0, 50.0], rec: 3, lead_in: Some((20.0, 90.0)), lead_out: None };
+        let e = LeadEdit { contour: 0, at: [100.0, 50.0], rec: 3, lead_in: Some((20.0, 90.0)), lead_out: None, same: false };
         let parts = vec![part(Shape::Rectangle, 100.0, 100.0, Some(with_edit(e))), part(Shape::Rectangle, 100.0, 100.0, None)];
         let a = Placed { part: 0, x: 100.0, y: 100.0, w: 100.0, h: 100.0, turns: 0, mirror: false, spin: Default::default() };
         let b = Placed { part: 1, x: 205.0, y: 100.0, w: 100.0, h: 100.0, turns: 0, mirror: false, spin: Default::default() };

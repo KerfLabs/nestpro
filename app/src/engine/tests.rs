@@ -3266,7 +3266,7 @@ fn dragging_a_lead_end_in_the_part_view_moves_that_lead_only() {
     let hole0 = before.contours.iter().find(|c| c.contour == 0).unwrap().lead_path.clone();
     // Drag the outline's pierce (it starts at the bottom-left corner) out to the left.
     let to = [-6.0, 4.0];
-    let m = drag_lead_end(&mut parts, 0, &spec, 1, LeadEnd::In, to, crate::units::LenUnit::Mm).unwrap();
+    let m = drag_lead_end(&mut parts, 0, &spec, 1, LeadEnd::In, to, false, crate::units::LenUnit::Mm).unwrap();
     assert!(m.contains("Contour 2's lead-in moved by hand"), "{m}");
     let t = parts[0].tech.unwrap();
     // The part keeps the machine's leads everywhere else (LE4).
@@ -3277,9 +3277,9 @@ fn dragging_a_lead_end_in_the_part_view_moves_that_lead_only() {
     assert!((c.lead_in[0] - to[0]).hypot(c.lead_in[1] - to[1]) < 0.15, "{:?}", c.lead_in);
     assert_eq!(after.contours.iter().find(|c| c.contour == 0).unwrap().lead_path, hole0);
     // Dragging the same point again changes nothing; dragging into the part keeps it in the scrap.
-    drag_lead_end(&mut parts, 0, &spec, 1, LeadEnd::In, to, crate::units::LenUnit::Mm).unwrap();
+    drag_lead_end(&mut parts, 0, &spec, 1, LeadEnd::In, to, false, crate::units::LenUnit::Mm).unwrap();
     assert_eq!(parts[0].tech.unwrap(), t);
-    let m = drag_lead_end(&mut parts, 0, &spec, 1, LeadEnd::In, [5.0, 8.0], crate::units::LenUnit::Inch).unwrap();
+    let m = drag_lead_end(&mut parts, 0, &spec, 1, LeadEnd::In, [5.0, 8.0], false, crate::units::LenUnit::Inch).unwrap();
     // The window's message follows its unit (NST-16).
     assert!(m.contains(" in at "), "{m}");
     let (o, _) = nest::placed_shape(&parts, &Placed { part: 0, x: 0.0, y: 0.0, w: 200.0, h: 150.0, turns: 0, mirror: false, spin: Default::default() });
@@ -3287,9 +3287,9 @@ fn dragging_a_lead_end_in_the_part_view_moves_that_lead_only() {
     assert!(!nest::point_in_poly(&o, c.lead_in), "{:?}", c.lead_in);
     // The lead-out's end too; then double-click (reset) puts the contour back.
     let out = *c.lead_out_path.last().unwrap();
-    drag_lead_end(&mut parts, 0, &spec, 1, LeadEnd::Out, [out[0] - 2.0, out[1] - 3.0], crate::units::LenUnit::Mm).unwrap();
+    drag_lead_end(&mut parts, 0, &spec, 1, LeadEnd::Out, [out[0] - 2.0, out[1] - 3.0], false, crate::units::LenUnit::Mm).unwrap();
     assert!(parts[0].tech.unwrap().lead_edit(1).unwrap().lead_out.is_some());
-    assert_eq!(reset_lead_edits(&mut parts[0], Some(1)), 1);
+    assert_eq!(reset_lead_edits(&mut parts[0], Some(1), false), 1);
     assert_eq!(cnc::plan_part(&parts, 0, &spec).contours.iter().find(|c| c.contour == 1).unwrap().lead_path, before.contours.iter().find(|c| c.contour == 1).unwrap().lead_path);
 }
 
@@ -3319,6 +3319,173 @@ fn a_moved_lead_stays_with_its_contour_when_the_cut_contours_change() {
     call(&mut s, "contour-tech", None, json!({"part": 1, "contours": b.to_string(), "state": "mark"}));
     assert!(leads_by_hand(&mut s, 1).iter().all(|r| !r.1));
     assert_eq!(jobfile::load(&job).unwrap().parts[0].tech.unwrap().lead_edits.iter().flatten().count(), 0);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Each contour's lead-in as part-info gives it: (number, length, angle,
+/// moved by hand, the contour a shared lead is set on).
+fn lead_rows(s: &mut Session, part: usize) -> Vec<(u64, Option<f64>, Option<f64>, bool, Option<u64>)> {
+    let pi = call(s, "part-info", None, json!({"part": part}));
+    pi["data"]["contours"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| (c["contour"].as_u64().unwrap(), c["lead_in"]["length_mm"].as_f64(), c["lead_in"]["angle_deg"].as_f64(), c["lead_by_hand"] == json!(true), c["lead_same_as"].as_u64()))
+        .collect()
+}
+
+#[test]
+fn an_agent_puts_one_holes_lead_on_every_hole_of_the_same_shape() {
+    let d = dir("lead_same");
+    let job = d.join("flange.snjob");
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1500, "h": 1000, "material": "steel", "thickness": 5}));
+    // A flange plate: four equal corner holes (contours 1–4), a big centre hole (5), the outline (6).
+    call(&mut s, "add-shape", None, json!({"shape": "flange", "w": 300, "h": 200, "qty": 2}));
+    call(&mut s, "leads", None, json!({"mode": "auto"}));
+    let corners = [1u64, 2, 3, 4];
+
+    // One hole's lead, with All the same contours: the other three take it (LE8).
+    let r = call(&mut s, "lead-edit", None, json!({"part": 1, "contour": 1, "in_length": 6, "in_angle": 60, "same": true}));
+    assert!(r["message"].as_str().unwrap().contains("and on the 3 holes like it too"), "{r}");
+    let rows = lead_rows(&mut s, 1);
+    for k in corners {
+        assert_eq!(rows[k as usize - 1], (k, Some(6.0), Some(60.0), true, Some(1)), "{rows:?}");
+    }
+    assert_eq!((rows[4].3, rows[4].4), (false, None), "the centre hole isn't the same shape: {rows:?}");
+    // It takes one of the 16 places for leads moved by hand, not four.
+    assert_eq!(jobfile::load(&job).unwrap().parts[0].tech.unwrap().lead_edits.iter().flatten().count(), 1);
+    // Each hole has it at the same place on it.
+    let j = jobfile::load(&job).unwrap();
+    let plan = cnc::plan_part(&j.parts, 0, &j.spec);
+    let from_hole = |ci: usize| {
+        let c = plan.contours.iter().find(|c| c.contour == ci).unwrap();
+        let b = nest::bbox_of(&c.points);
+        [c.lead_in[0] - b[0], c.lead_in[1] - b[1]]
+    };
+    for ci in 1..4 {
+        let (a, b) = (from_hole(0), from_hole(ci));
+        assert!((a[0] - b[0]).hypot(a[1] - b[1]) < 1e-6, "hole {ci}: {a:?} vs {b:?}");
+    }
+
+    // One of them moved alone: it gets its own lead, the others keep the shared one.
+    call(&mut s, "lead-edit", None, json!({"part": 1, "contour": 3, "in_length": 8}));
+    let rows = lead_rows(&mut s, 1);
+    assert_eq!(rows[2], (3, Some(8.0), Some(60.0), true, None), "{rows:?}");
+    assert_eq!((rows[1].1, rows[1].4), (Some(6.0), Some(1)), "{rows:?}");
+    // The hole it is set on moved alone: the others keep it, now set on hole 2.
+    call(&mut s, "lead-edit", None, json!({"part": 1, "contour": 1, "in_length": 5}));
+    let rows = lead_rows(&mut s, 1);
+    assert_eq!(rows[0], (1, Some(5.0), Some(60.0), true, None), "{rows:?}");
+    assert_eq!([rows[1].4, rows[3].4], [Some(2), Some(2)], "{rows:?}");
+    assert_eq!([rows[1].1, rows[3].1], [Some(6.0), Some(6.0)], "{rows:?}");
+
+    // Putting back a hole that shares a lead puts it back on all that share it.
+    let r = call(&mut s, "lead-edit", None, json!({"part": 1, "contour": 4, "mode": "reset"}));
+    assert!(r["message"].as_str().unwrap().contains("and 1 more it shared"), "{r}");
+    let rows = lead_rows(&mut s, 1);
+    assert_eq!(corners.map(|k| rows[k as usize - 1].3), [true, false, true, false], "{rows:?}");
+
+    // Share the lead hole 1 has now: hole 3's own goes, all four cut it.
+    let r = call(&mut s, "lead-edit", None, json!({"part": 1, "contour": 1, "same": true}));
+    assert!(r["message"].as_str().unwrap().contains("on the 3 holes like it too"), "{r}");
+    let rows = lead_rows(&mut s, 1);
+    for k in corners {
+        assert_eq!((rows[k as usize - 1].1, rows[k as usize - 1].4), (Some(5.0), Some(1)), "{rows:?}");
+    }
+
+    // Every piece on the sheet cuts it.
+    call(&mut s, "nest", None, json!({"stock": "off"}));
+    let j = jobfile::load(&job).unwrap();
+    let plans = j.plans();
+    let holes: Vec<&cnc::Contour> = plans[0].contours.iter().filter(|c| c.contour < 4).collect();
+    assert_eq!(holes.len(), 8);
+    assert!(holes.iter().all(|c| c.lead_hand), "every corner hole of both pieces");
+
+    // Refusals say what to do instead.
+    assert!(err(&mut s, "lead-edit", json!({"part": 1, "contour": 5, "same": true})).contains("isn't moved by hand"));
+    call(&mut s, "lead-edit", None, json!({"part": 1, "contour": 5, "in_length": 7}));
+    assert!(err(&mut s, "lead-edit", json!({"part": 1, "contour": 5, "same": true})).contains("No other hole"));
+    // The outline has none like it: same=true moves it alone.
+    let r = call(&mut s, "lead-edit", None, json!({"part": 1, "contour": 6, "in_length": 9, "same": true}));
+    assert!(!r["message"].as_str().unwrap().contains("like it"), "{r}");
+
+    // With same=true, putting one back puts back every hole of its shape.
+    let r = call(&mut s, "lead-edit", None, json!({"part": 1, "contour": 2, "mode": "reset", "same": true}));
+    assert!(r["message"].as_str().unwrap().contains("and 3 more"), "{r}");
+    let rows = lead_rows(&mut s, 1);
+    assert!(corners.iter().all(|&k| !rows[k as usize - 1].3), "{rows:?}");
+    assert_eq!((rows[4].3, rows[5].3), (true, true), "the centre hole and the outline keep theirs: {rows:?}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn dragging_with_all_the_same_contours_moves_every_hole_of_that_shape() {
+    // A flange plate with no technology of its own: the machine's leads.
+    let mut parts = vec![Part { name: "F".into(), shape: Shape::Flange, w: 300.0, h: 200.0, qty: 1, rotate: false, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
+    let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
+    assert!(has_same_holes(&parts[0]));
+    assert_eq!(same_holes(&parts[0], 0), vec![1, 2, 3]);
+    assert!(same_holes(&parts[0], 4).is_empty() && same_holes(&parts[0], 5).is_empty(), "the centre hole and the outline");
+    let centre = cnc::plan_part(&parts, 0, &spec).contours.iter().find(|c| c.contour == 4).unwrap().lead_path.clone();
+    // Drag hole 1's pierce up and to the left of its hole.
+    let hole = cnc::plan_part(&parts, 0, &spec).contours.iter().find(|c| c.contour == 0).unwrap().points.clone();
+    let b = nest::bbox_of(&hole);
+    let to = [(b[0] + b[2]) / 2.0 - 3.0, (b[1] + b[3]) / 2.0 + 3.0];
+    let m = drag_lead_end(&mut parts, 0, &spec, 0, LeadEnd::In, to, true, crate::units::LenUnit::Mm).unwrap();
+    assert!(m.contains("and on the 3 holes like it too"), "{m}");
+    let plan = cnc::plan_part(&parts, 0, &spec);
+    let rel = |ci: usize| {
+        let c = plan.contours.iter().find(|c| c.contour == ci).unwrap();
+        assert!(c.lead_hand, "hole {ci}");
+        let b = nest::bbox_of(&c.points);
+        [c.lead_in[0] - b[0], c.lead_in[1] - b[1]]
+    };
+    for ci in 1..4 {
+        let (a, b) = (rel(0), rel(ci));
+        assert!((a[0] - b[0]).hypot(a[1] - b[1]) < 1e-6, "hole {ci}: {a:?} vs {b:?}");
+    }
+    assert_eq!(plan.contours.iter().find(|c| c.contour == 4).unwrap().lead_path, centre, "the centre hole keeps its lead");
+
+    // Without it, a drag on one of them gives that hole its own lead.
+    // (Hole 3 sits 252 mm right of and 152 mm above hole 1.)
+    drag_lead_end(&mut parts, 0, &spec, 2, LeadEnd::In, [to[0] + 253.0, to[1] + 152.0], false, crate::units::LenUnit::Mm).unwrap();
+    assert_eq!(hand_lead(&parts[0], 2).map(|(e, k)| (k, e.same)), Some((2, false)));
+    assert_eq!(hand_lead(&parts[0], 1).map(|(_, k)| k), Some(0));
+
+    // A start picked on an element of a hole that shares a lead: that hole
+    // takes the start, the others keep the lead; on the hole it is set on,
+    // the others keep it too.
+    let el = nest::elements_of(&parts[0].geometry());
+    let on = |ci: usize| el.iter().position(|e| e.contour == ci).unwrap();
+    lead_on_element(&mut parts[0], on(1), None).unwrap();
+    assert!(hand_lead(&parts[0], 1).is_none());
+    assert_eq!(hand_lead(&parts[0], 3).map(|(_, k)| k), Some(0));
+    lead_on_element(&mut parts[0], on(0), None).unwrap();
+    assert!(hand_lead(&parts[0], 0).is_none());
+    assert_eq!(hand_lead(&parts[0], 3).map(|(_, k)| k), Some(3), "hole 4 holds it now");
+
+    // Double-click with All the same contours: every hole of the shape goes back.
+    let n = reset_lead_edits(&mut parts[0], Some(3), true);
+    assert_eq!(n, 2, "holes 3 and 4 had a lead moved by hand");
+    assert!((0..4).all(|ci| hand_lead(&parts[0], ci).is_none()));
+}
+
+#[test]
+fn a_shared_lead_stays_on_the_others_when_its_hole_is_no_longer_cut() {
+    let d = dir("lead_same_states");
+    let job = d.join("plate.snjob");
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "steel", "thickness": 3}));
+    call(&mut s, "import-drawing", None, json!({"path": layered_plate(&d).to_str().unwrap(), "qty": 1}));
+    call(&mut s, "leads", None, json!({"mode": "auto"}));
+    // Contours 2 and 3 are the two equal 12 mm holes.
+    call(&mut s, "lead-edit", None, json!({"part": 1, "contour": 2, "in_length": 4, "same": true}));
+    let shared = |s: &mut Session| lead_rows(s, 1).into_iter().filter(|r| r.4.is_some()).map(|r| (r.0, r.1, r.4)).collect::<Vec<_>>();
+    assert_eq!(shared(&mut s), vec![(2, Some(4.0), Some(2)), (3, Some(4.0), Some(2))]);
+    // Hole 2 is etched now, not cut: hole 3 keeps the lead (LE8, LE1).
+    call(&mut s, "contour-tech", None, json!({"part": 1, "contours": "2", "state": "mark"}));
+    assert_eq!(shared(&mut s), vec![(3, Some(4.0), Some(3))]);
     let _ = std::fs::remove_dir_all(&d);
 }
 
