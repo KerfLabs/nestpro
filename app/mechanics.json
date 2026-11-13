@@ -6433,6 +6433,137 @@
   "group": "sheet stock",
   "value": true,
   "source": "MECHANICS ST17"
+ },
+ {
+  "name": "gas list",
+  "group": "gas",
+  "value": "per machine: its post settings' G lines in order (gas n = the n-th line), each with a name and on/off; without them 1 Nitrogen, 2 Compressed air, 3 Oxygen, all on",
+  "source": "GS1"
+ },
+ {
+  "name": "gas 0",
+  "group": "gas",
+  "value": "any gas",
+  "source": "GS1"
+ },
+ {
+  "name": "LC5 gas names",
+  "group": "gas",
+  "value": "1 Nitrogen, 2 Air, 3 Oxygen, 4 Argon, 5 H2O",
+  "source": "GS2"
+ },
+ {
+  "name": "LC5 gas lines for another number (0, 6 and above)",
+  "group": "gas",
+  "value": "IDGAS, NOMEGAS, GasId and GasName written empty",
+  "source": "GS2"
+ },
+ {
+  "name": "where a program's gas comes from",
+  "group": "gas",
+  "value": "the sheet's cutting set-up (type of cut, sheets, lens, power, gas) at the top of its machining",
+  "source": "GS3"
+ },
+ {
+  "name": "stored gas counted as none",
+  "group": "gas",
+  "value": "32000 or more",
+  "source": "GS3"
+ },
+ {
+  "name": "machine reference gas, laser",
+  "group": "gas",
+  "value": "technology file B045 (0 = any; template 3)",
+  "source": "GS4"
+ },
+ {
+  "name": "machine reference gas, oxy-fuel and plasma",
+  "group": "gas",
+  "value": "technology file B399 (-1 in the shipped files)",
+  "source": "GS4"
+ },
+ {
+  "name": "how the reference gas fills a sheet's cutting set-up",
+  "group": "gas",
+  "value": "not found",
+  "source": "GS4",
+  "estimated": true
+ },
+ {
+  "name": "Type of cut starts from",
+  "group": "gas",
+  "value": "the set-up already in the sheet's machining (no gas when there is none)",
+  "source": "GS3"
+ },
+ {
+  "name": "machine configuration keys",
+  "group": "gas",
+  "value": "configuration alias, lens, gas, power, default technology mark",
+  "source": "GS5"
+ },
+ {
+  "name": "machine configurations offered",
+  "group": "gas",
+  "value": "the machine's custom configuration sets that cover the part's material and thickness, when it has such sets; otherwise its own fitting material/thickness sections, only when it shows lens, gas and power (A086) or the alias (A099) in them",
+  "source": "GS5"
+ },
+ {
+  "name": "job grouped by",
+  "group": "gas",
+  "value": "machine, material, thickness, machine configuration; two configurations match when either is empty, or equal apart from case and the default mark",
+  "source": "GS6"
+ },
+ {
+  "name": "nesting in a group with a configuration",
+  "group": "gas",
+  "value": "takes the group's configuration when its own differs",
+  "source": "GS6"
+ },
+ {
+  "name": "group a part joins when several fit",
+  "group": "gas",
+  "value": "the first whose configuration matches",
+  "source": "GS6",
+  "estimated": true
+ },
+ {
+  "name": "new part's configuration",
+  "group": "gas",
+  "value": "none, or its last order's for the same machine, material and thickness when that option is on",
+  "source": "GS7"
+ },
+ {
+  "name": "part's or group's configuration filled from the technology records",
+  "group": "gas",
+  "value": false,
+  "source": "GS7",
+  "estimated": true
+ },
+ {
+  "name": "shipped report templates and help mention the gas",
+  "group": "gas",
+  "value": false,
+  "source": "GS8"
+ },
+ {
+  "name": "a report of the original prints the gas",
+  "group": "gas",
+  "value": false,
+  "source": "GS8",
+  "estimated": true
+ },
+ {
+  "name": "library part carries a gas",
+  "group": "gas",
+  "value": false,
+  "source": "GS9"
+ },
+ {
+  "name": "nested sheets when a job's configuration changes",
+  "group": "gas",
+  "value": "not found",
+  "source": "GS9",
+  "estimated": true
  }
 ]
 }
