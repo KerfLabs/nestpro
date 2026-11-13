@@ -2241,6 +2241,10 @@ impl App {
             let n = sheet.len().max(1) as f64;
             let stagger = (0.7 / n).min(0.03);
             let mut animating = false;
+            // Selection glows are gathered into this slot, under every part, so
+            // one part's glow never paints over the parts placed before it.
+            let halo_slot = painter.add(EShape::Noop);
+            let mut halos: Vec<EShape> = vec![];
             for (i, pl) in sheet.iter().enumerate() {
                 let part = &self.parts[pl.part];
                 let base = part_color(part.color);
@@ -2279,9 +2283,8 @@ impl App {
                     Stroke::new(1.0, th().part_edge.gamma_multiply(ease))
                 };
                 if selected {
-                    // Soft glow behind the selected part.
-                    let r = Rect::from_two_pos(to_s([pl.x, pl.y]), to_s([pl.x + pl.w, pl.y + pl.h])).expand(4.0);
-                    painter.rect_filled(r, CornerRadius::same(4), Color32::from_rgba_unmultiplied(255, 255, 255, 40));
+                    // Soft glow round the selected part's own profile.
+                    halos.extend(selection_halo(part, pl, |q| to_s(q) - Vec2::new(0.0, drop)));
                 }
                 paint_part_placed(&painter, part, pl, |q| to_s(q) - Vec2::new(0.0, drop), fill, edge, th().sheet);
                 // Every contour in its cut quality's or state's colour (CS7).
@@ -2318,6 +2321,7 @@ impl App {
                     }
                 }
             }
+            painter.set(halo_slot, EShape::Vec(halos));
             if animating {
                 ui.ctx().request_repaint();
             }
