@@ -170,11 +170,11 @@ impl BlmSettings {
     pub fn for_spec(spec: &SheetSpec, machine: &str, job: &str) -> Self {
         let (n, id) = material_codes(spec.material);
         let blm = machine.to_uppercase().contains("LC5") || machine.to_uppercase().contains("BLM");
-        // The job's gas from the list (GS10); a job without one takes the
+        // The job's gas, as the LC5 names it (GS10, GS2); a job without one takes the
         // machine's in `engine::blm_for` (GS11), nitrogen until then, as for
         // a machine with no job open.
         let g = spec.gas.unwrap_or(crate::gas::Gas::Nitrogen);
-        BlmSettings { on: blm, machine: machine.to_string(), job: job.to_string(), mat_name: n.into(), mat_id: id.into(), gas_id: g.number(), gas_name: g.name().into() }
+        BlmSettings { on: blm, machine: machine.to_string(), job: job.to_string(), mat_name: n.into(), mat_id: id.into(), gas_id: g.number(), gas_name: g.program_name().into() }
     }
 }
 

@@ -126,7 +126,7 @@ pub fn blm_for(spec: &SheetSpec, base: &crate::blm::BlmSettings, job_name: &str,
     let b = crate::blm::BlmSettings::for_spec(spec, &base.machine, job_name);
     let (mat_name, mat_id) = cfg.materials.get(spec.material).cloned().unwrap_or((b.mat_name.clone(), b.mat_id.clone()));
     let gas = job_gas(spec, base);
-    crate::blm::BlmSettings { on: base.on, gas_id: gas.number, gas_name: gas.name, mat_name, mat_id, ..b }
+    crate::blm::BlmSettings { on: base.on, gas_id: gas.number, gas_name: gas.program_name, mat_name, mat_id, ..b }
 }
 
 /// The gas a job is cut with, as its programs name it (GS11): its own, else

@@ -6382,8 +6382,14 @@
  {
   "name": "gas list",
   "group": "gas",
-  "value": "1 Nitrogen, 2 Air, 3 Oxygen, 4 Argon, 5 Water",
+  "value": "1 Nitrogen, 2 Air, 3 Oxygen, 4 Argon, 5 Water (the names shown)",
   "source": "MECHANICS GS10"
+ },
+ {
+  "name": "LC5 gas names",
+  "group": "gas",
+  "value": "1 Nitrogen, 2 Air, 3 Oxygen, 4 Argon, 5 H2O",
+  "source": "MECHANICS GS10; GS2"
  },
  {
   "name": "job file gas",
@@ -6400,7 +6406,7 @@
  {
   "name": "new job gas",
   "group": "gas",
-  "value": "the active machine's when its number and name are the list's pair, else none of its own",
+  "value": "the active machine's when its number and name are a pair the LC5 list writes (5 is H2O), else none of its own",
   "source": "MECHANICS GS12"
  },
  {

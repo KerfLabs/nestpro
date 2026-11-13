@@ -4881,8 +4881,9 @@ fn programs_of_job_saved_before_gas(post: &str, blm: bool, gas: (u32, &str)) -> 
 #[test]
 fn a_job_saved_before_jobs_carried_a_gas_writes_the_programs_it_wrote_before() {
     // The G-code post and the LC5 on a nitrogen machine, and an LC5 saved in
-    // Settings as gas 2 named Oxygen, which isn't the list's pair.
-    for (post, blm, gas) in [("iso", false, (1, "Nitrogen")), ("lc5", true, (1, "Nitrogen")), ("lc5-saved-2-oxygen", true, (2, "Oxygen"))] {
+    // Settings as gas 2 named Oxygen or gas 5 named Water, neither of which
+    // is a pair the LC5 list writes (5 is H2O there, GS2).
+    for (post, blm, gas) in [("iso", false, (1, "Nitrogen")), ("lc5", true, (1, "Nitrogen")), ("lc5-saved-2-oxygen", true, (2, "Oxygen")), ("lc5-saved-5-water", true, (5, "Water"))] {
         let (text, xml) = programs_of_job_saved_before_gas(post, blm, gas);
         same_as_recorded(&format!("gas-old-{post}-sheet1.txt"), &text);
         if let Some(xml) = xml {
@@ -4973,6 +4974,31 @@ fn an_lc5_job_set_to_oxygen_names_oxygen_3_in_every_program_and_xml() {
         assert!(x.contains("\t<GasId>3</GasId>\r\n\t<GasName>Oxygen</GasName>\r\n"), "{x}");
     }
     let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_lc5_job_set_to_water_names_gas_5_h2o_as_the_lc5_list_does() {
+    // GS2: the LC5 names gas 5 H2O; people see Water. Agents may say either.
+    for given in ["water", "H2O", "h2o"] {
+        let d = dir(&format!("gas_water_{given}"));
+        let job = d.join("DEMO-H2O.snjob");
+        let mut ctx = Ctx::builtin();
+        ctx.blm.on = true;
+        let mut s = Session::new(ctx);
+        call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "stainless", "thickness": 3}));
+        call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 200, "h": 100, "qty": 1, "name": "DEMO-P1"}));
+        call(&mut s, "place", None, json!({"part": 1, "x": 50, "y": 50}));
+        let r = call(&mut s, "set-sheet", None, json!({"gas": given}));
+        assert!(r["message"].as_str().unwrap().contains("Water (5)"), "{r}");
+        assert_eq!(info_gas(&mut s), ("Water".into(), 5, "job".into()), "{given}");
+        let text = programs(&mut s).remove(0);
+        assert!(text.contains(";IDGAS=5\r\n;NOMEGAS=H2O\r\n"), "{given}: {text}");
+        let e = call(&mut s, "export", None, json!({"dir": d.join("cnc").to_str().unwrap()}));
+        let f = e["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap().to_string()).find(|f| f.ends_with(".XML")).unwrap();
+        let x = std::fs::read_to_string(f).unwrap();
+        assert!(x.contains("\t<GasId>5</GasId>\r\n\t<GasName>H2O</GasName>\r\n"), "{given}: {x}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }
 
 /// A job on the made-up gas laser: plates with two holes and a mark, two on
@@ -5107,6 +5133,21 @@ fn a_new_job_starts_with_the_machines_gas_and_keeps_it() {
     call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 200, "h": 100, "qty": 1}));
     call(&mut s, "place", None, json!({"part": 1, "x": 50, "y": 50}));
     assert!(programs(&mut s)[0].contains(";IDGAS=2\r\n;NOMEGAS=Oxygen\r\n"));
+    // Saved as 5 named Water: not the LC5's pair (5 is H2O, GS2), so a new
+    // job keeps writing it as saved. Saved as 5 named H2O: a water job.
+    for (name, own, written) in [("Water", "machine", ";IDGAS=5\r\n;NOMEGAS=Water\r\n"), ("H2O", "job", ";IDGAS=5\r\n;NOMEGAS=H2O\r\n")] {
+        s.ctx.cfg.machines[0].gas_id = 5;
+        s.ctx.cfg.machines[0].gas_name = name.into();
+        let _on = apply_machine(&mut s);
+        let job = d.join(format!("DEMO-NEW-{name}.snjob"));
+        call(&mut s, "new", Some(job.to_str().unwrap()), json!({"material": "mild steel", "thickness": 3}));
+        let (shown, no, from) = info_gas(&mut s);
+        assert_eq!((no, from.as_str()), (5, own), "{name}");
+        assert_eq!(shown, if own == "job" { "Water" } else { name }, "{name}");
+        call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 200, "h": 100, "qty": 1}));
+        call(&mut s, "place", None, json!({"part": 1, "x": 50, "y": 50}));
+        assert!(programs(&mut s)[0].contains(written), "{name}");
+    }
     let _ = std::fs::remove_dir_all(&d);
 }
 

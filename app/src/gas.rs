@@ -27,7 +27,7 @@ impl Gas {
         }
     }
 
-    /// GS10: the name the LC5 program writes (`;NOMEGAS=`, `<GasName>`).
+    /// GS10: the name nestpro shows people (info, replies, screens).
     pub fn name(self) -> &'static str {
         match self {
             Gas::Nitrogen => "Nitrogen",
@@ -35,6 +35,15 @@ impl Gas {
             Gas::Oxygen => "Oxygen",
             Gas::Argon => "Argon",
             Gas::Water => "Water",
+        }
+    }
+
+    /// GS10, GS2: the name the LC5 program writes (`;NOMEGAS=`,
+    /// `<GasName>`): the shown name, but H2O for water.
+    pub fn program_name(self) -> &'static str {
+        match self {
+            Gas::Water => "H2O",
+            g => g.name(),
         }
     }
 
@@ -47,21 +56,23 @@ impl Gas {
         Gas::ALL.into_iter().find(|g| g.number() == n)
     }
 
-    /// GS14: a gas as a person or an agent gives it: its name in any case, or
-    /// its number. Anything else is refused with the list.
+    /// GS14: a gas as a person or an agent gives it: its shown name or the
+    /// name programs write (Water or H2O), in any case, or its number.
+    /// Anything else is refused with the list.
     pub fn parse(text: &str) -> Result<Gas, String> {
         let t = text.trim();
         let by_number = t.parse::<f64>().ok().filter(|n| n.fract() == 0.0 && *n >= 0.0 && *n <= u32::MAX as f64).and_then(|n| Gas::from_number(n as u32));
         by_number
-            .or_else(|| Gas::ALL.into_iter().find(|g| g.name().eq_ignore_ascii_case(t)))
-            .ok_or_else(|| format!("gas '{t}' is not one of the gases: {}. Give its name or number.", list_words()))
+            .or_else(|| Gas::ALL.into_iter().find(|g| g.name().eq_ignore_ascii_case(t) || g.program_name().eq_ignore_ascii_case(t)))
+            .ok_or_else(|| format!("gas '{t}' is not one of the gases: {} (5 is also H2O). Give its name or number.", list_words()))
     }
 
     /// The list's gas for a machine's saved gas number and name, when they
-    /// are the list's pair exactly (GS12). A pair that isn't, such as 2 named
-    /// "Oxygen", belongs to no gas of the list.
+    /// are exactly a pair the LC5 program writes (GS12, GS2). A pair that
+    /// isn't, such as 2 named "Oxygen" or 5 named "Water", belongs to no gas
+    /// of the list, so it keeps being written as saved.
     pub fn listed(number: u32, name: &str) -> Option<Gas> {
-        Gas::from_number(number).filter(|g| g.name() == name)
+        Gas::from_number(number).filter(|g| g.program_name() == name)
     }
 }
 
@@ -70,17 +81,26 @@ pub fn list_words() -> String {
     Gas::ALL.iter().map(|g| format!("{} {}", g.number(), g.name())).collect::<Vec<_>>().join(", ")
 }
 
+/// The pairs the LC5 program writes (GS2): "1 Nitrogen, 2 Air, 3 Oxygen,
+/// 4 Argon, 5 H2O".
+pub fn program_words() -> String {
+    Gas::ALL.iter().map(|g| format!("{} {}", g.number(), g.program_name())).collect::<Vec<_>>().join(", ")
+}
+
 /// A gas number from a machine file or technology table, for people:
 /// "Oxygen (3)" for a gas of the list, else "gas 7".
 pub fn number_label(n: i64) -> String {
     u32::try_from(n).ok().and_then(Gas::from_number).map_or_else(|| format!("gas {n}"), Gas::label)
 }
 
-/// The gas a job is cut with, as its programs name it (GS11).
+/// The gas a job is cut with (GS11).
 #[derive(Clone, Debug, PartialEq)]
 pub struct JobGas {
     pub number: u32,
+    /// The name shown to people.
     pub name: String,
+    /// The name its programs write (GS2).
+    pub program_name: String,
     /// The job's own gas; false = the machine's, for a job saved before jobs
     /// carried a gas.
     pub own: bool,
@@ -92,8 +112,8 @@ impl JobGas {
     /// they aren't the list's pair.
     pub fn of(job: Option<Gas>, machine_number: u32, machine_name: &str) -> JobGas {
         match job {
-            Some(g) => JobGas { number: g.number(), name: g.name().to_string(), own: true },
-            None => JobGas { number: machine_number, name: machine_name.to_string(), own: false },
+            Some(g) => JobGas { number: g.number(), name: g.name().to_string(), program_name: g.program_name().to_string(), own: true },
+            None => JobGas { number: machine_number, name: machine_name.to_string(), program_name: machine_name.to_string(), own: false },
         }
     }
 
@@ -102,9 +122,10 @@ impl JobGas {
         format!("{} ({})", self.name, self.number)
     }
 
-    /// The list's gas this is, when its number and name are the list's pair.
+    /// The list's gas this is, when its number and program name are a pair
+    /// the LC5 program writes.
     pub fn listed(&self) -> Option<Gas> {
-        Gas::listed(self.number, &self.name)
+        Gas::listed(self.number, &self.program_name)
     }
 }
 
@@ -162,6 +183,10 @@ mod tests {
         assert_eq!(list, [(1, "Nitrogen"), (2, "Air"), (3, "Oxygen"), (4, "Argon"), (5, "Water")]);
         assert_eq!(Gas::Oxygen.label(), "Oxygen (3)");
         assert_eq!(list_words(), "1 Nitrogen, 2 Air, 3 Oxygen, 4 Argon, 5 Water");
+        // GS2: the LC5 program names gas 5 H2O; people still see Water.
+        let written: Vec<&str> = Gas::ALL.iter().map(|g| g.program_name()).collect();
+        assert_eq!(written, ["Nitrogen", "Air", "Oxygen", "Argon", "H2O"]);
+        assert_eq!((program_words(), Gas::Water.label()), ("1 Nitrogen, 2 Air, 3 Oxygen, 4 Argon, 5 H2O".to_string(), "Water (5)".to_string()));
         assert_eq!((number_label(3), number_label(7), number_label(-1)), ("Oxygen (3)".into(), "gas 7".into(), "gas -1".into()));
     }
 
@@ -169,6 +194,9 @@ mod tests {
     fn a_gas_is_given_by_its_name_in_any_case_or_its_number() {
         for t in ["oxygen", "OXYGEN", " Oxygen ", "3", "3.0"] {
             assert_eq!(Gas::parse(t), Ok(Gas::Oxygen), "{t}");
+        }
+        for t in ["water", "WATER", "h2o", "H2O", "5"] {
+            assert_eq!(Gas::parse(t), Ok(Gas::Water), "{t}");
         }
         for t in ["0", "6", "-1", "2.5", "helium", "", "oxy", "1e400"] {
             let e = Gas::parse(t).unwrap_err();
@@ -180,7 +208,9 @@ mod tests {
     fn a_machine_gas_is_on_the_list_only_as_the_lists_exact_pair() {
         assert_eq!(Gas::listed(1, "Nitrogen"), Some(Gas::Nitrogen));
         assert_eq!(Gas::listed(3, "Oxygen"), Some(Gas::Oxygen));
-        for (n, name) in [(2, "Oxygen"), (1, "NITROGEN"), (0, "Nitrogen"), (6, "Water"), (1, "")] {
+        assert_eq!(Gas::listed(5, "H2O"), Some(Gas::Water));
+        // 5 named Water isn't a pair the LC5 writes (GS2): kept as saved.
+        for (n, name) in [(2, "Oxygen"), (1, "NITROGEN"), (0, "Nitrogen"), (6, "Water"), (5, "Water"), (5, "h2o"), (1, "")] {
             assert_eq!(Gas::listed(n, name), None, "{n} {name}");
         }
     }
@@ -191,6 +221,10 @@ mod tests {
         assert_eq!((j.number, j.name.as_str(), j.own, j.listed()), (2, "Oxygen", false, None));
         let j = JobGas::of(Some(Gas::Oxygen), 2, "Oxygen");
         assert_eq!((j.label(), j.own, j.listed()), ("Oxygen (3)".to_string(), true, Some(Gas::Oxygen)));
+        let j = JobGas::of(Some(Gas::Water), 5, "Water");
+        assert_eq!((j.label(), j.program_name.as_str(), j.listed()), ("Water (5)".to_string(), "H2O", Some(Gas::Water)));
+        let j = JobGas::of(None, 5, "Water");
+        assert_eq!((j.name.as_str(), j.program_name.as_str(), j.listed()), ("Water", "Water", None));
         // The section and record keys: none and the machine's without a gas of the job's own.
         assert_eq!((section_gas(None), record_gas(None, 2)), (0, 2));
         assert_eq!((section_gas(Some(Gas::Oxygen)), record_gas(Some(Gas::Oxygen), 2)), (3, 3));

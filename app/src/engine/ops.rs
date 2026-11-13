@@ -715,14 +715,14 @@ fn spec_json(spec: &SheetSpec, base: &crate::blm::BlmSettings) -> Value {
         "level": spec.nest_level().name, "machine": spec.machine.label(),
     });
     if gas.listed().is_none() {
-        v["gas_note"] = json!(format!("The machine's gas as saved in Settings → Machines; {} isn't one of the gases ({}). Pick one with set-sheet gas=.", gas.label(), crate::gas::list_words()));
+        v["gas_note"] = json!(format!("The machine's gas as saved in Settings → Machines, written as saved: {} named \"{}\", which isn't a pair the LC5 list writes ({}). Pick a gas with set-sheet gas=.", gas.number, gas.program_name, crate::gas::program_words()));
     }
     v
 }
 
 /// The gas as a job's machine-tech shows it.
 fn gas_json(g: &crate::gas::JobGas) -> Value {
-    json!({"number": g.number, "name": g.name, "label": g.label(), "from": if g.own { "job" } else { "machine" }})
+    json!({"number": g.number, "name": g.name, "program_name": g.program_name, "label": g.label(), "from": if g.own { "job" } else { "machine" }})
 }
 
 fn placed_json(job: &JobFile, s: usize) -> Value {
