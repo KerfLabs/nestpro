@@ -386,6 +386,11 @@ pub fn sheet_fingerprint(lines: &[CutLine], sheet: &[Placed]) -> u64 {
     if !has_line {
         for c in sheet {
             (c.part, c.x.to_bits(), c.y.to_bits(), c.turns, c.mirror).hash(&mut h);
+            // A free angle (HM14) only when there is one, so sheets saved
+            // before free angles keep their fingerprint.
+            if !c.spin.is_none() {
+                c.spin.deg.to_bits().hash(&mut h);
+            }
         }
     }
     h.finish() | 1
@@ -872,7 +877,7 @@ mod tests {
             let j = JobSheets { name: "DEMO-001", parts: &parts, spec: &spec, sheets: &sheets, cut_lines: &[], material_name: String::new() };
             make_remnants(&as_sam(&dir), &j, formats, &st, false, None).unwrap()
         };
-        let p = Placed { part: 0, x: 10.0, y: 10.0, w: 100.0, h: 50.0, turns: 0, mirror: false };
+        let p = Placed { part: 0, x: 10.0, y: 10.0, w: 100.0, h: 50.0, turns: 0, mirror: false, spin: Default::default() };
         let mut formats = vec![SheetFormat::rect(1000.0, 500.0)];
         store(p, &mut formats);
         assert_eq!(formats[0].made, vec!["R".to_string()]);
@@ -913,7 +918,7 @@ mod tests {
         let st = StockSettings { remnants_on_save: true, auto_remnant_ref: true, remnant_ref_format: "R".into(), ..Default::default() };
         let parts = [part];
         let line = |x: f64| vec![CutLine { pts: vec![[x, 0.0], [x, 500.0]], kind: CutKind::Remnant }];
-        let p = Placed { part: 0, x: 10.0, y: 10.0, w: 100.0, h: 50.0, turns: 0, mirror: false };
+        let p = Placed { part: 0, x: 10.0, y: 10.0, w: 100.0, h: 50.0, turns: 0, mirror: false, spin: Default::default() };
         let sheets = [vec![p]];
         let mut formats = vec![SheetFormat::rect(1000.0, 500.0)];
         let lines1 = [line(300.0)];
@@ -948,7 +953,7 @@ mod tests {
         let st = StockSettings { remnants_on_save: true, ..Default::default() };
         let parts = [part];
         let line = |x: f64| vec![CutLine { pts: vec![[x, 0.0], [x, 500.0]], kind: CutKind::Remnant }];
-        let p = Placed { part: 0, x: 10.0, y: 10.0, w: 100.0, h: 50.0, turns: 0, mirror: false };
+        let p = Placed { part: 0, x: 10.0, y: 10.0, w: 100.0, h: 50.0, turns: 0, mirror: false, spin: Default::default() };
         let sheets = [vec![p], vec![p]];
         let mut formats = vec![SheetFormat::rect(1000.0, 500.0), SheetFormat::rect(1000.0, 500.0)];
         let check = |lines: &[Vec<CutLine>], formats: &mut Vec<SheetFormat>| {
@@ -974,7 +979,7 @@ mod tests {
     fn completed_sheet_remnants_notice_parts_moving() {
         // RN4: without a remnant line the stored remnant is the sheet less
         // its parts, so moving them must make it be rebuilt.
-        let p = Placed { part: 0, x: 10.0, y: 10.0, w: 100.0, h: 50.0, turns: 0, mirror: false };
+        let p = Placed { part: 0, x: 10.0, y: 10.0, w: 100.0, h: 50.0, turns: 0, mirror: false, spin: Default::default() };
         let moved = Placed { x: 300.0, ..p };
         assert_ne!(sheet_fingerprint(&[], &[p]), sheet_fingerprint(&[], &[moved]));
         let line = [CutLine { pts: vec![[900.0, 0.0], [900.0, 500.0]], kind: CutKind::Remnant }];

@@ -1274,7 +1274,7 @@ mod drawing_tests {
         let parts = vec![part(Shape::PlateHole), part(Shape::Flange)];
         let spec = nest::SheetSpec { w: 1000.0, h: 500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None };
         for i in 0..parts.len() {
-            let pl = nest::Placed { part: i, x: 0.0, y: 0.0, w: 200.0, h: 120.0, turns: 0, mirror: false };
+            let pl = nest::Placed { part: i, x: 0.0, y: 0.0, w: 200.0, h: 120.0, turns: 0, mirror: false, spin: Default::default() };
             let plan = cnc::plan(&parts, &[pl], &spec);
             assert!(verify_machining(&plan).is_empty(), "{:?}", verify_machining(&plan));
         }

@@ -90,7 +90,8 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("F5", "Nest all"),
     ("Ctrl + Z  /  Ctrl + Y", "Undo / redo"),
     ("Click / Shift or Ctrl + click", "Select a part / add it to the selection or take it out"),
-    ("Drag on empty sheet", "Select the parts wholly inside the window (Shift or Ctrl adds)"),
+    ("Drag right on empty sheet", "Select the parts wholly inside the window (Shift or Ctrl adds)"),
+    ("Drag left on empty sheet", "Select every part the window touches (Shift or Ctrl adds)"),
     ("Ctrl + E  /  Ctrl + A", "Select every part on the sheet"),
     ("Alt + arrow keys", "Move the selected parts by the step (Settings → Nesting, or Ctrl + R); like the original, this move doesn't stop at other parts"),
     ("Ctrl + arrow keys", "Slide the selected parts to the next part (at the part gap) or the margin"),
@@ -99,7 +100,11 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Drag a part", "Move the selection; it snaps one part gap from a neighbour and slides along parts it meets (hold Alt for no snap)"),
     ("Ctrl + drag a part", "Drag a copy of the selection"),
     ("Ctrl + D", "Copy the selected parts to the first free spot"),
-    ("R  /  Ctrl + Q  /  Ctrl + W  /  Ctrl + 9", "Turn the selection: next allowed turn / 90° left / 90° right / 90° (direction in Settings → Nesting)"),
+    ("R", "Turn the selection to its next allowed quarter turn"),
+    ("Ctrl + Q  /  Ctrl + W", "Turn the selection left / right by the turn step (the turn bar's Snap, or Settings → Nesting; 1° when Free)"),
+    ("Ctrl + 1 / 5 / 0 / 3 / 4 / 9", "Turn the selection 1° / 5° / 10° / 30° / 45° / 90° (direction in Settings → Nesting)"),
+    ("Ctrl + T", "Type an angle for the selection (the turn bar's angle box)"),
+    ("Drag the round handle", "Turn the selection about its centre, snapping to the turn step (hold Alt to turn freely)"),
     ("M  /  Shift + M", "Mirror the selection left↔right / top↔bottom"),
     ("Del", "Remove the selected parts"),
     ("Esc", "Clear the selection"),
@@ -547,7 +552,24 @@ impl App {
                 });
             });
             ui.checkbox(&mut self.cfg.nesting.halo, "Show the part gap as a dashed outline around parts being dragged");
-            ui.checkbox(&mut self.cfg.nesting.keys_clockwise, "Ctrl + 9 turns clockwise (off: counter-clockwise)");
+            ui.checkbox(&mut self.cfg.nesting.keys_clockwise, "Ctrl + 1/5/0/3/4/9 turn clockwise (off: counter-clockwise)");
+            row(ui, "Turn step", |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    for v in crate::turnbar::STEPS {
+                        let label = if v == 0.0 { "Free".to_string() } else { crate::nest::angle_text(v) };
+                        if ui.selectable_label((self.cfg.nesting.turn_step - v).abs() < 1e-9, label).clicked() {
+                            self.cfg.nesting.turn_step = v;
+                        }
+                    }
+                    let mut v = if crate::turnbar::STEPS.iter().any(|&s| (s - self.cfg.nesting.turn_step).abs() < 1e-9) { self.turn_custom } else { self.cfg.nesting.turn_step };
+                    if ui.add(egui::DragValue::new(&mut v).range(0.1..=crate::settings::TURN_STEP_MAX).speed(0.25).max_decimals(2).suffix("°")).on_hover_text("Your own step").changed() {
+                        self.turn_custom = v;
+                        self.cfg.nesting.turn_step = v;
+                    }
+                });
+            });
+            ui.label(RichText::new("What Ctrl + Q / Ctrl + W and the turn bar's buttons turn by, and what a turn by the round handle snaps to (Free: any angle, to 0.1°; the keys then turn 1°).").size(11.5).color(th().text_dim));
+            ui.checkbox(&mut self.cfg.nesting.turn_bar, "Show the turn bar under selected parts (turn by the step, type an angle, choose the step)");
         });
     }
 

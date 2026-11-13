@@ -928,7 +928,7 @@ mod tests {
     }
 
     fn at(part: usize, x: f64) -> Placed {
-        Placed { part, x, y: 5.0, w: 100.0, h: 50.0, turns: 0, mirror: false }
+        Placed { part, x, y: 5.0, w: 100.0, h: 50.0, turns: 0, mirror: false, spin: Default::default() }
     }
 
     #[test]

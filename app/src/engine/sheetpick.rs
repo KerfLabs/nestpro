@@ -1,12 +1,14 @@
 //! Whole parts picked into a sheet's cut order in Manual cutting (MECHANICS
 //! MM8, MM9): a sweep takes the parts the pointer passes over, in that order;
-//! a box takes the parts wholly inside it, in the sheet's automatic order
-//! among themselves. Each part is cut whole at its place among the sheet's
+//! a box takes the parts wholly inside it (dragged to the right) or those it
+//! touches (dragged to the left, SW1), in the sheet's automatic order among
+//! themselves. Each part is cut whole at its place among the sheet's
 //! picks, in its own cut order (`cnc::cut_jobs`). The window turns pointer
 //! moves into these calls (with the cut technology panel's gestures,
 //! `cutpanel::gestures`), and the agents' `cut-order parts` makes the same
 //! calls. A click still picks one contour (`manual_pick`, MM4).
 
+use super::selection::Window;
 use crate::cnc::{self, ManualCut};
 use crate::cutpanel;
 use crate::dxf::{Contour, ContourState};
@@ -124,15 +126,13 @@ pub fn sweep(parts: &[Part], placed: &[Placed], done: &[bool], path: &[P], half:
     s.got
 }
 
-/// The parts a box from corner `a` to corner `b` (sheet mm) takes (MM9):
-/// those wholly inside it, in the sheet's automatic order among themselves
-/// (`cnc::sheet_order`); a part partly outside is left out, and those the
-/// picks already finish (`done`) are skipped.
-pub fn boxed(parts: &[Part], placed: &[Placed], spec: &SheetSpec, done: &[bool], a: P, b: P) -> Gathered {
-    let outlines: Vec<Contour> = placed.iter().map(|pl| Contour::new(parts[pl.part].geometry().outline.iter().map(|&p| pl.map(p)).collect(), true, ContourState::Cut)).collect();
-    let inside = cutpanel::contours_in_box(&outlines, a, b);
+/// The parts a box `w` (sheet mm) takes (MM9, SW1, SW3): those wholly inside
+/// it, or with a crossing window those it touches, in the sheet's automatic
+/// order among themselves (`cnc::sheet_order`); those the picks already
+/// finish (`done`) are skipped.
+pub fn boxed(parts: &[Part], placed: &[Placed], spec: &SheetSpec, done: &[bool], w: &Window) -> Gathered {
     let mut g = Gathered::default();
-    for i in cnc::sheet_order(placed, spec).into_iter().filter(|i| inside.contains(i)) {
+    for i in cnc::sheet_order(placed, spec).into_iter().filter(|&i| w.takes_placed(parts, &placed[i])) {
         g.meet(i, done);
     }
     g
@@ -167,7 +167,7 @@ pub fn take(parts: &[Part], placed: &[Placed], list: &mut Vec<ManualCut>, g: &Ga
     let already = format!("{} {} already picked", numbers(&g.skipped), if g.skipped.len() == 1 { "is" } else { "are" });
     if g.add.is_empty() {
         return Err(if g.skipped.is_empty() {
-            "No part there — sweep across parts, or draw a box round whole parts.".into()
+            "No part there — sweep across parts, draw a box round whole parts, or drag a box to the left over them.".into()
         } else {
             format!("{already} — undo a pick to change it.")
         });
@@ -226,7 +226,7 @@ mod tests {
     }
 
     fn at(part: usize, x: f64, y: f64, w: f64, h: f64) -> Placed {
-        Placed { part, x, y, w, h, turns: 0, mirror: false }
+        Placed { part, x, y, w, h, turns: 0, mirror: false, spin: Default::default() }
     }
 
     fn spec() -> SheetSpec {
@@ -303,16 +303,29 @@ mod tests {
     #[test]
     fn a_box_takes_the_whole_parts_inside_in_the_automatic_order() {
         let (parts, placed) = sheet();
+        let right = Window::dragged;
         // Round the three plates: number order would be #1, #2, #3; the
         // automatic order goes left to right.
-        let g = boxed(&parts, &placed, &spec(), &NONE, [0.0, 0.0], [520.0, 100.0]);
+        let g = boxed(&parts, &placed, &spec(), &NONE, &right([0.0, 0.0], [520.0, 100.0]));
         assert_eq!(g.add, vec![1, 2, 0]);
         // Half of #1 inside: only whole parts count.
-        let g = boxed(&parts, &placed, &spec(), &NONE, [0.0, 0.0], [450.0, 100.0]);
+        let g = boxed(&parts, &placed, &spec(), &NONE, &right([0.0, 0.0], [450.0, 100.0]));
         assert_eq!(g.add, vec![1, 2]);
         // Round the frame: the square in its hole goes first (CO1).
-        let g = boxed(&parts, &placed, &spec(), &NONE, [0.0, 150.0], [350.0, 550.0]);
+        let g = boxed(&parts, &placed, &spec(), &NONE, &right([0.0, 150.0], [350.0, 550.0]));
         assert_eq!(g.add, vec![4, 3]);
+    }
+
+    #[test]
+    fn a_box_dragged_to_the_left_takes_the_parts_it_touches() {
+        let (parts, placed) = sheet();
+        // The box half over #1, dragged the other way: #1 too.
+        let g = boxed(&parts, &placed, &spec(), &NONE, &Window::dragged([450.0, 100.0], [0.0, 0.0]));
+        assert_eq!(g.add, vec![1, 2, 0]);
+        // A small box over the frame's rim and into its hole, short of the
+        // square in the hole: the frame alone.
+        let g = boxed(&parts, &placed, &spec(), &NONE, &Window::dragged([120.0, 360.0], [60.0, 340.0]));
+        assert_eq!(g.add, vec![3]);
     }
 
     #[test]
