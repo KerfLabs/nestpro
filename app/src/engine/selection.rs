@@ -196,7 +196,7 @@ mod tests {
         // A 300 frame with a Ø120 hole at (10, 200): a crossing window in the
         // hole, though inside the frame's box, takes nothing; on its rim it does.
         let part = Part { name: "DEMO".into(), shape: Shape::PlateHole, w: 300.0, h: 300.0, qty: 1, rotate: false, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
-        let pl = Placed { part: 0, x: 10.0, y: 200.0, w: 300.0, h: 300.0, turns: 0, mirror: false };
+        let pl = Placed { part: 0, x: 10.0, y: 200.0, w: 300.0, h: 300.0, turns: 0, mirror: false, spin: Default::default() };
         let parts = [part];
         assert!(!Window::new([150.0, 340.0], [170.0, 360.0], Take::Touching).takes_placed(&parts, &pl), "in the hole");
         assert!(Window::new([20.0, 210.0], [30.0, 220.0], Take::Touching).takes_placed(&parts, &pl), "on the rim");

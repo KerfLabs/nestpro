@@ -595,7 +595,8 @@ How the rebuild uses them (Nesting screen, Parts View):
 - **Enter** places one copy by itself at the first free spot, lowest then leftmost — our take on
   *Semi-Automatic* (G7; the spot order is estimated).
 - Dropping more than the ordered quantity raises the order by one, like *Copy part*.
-- Not imitated: free-angle turning by dragging around a point (our parts turn in 90° steps),
+- Not imitated: turning the ghost to other angles while dropping it (it turns in quarter turns;
+  once placed, a part takes any angle, HM14–HM15),
   snapping on the true outline instead of the box, and the sliding snap.
 
 ## Moving parts by hand (selection, keys, snap)
@@ -618,6 +619,10 @@ Nesting screen. Code: `engine/arrange.rs` (rules), `arrange_ui.rs` (mouse and ke
 | HM11 | Parts being dragged can show the **part gap** as a dashed outline around them (the original's option to draw the moving parts grown by the part gap). Off at the factory; on first start the rebuild takes the install's setting. | observed option and default; look: rebuild |
 | HM13 | **Plain arrow keys move the view** (left/right/up/down) and **Page Down / Page Up zoom in / out**; the mouse wheel issues the same commands in the original. The rebuild pans 80 px per press and zooms by 2 (the original's default keyboard zoom factor). | keys: observed; pan step: estimate |
 | HM12 | **Settings → Nesting**: the units (mm or inches) every length in the app is shown and typed in (UN1); new jobs start with the part gap and edge margin set there; the movement value, snapping, snap reach and the gap outline are set there too. | rebuild |
+| HM14 | **Placed parts keep any angle**, not only quarter turns: a part is mirrored, then turned counter-clockwise by its angle, and its footprint is the box of its turned outline. Its holes, texts, cut path, leads, micro-joints and program all follow. A selection turns about the centre of its box (HM5); one part turns about the middle of its own box. Ctrl+Q / Ctrl+W turn by the rotation step (HM16), Ctrl+1/5/0/3/4/9 turn 1/5/10/30/45/90°, and Ctrl+T types an angle: the part clicked first goes to it and the others turn with it. Angles other than 0/90/180/270° are only for parts that may turn 90°: a part kept to 0° and 180° (grain) keeps to them. Agents: `turn angle=` (turn by) or `to=` (turn to). A job with a part at such an angle is saved as job layout 2, which builds from before free angles refuse to open instead of cutting the part at the wrong angle; other jobs stay at layout 1. | keys and typed angle: observed (HM1); "may turn 90°" deciding other angles: estimate; the job layout: rebuild |
+| HM15 | **Turning by dragging.** A round handle sits above the selection when every selected part may take any angle. Dragging it turns the selection about the centre of its box by the angle the pointer goes round that centre, rounded to the rotation step (G3: Round(angle / step) · step), or to 0.1° when the step is Free or Alt is held. The parts show turned while the button is held, outlined red when they would overlap or leave the sheet. Letting go turns them as HM5 does (to the nearest free spot) in one undo step; Esc puts them back. | rounding: observed (G3); the handle: rebuild |
+| HM16 | **Rotation step**: Free, 5°, 10°, 15°, 30°, 45°, 90° or a typed step (0.1° to 180°), kept in Settings → Nesting. A new install starts at 15°. With Free, Ctrl+Q / Ctrl+W and the turn bar's buttons turn 1°. | the step for Ctrl+Q / Ctrl+W: observed (HM1); the choices and the 15° start: rebuild |
+| HM17 | **The turn bar** sits under the selected parts (above them when there is no room below). It has turn left and turn right by the step, the angle of the part clicked first (type another and press Enter) and the step chips. Its × hides it; Ctrl+T or Settings → Nesting shows it again. | rebuild |
 
 How the rebuild uses them:
 
@@ -628,16 +633,19 @@ How the rebuild uses them:
   exactly by the step (HM3). Holding a key repeats the move; moves in a row make one undo step.
   After each move the status line shows how much room is left in each direction. The ribbon's
   **Move** group has the step box and slide buttons. Plain arrows and Page Down / Page Up move
-  and zoom the view (HM13). Ctrl+Q and R turn 90° left, Ctrl+W 90° right, Ctrl+9 90° in the
-  set direction (R on one part: its next allowed turn), M / Shift+M mirror (Ctrl+A / Ctrl+S in
+  and zoom the view (HM13). R turns to the next allowed quarter turn; Ctrl+Q / Ctrl+W turn left /
+  right by the rotation step and Ctrl+1/5/0/3/4/9 by 1/5/10/30/45/90° in the set direction
+  (HM14, HM16); Ctrl+T types an angle; M / Shift+M mirror (Ctrl+A / Ctrl+S in
   the original; Ctrl+S saves here). Del removes the selection, Ctrl+D copies it (in the
   original Ctrl+D flips the turn direction).
 - **Drag** (HM8–HM11): the selection moves together; with **Snap** on (ribbon) it snaps to the
   gap near a part or the margin; when blocked it slides along; red outline = can't stay there
   (moved back on release). Ctrl + drag drags a copy.
-- Not imitated yet: turning by steps other than 90° and by typed angles (the rebuild keeps parts
-  in quarter turns, FEATURES NST-14), the minimum-rectangle turn, Place Near, Expand, Fit and
-  Advanced Copy (NST-4), snap points and Distance & Angle on the sheet (NST-6), orthogonal mode.
+- **Turn** (HM14–HM17): the turn bar under the selection turns it by the step or to a typed
+  angle; the round handle above it turns it by dragging, snapping to the step.
+- Not imitated yet: the minimum-rectangle turn (Ctrl+G / Ctrl+F), + / − and Ctrl+E for the step,
+  Ctrl+D flipping the fixed-angle keys (FEATURES NST-22), Place Near, Expand, Fit and Advanced
+  Copy (NST-4), snap points and Distance & Angle on the sheet (NST-6), orthogonal mode.
 
 ## Manual machining (cutting picked contours by hand)
 

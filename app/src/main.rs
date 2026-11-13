@@ -65,6 +65,7 @@ mod qualities;
 mod partview;
 mod techui;
 mod theme;
+mod turnbar;
 mod ui_parts;
 mod units;
 mod v44;
@@ -210,6 +211,13 @@ pub struct App {
     /// More selected parts on the sheet besides `sel_placed` (arrange_ui.rs).
     pub sel_more: Vec<usize>,
     pub drag: Option<arrange_ui::DragState>,
+    /// A turn of the selection by its handle (turnbar.rs, HM15).
+    pub turn_drag: Option<turnbar::TurnDrag>,
+    /// The turn bar's angle box while typed in, its own step, and Ctrl+T
+    /// asking for the box (HM17).
+    pub turn_text: String,
+    pub turn_custom: f64,
+    pub turn_focus: bool,
     /// A selection window being drawn on the sheet: where the drag started and
     /// where it is now (mm; the direction says what it takes, SW1), and
     /// whether it adds to the selection.
@@ -566,6 +574,10 @@ impl App {
             sel_placed: None,
             sel_more: vec![],
             drag: None,
+            turn_drag: None,
+            turn_text: String::new(),
+            turn_custom: turnbar::CUSTOM_STEP_DEFAULT,
+            turn_focus: false,
             window_sel: None,
             step_popup: false,
             panning: false,
@@ -1140,7 +1152,7 @@ impl App {
     /// Returns (first sheet index, number of identical sheets).
     pub fn sheet_groups(&self) -> Vec<(usize, usize)> {
         let sig = |s: &Vec<Placed>| {
-            let mut v: Vec<(usize, i64, i64, u8, bool)> = s.iter().map(|p| (p.part, (p.x * 10.0).round() as i64, (p.y * 10.0).round() as i64, p.turns, p.mirror)).collect();
+            let mut v: Vec<(usize, i64, i64, u8, bool, i64)> = s.iter().map(|p| (p.part, (p.x * 10.0).round() as i64, (p.y * 10.0).round() as i64, p.turns, p.mirror, (p.spin.deg * 100.0).round() as i64)).collect();
             v.sort();
             v
         };
@@ -1150,7 +1162,7 @@ impl App {
             let f = self.result.format(i, &self.spec);
             ((f.w * 10.0).round() as i64, (f.h * 10.0).round() as i64, f.stock_ref)
         };
-        let mut groups: Vec<(usize, usize, Vec<(usize, i64, i64, u8, bool)>)> = vec![];
+        let mut groups: Vec<(usize, usize, Vec<(usize, i64, i64, u8, bool, i64)>)> = vec![];
         for (i, s) in self.result.sheets.iter().enumerate() {
             let g = sig(s);
             if let Some(e) = groups.iter_mut().find(|e| e.2 == g && fmt(e.0) == fmt(i)) {
@@ -1633,6 +1645,7 @@ impl App {
         self.sel_cut = None;
         self.sel_placed = None;
         self.drag = None;
+        self.turn_drag = None;
         // A part on the pointer may be one the restored job doesn't have.
         self.ghost = None;
         if self.sel_part.is_some_and(|i| i >= self.parts.len()) {
@@ -1812,6 +1825,7 @@ impl App {
         self.cur_sheet = 0;
         self.sel_placed = None;
         self.drag = None;
+        self.turn_drag = None;
         self.stale = false;
         self.refresh();
         let need: u32 = self.parts.iter().map(|p| p.qty).sum();
@@ -1866,6 +1880,7 @@ impl App {
                 self.sel_cut = None;
                 self.sel_placed = None;
                 self.drag = None;
+                self.turn_drag = None;
                 if self.cfg.stock.lines_after_nesting {
                     self.auto_lines_sheet(ci);
                 }
@@ -1939,6 +1954,7 @@ impl App {
         self.sel_cut = None;
         self.sel_placed = None;
         self.drag = None;
+        self.turn_drag = None;
         self.refresh();
     }
 
@@ -2243,6 +2259,10 @@ impl App {
             let n = sheet.len().max(1) as f64;
             let stagger = (0.7 / n).min(0.03);
             let mut animating = false;
+            // Selection glows are gathered into this slot, under every part, so
+            // one part's glow never paints over the parts placed before it.
+            let halo_slot = painter.add(EShape::Noop);
+            let mut halos: Vec<EShape> = vec![];
             for (i, pl) in sheet.iter().enumerate() {
                 let part = &self.parts[pl.part];
                 let base = part_color(part.color);
@@ -2255,7 +2275,7 @@ impl App {
                         part.name,
                         i + 1,
                         u.size(pl.w, pl.h, 0),
-                        &match (pl.angle(), pl.mirror) { (0, false) => String::new(), (a, m) => format!("  ·  turned {a}°{}", if m { ", mirrored" } else { "" }) },
+                        &if pl.angle() == 0.0 && !pl.mirror { String::new() } else { format!("  ·  turned {}{}", nest::angle_text(pl.angle()), if pl.mirror { ", mirrored" } else { "" }) },
                         u.num_dp(pl.x, 0),
                         u.num_dp(pl.y, 0)
                     ));
@@ -2272,7 +2292,7 @@ impl App {
                 let drop = (1.0 - ease) * 14.0;
                 let fill = if hovered && !selected { base.gamma_multiply(1.2) } else { base };
                 let fill = if t < 1.0 { fill.gamma_multiply(ease) } else { fill };
-                let invalid = self.drag.as_ref().is_some_and(|d| !d.valid && d.sel.contains(&i));
+                let invalid = self.drag.as_ref().is_some_and(|d| !d.valid && d.sel.contains(&i)) || self.turn_drag.as_ref().is_some_and(|d| !d.valid && d.sel.contains(&i));
                 let edge = if invalid {
                     Stroke::new(2.5, Color32::from_rgb(248, 80, 90))
                 } else if selected {
@@ -2281,16 +2301,15 @@ impl App {
                     Stroke::new(1.0, th().part_edge.gamma_multiply(ease))
                 };
                 if selected {
-                    // Soft glow behind the selected part.
-                    let r = Rect::from_two_pos(to_s([pl.x, pl.y]), to_s([pl.x + pl.w, pl.y + pl.h])).expand(4.0);
-                    painter.rect_filled(r, CornerRadius::same(4), Color32::from_rgba_unmultiplied(255, 255, 255, 40));
+                    // Soft glow round the selected part's own profile.
+                    halos.extend(selection_halo(part, pl, |q| to_s(q) - Vec2::new(0.0, drop)));
                 }
                 paint_part_placed(&painter, part, pl, |q| to_s(q) - Vec2::new(0.0, drop), fill, edge, th().sheet);
                 // Every contour in its cut quality's or state's colour (CS7).
                 crate::cutpanel::paint_contour_colours(&painter, part, &mt, &|q| to_s(pl.map(q)) - Vec2::new(0.0, drop), 1.2, false);
                 // Micro-joints as the cut plan places them (automatic ones too, holes
                 // included): small uncut bridges on the contours.
-                let planned: Vec<(&[P], (f64, f64))> = if self.drag.is_none() {
+                let planned: Vec<(&[P], (f64, f64))> = if !self.moving_parts() {
                     self.plans.get(sheet_idx).map_or(vec![], |plan| {
                         plan.contours.iter().filter(|c| c.part_no == i + 1).flat_map(|c| c.joints.iter().map(move |&j| (c.points.as_slice(), j))).collect()
                     })
@@ -2320,10 +2339,11 @@ impl App {
                     }
                 }
             }
+            painter.set(halo_slot, EShape::Vec(halos));
             if animating {
                 ui.ctx().request_repaint();
             }
-            if self.show_path && self.drag.is_none() {
+            if self.show_path && !self.moving_parts() {
                 if let Some(plan) = self.plans.get(sheet_idx) {
                     let mut pos = to_s([0.0, 0.0]);
                     let rapid = Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 120, 120, 200));
@@ -2369,9 +2389,10 @@ impl App {
         if has_sheet {
             self.arrange_canvas(&painter, &to_s);
             self.carry_canvas(&painter, &to_s);
+            self.turn_canvas(&painter, &to_s, s);
         }
         // Hover card next to the pointer.
-        if let (Some(info), Some(hp), None, false, None) = (&self.hover_name, resp.hover_pos(), &self.drag, ghosting, &self.carry) {
+        if let (Some(info), Some(hp), None, false, None, None) = (&self.hover_name, resp.hover_pos(), &self.drag, ghosting, &self.carry, &self.turn_drag) {
             let galley = painter.layout(info.clone(), FontId::proportional(12.5), th().text, 260.0);
             let size = galley.size() + Vec2::new(20.0, 14.0);
             let mut pos = hp + Vec2::new(18.0, 18.0);
@@ -2418,6 +2439,10 @@ impl App {
         }
         if self.ghost.is_some() {
             self.ghost_canvas(ui, &painter, rect, &resp, &to_s, &to_w, s);
+        }
+        // Turn the selection: step buttons, a typed angle, the step (HM17).
+        if has_sheet {
+            self.turn_bar(ui, rect, &to_s);
         }
 
         self.canvas_overlays(ui, rect, now);
@@ -3403,7 +3428,7 @@ fn main() -> eframe::Result {
                     'find: for a in 0..rings.len() {
                         for b in a + 1..rings.len() {
                             for p in nest::pocket_points(rings[a].0, rings[a].1, rings[b].0, rings[b].1, r, app.spec.gap) {
-                                let c = Placed { part: i, x: p[0] - lc[0], y: p[1] - lc[1], w: fw, h: fh, turns: 0, mirror: false };
+                                let c = Placed { part: i, x: p[0] - lc[0], y: p[1] - lc[1], w: fw, h: fh, turns: 0, mirror: false, spin: Default::default() };
                                 if app.ghost_ok(&c) {
                                     spot = Some(p);
                                     break 'find;
@@ -3790,7 +3815,7 @@ mod tests {
         let r = Part { name: "A".into(), shape: Shape::Rectangle, w: 100.0, h: 100.0, qty: 2, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
         a.parts = vec![r];
         a.spec.gap = 6.35;
-        a.result = NestResult { sheets: vec![vec![Placed { part: 0, x: 100.0, y: 100.0, w: 100.0, h: 100.0, turns: 0, mirror: false }, Placed { part: 0, x: 210.0, y: 100.0, w: 100.0, h: 100.0, turns: 0, mirror: false }]], formats: vec![nest::SheetFormat::rect(2000.0, 1000.0)], method: String::new(), tried: 0 };
+        a.result = NestResult { sheets: vec![vec![Placed { part: 0, x: 100.0, y: 100.0, w: 100.0, h: 100.0, turns: 0, mirror: false, spin: Default::default() }, Placed { part: 0, x: 210.0, y: 100.0, w: 100.0, h: 100.0, turns: 0, mirror: false, spin: Default::default() }]], formats: vec![nest::SheetFormat::rect(2000.0, 1000.0)], method: String::new(), tried: 0 };
         a.cur_sheet = 0;
         a.collision = false;
         a.set_selection(vec![1]);

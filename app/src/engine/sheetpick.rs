@@ -226,7 +226,7 @@ mod tests {
     }
 
     fn at(part: usize, x: f64, y: f64, w: f64, h: f64) -> Placed {
-        Placed { part, x, y, w, h, turns: 0, mirror: false }
+        Placed { part, x, y, w, h, turns: 0, mirror: false, spin: Default::default() }
     }
 
     fn spec() -> SheetSpec {

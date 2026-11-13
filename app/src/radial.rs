@@ -191,7 +191,7 @@ impl App {
     /// Right button pressed (or S) over a hovered canvas.
     pub fn radial_trigger(&self, ui: &egui::Ui) -> bool {
         // Not while parts are being dragged or carried (right-click cancels a carry).
-        if self.radial.is_some() || self.dock.dragging.is_some() || self.drag.is_some() || self.carry.is_some() {
+        if self.radial.is_some() || self.dock.dragging.is_some() || self.drag.is_some() || self.turn_drag.is_some() || self.carry.is_some() {
             return false;
         }
         let right = ui.input(|i| i.pointer.button_pressed(PointerButton::Secondary));

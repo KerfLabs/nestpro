@@ -222,7 +222,7 @@ pub fn program_job(cfg: &AppSettings, base: &SheetSpec, path: &Path, color0: usi
             rots: Default::default(),
         })
         .collect();
-    let sheet: Vec<Placed> = im.placed.iter().map(|&(k, x, y)| Placed { part: k, x, y, w: parts[k].w, h: parts[k].h, turns: 0, mirror: false }).collect();
+    let sheet: Vec<Placed> = im.placed.iter().map(|&(k, x, y)| Placed { part: k, x, y, w: parts[k].w, h: parts[k].h, turns: 0, mirror: false, spin: Default::default() }).collect();
     let cuts: Vec<CutLine> = im
         .cuts
         .iter()

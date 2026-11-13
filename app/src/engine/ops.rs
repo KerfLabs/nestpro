@@ -238,9 +238,10 @@ pub static OPS: &[Op] = &[
     Op { name: "rotate", group: "Nesting", kind: Kind::Write, help: "Turn a placed part to its next allowed quarter turn (counter-clockwise), or with back=true to its previous one (clockwise), where there is room.", args: &[
         SHEET, ITEM, a("back", Ty::Bool, "Turn to the previous allowed turn (clockwise) instead of the next"),
     ] },
-    Op { name: "turn", group: "Nesting", kind: Kind::Write, help: "Turn placed parts together about the centre of their box by 90° (counter-clockwise), -90° or 180°; when the turned group would overlap a part or leave the sheet it moves to the nearest free spot.", args: &[
+    Op { name: "turn", group: "Nesting", kind: Kind::Write, help: "Turn placed parts together about the centre of their box, by any angle (angle) or so the first of them sits at an angle (to) — the turn bar on the sheet; when the turned group would overlap a part or leave the sheet it moves to the nearest free spot. Angles other than 0/90/180/270° need parts that may turn 90°.", args: &[
         SHEET, ITEM_ONE, ITEMS,
-        Arg { name: "angle", ty: Ty::Int, required: false, help: "90 (default, counter-clockwise), -90 or 180", choices: &[] },
+        Arg { name: "angle", ty: Ty::Num, required: false, help: "Turn by this many degrees: positive counter-clockwise, negative clockwise (default 90; any angle, e.g. 15 or -32.5)", choices: &[] },
+        a("to", Ty::Num, "Instead of angle: turn so the first of the parts sits at this angle (degrees, counter-clockwise from as drawn); the others turn with it"),
     ] },
     Op { name: "mirror", group: "Nesting", kind: Kind::Write, help: "Mirror placed parts together about the centre of their box: axis x = left↔right (default), y = top↔bottom; moved to the nearest free spot when needed.", args: &[
         SHEET, ITEM_ONE, ITEMS,
@@ -714,7 +715,7 @@ fn spec_json(spec: &SheetSpec) -> Value {
 
 fn placed_json(job: &JobFile, s: usize) -> Value {
     json!(job.sheets[s].iter().enumerate().map(|(i, p)| json!({
-        "item": i + 1, "part": p.part + 1, "name": job.parts[p.part].name, "x": r1(p.x), "y": r1(p.y), "w": r1(p.w), "h": r1(p.h), "angle": p.angle(), "mirror": p.mirror,
+        "item": i + 1, "part": p.part + 1, "name": job.parts[p.part].name, "x": r1(p.x), "y": r1(p.y), "w": r1(p.w), "h": r1(p.h), "angle": (p.angle() * 100.0).round() / 100.0, "mirror": p.mirror,
     })).collect::<Vec<_>>())
 }
 
@@ -2353,7 +2354,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             let c = match (a.num("x")?, a.num("y")?) {
                 (Some(x), Some(y)) => {
                     let (w, h) = footprint(&job.parts[pi], turns);
-                    let c = Placed { part: pi, x, y, w, h, turns, mirror };
+                    let c = Placed { part: pi, x, y, w, h, turns, mirror, spin: Default::default() };
                     if !placement_ok(&job.parts, &job.sheets[s], &job.spec, &job.format(s), None, &c, true) {
                         job.tidy();
                         return Err(format!("There is no room for '{}' at X {x} Y {y} on sheet {} (it would overlap a part or leave the margin).", job.parts[pi].name, s + 1));
@@ -2441,20 +2442,23 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             }
             job.sheets[s][i] = c;
             job.sheet_changed(s);
-            Ok(Outcome::msg(format!("Turned #{} to {}°.", i + 1, c.angle())))
+            Ok(Outcome::msg(format!("Turned #{} to {}.", i + 1, nest::angle_text(c.angle()))))
         }
         "turn" | "mirror" => {
             let s = sheet_idx(job, &a)?;
             let sel = items_idx(job, s, &a)?;
             let f = job.format(s);
             let (new, what) = if name == "turn" {
-                let q = match a.int("angle")?.unwrap_or(90) {
-                    90 | -270 => 1,
-                    180 | -180 => 2,
-                    -90 | 270 => 3,
-                    v => return Err(format!("angle: {v}° — parts turn by 90, -90 or 180.")),
+                // HM14: by any angle, or to an angle for the first part.
+                let deg = match (a.num("angle")?, a.num("to")?) {
+                    (Some(_), Some(_)) => return Err("Give angle (turn by) or to (turn to an angle), not both.".into()),
+                    (None, Some(t)) => t - job.sheets[s][sel[0]].angle(),
+                    (by, None) => by.unwrap_or(90.0),
                 };
-                (arrange::turn(&job.parts, &job.sheets[s], &sel, q, &job.spec, &f, true)?, format!("Turned {}", names(&sel)))
+                if !deg.is_finite() {
+                    return Err("angle: give a number of degrees.".into());
+                }
+                (arrange::turn_by(&job.parts, &job.sheets[s], &sel, deg, &job.spec, &f, true)?, format!("Turned {} by {}", names(&sel), nest::angle_text(deg)))
             } else {
                 let vertical = match a.str("axis").as_deref().map(str::trim) {
                     None | Some("x") | Some("X") => true,

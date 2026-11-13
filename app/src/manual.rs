@@ -266,7 +266,7 @@ mod tests {
     fn app() -> App {
         let mut a = App::new(None);
         a.parts = vec![Part { name: "DEMO-PLATE".into(), shape: Shape::Rectangle, w: 100.0, h: 50.0, qty: 3, rotate: false, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
-        let at = |x| Placed { part: 0, x, y: 100.0, w: 100.0, h: 50.0, turns: 0, mirror: false };
+        let at = |x| Placed { part: 0, x, y: 100.0, w: 100.0, h: 50.0, turns: 0, mirror: false, spin: Default::default() };
         a.result = NestResult { sheets: vec![vec![at(100.0), at(300.0), at(500.0)]], formats: vec![SheetFormat::rect(2000.0, 1000.0)], method: String::new(), tried: 0 };
         a.cur_sheet = 0;
         a.manual_cuts.clear();

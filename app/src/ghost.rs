@@ -202,7 +202,7 @@ impl App {
     /// clamped into the sheet, then approach-snapped. Returns (box, snapped, ok).
     pub fn ghost_candidate(&self, g: &Ghost, w: P, reach: f64) -> (Placed, bool, bool) {
         let (fw, fh) = footprint(&self.parts[g.part], g.turns);
-        let mut c = Placed { part: g.part, x: (w[0] - fw / 2.0).round(), y: (w[1] - fh / 2.0).round(), w: fw, h: fh, turns: g.turns, mirror: g.mirror };
+        let mut c = Placed { part: g.part, x: (w[0] - fw / 2.0).round(), y: (w[1] - fh / 2.0).round(), w: fw, h: fh, turns: g.turns, mirror: g.mirror, spin: Default::default() };
         clamp_to_limits(&mut c, &self.cur_spec());
         if let Some(circle) = nest::part_circle(&self.parts[g.part]) {
             let rings: Vec<(P, f64)> = self.ghost_others().iter().filter_map(|o| nest::placed_circle(&self.parts, o)).collect();
@@ -371,7 +371,7 @@ impl App {
         // Readout next to the ghost.
         let mut info = format!("X {:.0}  Y {:.0}", c.x, c.y);
         if c.turns % 4 != 0 || c.mirror {
-            info += &format!("  ·  {}°{}", c.angle(), if c.mirror { " mirrored" } else { "" });
+            info += &format!("  ·  {}{}", nest::angle_text(c.angle()), if c.mirror { " mirrored" } else { "" });
         }
         if snapped {
             info += "  ·  snapped";
@@ -404,7 +404,7 @@ mod ghost_tests {
         Part { name: "P".into(), shape: Shape::Rectangle, w: 100.0, h: 40.0, qty: 2, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }
     }
     fn at(x: f64, y: f64) -> Placed {
-        Placed { part: 0, x, y, w: 100.0, h: 40.0, turns: 0, mirror: false }
+        Placed { part: 0, x, y, w: 100.0, h: 40.0, turns: 0, mirror: false, spin: Default::default() }
     }
 
     #[test]
@@ -439,7 +439,7 @@ mod ghost_tests {
         Part { shape: Shape::Disc, w: 100.0, h: 100.0, ..part() }
     }
     fn disc_at(x: f64, y: f64) -> Placed {
-        Placed { part: 0, x, y, w: 100.0, h: 100.0, turns: 0, mirror: false }
+        Placed { part: 0, x, y, w: 100.0, h: 100.0, turns: 0, mirror: false, spin: Default::default() }
     }
 
     #[test]
@@ -473,7 +473,7 @@ mod ghost_tests {
         Part { shape: Shape::Triangle, w: 100.0, h: 100.0, ..part() }
     }
     fn tri_at(x: f64, y: f64, turns: u8) -> Placed {
-        Placed { part: 0, x, y, w: 100.0, h: 100.0, turns, mirror: false }
+        Placed { part: 0, x, y, w: 100.0, h: 100.0, turns, mirror: false, spin: Default::default() }
     }
 
     #[test]
@@ -489,11 +489,11 @@ mod ghost_tests {
         let ring = Part { shape: Shape::PlateHole, w: 300.0, h: 300.0, ..part() };
         let small = Part { shape: Shape::Rectangle, w: 20.0, h: 20.0, ..part() };
         let ps = [ring, small];
-        let big = Placed { part: 0, x: 0.0, y: 0.0, w: 300.0, h: 300.0, turns: 0, mirror: false };
+        let big = Placed { part: 0, x: 0.0, y: 0.0, w: 300.0, h: 300.0, turns: 0, mirror: false, spin: Default::default() };
         let hole = nest::placed_shape(&ps, &big).1;
         if let Some(h) = hole.first() {
             let c = nest::centroid(h);
-            let inside = Placed { part: 1, x: c[0] - 10.0, y: c[1] - 10.0, w: 20.0, h: 20.0, turns: 0, mirror: false };
+            let inside = Placed { part: 1, x: c[0] - 10.0, y: c[1] - 10.0, w: 20.0, h: 20.0, turns: 0, mirror: false, spin: Default::default() };
             assert!(!nest::clash_exact(&ps, &inside, &big, 5.0), "fits in the hole");
             let on_edge = Placed { x: 5.0, y: 140.0, ..inside };
             assert!(nest::clash_exact(&ps, &on_edge, &big, 5.0));

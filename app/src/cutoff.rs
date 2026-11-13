@@ -799,7 +799,7 @@ mod cutoff_tests {
         Part { name: "R".into(), shape: Shape::Rectangle, w: 500.0, h: 300.0, qty: 1, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }
     }
     fn at(x: f64, y: f64) -> Placed {
-        Placed { part: 0, x, y, w: 500.0, h: 300.0, turns: 0, mirror: false }
+        Placed { part: 0, x, y, w: 500.0, h: 300.0, turns: 0, mirror: false, spin: Default::default() }
     }
 
     #[test]
