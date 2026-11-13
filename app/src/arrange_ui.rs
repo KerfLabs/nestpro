@@ -5,6 +5,8 @@
 //! `engine::arrange`; MECHANICS.md "Moving parts by hand" (HM1–HM12).
 
 use crate::engine::arrange::{self, Dir};
+use crate::engine::pattern::{self, Over};
+use crate::engine::selection::{Take, Window};
 use crate::nest::{self, Placed, P};
 use crate::theme::th;
 use crate::App;
@@ -32,6 +34,8 @@ pub struct DragState {
     pub valid: bool,
     /// Ctrl+drag: the moving parts are new copies (`copied_from` = sheet length before).
     pub copied_from: Option<usize>,
+    /// Ctrl+drag: each part's order before the copies (put back if they can't stay).
+    pub qty0: Vec<u32>,
     /// Gap halos of the moving parts at their start (mm, sheet coordinates).
     pub halo: Vec<Vec<P>>,
 }
@@ -55,8 +59,28 @@ pub struct Carry {
     pub off: P,
     pub last: Option<P>,
     pub valid: bool,
-    /// The originals (selected again on cancel).
+    /// The originals (selected again on cancel); for a pattern, the copy
+    /// dropped last.
     pub orig: Vec<usize>,
+    /// Ctrl+C's pattern (HM18–HM21): it stays on the pointer after each drop
+    /// and uses the pieces still to place. `None`: the quick ring's copy.
+    pub repeat: Option<Repeat>,
+}
+
+/// A pattern on the pointer (HM18–HM21).
+#[derive(Clone, Debug, Default)]
+pub struct Repeat {
+    /// The answer for a copy short of pieces, once given: it holds until the
+    /// pattern is put away (HM20).
+    pub over: Option<Over>,
+    /// A drop waiting for that answer, and where on the screen it was asked.
+    pub asking: bool,
+    pub ask_pos: Option<Pos2>,
+    /// Copies dropped so far.
+    pub drops: u32,
+    /// The copies' part names: a pattern follows to another sheet or through
+    /// undo only while the job's parts are still the same.
+    pub names: Vec<String>,
 }
 
 impl App {
@@ -223,7 +247,7 @@ impl App {
         let mut moves: Vec<(Dir, bool)> = vec![];
         let mut pan = Vec2::ZERO;
         let mut zoom = 0i32;
-        let (mut turn, mut mirror, mut all, mut step, mut esc, mut typed) = (None::<f64>, None, false, false, false, false);
+        let (mut turn, mut mirror, mut all, mut step, mut esc, mut typed, mut copy) = (None::<f64>, None, false, false, false, false, false);
         let by = self.key_turn_step();
         // The fixed-angle keys turn the way the setting says (HM5).
         let fixed = if self.cfg.nesting.keys_clockwise { -1.0 } else { 1.0 };
@@ -275,6 +299,13 @@ impl App {
             if has && i.key_pressed(Key::Escape) {
                 esc = true;
             }
+            // Ctrl+C: the selection as a pattern on the pointer (HM18). The
+            // window system sends it as a Copy event rather than a key; with
+            // no part selected it is left for copying text.
+            if has && (i.events.iter().any(|e| matches!(e, egui::Event::Copy)) || i.consume_key(Modifiers::COMMAND, Key::C)) {
+                i.events.retain(|e| !matches!(e, egui::Event::Copy));
+                copy = true;
+            }
         });
         if !has {
             moves.clear();
@@ -304,6 +335,9 @@ impl App {
         }
         if step {
             self.step_popup = true;
+        }
+        if copy {
+            self.start_pattern(self.cursor_mm);
         }
         if esc && !self.step_popup {
             self.set_selection(vec![]);
@@ -350,7 +384,9 @@ impl App {
                     self.start_drag(i, w, mods.command);
                     self.panning = false;
                 } else {
-                    // Empty sheet: a selection window (HM7).
+                    // Empty sheet: a selection window (HM7), from where the
+                    // button went down; which way it is dragged says what it
+                    // takes (SW1).
                     self.window_sel = Some((w, w, mods.shift || mods.command));
                     self.panning = false;
                 }
@@ -373,7 +409,10 @@ impl App {
             self.cut_drag_end();
             self.end_drag();
             if let Some((a, b, add)) = self.window_sel.take() {
-                let mut v = arrange::window_select(&self.result.sheets[si], a, b);
+                // Where the button came up, which says the direction (SW1).
+                let b = resp.interact_pointer_pos().map(to_w).unwrap_or(b);
+                let win = Window::dragged(a, b);
+                let mut v = arrange::window_select(&self.parts, &self.result.sheets[si], &win);
                 if add {
                     let mut cur = self.selection();
                     cur.retain(|i| !v.contains(i));
@@ -381,7 +420,11 @@ impl App {
                 }
                 let n = v.len();
                 self.set_selection(v);
-                self.status = if n == 0 { "No part lies wholly inside the window.".into() } else { format!("{n} part(s) selected — Alt+arrows move them by the step, Ctrl+arrows slide them to the next part.") };
+                self.status = match (n, win.take) {
+                    (0, Take::Inside) => "No part lies wholly inside the window — drag to the left to take the parts it touches.".into(),
+                    (0, Take::Touching) => "The window touches no part.".into(),
+                    _ => format!("{n} part(s) selected — Alt+arrows move them by the step, Ctrl+arrows slide them to the next part."),
+                };
             }
             self.panning = false;
         }
@@ -403,14 +446,14 @@ impl App {
         let mut sel = self.selection();
         let mut copied_from = None;
         let mut grab_idx = grab_idx;
+        let mut qty0 = vec![];
         if copy {
-            // Ctrl+drag: fresh copies follow the pointer; the originals stay (HM10).
+            // Ctrl+drag: fresh copies follow the pointer; the originals stay.
+            // They use pieces still to place first (HM10).
             let n = self.result.sheets[si].len();
             let copies = arrange::copies(&self.result.sheets[si], &sel, [0.0, 0.0]);
-            for c in &copies {
-                self.parts[c.part].qty += 1;
-            }
-            self.result.sheets[si].extend(copies);
+            qty0 = self.parts.iter().map(|p| p.qty).collect();
+            pattern::put(&mut self.parts, &mut self.result.sheets, si, &copies);
             grab_idx = n + sel.iter().position(|&i| i == grab_idx).unwrap_or(0);
             sel = (n..self.result.sheets[si].len()).collect();
             copied_from = Some(n);
@@ -419,7 +462,22 @@ impl App {
         let start = self.result.sheets[si].clone();
         let g = start[grab_idx];
         let halo = if self.cfg.nesting.halo { sel.iter().flat_map(|&i| arrange::gap_halo(&self.parts, &start[i], self.spec.gap)).collect() } else { vec![] };
-        self.drag = Some(DragState { sel, start, grab_idx, grab: [w[0] - g.x, w[1] - g.y], off: [0.0, 0.0], last: copied_from.is_none().then_some([0.0, 0.0]), valid: copied_from.is_none(), copied_from, halo });
+        self.drag = Some(DragState { sel, start, grab_idx, grab: [w[0] - g.x, w[1] - g.y], off: [0.0, 0.0], last: copied_from.is_none().then_some([0.0, 0.0]), valid: copied_from.is_none(), copied_from, qty0, halo });
+    }
+
+    /// The status line after copies went on the sheet shown, from index
+    /// `first` on (HM10): where a single copy went, and how many went beyond
+    /// the order.
+    pub(crate) fn copied_status(&self, first: usize, extras: u32) -> String {
+        let Some(s) = self.result.sheets.get(self.cur_sheet).filter(|s| first < s.len()) else { return String::new() };
+        let p = s[first];
+        let part = &self.parts[p.part];
+        match (s.len() - first, extras) {
+            (1, 0) => format!("Copied {} to X {}  Y {} — {} left to place.", part.name, self.len_txt(p.x), self.len_txt(p.y), part.qty.saturating_sub(self.placed_of(p.part) as u32)),
+            (1, _) => format!("Copied {} to X {}  Y {} — an extra: none were left, so the order grew to {}.", part.name, self.len_txt(p.x), self.len_txt(p.y), part.qty),
+            (n, 0) => format!("Copied {n} parts from the pieces still to place; the copies are selected."),
+            (n, e) => format!("Copied {n} parts; {e} went beyond the order, which grew by {e}. The copies are selected."),
+        }
     }
 
     /// The quick ring's Copy (QR4): copies of the whole selection, spacing
@@ -432,13 +490,66 @@ impl App {
         let grab_idx = sel.iter().position(|&i| nest::placed_contains(&self.parts, &sheet[i], at)).unwrap_or(0);
         let g = copies[grab_idx];
         let n = copies.len();
-        self.carry = Some(Carry { sheet: si, base: sheet.clone(), limits: self.sheet_limits(), copies, grab_idx, grab: [at[0] - g.x, at[1] - g.y], off: [0.0, 0.0], last: None, valid: false, orig: sel });
+        self.carry = Some(Carry { sheet: si, base: sheet.clone(), limits: self.sheet_limits(), copies, grab_idx, grab: [at[0] - g.x, at[1] - g.y], off: [0.0, 0.0], last: None, valid: false, orig: sel, repeat: None });
         self.status = format!("Copy of {} on the pointer — click to drop it, Esc or right-click to cancel.", if n == 1 { "the part".to_string() } else { format!("{n} parts") });
+    }
+
+    /// Ctrl+C (HM18): copies of the selected parts, layout kept, go on the
+    /// pointer as a pattern that stays there after each drop and uses the
+    /// pieces still to place (HM19). `at`: the pointer on the sheet (mm);
+    /// without it the pattern is held by the middle of the first selected part.
+    pub fn start_pattern(&mut self, at: Option<P>) {
+        let sel = self.selection();
+        let si = self.cur_sheet;
+        let Some(sheet) = self.result.sheets.get(si).filter(|_| !sel.is_empty()) else {
+            self.status = "Select the parts of the pattern first (click, Shift + click or a window round them), then Ctrl+C.".into();
+            return;
+        };
+        let copies = arrange::copies(sheet, &sel, [0.0, 0.0]);
+        let held = at.and_then(|w| sel.iter().position(|&i| nest::placed_contains(&self.parts, &sheet[i], w))).unwrap_or(0);
+        let g = copies[held];
+        let at = at.unwrap_or([g.x + g.w / 2.0, g.y + g.h / 2.0]);
+        let names = copies.iter().map(|p| self.parts[p.part].name.clone()).collect();
+        let u = pattern::uses(&self.parts, &self.result.sheets, &copies);
+        self.carry = Some(Carry { sheet: si, base: sheet.clone(), limits: self.sheet_limits(), copies, grab_idx: held, grab: [at[0] - g.x, at[1] - g.y], off: [0.0, 0.0], last: None, valid: false, orig: sel, repeat: Some(Repeat { names, ..Default::default() }) });
+        self.status = format!("Pattern on the pointer: {}. Click to drop a copy; Esc puts it away.", pattern::label(&self.parts, &u, None));
+    }
+
+    /// What one copy of the pattern on the pointer uses, and the answer given
+    /// for a short copy (HM19, HM20).
+    pub fn pattern_uses(&self) -> Option<(Vec<pattern::Use>, Option<Over>)> {
+        let c = self.carry.as_ref()?;
+        let r = c.repeat.as_ref()?;
+        Some((pattern::uses(&self.parts, &self.result.sheets, &c.copies), r.over))
+    }
+
+    /// A pattern is on the pointer (the keys for the selection wait).
+    pub fn pattern_on(&self) -> bool {
+        self.carry.as_ref().is_some_and(|c| c.repeat.is_some())
     }
 
     fn sheet_limits(&self) -> [f64; 4] {
         let s = self.cur_spec();
         [s.w, s.h, s.margin, s.gap]
+    }
+
+    /// A pattern can go along to the sheet shown now (HM21): still on the
+    /// Nesting screen with no other tool, and the job's parts are the ones it
+    /// was copied from.
+    fn pattern_can_follow(&self) -> bool {
+        let Some((c, r)) = self.carry.as_ref().and_then(|c| Some((c, c.repeat.as_ref()?))) else { return false };
+        self.cur_sheet < self.result.sheets.len()
+            && self.workspace == crate::Workspace::Nesting
+            && self.ghost.is_none()
+            && self.cut_tool.is_none()
+            && !self.manual_mode
+            && c.copies.len() == r.names.len()
+            && c.copies.iter().zip(&r.names).all(|(p, n)| {
+                self.parts.get(p.part).is_some_and(|q| {
+                    let (w, h) = crate::ghost::footprint(q, p.turns);
+                    &q.name == n && (w - p.w).abs() < 1e-3 && (h - p.h).abs() < 1e-3
+                })
+            })
     }
 
     /// The carry still belongs to the sheet as it is now (nothing else has
@@ -456,21 +567,50 @@ impl App {
         })
     }
 
-    /// End a carry that no longer belongs to the sheet shown (see `carry_current`).
+    /// End a carry that no longer belongs to the sheet shown (see
+    /// `carry_current`). A pattern instead goes along to the sheet as it is
+    /// now — another sheet, after undo, a new sheet (HM21) — while it can.
     pub fn check_carry(&mut self) {
-        if self.carry.is_some() && !self.carry_current() {
-            self.carry = None;
+        if self.carry.is_none() || self.carry_current() {
+            return;
         }
+        if self.pattern_can_follow() {
+            let si = self.cur_sheet;
+            let (base, limits) = (self.result.sheets[si].clone(), self.sheet_limits());
+            if let Some(c) = self.carry.as_mut() {
+                c.sheet = si;
+                c.base = base;
+                c.limits = limits;
+                c.last = None;
+                c.valid = false;
+                c.orig.clear();
+                if let Some(r) = c.repeat.as_mut() {
+                    r.asking = false;
+                    r.ask_pos = None;
+                }
+            }
+            return;
+        }
+        self.carry = None;
     }
 
     /// Move the carried copies toward the pointer at `w` (mm), sliding and
     /// snapping as a Ctrl + drag does.
     pub(crate) fn carry_move(&mut self, w: P, s: f32, no_snap: bool) {
         self.check_carry();
-        let Some(c) = self.carry.as_ref() else { return };
+        // A pattern copy waiting for an answer stays where it was asked (HM20).
+        let Some(c) = self.carry.as_ref().filter(|c| !c.repeat.as_ref().is_some_and(|r| r.asking)) else { return };
         let mut all = c.base.clone();
         let n = all.len();
-        all.extend(c.copies.iter().copied());
+        // With "place just those left" chosen, only the pieces that will go
+        // down have to fit (HM20).
+        let going = c
+            .repeat
+            .as_ref()
+            .and_then(|r| pattern::pick(&pattern::uses(&self.parts, &self.result.sheets, &c.copies), &c.copies, c.grab_idx, r.over))
+            .filter(|g| !g.is_empty())
+            .unwrap_or_else(|| (0..c.copies.len()).collect());
+        all.extend(going.iter().map(|&k| c.copies[k]));
         let sel: Vec<usize> = (n..all.len()).collect();
         let g = c.copies[c.grab_idx];
         let want = [(w[0] - c.grab[0]).round() - g.x, (w[1] - c.grab[1]).round() - g.y];
@@ -487,8 +627,10 @@ impl App {
     }
 
     /// Drop the carried copies where they are: only now do they go on the
-    /// sheet, one undo step, each adding one to its part's order.
-    pub(crate) fn carry_drop(&mut self) -> bool {
+    /// sheet, one undo step, counted as HM10 says. A pattern
+    /// uses the pieces still to place instead and stays on the pointer
+    /// (`pattern_drop`); `keep` (Shift) keeps it there when none are left.
+    pub(crate) fn carry_drop(&mut self, keep: bool) -> bool {
         self.check_carry();
         let Some(c) = self.carry.take() else { return false };
         if !c.valid {
@@ -496,39 +638,120 @@ impl App {
             self.carry = Some(c);
             return false;
         }
+        if c.repeat.is_some() {
+            return self.pattern_drop(c, keep);
+        }
         self.checkpoint();
         let si = c.sheet;
         let n = self.result.sheets[si].len();
-        for p in arrange::copies(&c.copies, &(0..c.copies.len()).collect::<Vec<_>>(), c.off) {
-            self.parts[p.part].qty += 1;
-            self.result.sheets[si].push(p);
-        }
+        let pieces = arrange::copies(&c.copies, &(0..c.copies.len()).collect::<Vec<_>>(), c.off);
+        let extras = pattern::put(&mut self.parts, &mut self.result.sheets, si, &pieces);
         self.set_selection((n..self.result.sheets[si].len()).collect());
         self.refresh();
-        let p = self.result.sheets[si][n + c.grab_idx];
-        self.status = if c.copies.len() == 1 {
-            format!("Copied {} to X {}  Y {} (quantity now {}).", self.parts[p.part].name, self.len_txt(p.x), self.len_txt(p.y), self.parts[p.part].qty)
-        } else {
-            format!("Copied {} parts (each part's quantity grew by one).", c.copies.len())
-        };
+        self.status = self.copied_status(n, extras);
         true
+    }
+
+    /// One copy of the pattern goes down (HM19–HM21): it takes pieces still
+    /// to place; a copy short of them asks first (or follows the answer
+    /// already given). The pattern stays on the pointer, unless none of its
+    /// parts has a piece left and `keep` (Shift) isn't held.
+    fn pattern_drop(&mut self, mut c: Carry, keep: bool) -> bool {
+        let Some(mut rep) = c.repeat.take() else { return false };
+        let u = pattern::uses(&self.parts, &self.result.sheets, &c.copies);
+        let Some(pick) = pattern::pick(&u, &c.copies, c.grab_idx, rep.over) else {
+            // Short, and not asked yet: the copy waits for the answer.
+            rep.asking = true;
+            self.status = format!("{} Place only the pieces left, or add extras to the order?", pattern::question(&self.parts, &u));
+            c.repeat = Some(rep);
+            self.carry = Some(c);
+            return false;
+        };
+        if pick.is_empty() {
+            self.status = format!("Nothing left to place of {} — pattern put away.", self.pattern_names(&u));
+            return false;
+        }
+        let at = arrange::copies(&c.copies, &(0..c.copies.len()).collect::<Vec<_>>(), c.off);
+        let pieces: Vec<Placed> = pick.iter().map(|&k| at[k]).collect();
+        // The pattern is off `self.carry` here, so the undo step keeps it.
+        self.checkpoint();
+        let si = c.sheet;
+        let n = self.result.sheets[si].len();
+        let extras = pattern::put(&mut self.parts, &mut self.result.sheets, si, &pieces);
+        rep.drops += 1;
+        self.set_selection((n..self.result.sheets[si].len()).collect());
+        self.refresh();
+        let mut what = format!("Copy {} dropped ({} piece{}", rep.drops, pieces.len(), if pieces.len() == 1 { "" } else { "s" });
+        if extras > 0 {
+            what += &format!(", {extras} extra — the order grew");
+        }
+        what += ")";
+        let u = pattern::uses(&self.parts, &self.result.sheets, &c.copies);
+        if u.iter().all(|x| x.left == 0) && !keep {
+            self.status = format!("{what}. Every {} is placed — pattern put away (Shift + click keeps it on the pointer).", self.pattern_names(&u));
+            return true;
+        }
+        let si = self.cur_sheet;
+        c.sheet = si;
+        c.base = self.result.sheets.get(si).cloned().unwrap_or_default();
+        c.limits = self.sheet_limits();
+        c.orig = self.selection();
+        c.last = None;
+        c.valid = false;
+        self.status = format!("{what}. {}. Click for the next; Esc puts it away.", pattern::label(&self.parts, &u, rep.over));
+        c.repeat = Some(rep);
+        self.carry = Some(c);
+        true
+    }
+
+    fn pattern_names(&self, u: &[pattern::Use]) -> String {
+        let v: Vec<&str> = u.iter().filter_map(|x| self.parts.get(x.part).map(|p| p.name.as_str())).collect();
+        v.join(" and ")
+    }
+
+    /// The answer to "this copy needs more pieces than are left" (HM20):
+    /// extras, only those left, or `None` — not this copy (the pattern stays
+    /// on the pointer). The answer holds until the pattern is put away.
+    pub fn pattern_answer(&mut self, over: Option<Over>, keep: bool) -> bool {
+        let Some(r) = self.carry.as_mut().and_then(|c| c.repeat.as_mut()) else { return false };
+        r.asking = false;
+        r.ask_pos = None;
+        match over {
+            None => {
+                self.status = "Not dropped — the pattern is still on the pointer.".into();
+                false
+            }
+            Some(o) => {
+                r.over = Some(o);
+                self.carry_drop(keep)
+            }
+        }
     }
 
     /// While a copy is carried: it follows the pointer; a click (or a press
     /// that wobbles into a short drag) drops it where it fits; Esc or a
-    /// right-click cancels.
+    /// right-click cancels. A pattern waiting for an answer stays put.
     fn carry_pointer(&mut self, ui: &egui::Ui, resp: &egui::Response, to_w: &dyn Fn(Pos2) -> P, s: f32, no_snap: bool) {
         if resp.dragged_by(PointerButton::Middle) {
             self.pan += resp.drag_delta();
         }
+        if self.carry.as_ref().and_then(|c| c.repeat.as_ref()).is_some_and(|r| r.asking) {
+            // The question (`pattern_window`) takes the keys and clicks.
+            return;
+        }
         if let Some(hp) = resp.hover_pos() {
             self.carry_move(to_w(hp), s, no_snap);
         }
-        let esc = ui.input(|i| i.key_pressed(Key::Escape));
+        let (esc, shift) = ui.input(|i| (i.key_pressed(Key::Escape), i.modifiers.shift));
         if esc || resp.secondary_clicked() {
             self.cancel_carry();
         } else if resp.clicked() || resp.drag_stopped_by(PointerButton::Primary) {
-            self.carry_drop();
+            self.carry_drop(shift);
+            // A short copy asks beside the pointer.
+            let at = resp.interact_pointer_pos().or(resp.hover_pos());
+            if let Some(r) = self.carry.as_mut().and_then(|c| c.repeat.as_mut()).filter(|r| r.asking) {
+                r.ask_pos = at;
+            }
         }
         ui.ctx().request_repaint();
     }
@@ -539,7 +762,60 @@ impl App {
         if self.carry_base_ok(&c) {
             self.set_selection(c.orig);
         }
-        self.status = "Copy cancelled.".into();
+        self.status = match c.repeat {
+            Some(r) if r.drops > 0 => format!("Pattern put away after {} cop{}.", r.drops, if r.drops == 1 { "y" } else { "ies" }),
+            Some(_) => "Pattern put away.".into(),
+            None => "Copy cancelled.".into(),
+        };
+    }
+
+    /// The question for a pattern copy short of pieces (HM20), beside the
+    /// pointer where it was dropped. Enter takes the first choice, Esc
+    /// doesn't drop this copy.
+    pub fn pattern_window(&mut self, ctx: &egui::Context) {
+        let Some((pos, u)) = self.carry.as_ref().and_then(|c| {
+            let r = c.repeat.as_ref().filter(|r| r.asking)?;
+            Some((r.ask_pos, pattern::uses(&self.parts, &self.result.sheets, &c.copies)))
+        }) else {
+            return;
+        };
+        let (short, can) = (pattern::short(&u), pattern::placeable(&u));
+        let mut answer: Option<Option<Over>> = None;
+        let win = egui::Window::new("Not enough pieces left").collapsible(false).resizable(false);
+        let win = match pos {
+            Some(p) => win.fixed_pos(p + Vec2::new(18.0, 18.0)),
+            None => win.anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO),
+        };
+        win.show(ctx, |ui| {
+            ui.set_max_width(360.0);
+            ui.label(pattern::question(&self.parts, &u));
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if can > 0 {
+                    let label = if can == 1 { "Place just the 1 left".to_string() } else { format!("Place just the {can} left") };
+                    if ui.button(label).on_hover_text("The order stays as it is; the piece you hold goes down first, then the nearest (Enter)").clicked() {
+                        answer = Some(Some(Over::OnlyLeft));
+                    }
+                }
+                let label = if short == 1 { "Add 1 extra".to_string() } else { format!("Add {short} extras") };
+                if ui.button(label).on_hover_text("Place the whole copy; the order grows by the pieces beyond it").clicked() {
+                    answer = Some(Some(Over::Extras));
+                }
+                if ui.button("Cancel").on_hover_text("Don't drop this copy; the pattern stays on the pointer (Esc)").clicked() {
+                    answer = Some(None);
+                }
+            });
+            ui.label(egui::RichText::new("Your choice holds for the rest of this pattern.").size(11.5).color(th().text_dim));
+        });
+        let (esc, enter, shift) = ctx.input(|i| (i.key_pressed(Key::Escape), i.key_pressed(Key::Enter), i.modifiers.shift));
+        if esc {
+            answer = Some(None);
+        } else if enter && answer.is_none() {
+            answer = Some(Some(if can > 0 { Over::OnlyLeft } else { Over::Extras }));
+        }
+        if let Some(a) = answer {
+            self.pattern_answer(a, shift);
+        }
     }
 
     fn carry_base_ok(&self, c: &Carry) -> bool {
@@ -550,9 +826,41 @@ impl App {
     pub fn carry_canvas(&self, painter: &egui::Painter, to_s: &dyn Fn(P) -> Pos2) {
         let Some(c) = self.carry.as_ref().filter(|_| self.carry_current()) else { return };
         let tone = if c.valid { Color32::from_rgb(74, 222, 128) } else { Color32::from_rgb(248, 80, 90) };
-        for p in arrange::copies(&c.copies, &(0..c.copies.len()).collect::<Vec<_>>(), c.off) {
+        // A pattern short of pieces with "only those left" chosen: the pieces
+        // that won't go down are drawn faint (HM20).
+        let going = c.repeat.as_ref().and_then(|r| pattern::pick(&pattern::uses(&self.parts, &self.result.sheets, &c.copies), &c.copies, c.grab_idx, r.over));
+        for (k, p) in arrange::copies(&c.copies, &(0..c.copies.len()).collect::<Vec<_>>(), c.off).into_iter().enumerate() {
             let part = &self.parts[p.part];
-            crate::ui_parts::paint_part_placed(painter, part, &p, to_s, crate::ui_parts::with_alpha(crate::ui_parts::part_color(part.color), crate::ghost::GHOST_ALPHA), Stroke::new(2.0, tone), crate::ui_parts::with_alpha(th().sheet, 150));
+            let (alpha, stroke) = match &going {
+                Some(g) if !g.contains(&k) => (40, Stroke::new(1.0, tone.gamma_multiply(0.5))),
+                _ => (crate::ghost::GHOST_ALPHA, Stroke::new(2.0, tone)),
+            };
+            crate::ui_parts::paint_part_placed(painter, part, &p, to_s, crate::ui_parts::with_alpha(crate::ui_parts::part_color(part.color), alpha), stroke, crate::ui_parts::with_alpha(th().sheet, 150));
+        }
+        if let (Some(r), Some((u, _))) = (c.repeat.as_ref(), self.pattern_uses()) {
+            // What one copy uses and what is left, beside the pointer (HM19).
+            let g = c.copies[c.grab_idx];
+            let at = to_s([g.x + c.off[0] + c.grab[0], g.y + c.off[1] + c.grab[1]]);
+            let mut info = pattern::label(&self.parts, &u, r.over);
+            if !c.valid {
+                info += " · no room here";
+            }
+            let fill = if !c.valid {
+                tone
+            } else if pattern::short(&u) > 0 {
+                Color32::from_rgb(217, 119, 6)
+            } else {
+                th().accent
+            };
+            let galley = painter.layout_no_wrap(info, egui::FontId::proportional(12.0), Color32::WHITE);
+            let size = galley.size() + Vec2::new(14.0, 8.0);
+            let clip = painter.clip_rect();
+            let mut pos = at + Vec2::new(16.0, -size.y - 10.0);
+            pos.x = pos.x.min(clip.right() - size.x - 4.0).max(clip.left() + 4.0);
+            pos.y = pos.y.max(clip.top() + 4.0);
+            let chip = Rect::from_min_size(pos, size);
+            painter.rect_filled(chip, CornerRadius::same(6), crate::ui_parts::with_alpha(fill, 230));
+            painter.galley(chip.min + Vec2::new(7.0, 4.0), galley, Color32::WHITE);
         }
     }
 
@@ -586,8 +894,9 @@ impl App {
         if !d.valid {
             self.undo.pop();
             if let Some(n) = d.copied_from {
-                for c in self.result.sheets[si].drain(n..).collect::<Vec<_>>() {
-                    self.parts[c.part].qty = self.parts[c.part].qty.saturating_sub(1);
+                self.result.sheets[si].truncate(n);
+                for (p, &q) in self.parts.iter_mut().zip(&d.qty0) {
+                    p.qty = q;
                 }
                 self.set_selection(vec![]);
                 self.status = "The copy would overlap a part or leave the sheet — not placed.".into();
@@ -603,9 +912,9 @@ impl App {
             return;
         } else {
             let p = self.result.sheets[si][d.grab_idx];
+            let extras = self.parts.iter().zip(&d.qty0).map(|(p, &q)| p.qty.saturating_sub(q)).sum();
             self.status = match (d.copied_from, d.sel.len()) {
-                (Some(_), 1) => format!("Copied {} to X {}  Y {} (quantity now {}).", self.parts[p.part].name, self.len_txt(p.x), self.len_txt(p.y), self.parts[p.part].qty),
-                (Some(_), n) => format!("Copied {n} parts (each part's quantity grew by one)."),
+                (Some(n), _) => self.copied_status(n, extras),
                 (None, 1) => format!("Part moved to X {}  Y {}.", self.len_txt(p.x), self.len_txt(p.y)),
                 (None, n) => format!("{n} parts moved by X {}  Y {}.", self.len_txt(d.off[0]), self.len_txt(d.off[1])),
             };
@@ -628,9 +937,7 @@ impl App {
             }
         }
         if let Some((a, b, _)) = self.window_sel {
-            let r = Rect::from_two_pos(to_s(a), to_s(b));
-            painter.rect_filled(r, CornerRadius::ZERO, th().accent.gamma_multiply(0.12));
-            painter.rect_stroke(r, CornerRadius::ZERO, Stroke::new(1.0, th().accent), egui::StrokeKind::Middle);
+            crate::ui_parts::paint_select_window(painter, Rect::from_two_pos(to_s(a), to_s(b)), Take::of_drag(a[0], b[0]));
         }
     }
 
@@ -697,6 +1004,22 @@ impl App {
             self.start_drag(i, w, false);
             let s = 0.5;
             self.drag_move([w[0] + d[0], w[1] + d[1]], s, false);
+        }
+        // `--pattern=dx,dy`: the selection as a pattern (HM18), held by the
+        // middle of its first part, dropped `--pattern-drops=N` times a step
+        // of dx, dy (mm) apart and held one more step on.
+        let d: Option<Vec<f64>> = arg("--pattern=").map(|v| v.split(',').filter_map(|x| x.trim().parse().ok()).collect());
+        if let (Some(d), Some(i)) = (d.filter(|d| d.len() == 2), self.sel_placed) {
+            let p = self.result.sheets[self.cur_sheet][i];
+            let w = [p.x + p.w / 2.0, p.y + p.h / 2.0];
+            self.start_pattern(Some(w));
+            let drops = arg("--pattern-drops=").and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
+            for k in 1..=drops + 1 {
+                self.carry_move([w[0] + d[0] * k as f64, w[1] + d[1] * k as f64], 0.5, true);
+                if k <= drops {
+                    self.carry_drop(false);
+                }
+            }
         }
         if let Some(deg) = arg("--turn-sel=").and_then(|v| v.parse::<f64>().ok()) {
             self.turn_selected_by(deg);
@@ -879,7 +1202,7 @@ mod quick_ring_tests {
         assert_eq!((a.result.sheets[0].len(), a.parts[0].qty, a.undo.len()), (2, 2, undo0), "nothing placed yet");
         // Over the originals it can't drop and stays on the pointer.
         a.carry_move([150.0, 150.0], 1.0, true);
-        assert!(!a.carry_drop() && a.carry.is_some());
+        assert!(!a.carry_drop(false) && a.carry.is_some());
         // Esc: gone, the originals selected again, nothing to undo.
         a.cancel_carry();
         assert!(a.carry.is_none());
@@ -888,7 +1211,7 @@ mod quick_ring_tests {
         // Carried up into free sheet and dropped: both copies, 200 mm apart as before.
         a.start_carry_copy([150.0, 150.0]);
         a.carry_move([150.0, 650.0], 1.0, true);
-        assert!(a.carry_drop());
+        assert!(a.carry_drop(false));
         let s = &a.result.sheets[0];
         assert_eq!(s.len(), 4);
         assert_eq!((s[2].x, s[2].y, s[3].x, s[3].y), (100.0, 600.0, 300.0, 600.0));
@@ -965,5 +1288,190 @@ mod quick_ring_tests {
         assert_eq!(a.overlaps, vec![(0, 1)], "{}", a.status);
         a.radial_run(Act::Undo, Radial::new(Pos2::ZERO, Ring::Sheet));
         assert!(a.overlaps.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod pattern_tests {
+    use super::*;
+    use crate::nest::{NestResult, Part, Shape, SheetFormat};
+
+    /// Two 100 mm squares of part A side by side, 200 mm apart, `qty` ordered.
+    fn app(qty: u32) -> App {
+        let mut a = App::new(None);
+        let r = Part { name: "A".into(), shape: Shape::Rectangle, w: 100.0, h: 100.0, qty, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
+        a.parts = vec![r];
+        a.spec.gap = 5.0;
+        let at = |x: f64, y: f64| Placed { part: 0, x, y, w: 100.0, h: 100.0, turns: 0, mirror: false, spin: Default::default() };
+        a.result = NestResult { sheets: vec![vec![at(100.0, 100.0), at(300.0, 100.0)]], formats: vec![SheetFormat::rect(2000.0, 1000.0)], method: String::new(), tried: 0 };
+        a.cur_sheet = 0;
+        a.workspace = crate::Workspace::Nesting;
+        a.refresh();
+        a
+    }
+
+    #[test]
+    fn a_pattern_stays_on_the_pointer_and_uses_the_pieces_left() {
+        // HM18, HM19: two of seven placed; each copy of the pair takes two of
+        // the five left, the order stays at seven.
+        let mut a = app(7);
+        a.set_selection(vec![0, 1]);
+        let undo0 = a.undo.len();
+        a.start_pattern(Some([150.0, 150.0]));
+        assert!(a.pattern_on(), "{}", a.status);
+        assert!(a.status.contains("2 × A per copy · 5 left · 2 copies to go"), "{}", a.status);
+        a.carry_move([150.0, 400.0], 1.0, true);
+        assert!(a.carry_drop(false), "{}", a.status);
+        assert!(a.pattern_on(), "it stays on the pointer");
+        assert_eq!((a.result.sheets[0].len(), a.parts[0].qty, a.undo.len()), (4, 7, undo0 + 1), "one undo step, the order didn't grow");
+        let s = &a.result.sheets[0];
+        assert_eq!((s[2].x, s[2].y, s[3].x, s[3].y), (100.0, 350.0, 300.0, 350.0), "layout kept");
+        // Where the last copy went it can't go again.
+        a.carry_move([150.0, 400.0], 1.0, true);
+        assert!(!a.carry_drop(false) && a.pattern_on());
+        a.carry_move([150.0, 650.0], 1.0, true);
+        assert!(a.carry_drop(false), "{}", a.status);
+        assert_eq!((a.result.sheets[0].len(), a.parts[0].qty), (6, 7));
+        assert!(a.status.contains("1 piece short — a drop asks"), "{}", a.status);
+        // Undo takes the last copy off; the pattern stays on the pointer.
+        a.undo();
+        a.check_carry();
+        assert!(a.pattern_on());
+        assert_eq!(a.result.sheets[0].len(), 4);
+        // Esc puts it away and changes nothing else.
+        a.cancel_carry();
+        assert!(!a.pattern_on());
+        assert_eq!((a.result.sheets[0].len(), a.parts[0].qty), (4, 7));
+        assert!(a.overlaps.is_empty());
+    }
+
+    #[test]
+    fn a_copy_short_of_pieces_asks_before_it_drops() {
+        // HM20: three ordered, two placed: the pair's copy is one piece short.
+        let mut a = app(3);
+        a.set_selection(vec![0, 1]);
+        // Held by the right-hand square.
+        a.start_pattern(Some([350.0, 150.0]));
+        a.carry_move([350.0, 400.0], 1.0, true);
+        assert!(!a.carry_drop(false), "it asks first");
+        assert!(a.status.contains("needs 2 × A (1 left)"), "{}", a.status);
+        assert_eq!(a.result.sheets[0].len(), 2);
+        // While it asks, the copy stays where it was dropped.
+        a.carry_move([350.0, 900.0], 1.0, true);
+        assert_eq!(a.carry.as_ref().map(|c| c.off), Some([0.0, 250.0]));
+        // Cancel: not dropped, still on the pointer.
+        a.pattern_answer(None, false);
+        assert!(a.pattern_on() && a.result.sheets[0].len() == 2);
+        // Place just the one left: the square held goes down, the order
+        // stays; none is left, so the pattern is put away.
+        assert!(!a.carry_drop(false));
+        assert!(a.pattern_answer(Some(Over::OnlyLeft), false), "{}", a.status);
+        let s = &a.result.sheets[0];
+        assert_eq!((s.len(), s[2].x, s[2].y, a.parts[0].qty), (3, 300.0, 350.0, 3));
+        assert!(!a.pattern_on(), "{}", a.status);
+        assert!(a.status.contains("Every A is placed"), "{}", a.status);
+    }
+
+    #[test]
+    fn one_off_copies_use_the_pieces_left_before_the_order_grows() {
+        // HM10: Ctrl+D and Ctrl + drag count as the pattern does, without asking.
+        let mut a = app(3);
+        a.set_selection(vec![0]);
+        a.duplicate_selected();
+        assert_eq!((a.total_placed(), a.parts[0].qty), (3, 3), "{}", a.status);
+        assert!(a.status.contains("0 left to place"), "{}", a.status);
+        // None left: the next copy is an extra and says so.
+        a.set_selection(vec![0]);
+        a.duplicate_selected();
+        assert_eq!((a.total_placed(), a.parts[0].qty), (4, 4));
+        assert!(a.status.contains("order grew to 4"), "{}", a.status);
+        // A Ctrl + drag copy that can't stay puts the order back as it was.
+        a.set_selection(vec![0]);
+        a.start_drag(0, [150.0, 150.0], true);
+        assert_eq!(a.parts[0].qty, 5);
+        a.end_drag();
+        assert_eq!((a.total_placed(), a.parts[0].qty), (4, 4), "{}", a.status);
+    }
+
+    #[test]
+    fn with_just_those_left_chosen_only_the_pieces_that_go_down_must_fit() {
+        // HM20: a pattern of an A and a B with no B left. Once "place just
+        // those left" is chosen, the A drops where the B's copy would clash.
+        let mut a = app(10);
+        a.parts.push(Part { name: "B".into(), qty: 1, ..a.parts[0].clone() });
+        a.result.sheets[0][1].part = 1;
+        a.result.sheets[0].push(Placed { part: 0, x: 300.0, y: 400.0, w: 100.0, h: 100.0, turns: 0, mirror: false, spin: Default::default() });
+        a.refresh();
+        a.set_selection(vec![0, 1]);
+        a.start_pattern(Some([150.0, 150.0]));
+        a.carry_move([150.0, 750.0], 1.0, true);
+        assert!(!a.carry_drop(false), "no B left: it asks");
+        assert!(a.pattern_answer(Some(Over::OnlyLeft), false), "{}", a.status);
+        assert!(a.pattern_on(), "A pieces are still left");
+        // The B's copy would land on the A at X 300 Y 400; the A's is clear.
+        a.carry_move([150.0, 450.0], 1.0, true);
+        assert!(a.carry_drop(false), "{}", a.status);
+        let s = &a.result.sheets[0];
+        assert_eq!((s.len(), s[4].part, s[4].x, s[4].y), (5, 0, 100.0, 400.0));
+        assert_eq!((a.parts[0].qty, a.parts[1].qty), (10, 1));
+    }
+
+    #[test]
+    fn extras_grow_the_order_and_the_answer_holds_for_the_pattern() {
+        // HM20, HM21: none left; extras chosen once, Shift keeps the pattern.
+        let mut a = app(2);
+        a.set_selection(vec![0, 1]);
+        a.start_pattern(Some([150.0, 150.0]));
+        assert!(a.status.contains("0 left · a drop asks before adding extras"), "{}", a.status);
+        a.carry_move([150.0, 400.0], 1.0, true);
+        assert!(!a.carry_drop(true));
+        assert!(a.pattern_answer(Some(Over::Extras), true), "{}", a.status);
+        assert_eq!((a.result.sheets[0].len(), a.parts[0].qty), (4, 4));
+        assert!(a.pattern_on(), "Shift keeps it on the pointer");
+        // The next copy goes down without asking again.
+        a.carry_move([150.0, 650.0], 1.0, true);
+        assert!(a.carry_drop(false), "{}", a.status);
+        assert_eq!((a.result.sheets[0].len(), a.parts[0].qty), (6, 6));
+        assert!(!a.pattern_on(), "none left and no Shift: put away");
+    }
+
+    #[test]
+    fn a_pattern_goes_along_to_another_sheet_but_not_to_another_screen() {
+        // HM21.
+        let mut a = app(10);
+        a.result.sheets.push(vec![Placed { part: 0, x: 1500.0, y: 800.0, w: 100.0, h: 100.0, turns: 0, mirror: false, spin: Default::default() }]);
+        a.result.formats.push(SheetFormat::rect(2000.0, 1000.0));
+        a.refresh();
+        a.set_selection(vec![0, 1]);
+        a.start_pattern(Some([150.0, 150.0]));
+        a.select_sheet(1);
+        a.check_carry();
+        assert!(a.pattern_on(), "another sheet");
+        a.carry_move([150.0, 150.0], 1.0, true);
+        assert!(a.carry_drop(false), "{}", a.status);
+        assert_eq!((a.result.sheets[0].len(), a.result.sheets[1].len(), a.parts[0].qty), (2, 3, 10));
+        // Another tool or screen ends it.
+        a.start_ghost(0, false);
+        a.check_carry();
+        assert!(!a.pattern_on(), "another tool");
+        a.stop_ghost();
+        a.set_selection(vec![0]);
+        a.start_pattern(None);
+        assert!(a.pattern_on());
+        a.workspace = crate::Workspace::Jobs;
+        a.check_carry();
+        assert!(!a.pattern_on(), "another screen");
+        // Another job's parts: it doesn't follow.
+        a.workspace = crate::Workspace::Nesting;
+        a.set_selection(vec![0]);
+        a.start_pattern(None);
+        a.parts[0].name = "B".into();
+        a.select_sheet(0);
+        a.check_carry();
+        assert!(!a.pattern_on(), "the parts changed");
+        // Nothing selected: it says what to do.
+        a.set_selection(vec![]);
+        a.start_pattern(None);
+        assert!(!a.pattern_on() && a.status.contains("Select the parts"), "{}", a.status);
     }
 }

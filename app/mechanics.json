@@ -350,7 +350,7 @@
   {
    "name": "cut technology panel: a drag with a row chosen",
    "group": "part technology",
-   "value": "from a contour: sweep (every contour passed over); from open space: box (the contours wholly inside)",
+   "value": "from a contour: sweep (every contour passed over); from open space: box (the contours wholly inside; dragged left, those it touches)",
    "source": "CS6",
    "estimated": true
   },
@@ -518,7 +518,7 @@
   {
    "name": "a box while picking a part's cut order",
    "group": "part cut order",
-   "value": "adds the cut and marked contours wholly inside it, in the automatic order among themselves",
+   "value": "adds the cut and marked contours wholly inside it (dragged left, those it touches), in the automatic order among themselves",
    "source": "CO12",
    "estimated": true
   },
@@ -772,6 +772,41 @@
    "group": "element picking",
    "value": true,
    "source": "MECHANICS E2"
+  },
+  {
+   "name": "which way a selection box is dragged",
+   "group": "selection windows",
+   "value": "right (or straight up/down): window, takes what is wholly inside; left: crossing window, takes everything it touches",
+   "source": "SW1",
+   "estimated": true
+  },
+  {
+   "name": "crossing window takes a line",
+   "group": "selection windows",
+   "value": "when any stretch of it passes through or touches the box",
+   "source": "SW2",
+   "estimated": true
+  },
+  {
+   "name": "crossing window takes a part or a text",
+   "group": "selection windows",
+   "value": "when it touches an edge (holes too) or lies on its material; not from inside a hole",
+   "source": "SW3",
+   "estimated": true
+  },
+  {
+   "name": "selection box look",
+   "group": "selection windows",
+   "value": "window: solid light indigo edge (165, 180, 252); crossing window: dashed green edge (74, 222, 128); faint fill of its colour",
+   "source": "SW4",
+   "estimated": true
+  },
+  {
+   "name": "agents' crossing window",
+   "group": "selection windows",
+   "value": "cut-order mode=parts box=... touching=true",
+   "source": "SW5",
+   "estimated": true
   },
   {
    "name": "capture square half-size",
@@ -1174,7 +1209,7 @@
   {
    "name": "a box on the sheet in Manual cutting",
    "group": "manual machining",
-   "value": "takes the parts wholly inside it, in the sheet's automatic order among themselves",
+   "value": "takes the parts wholly inside it (dragged left, every part it touches), in the sheet's automatic order among themselves",
    "source": "MM9",
    "estimated": true
   },
@@ -4252,7 +4287,7 @@
  {
   "name": "window selection picks",
   "group": "moving parts by hand",
-  "value": "parts wholly inside the window",
+  "value": "parts wholly inside the window; dragged left, every part it touches (SW1)",
   "source": "MECHANICS HM7; estimate",
   "estimated": true
  },
@@ -4284,9 +4319,9 @@
   "source": "MECHANICS HM10"
  },
  {
-  "name": "each copy adds to the part's order",
+  "name": "a copy of a placed part counts",
   "group": "moving parts by hand",
-  "value": true,
+  "value": "against the pieces still to place; the order grows only beyond it (the original adds one per copy)",
   "source": "MECHANICS HM10"
  },
  {
@@ -4380,6 +4415,36 @@
   "group": "moving parts by hand",
   "value": "under the selected parts (above when no room); × hides it, Ctrl+T shows it",
   "source": "MECHANICS HM17"
+ },
+ {
+  "name": "Ctrl+C on the sheet",
+  "group": "moving parts by hand",
+  "value": "selection on the pointer as a pattern; it stays after each drop",
+  "source": "MECHANICS HM18"
+ },
+ {
+  "name": "pattern copies use",
+  "group": "moving parts by hand",
+  "value": "the pieces still to place; the order grows only beyond it",
+  "source": "MECHANICS HM19"
+ },
+ {
+  "name": "pattern label",
+  "group": "moving parts by hand",
+  "value": "what one copy uses, pieces left, whole copies to go",
+  "source": "MECHANICS HM19"
+ },
+ {
+  "name": "pattern copy short of pieces",
+  "group": "moving parts by hand",
+  "value": "asks: place just those left (held piece first, then nearest) / add extras / cancel; the answer holds for the pattern",
+  "source": "MECHANICS HM20"
+ },
+ {
+  "name": "pattern put away",
+  "group": "moving parts by hand",
+  "value": "when none of its parts has a piece left after a drop (Shift + click keeps it); follows other sheets and undo",
+  "source": "MECHANICS HM21"
  },
  {
   "name": "technology table and time file",

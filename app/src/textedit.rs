@@ -63,11 +63,11 @@ pub fn text_box(t: &PartText) -> [P; 4] {
     [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
 }
 
-/// Window selection of texts (T14): all four box corners inside.
-pub fn text_in_window(t: &PartText, a: P, b: P) -> bool {
-    let (x0, x1) = (a[0].min(b[0]), a[0].max(b[0]));
-    let (y0, y1) = (a[1].min(b[1]), a[1].max(b[1]));
-    text_box(t).iter().all(|q| q[0] >= x0 && q[0] <= x1 && q[1] >= y0 && q[1] <= y1)
+/// Window selection of texts (T14, SW3): a window takes a text when all four
+/// corners of its box are inside; a crossing window (dragged to the left)
+/// when it touches or overlaps the box.
+pub fn text_in_window(t: &PartText, w: &crate::engine::selection::Window) -> bool {
+    w.takes_area(&text_box(t), &[])
 }
 
 fn seg_dist(p: P, a: P, b: P) -> f64 {
@@ -343,9 +343,14 @@ mod tests {
         let b = PartText { text: "B".into(), at: [2.0, 2.0], height: 3.0, angle: 0.0, curve: 0.0, kind: TextKind::Mark };
         assert_eq!(text_at(&[a.clone(), b.clone()], [2.5, 3.0], 0.5), Some(1));
         assert_eq!(text_at(&[b, a], [20.0, 9.8], 0.5), Some(1));
-        // Window selection needs the whole box inside.
-        assert!(text_in_window(&up, [40.0, -1.0], [60.0, w + 1.0]));
-        assert!(!text_in_window(&up, [40.0, -1.0], [60.0, w / 2.0]));
+        // A window needs the whole box inside; a crossing window only has
+        // to touch it.
+        use crate::engine::selection::Window;
+        assert!(text_in_window(&up, &Window::dragged([40.0, -1.0], [60.0, w + 1.0])));
+        assert!(!text_in_window(&up, &Window::dragged([40.0, -1.0], [60.0, w / 2.0])));
+        assert!(text_in_window(&up, &Window::dragged([60.0, w / 2.0], [40.0, -1.0])));
+        assert!(text_in_window(&up, &Window::dragged([47.0, 5.0], [46.0, 4.0])), "a crossing box inside the text's box");
+        assert!(!text_in_window(&up, &Window::dragged([60.0, w / 2.0], [52.0, -1.0])), "beside it");
     }
 
     #[test]

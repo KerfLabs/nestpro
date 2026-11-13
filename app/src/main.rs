@@ -218,7 +218,9 @@ pub struct App {
     pub turn_text: String,
     pub turn_custom: f64,
     pub turn_focus: bool,
-    /// A selection window being drawn on the sheet: corners (mm) and whether it adds.
+    /// A selection window being drawn on the sheet: where the drag started and
+    /// where it is now (mm; the direction says what it takes, SW1), and
+    /// whether it adds to the selection.
     pub window_sel: Option<(P, P, bool)>,
     /// The movement value window (Ctrl+R) is open.
     pub step_popup: bool,
@@ -1601,8 +1603,11 @@ impl App {
 
     /// Remember the current state so the next change can be undone.
     pub fn checkpoint(&mut self) {
-        // Any other change ends a copy carried on the pointer (QR4).
-        self.carry = None;
+        // Any other change ends a copy carried on the pointer (QR4); a
+        // pattern goes along with the sheet as the change leaves it (HM21).
+        if !self.pattern_on() {
+            self.carry = None;
+        }
         let s = self.snapshot();
         self.push_undo(s);
     }
@@ -1695,7 +1700,7 @@ impl App {
     }
 
     /// Place a copy of the selected parts in the first free spot (left first),
-    /// keeping their layout (HM10).
+    /// keeping their layout; it uses pieces still to place first (HM10).
     pub fn duplicate_selected(&mut self) {
         let sel = self.selection();
         let ci = self.cur_sheet;
@@ -1707,18 +1712,11 @@ impl App {
             Some(d) => {
                 self.checkpoint();
                 let n = self.result.sheets[ci].len();
-                for c in engine::arrange::copies(&self.result.sheets[ci], &sel, d) {
-                    self.parts[c.part].qty += 1;
-                    self.result.sheets[ci].push(c);
-                }
+                let copies = engine::arrange::copies(&self.result.sheets[ci], &sel, d);
+                let extras = engine::pattern::put(&mut self.parts, &mut self.result.sheets, ci, &copies);
                 self.set_selection((n..self.result.sheets[ci].len()).collect());
                 self.refresh();
-                let c = self.result.sheets[ci][n];
-                self.status = if sel.len() == 1 {
-                    format!("Copied {} to X {}  Y {}.", self.parts[c.part].name, self.len_txt(c.x), self.len_txt(c.y))
-                } else {
-                    format!("Copied {} parts; the copies are selected.", sel.len())
-                };
+                self.status = self.copied_status(n, extras);
             }
             None => self.status = "No free spot on this sheet for a copy.".into(),
         }
@@ -1931,8 +1929,11 @@ impl App {
 
     pub fn select_sheet(&mut self, i: usize) {
         if i < self.result.sheets.len() && i != self.cur_sheet {
-            // A copy on the pointer belongs to the sheet it was made on.
-            self.carry = None;
+            // A copy on the pointer belongs to the sheet it was made on; a
+            // pattern goes along to the next (HM21).
+            if !self.pattern_on() {
+                self.carry = None;
+            }
             self.cur_sheet = i;
             self.ssim = None;
             self.sel_placed = None;
@@ -2802,7 +2803,8 @@ impl eframe::App for App {
             self.import_drawings(dropped);
         }
         // A copy on the pointer ends when its sheet changes, the screen
-        // changes or another tool starts (QR4).
+        // changes or another tool starts (QR4); a pattern follows the sheet
+        // shown while it can (HM21).
         self.check_carry();
         if self.workspace == Workspace::Nesting {
             // Alt/Ctrl + arrows, Ctrl+Q/W, M, Ctrl+E… on the selected parts.
@@ -2821,10 +2823,13 @@ impl eframe::App for App {
             if redo {
                 self.redo();
             }
-            if dup {
+            // With a pattern on the pointer the keys for the selected parts
+            // wait (the selection is the copy dropped last, not what is held).
+            let held = self.pattern_on();
+            if dup && !held {
                 self.duplicate_selected();
             }
-            let (f5, r, del) = ctx.input(|i| (i.key_pressed(Key::F5), i.key_pressed(Key::R) && i.modifiers.is_none(), i.key_pressed(Key::Delete)));
+            let (f5, r, del) = ctx.input(|i| (i.key_pressed(Key::F5), i.key_pressed(Key::R) && i.modifiers.is_none() && !held, i.key_pressed(Key::Delete) && !held));
             if f5 {
                 self.run_nesting();
             }
@@ -2925,6 +2930,7 @@ impl eframe::App for App {
         self.dock_overlay(&ctx);
         self.times_window(&ctx);
         self.step_window(&ctx);
+        self.pattern_window(&ctx);
         self.pending_dialog(&ctx);
         self.joint_sizes_window(&ctx);
     }
@@ -3464,6 +3470,17 @@ fn main() -> eframe::Result {
                 }
                 app.refresh();
             }
+            // --window="x,y;x,y" (screenshots): a selection window on sheet 1
+            // being dragged from the first corner to the second, sheet mm, with
+            // the parts it takes selected (HM7, SW1).
+            if let Some(w) = args.iter().find_map(|a| a.strip_prefix("--window=")) {
+                let c: Vec<P> = w.split(';').filter_map(|q| q.split_once(',')).filter_map(|(x, y)| Some([x.trim().parse().ok()?, y.trim().parse().ok()?])).collect();
+                if let (2, Some(sheet)) = (c.len(), app.result.sheets.first()) {
+                    let sel = engine::arrange::window_select(&app.parts, sheet, &engine::selection::Window::dragged(c[0], c[1]));
+                    app.set_selection(sel);
+                    app.window_sel = Some((c[0], c[1], false));
+                }
+            }
             if want_radial {
                 // The Part view's ring, or on the sheet the part ring with a
                 // selection (--select=…) and the sheet ring without.
@@ -3616,7 +3633,7 @@ fn main() -> eframe::Result {
                     app.order_click(i, q, 1.0);
                 }
                 if let Some(q) = boxed.as_deref().map(pts).filter(|q| q.len() == 2) {
-                    app.order_box(i, q[0], q[1]);
+                    app.order_box(i, &crate::engine::selection::Window::dragged(q[0], q[1]));
                 }
                 let sweeps: Vec<Vec<[f64; 2]>> = sweep.as_deref().map_or(vec![], |s| s.split('|').map(pts).collect());
                 for (k, q) in sweeps.iter().enumerate() {
