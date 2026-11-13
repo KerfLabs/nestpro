@@ -171,6 +171,28 @@ pub fn with_alpha(c: Color32, a: u8) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a)
 }
 
+/// A selection window while it is dragged (SW4), as CAD programs draw it: a
+/// window (dragged to the right, takes what is wholly inside) with a solid
+/// light indigo edge, a crossing window (to the left, takes what it touches)
+/// with a dashed green edge. The drawing canvas is dark in both themes, so
+/// both take the dark theme's bright colours.
+pub fn paint_select_window(painter: &egui::Painter, r: Rect, take: crate::engine::selection::Take) {
+    use crate::engine::selection::Take;
+    let col = match take {
+        Take::Inside => crate::theme::DARK.accent_fg,
+        Take::Touching => crate::theme::DARK.ok_fg,
+    };
+    painter.rect_filled(r, CornerRadius::ZERO, with_alpha(col, 28));
+    let ring = [r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom(), r.left_top()];
+    let edge = Stroke::new(1.5, col);
+    match take {
+        Take::Inside => {
+            painter.add(EShape::line(ring.to_vec(), edge));
+        }
+        Take::Touching => painter.extend(EShape::dashed_line(&ring, edge, 6.0, 4.0)),
+    }
+}
+
 /// Draw a part's geometry with a mapping from part coordinates to the screen.
 pub fn paint_part(painter: &egui::Painter, part: &Part, map: impl Fn(P) -> Pos2, fill: Color32, edge: Stroke, hole: Color32) {
     paint_part_ex(painter, part, map, fill, edge, hole, true);

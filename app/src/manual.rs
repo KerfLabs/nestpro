@@ -204,8 +204,8 @@ impl App {
                     }
                 }
                 Gesture::SweepEnd => self.manual_sweep_end(),
-                Gesture::Box(a, b) => {
-                    let got = sheetpick::boxed(&self.parts, &sheet, &self.sheet_spec(s), &picked(self), a, b);
+                Gesture::Box(w) => {
+                    let got = sheetpick::boxed(&self.parts, &sheet, &self.sheet_spec(s), &picked(self), &w);
                     self.manual_take(&got);
                 }
             }

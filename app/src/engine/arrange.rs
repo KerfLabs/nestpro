@@ -8,6 +8,7 @@
 //! stops them. The GUI and the agent operations both call these.
 
 use super::part_fits_format;
+use super::selection::Window;
 use crate::nest::{self, Part, Placed, SheetFormat, SheetSpec, P};
 
 /// A direction on the sheet (X right, Y up).
@@ -93,13 +94,10 @@ pub fn group_box(sheet: &[Placed], sel: &[usize]) -> [f64; 4] {
     })
 }
 
-/// Window selection (HM7): the parts whose box lies wholly inside the window
-/// (two opposite corners, any order).
-pub fn window_select(sheet: &[Placed], a: P, b: P) -> Vec<usize> {
-    let (x0, x1) = (a[0].min(b[0]), a[0].max(b[0]));
-    let (y0, y1) = (a[1].min(b[1]), a[1].max(b[1]));
-    let e = 1e-6;
-    sheet.iter().enumerate().filter(|(_, p)| p.x >= x0 - e && p.y >= y0 - e && p.x + p.w <= x1 + e && p.y + p.h <= y1 + e).map(|(i, _)| i).collect()
+/// Window selection (HM7, SW1, SW3): the parts lying wholly inside a window
+/// dragged to the right, or every part a window dragged to the left touches.
+pub fn window_select(parts: &[Part], sheet: &[Placed], w: &Window) -> Vec<usize> {
+    sheet.iter().enumerate().filter(|(_, p)| w.takes_placed(parts, p)).map(|(i, _)| i).collect()
 }
 
 /// Can the selection sit moved by `d`: every moved part inside the sheet (its
@@ -709,10 +707,17 @@ mod tests {
     }
 
     #[test]
-    fn a_window_selects_the_parts_wholly_inside() {
+    fn a_window_selects_the_parts_wholly_inside_and_a_crossing_one_those_it_touches() {
+        use crate::engine::selection::Take;
         let ps = parts();
         let sheet = vec![at(0, 10.0, 10.0, &ps), at(0, 200.0, 10.0, &ps), at(3, 120.0, 20.0, &ps)];
-        assert_eq!(window_select(&sheet, [250.0, 100.0], [0.0, 0.0]), vec![0, 2]);
+        // Dragged to the right: #2 sticks out past X 250, so only #1 and #3.
+        assert_eq!(window_select(&ps, &sheet, &Window::dragged([0.0, 0.0], [250.0, 100.0])), vec![0, 2]);
+        // The same box dragged to the left takes #2 too, as it touches it.
+        assert_eq!(window_select(&ps, &sheet, &Window::dragged([250.0, 100.0], [0.0, 0.0])), vec![0, 1, 2]);
+        // A small crossing box on #2's edge takes #2 alone.
+        let edge = Window::new([195.0, 15.0], [205.0, 25.0], Take::Touching);
+        assert_eq!(window_select(&ps, &sheet, &edge), vec![1]);
     }
 
     #[test]

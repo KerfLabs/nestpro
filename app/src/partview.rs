@@ -7,6 +7,7 @@
 //! machine, material and thickness, then starts or brings forward the original's
 //! drawing/nesting program in its drawing mode.
 
+use crate::engine::selection::{Take, Window};
 use crate::nest::P;
 use crate::theme::th;
 use crate::ui_parts::*;
@@ -526,15 +527,17 @@ impl App {
                 }
             }
         }
-        // Window selection: drag a box; elements fully inside are selected.
+        // Window selection: drag a box to the right for the elements wholly
+        // inside it, to the left for every element it touches (E2, SW1, SW2).
         if resp.drag_started_by(egui::PointerButton::Primary) && !space && !painting {
-            self.box_start = resp.interact_pointer_pos();
+            // Where the button went down, so the drag's direction is true.
+            self.box_start = ui.input(|i| i.pointer.press_origin()).or(resp.interact_pointer_pos());
         }
         if let (Some(a), Some(b)) = (self.box_start, resp.interact_pointer_pos()) {
             if resp.dragged_by(egui::PointerButton::Primary) {
-                let r = Rect::from_two_pos(a, b);
-                painter.rect_filled(r, CornerRadius::same(2), with_alpha(th().accent, 30));
-                painter.extend(EShape::dashed_line(&[r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom(), r.left_top()], Stroke::new(1.0, th().accent_fg), 5.0, 3.0));
+                // Zoom Window only frames the view: it is drawn as a window whichever way.
+                let take = if self.dv.zoom_window { Take::Inside } else { Take::of_drag(a.x as f64, b.x as f64) };
+                paint_select_window(&painter, Rect::from_two_pos(a, b), take);
             }
             if resp.drag_stopped() && self.dv.zoom_window {
                 // Zoom Window: the box fills the view.
@@ -549,17 +552,10 @@ impl App {
                 self.dv.zoom_window = false;
                 self.box_start = None;
             } else if resp.drag_stopped() {
-                let (wa, wb) = (to_w(a), to_w(b));
-                let (x0, x1) = (wa[0].min(wb[0]), wa[0].max(wb[0]));
-                let (y0, y1) = (wa[1].min(wb[1]), wa[1].max(wb[1]));
-                let inside: Vec<usize> = elems
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, e)| e.pts.iter().all(|p| p[0] >= x0 && p[0] <= x1 && p[1] >= y0 && p[1] <= y1))
-                    .map(|(i, _)| i)
-                    .collect();
-                // Texts fully inside the box are selected too (T14).
-                let texts_in: Vec<usize> = part.texts.iter().enumerate().filter(|(_, t)| crate::textedit::text_in_window(t, wa, wb)).map(|(k, _)| k).collect();
+                let w = Window::dragged(to_w(a), to_w(b));
+                let inside: Vec<usize> = elems.iter().enumerate().filter(|(_, e)| w.takes_line(&e.pts)).map(|(i, _)| i).collect();
+                // The texts it takes are selected too (T14, SW3).
+                let texts_in: Vec<usize> = part.texts.iter().enumerate().filter(|(_, t)| crate::textedit::text_in_window(t, &w)).map(|(k, _)| k).collect();
                 if !shift {
                     self.sel_texts.clear();
                 }

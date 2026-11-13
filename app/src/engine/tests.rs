@@ -3866,6 +3866,28 @@ fn a_sweep_and_a_box_take_parts_and_undo_takes_back_one_command() {
 }
 
 #[test]
+fn a_box_with_touching_takes_every_part_it_touches() {
+    // SW1: an agent's box takes the parts wholly inside it, or with
+    // touching=true every part it touches, as a box dragged to the left on
+    // the sheet does; both in the automatic order (MM9).
+    let d = dir("sheet_parts_box_touching");
+    let mut s = ordered_plate_job(&d, false, "3, 1, 2", &TURNED);
+    // Up to Y 550: round #1 and #2, and over the lower ends of #3 and #4.
+    let r = call(&mut s, "cut-order", None, json!({"mode": "parts", "box": "0,0; 720,550"}));
+    assert_eq!(r["data"]["added"], json!([1, 2]), "{r}");
+    call(&mut s, "cut-order", None, json!({"mode": "undo"}));
+    let r = call(&mut s, "cut-order", None, json!({"mode": "parts", "box": "0,0; 720,550", "touching": true}));
+    assert_eq!(r["data"]["added"], json!([1, 3, 2, 4]), "{r}");
+    assert_eq!(iso_parts(&mut s, 1), vec![1, 3, 2, 4]);
+    verify_clean(&mut s);
+    // Over open sheet it touches nothing: refused, nothing changes.
+    call(&mut s, "cut-order", None, json!({"mode": "clear"}));
+    let e = err(&mut s, "cut-order", json!({"mode": "parts", "box": "180,400; 350,450", "touching": true}));
+    assert!(e.starts_with("No part there"), "{e}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn a_sweep_over_parts_already_picked_skips_them_and_takes_the_rest_of_a_part_with_a_hole_picked() {
     let d = dir("sheet_parts_picked");
     let mut s = ordered_plate_job(&d, false, "3, 1, 2", &TURNED);

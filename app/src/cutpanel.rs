@@ -7,6 +7,7 @@
 
 use crate::dxf::{Contour, ContourState};
 use crate::engine::contours::{self, Look, Paint};
+use crate::engine::selection::{Take, Window};
 use crate::nest::{CutQuality, Part, P};
 use crate::qualities::CutQualities;
 use crate::theme::th;
@@ -122,12 +123,20 @@ pub fn contour_at(list: &[Contour], p: P, half: f64) -> Option<usize> {
         .map(|(k, _)| k)
 }
 
-/// The contours a box from `a` to `b` picks (CS6): those wholly inside it,
+/// The contours a box `w` picks (CS6, SW2): those wholly inside it, or with
+/// a crossing window (dragged to the left) every one whose line it touches,
 /// in number order.
-pub fn contours_in_box(list: &[Contour], a: P, b: P) -> Vec<usize> {
-    let (x0, x1, y0, y1) = (a[0].min(b[0]), a[0].max(b[0]), a[1].min(b[1]), a[1].max(b[1]));
-    let inside = |q: &P| q[0] >= x0 && q[0] <= x1 && q[1] >= y0 && q[1] <= y1;
-    list.iter().enumerate().filter(|(_, c)| !c.pts.is_empty() && c.pts.iter().all(inside)).map(|(k, _)| k).collect()
+pub fn contours_in_window(list: &[Contour], w: &Window) -> Vec<usize> {
+    list.iter().enumerate().filter(|(_, c)| w.takes_line(&c.path())).map(|(k, _)| k).collect()
+}
+
+/// What a status line says when a box took no contour (SW1): a window
+/// suggests dragging the other way.
+pub fn none_in_window(take: Take, what: &str) -> String {
+    match take {
+        Take::Inside => format!("No {what} lies wholly inside the box — drag to the left to take the ones it touches."),
+        Take::Touching => format!("The box touches no {what}."),
+    }
 }
 
 /// The contours a sweep picks as the pointer moves from `a` to `b` with the
@@ -188,7 +197,8 @@ pub fn contours_along_stroke(list: &[Contour], a: P, b: P, half: f64) -> Vec<usi
 pub enum Drag {
     /// Paint every contour the pointer passes over.
     Sweep,
-    /// Draw a box; the contours wholly inside it are painted when it is let go.
+    /// Draw a box; the contours it takes (wholly inside it, or touched by
+    /// it when dragged to the left, SW1) are painted when it is let go.
     Box,
 }
 
@@ -214,8 +224,9 @@ pub enum Gesture {
     SweepTo(P),
     /// The button was let go: the sweep ends.
     SweepEnd,
-    /// A box from one corner to the other (part mm) was let go.
-    Box(P, P),
+    /// A box was let go: from where the button went down to where it came
+    /// up (part mm), which also says what it takes (SW1).
+    Box(Window),
 }
 
 /// Clicks, sweeps and boxes over contours `list` this frame (CS6): a click
@@ -251,9 +262,7 @@ pub fn gestures(ui: &egui::Ui, resp: &egui::Response, painter: &egui::Painter, l
             out.push(Gesture::SweepTo(w));
         }
         if let (Some(a), Some(b)) = (*box_from, resp.interact_pointer_pos()) {
-            let r = egui::Rect::from_two_pos(a, b);
-            painter.rect_filled(r, egui::CornerRadius::same(2), crate::ui_parts::with_alpha(th().accent, 30));
-            painter.extend(egui::Shape::dashed_line(&[r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom(), r.left_top()], egui::Stroke::new(1.0, th().accent_fg), 5.0, 3.0));
+            crate::ui_parts::paint_select_window(painter, egui::Rect::from_two_pos(a, b), Take::of_drag(a.x as f64, b.x as f64));
         }
     }
     if resp.drag_stopped() {
@@ -266,7 +275,7 @@ pub fn gestures(ui: &egui::Ui, resp: &egui::Response, painter: &egui::Painter, l
             out.push(Gesture::SweepEnd);
         }
         if let (Some(a), Some(b)) = (box_from.take(), resp.interact_pointer_pos()) {
-            out.push(Gesture::Box(to_w(a), to_w(b)));
+            out.push(Gesture::Box(Window::dragged(to_w(a), to_w(b))));
         }
     }
     out
@@ -487,10 +496,10 @@ pub fn canvas<T: PaintTarget>(
             Gesture::SweepStart(from) => sweep_start(t, panel, part, from, row, same, half),
             Gesture::SweepTo(w) => sweep_to(t, panel, w, half),
             Gesture::SweepEnd => sweep_end(t, panel, names),
-            Gesture::Box(a, b) => {
-                let picks = contours_in_box(&list, a, b);
+            Gesture::Box(w) => {
+                let picks = contours_in_window(&list, &w);
                 if picks.is_empty() {
-                    t.say("No contour lies wholly inside the box.".into());
+                    t.say(none_in_window(w.take, "contour"));
                 } else {
                     paint_gathered(t, &picks, row, same);
                 }
@@ -908,16 +917,26 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_box_picks_the_contours_wholly_inside_it() {
+    fn a_box_picks_the_contours_wholly_inside_it_or_dragged_left_those_it_touches() {
         let list = contours::list(&bend_plate());
-        // Round the four small holes: those four, not the outline it crosses.
+        // Round the four small holes, dragged to the right: those four, not
+        // the outline it crosses.
         let mut four: Vec<usize> = [[250.0, 35.0], [290.0, 35.0], [250.0, 125.0], [290.0, 125.0]].iter().map(|&c| at(&list, c)).collect();
         four.sort_unstable();
-        assert_eq!(contours_in_box(&list, [235.0, 15.0], [305.0, 145.0]), four);
-        // Drawn either way round, the same.
-        assert_eq!(contours_in_box(&list, [305.0, 145.0], [235.0, 15.0]), four);
+        assert_eq!(contours_in_window(&list, &Window::dragged([235.0, 15.0], [305.0, 145.0])), four);
+        assert_eq!(contours_in_window(&list, &Window::dragged([235.0, 145.0], [305.0, 15.0])), four, "down and to the right");
+        // A box reaching past the plate's right edge (X 320): dragged to the
+        // right still those four; dragged to the left the outline it crosses too.
+        assert_eq!(contours_in_window(&list, &Window::dragged([235.0, 15.0], [330.0, 145.0])), four);
+        let mut touched = [four.clone(), vec![5]].concat();
+        touched.sort_unstable();
+        assert_eq!(contours_in_window(&list, &Window::dragged([330.0, 145.0], [235.0, 15.0])), touched);
+        // A crossing box over open material takes nothing, and says so.
+        let open = Window::dragged([160.0, 130.0], [140.0, 110.0]);
+        assert!(contours_in_window(&list, &open).is_empty());
+        assert_eq!(none_in_window(open.take, "contour"), "The box touches no contour.");
         // Round the whole part: every contour, the bend line and stray line too.
-        assert_eq!(contours_in_box(&list, [-5.0, -5.0], [330.0, 170.0]), (0..8).collect::<Vec<_>>());
+        assert_eq!(contours_in_window(&list, &Window::dragged([-5.0, -5.0], [330.0, 170.0])), (0..8).collect::<Vec<_>>());
     }
 
     #[test]

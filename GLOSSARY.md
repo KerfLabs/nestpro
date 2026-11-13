@@ -82,6 +82,14 @@ _Avoid_: travel, jump, idle move
 Holding the mouse button down and dragging across contours or parts as if the pointer were the head; each is taken in the order the pointer passes over it.
 _Avoid_: drag-select, paint stroke
 
+**Window**:
+A box dragged to the right from open space; it takes only what lies wholly inside it.
+_Avoid_: marquee, rubber band, box select
+
+**Crossing window**:
+A box dragged to the left from open space; it takes everything it touches, even what sticks out of it.
+_Avoid_: capture, lasso, touch select
+
 ## Sharing the Library
 
 **Library**:
