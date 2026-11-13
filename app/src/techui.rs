@@ -3,7 +3,7 @@
 //! Automatic and Delete. The rules it follows are in MECHANICS.md.
 
 use crate::engine::TechEdit;
-use crate::nest::{LeadType, PartTech};
+use crate::nest::PartTech;
 use crate::theme::th;
 use crate::ui_parts::*;
 use crate::App;
@@ -197,11 +197,7 @@ impl App {
             ui.vertical(|ui| {
                 ui.add_space(6.0);
                 ui.label(RichText::new("Type").size(11.0).color(th().text_dim));
-                egui::ComboBox::from_id_salt("lead_type").width(96.0).selected_text(self.lead_choice.label()).show_ui(ui, |ui| {
-                    for lt in LeadType::ALL {
-                        ui.selectable_value(&mut self.lead_choice, lt, lt.label());
-                    }
-                });
+                crate::leadmenu::picker(ui, &mut self.lead_choice, self.lead_menu_demo);
             });
             ui.add_space(6.0);
             ui.vertical(|ui| {

@@ -15,6 +15,7 @@ mod mcp;
 mod ct1;
 mod cutpanel;
 mod orderpick;
+mod leadmenu;
 mod joints;
 mod kerf;
 mod leads;
@@ -58,6 +59,7 @@ mod remmark;
 mod remnant;
 mod stock;
 mod stockui;
+mod stockpics;
 mod machine;
 mod nest;
 mod post;
@@ -292,6 +294,8 @@ pub struct App {
     tech_all_box: bool,
     /// Technology tab: lead type and keypad position for Automatic, and "All parts".
     pub lead_choice: nest::LeadType,
+    /// Screenshots only (--lead-menu=<type>): the Type picker shown open on that type.
+    pub lead_menu_demo: Option<nest::LeadType>,
     pub lead_pos: u8,
     pub tech_all: bool,
     /// The scope picked by hand on the sheet (Nesting): None until then,
@@ -636,6 +640,7 @@ impl App {
             tech_answer_all: None,
             tech_all_box: false,
             lead_choice: nest::LeadType::Machine,
+            lead_menu_demo: None,
             lead_pos: 1,
             tech_all: false,
             tech_nest_all: None,
@@ -3332,7 +3337,20 @@ fn main() -> eframe::Result {
                     s.add_sheet(stock::Item::sheet("DEMO-S1", m, t, 2000.0, 1000.0, 5), true)?;
                     let mut r = stock::Item::sheet("DEMO-R1", m, t, 1200.0, 1000.0, 1);
                     r.kind = stock::Kind::UserRemnant;
-                    s.add_sheet(r, true)
+                    s.add_sheet(r, true)?;
+                    // More made-up stock, so the material shelf and the cards
+                    // have something to show: another size, an L-shaped
+                    // remnant, another thickness and the other materials.
+                    s.add_sheet(stock::Item::sheet("DEMO-S2", m, t, 3048.0, 1219.2, 8), true)?;
+                    let mut l = stock::Item::sheet("DEMO-001-R1", m, t, 2032.0, 1067.0, 1);
+                    l.kind = stock::Kind::NestRemnant;
+                    l.origin = "3".into();
+                    l.from_job = "DEMO-001".into();
+                    l.outline = Some(stock::Outline { outer: vec![[0.0, 0.0], [2032.0, 0.0], [2032.0, 457.0], [1016.0, 457.0], [1016.0, 1067.0], [0.0, 1067.0]], holes: vec![] });
+                    s.add_sheet(l, true)?;
+                    s.add_sheet(stock::Item::sheet("DEMO-S3", m, 5.0, 3657.6, 1524.0, 3), true)?;
+                    s.add_sheet(stock::Item::sheet("DEMO-SS2", (m + 1) % cnc::MATERIALS.len(), 2.0, 2438.4, 1219.2, 4), true)?;
+                    s.add_sheet(stock::Item::sheet("DEMO-AL1", (m + 2) % cnc::MATERIALS.len(), 3.0, 3048.0, 1524.0, 1), true)
                 });
                 app.stockui.sel = Some("DEMO-R1".into());
             }
@@ -3342,11 +3360,21 @@ fn main() -> eframe::Result {
                 let (m, t) = ((app.spec.material + 1) % cnc::MATERIALS.len(), app.spec.thickness);
                 let _ = stock::Stock::update(&app.library_at(), |s| s.add_sheet(stock::Item::sheet("DEMO-SS1", m, t, 1486.0, 724.0, 1), true));
                 app.stockui.sel = Some("DEMO-SS1".into());
-                app.stockui.job_only = false;
+                app.stockui.shelf = Some(crate::stockui::Shelf::Thickness(m, t));
             }
             if std::env::args().any(|a| a == "--stock") {
                 app.stockui.open = true;
                 app.stockui.show_options = std::env::args().any(|a| a == "--stock-options");
+                // --stock-cards / --stock-new: the cards view, or the New sheet form open.
+                app.stockui.cards = std::env::args().any(|a| a == "--stock-cards");
+                if std::env::args().any(|a| a == "--stock-new") {
+                    app.stockui.creating = true;
+                    app.stockui.new_item.material = app.spec.material;
+                    app.stockui.new_item.thickness = app.spec.thickness;
+                    app.stockui.new_item.length = 3048.0;
+                    app.stockui.new_item.width = 1219.2;
+                    app.stockui.new_item.qty = 10;
+                }
             }
             // --erp: the ERP window filled with made-up work (screenshots, no network).
             if std::env::args().any(|a| a == "--erp") {
@@ -3676,6 +3704,13 @@ fn main() -> eframe::Result {
                 app.order_pick.demo_quality = flag("--order-quality");
                 app.order_pick.demo_card = arg("--order-card=");
                 app.order_pick.demo_menu = flag("--order-menu") || app.order_pick.demo_quality || app.order_pick.demo_card.is_some();
+            }
+            // --lead-menu=<machine|perpendicular|line|arc|line-arc|corner>
+            // (screenshots): the Technology tab with the lead Type picker
+            // open, previewing that type.
+            if let Some(t) = std::env::args().find_map(|a| a.strip_prefix("--lead-menu=").and_then(leadmenu::named)) {
+                app.tab = Tab::Technology;
+                app.lead_menu_demo = Some(t);
             }
             // --tech-result (screenshots): Auto lead-ins run on one part type,
             // with its result card and "Apply to all".
