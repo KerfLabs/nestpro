@@ -70,6 +70,10 @@ _Avoid_: laser, cutter (for the set-up)
 One of the machine's 12 numbered sets of cutting settings (speed, pierce, gas pressure, power), named and coloured by its technology table, e.g. Slow, Medium, Fast, Marking. Every cut contour has one.
 _Avoid_: technology, quality level
 
+**Gas**:
+The gas blown through the nozzle with the beam (nitrogen, air, oxygen, argon or water), numbered the way the machine knows it. A job is cut with one gas, like its one material and thickness; the machine's gas is only the starting choice for a new job.
+_Avoid_: assist gas, cutting gas, gas type
+
 **Cut order**:
 The order the machine cuts things in: a part's cut order is the order of its contours, a sheet's cut order the order of its parts. The programmer can set any part of it by hand; the rest follows the machine's automatic order. The outline is always cut last.
 _Avoid_: machining order, cut sequence, cut pattern
