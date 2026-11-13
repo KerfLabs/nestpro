@@ -4330,31 +4330,31 @@
   "name": "Ctrl+C on the sheet",
   "group": "moving parts by hand",
   "value": "selection on the pointer as a pattern; it stays after each drop",
-  "source": "MECHANICS HM14"
+  "source": "MECHANICS HM18"
  },
  {
   "name": "pattern copies use",
   "group": "moving parts by hand",
   "value": "the pieces still to place; the order grows only beyond it",
-  "source": "MECHANICS HM15"
+  "source": "MECHANICS HM19"
  },
  {
   "name": "pattern label",
   "group": "moving parts by hand",
   "value": "what one copy uses, pieces left, whole copies to go",
-  "source": "MECHANICS HM15"
+  "source": "MECHANICS HM19"
  },
  {
   "name": "pattern copy short of pieces",
   "group": "moving parts by hand",
   "value": "asks: place just those left (held piece first, then nearest) / add extras / cancel; the answer holds for the pattern",
-  "source": "MECHANICS HM16"
+  "source": "MECHANICS HM20"
  },
  {
   "name": "pattern put away",
   "group": "moving parts by hand",
   "value": "when none of its parts has a piece left after a drop (Shift + click keeps it); follows other sheets and undo",
-  "source": "MECHANICS HM17"
+  "source": "MECHANICS HM21"
  },
  {
   "name": "technology table and time file",

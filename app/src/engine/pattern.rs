@@ -1,4 +1,4 @@
-//! Repeating a pattern of placed parts (HM14–HM17): copies of a group of
+//! Repeating a pattern of placed parts (HM18–HM21): copies of a group of
 //! parts, keeping their layout, that use the pieces still to place instead of
 //! growing the order. When a copy needs more pieces than are left, the user
 //! (or the agent) chooses: add extras, or place only the pieces left. The GUI
@@ -15,7 +15,7 @@ pub struct Use {
     pub left: u32,
 }
 
-/// What to do with a copy that needs more pieces than are left (HM16).
+/// What to do with a copy that needs more pieces than are left (HM20).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Over {
     /// Place the whole copy; the order grows by the pieces beyond it.
@@ -57,7 +57,7 @@ pub fn placeable(uses: &[Use]) -> u32 {
 /// Which of the pattern's pieces go down for one copy (indices into
 /// `pattern`, in order). With pieces enough, or `Extras`: all of them.
 /// `OnlyLeft`: per part type only as many as are left — the held piece
-/// first, then the nearest to it (HM16). A short copy with no answer yet:
+/// first, then the nearest to it (HM20). A short copy with no answer yet:
 /// `None`, ask first.
 pub fn pick(uses: &[Use], pattern: &[Placed], held: usize, over: Option<Over>) -> Option<Vec<usize>> {
     if short(uses) == 0 || over == Some(Over::Extras) {
@@ -89,7 +89,7 @@ pub fn pick(uses: &[Use], pattern: &[Placed], held: usize, over: Option<Over>) -
 }
 
 /// Put copy pieces on sheet `s`: each takes a piece still to place, and only
-/// a piece beyond the order makes it grow by one (HM15). Returns how many
+/// a piece beyond the order makes it grow by one (HM19). Returns how many
 /// pieces were extras.
 pub fn put(parts: &mut [Part], sheets: &mut [Vec<Placed>], s: usize, pieces: &[Placed]) -> u32 {
     let mut extras = 0;
@@ -111,7 +111,7 @@ fn pieces(n: u32) -> String {
     if n == 1 { "1 piece".into() } else { format!("{n} pieces") }
 }
 
-/// The line beside a pattern on the pointer (HM15): what one copy uses, what
+/// The line beside a pattern on the pointer (HM19): what one copy uses, what
 /// is left and how many whole copies that makes — or, for a copy that is
 /// short, what the drop will do.
 pub fn label(parts: &[Part], uses: &[Use], over: Option<Over>) -> String {
@@ -133,7 +133,7 @@ pub fn label(parts: &[Part], uses: &[Use], over: Option<Over>) -> String {
     }
 }
 
-/// The question for a copy that is short (HM16): which part types it needs
+/// The question for a copy that is short (HM20): which part types it needs
 /// more of than are left.
 pub fn question(parts: &[Part], uses: &[Use]) -> String {
     let short: Vec<String> = uses
@@ -161,7 +161,7 @@ mod tests {
 
     #[test]
     fn a_copy_uses_the_pieces_left_and_counts_the_copies_to_go() {
-        // HM15: two of 18 placed as a pattern of two: 16 left, 8 copies.
+        // HM19: two of 18 placed as a pattern of two: 16 left, 8 copies.
         let parts = vec![part("Gusset", 18)];
         let sheets = vec![vec![at(0, 0.0), at(0, 0.0)]];
         let u = uses(&parts, &sheets, &sheets[0]);
@@ -178,7 +178,7 @@ mod tests {
 
     #[test]
     fn a_short_copy_asks_then_adds_extras_or_places_only_those_left() {
-        // HM16: one Gusset left, the pattern holds two.
+        // HM20: one Gusset left, the pattern holds two.
         let parts = vec![part("Gusset", 3), part("Bracket", 5)];
         let pat = vec![at(0, 0.0), at(1, 150.0), at(0, 300.0)];
         let sheets = vec![vec![at(0, 0.0), at(0, 300.0)]];

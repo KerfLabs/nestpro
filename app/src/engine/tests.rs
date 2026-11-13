@@ -973,7 +973,7 @@ fn an_agent_arranges_parts_by_hand() {
 
 #[test]
 fn an_agent_repeats_a_pattern_using_the_pieces_left() {
-    // HM14–HM16 through `repeat`: copies of a pair take the pieces still to
+    // HM18–HM20 through `repeat`: copies of a pair take the pieces still to
     // place; a short copy is refused until extras says what to do.
     let d = dir("repeat");
     let jp = d.join("a.snjob");

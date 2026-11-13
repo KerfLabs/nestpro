@@ -1590,7 +1590,7 @@ impl App {
     /// Remember the current state so the next change can be undone.
     pub fn checkpoint(&mut self) {
         // Any other change ends a copy carried on the pointer (QR4); a
-        // pattern goes along with the sheet as the change leaves it (HM17).
+        // pattern goes along with the sheet as the change leaves it (HM21).
         if !self.pattern_on() {
             self.carry = None;
         }
@@ -1913,7 +1913,7 @@ impl App {
     pub fn select_sheet(&mut self, i: usize) {
         if i < self.result.sheets.len() && i != self.cur_sheet {
             // A copy on the pointer belongs to the sheet it was made on; a
-            // pattern goes along to the next (HM17).
+            // pattern goes along to the next (HM21).
             if !self.pattern_on() {
                 self.carry = None;
             }
@@ -2777,7 +2777,7 @@ impl eframe::App for App {
         }
         // A copy on the pointer ends when its sheet changes, the screen
         // changes or another tool starts (QR4); a pattern follows the sheet
-        // shown while it can (HM17).
+        // shown while it can (HM21).
         self.check_carry();
         if self.workspace == Workspace::Nesting {
             // Alt/Ctrl + arrows, Ctrl+Q/W, M, Ctrl+E… on the selected parts.

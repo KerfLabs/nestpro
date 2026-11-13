@@ -2502,7 +2502,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             let u = pattern::uses(&job.parts, &job.sheets, &pat);
             let whole = pattern::copies_left(&u);
             // How many copies: as asked, or what the pieces left make — whole
-            // copies, or with an answer for a short one, until none is left (HM15, HM16).
+            // copies, or with an answer for a short one, until none is left (HM19, HM20).
             let all = u.iter().map(|x| x.left.div_ceil(x.per)).max().unwrap_or(0);
             let want = times.unwrap_or(if over.is_some() { all } else { whole });
             if over.is_none() && whole == 0 {
