@@ -82,9 +82,9 @@ impl Record {
         t
     }
 
-    /// "stainless 2.7–3.2 mm, gas 1" for people.
+    /// "0100 stainless steel 2.7–3.2 mm, Nitrogen (1)" for people.
     pub fn label(&self) -> String {
-        let gas = if self.gas == 0 { String::new() } else { format!(", gas {}", self.gas) };
+        let gas = if self.gas == 0 { String::new() } else { format!(", {}", crate::gas::number_label(self.gas as i64)) };
         format!("{} {}–{} mm{gas}{}", crate::ct1::material_label(&self.material), self.t_from, self.t_to, if self.default { " (default)" } else { "" })
     }
 }
@@ -106,13 +106,21 @@ impl Default for Fields {
 }
 
 /// What a job brings to the record choice (TT9). Our jobs carry a gas (the
-/// machine's) but no lens, power, angle or alias: those accept any record.
+/// job's, GS13) but no lens, power, angle or alias: those accept any record.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Keys {
     pub material: String,
     pub thickness: f64,
     /// 0 = no gas given.
     pub gas: u32,
+}
+
+impl Keys {
+    /// A sheet's keys (TT9, GS13): its material and thickness, and the job's
+    /// gas, or `machine_gas` for a job without a gas of its own.
+    pub fn for_spec(spec: &crate::nest::SheetSpec, machine_gas: u32) -> Keys {
+        Keys { material: crate::ct1::key_of_material(spec.material), thickness: spec.thickness, gas: crate::gas::record_gas(spec.gas, machine_gas) }
+    }
 }
 
 /// How the record was chosen (TT9).
@@ -280,7 +288,8 @@ pub struct SpeedFiles {
     pub time: TimeSettings,
     pub table: Option<Table>,
     pub fields: Fields,
-    /// The gas the machine cuts with (Settings → Machines), for the record choice.
+    /// The machine's gas number (Settings → Machines): the record choice of
+    /// a job without a gas of its own (GS13).
     pub gas: u32,
 }
 
@@ -486,6 +495,23 @@ mod tests {
         // No nearest thickness: 3.3 mm is outside 2.7–3.2 (+0.005).
         assert_eq!(t.pick(&keys("100", 3.3, 1)), None);
         assert_eq!(t.pick(&keys("100", 3.204, 1)), Some((0, Pick::Exact)));
+    }
+
+    #[test]
+    fn the_jobs_gas_picks_the_record_and_a_job_without_one_the_machines() {
+        use crate::gas::Gas;
+        // GS13, TT9 on a sheet: mild steel 3 mm has an oxygen record, then the nitrogen default.
+        let t = Table::from_text(demo_table());
+        let spec = |gas| crate::nest::SheetSpec { material: 0, thickness: 3.0, gas, ..crate::engine::default_spec() };
+        let pick = |gas, machine_gas| t.pick(&Keys::for_spec(&spec(gas), machine_gas));
+        assert_eq!(pick(Some(Gas::Oxygen), 1), Some((1, Pick::Exact)));
+        assert_eq!(pick(Some(Gas::Nitrogen), 3), Some((2, Pick::Exact)));
+        // A job without a gas of its own: the machine's, as before.
+        assert_eq!(pick(None, 3), Some((1, Pick::Exact)));
+        assert_eq!(pick(None, 1), Some((2, Pick::Exact)));
+        // A gas no record has: the default record.
+        assert_eq!(pick(Some(Gas::Argon), 1), Some((2, Pick::Default)));
+        assert_eq!(t.records[1].label(), "0010 mild steel 2.7–3.2 mm, Oxygen (3)");
     }
 
     #[test]

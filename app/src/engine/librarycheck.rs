@@ -339,7 +339,7 @@ fn logged_records(folder: &Path) -> std::collections::HashSet<(bool, u64)> {
 }
 
 fn demo_spec() -> SheetSpec {
-    SheetSpec { w: 3000.0, h: 1500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() }
+    SheetSpec { w: 3000.0, h: 1500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None }
 }
 
 /// A made-up job; `rev` (how often it was saved over) goes in its method.

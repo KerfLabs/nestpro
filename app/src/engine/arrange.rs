@@ -558,7 +558,7 @@ mod tests {
     const GAP: f64 = 6.35;
 
     fn spec() -> SheetSpec {
-        SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: GAP, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() }
+        SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: GAP, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None }
     }
     fn fmt() -> SheetFormat {
         SheetFormat::rect(1000.0, 500.0)

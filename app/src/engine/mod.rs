@@ -122,12 +122,77 @@ pub fn blm_base(m: &settings::Machine) -> crate::blm::BlmSettings {
     b
 }
 
-/// BLM settings with the job's name, material and thickness filled in
-/// (material name and code from Settings → Materials).
+/// BLM settings with the job's name, material, thickness and gas filled in
+/// (material name and code from Settings → Materials; the gas: GS11).
 pub fn blm_for(spec: &SheetSpec, base: &crate::blm::BlmSettings, job_name: &str, cfg: &AppSettings) -> crate::blm::BlmSettings {
     let b = crate::blm::BlmSettings::for_spec(spec, &base.machine, job_name);
     let (mat_name, mat_id) = cfg.materials.get(spec.material).cloned().unwrap_or((b.mat_name.clone(), b.mat_id.clone()));
-    crate::blm::BlmSettings { on: base.on, gas_id: base.gas_id, gas_name: base.gas_name.clone(), mat_name, mat_id, ..b }
+    let gas = job_gas(spec, base);
+    crate::blm::BlmSettings { on: base.on, gas_id: gas.number, gas_name: gas.program_name, mat_name, mat_id, ..b }
+}
+
+/// The gas a job is cut with, as its programs name it (GS11): its own, else
+/// the machine's gas as saved in Settings → Machines (`base`, from
+/// `blm_base`), even a number and name that aren't the list's pair.
+pub fn job_gas(spec: &SheetSpec, base: &crate::blm::BlmSettings) -> crate::gas::JobGas {
+    crate::gas::JobGas::of(spec.gas, base.gas_id, &base.gas_name)
+}
+
+/// The gas a new job starts with (GS12): the active machine's (Settings →
+/// Machines) when its saved number and name are one of the list's pairs;
+/// otherwise none of its own, so the job is cut with the machine's as saved
+/// (GS11; our choice, FEATURES MAC-69).
+pub fn new_job_gas(cfg: &AppSettings) -> Option<crate::gas::Gas> {
+    let m = cfg.machine();
+    crate::gas::Gas::listed(m.gas_id, &m.gas_name)
+}
+
+/// What picking a job's gas changed, in words (GS14): the gas, the machine
+/// file's section and the technology table's record picked again for it,
+/// whether the automatic lead tables changed, and the job's cut time. The
+/// nested sheets stay as they are; `before` and `after` are the job's sheet
+/// settings, the sheets those of the job.
+pub fn gas_change_note(parts: &[Part], sheets: &[Vec<Placed>], formats: &[SheetFormat], manual: &[Vec<ManualCut>], before: &SheetSpec, after: &SheetSpec, base: &crate::blm::BlmSettings) -> String {
+    let (g0, g1) = (job_gas(before, base), job_gas(after, base));
+    if before.gas == after.gas {
+        return format!("Gas: already {}.", g1.label());
+    }
+    let whose = |g: &crate::gas::JobGas| if g.own { g.label() } else { format!("{} (the machine's)", g.label()) };
+    let mut said = vec![format!("Gas: {} → {}", whose(&g0), whose(&g1))];
+    let (t0, t1) = (crate::ct1::for_spec(before), crate::ct1::for_spec(after));
+    let section = |t: &crate::ct1::MachineTech| t.applied().map_or("none (the machine's own values)".to_string(), |s| s.label());
+    if t0.section == t1.section {
+        said.push(format!("machine table section unchanged: {}", section(&t1)));
+    } else {
+        said.push(format!("machine table section {} → {}", section(&t0), section(&t1)));
+    }
+    let record = |spec: &SheetSpec, t: &crate::ct1::MachineTech| {
+        let files = &t.speed_files;
+        let keys = crate::techtable::Keys::for_spec(spec, files.gas);
+        match files.table.as_ref().and_then(|tb| tb.pick(&keys).map(|(i, _)| tb.records[i].label())) {
+            Some(l) => l,
+            None if files.table.is_some() => "none".to_string(),
+            None => "no technology table".to_string(),
+        }
+    };
+    let (r0, r1) = (record(before, &t0), record(after, &t1));
+    if r0 == r1 {
+        said.push(format!("technology record unchanged: {r1}"));
+    } else {
+        said.push(format!("technology record {r0} → {r1}"));
+    }
+    said.push(if t0.leads == t1.leads {
+        "automatic lead tables unchanged".to_string()
+    } else {
+        "automatic leads follow the new section's lead tables (leads moved by hand stay)".to_string()
+    });
+    if sheets.is_empty() {
+        said.push("no nested sheets".to_string());
+    } else {
+        let time = |spec: &SheetSpec| plans(parts, sheets, formats, spec, manual).iter().map(|p| p.seconds).sum::<f64>();
+        said.push(format!("{} nested sheet(s) kept; cut time {:.1} s → {:.1} s", sheets.len(), time(before), time(after)));
+    }
+    format!("{}.", said.join("; "))
 }
 
 impl Ctx {
@@ -1298,14 +1363,15 @@ impl JobFile {
     }
 }
 
-/// A new job's sheet with the part gap and edge margin from Settings → Nesting (HM12).
+/// A new job's sheet with the part gap and edge margin from Settings →
+/// Nesting (HM12) and the machine's gas (GS12).
 pub fn with_prefs(spec: &SheetSpec, cfg: &AppSettings) -> SheetSpec {
-    SheetSpec { gap: cfg.nesting.part_gap, margin: cfg.nesting.edge_margin, ..spec.clone() }
+    SheetSpec { gap: cfg.nesting.part_gap, margin: cfg.nesting.edge_margin, gas: new_job_gas(cfg), ..spec.clone() }
 }
 
 /// The default sheet of a new job: 2000 × 1000 mm, 3 mm mild steel, level 3.
 pub fn default_spec() -> SheetSpec {
-    SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() }
+    SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None }
 }
 
 #[cfg(test)]

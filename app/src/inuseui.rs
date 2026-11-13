@@ -748,7 +748,7 @@ mod inuseui_tests {
 
     /// Library job `name` (one part), saved by kim on PROG-3.
     fn saved(dir: &Path, name: &str) -> u64 {
-        let spec = crate::nest::SheetSpec { w: 3000.0, h: 1500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 10.0, level: 3, machine: Default::default(), kerf: Default::default() };
+        let spec = crate::nest::SheetSpec { w: 3000.0, h: 1500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 10.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None };
         let mut j = crate::jobfile::JobFile::new_job(name, spec);
         j.week = "Acme".into();
         j.parts.push(crate::engine::shape_part(crate::nest::Shape::Rectangle, 1, 1));

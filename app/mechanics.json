@@ -3943,7 +3943,7 @@
  {
   "name": "job gas / lens / nozzle keys",
   "group": "machine file sections",
-  "value": "not given (jobs carry none)",
+  "value": "gas: the job's (GS13); lens, nozzle and the rest: not given (jobs carry none)",
   "source": "MECHANICS MTL4; own design"
  },
  {
@@ -6629,6 +6629,61 @@
   "value": "not found",
   "source": "GS9",
   "estimated": true
+ },
+ {
+  "name": "gas list shown to people",
+  "group": "gas",
+  "value": "1 Nitrogen, 2 Air, 3 Oxygen, 4 Argon, 5 Water",
+  "source": "MECHANICS GS10"
+ },
+ {
+  "name": "gas names a job's LC5 programs write",
+  "group": "gas",
+  "value": "1 Nitrogen, 2 Air, 3 Oxygen, 4 Argon, 5 H2O",
+  "source": "MECHANICS GS10; GS2"
+ },
+ {
+  "name": "job file gas",
+  "group": "gas",
+  "value": "the gas's number, beside material and thickness; none = saved before jobs carried a gas",
+  "source": "MECHANICS GS10"
+ },
+ {
+  "name": "job without a gas",
+  "group": "gas",
+  "value": "the machine's gas number and name as saved, even off the list; file unchanged until a gas is picked",
+  "source": "MECHANICS GS11"
+ },
+ {
+  "name": "new job gas",
+  "group": "gas",
+  "value": "the active machine's when its number and name are a pair the LC5 list writes (5 is H2O), else none of its own",
+  "source": "MECHANICS GS12"
+ },
+ {
+  "name": "section and record keys",
+  "group": "gas",
+  "value": "the job's gas; a section or record with no gas fits any job; no gas of its own: none for the section, the machine's for the record",
+  "source": "MECHANICS GS13"
+ },
+ {
+  "name": "default-technology rule with a gas",
+  "group": "gas",
+  "value": "applies when the job gives only material, thickness and gas (among the sections its gas fits)",
+  "source": "MECHANICS GS13",
+  "estimated": true
+ },
+ {
+  "name": "gas change keeps the nested sheets",
+  "group": "gas",
+  "value": true,
+  "source": "MECHANICS GS14"
+ },
+ {
+  "name": "gas change marks the sheets changed",
+  "group": "gas",
+  "value": false,
+  "source": "MECHANICS GS14"
  }
 ]
 }
