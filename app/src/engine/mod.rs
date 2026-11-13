@@ -691,8 +691,11 @@ pub fn lead_on_element(part: &mut Part, elem: usize, pick: Option<P>) -> Result<
     if let Some(slot) = t.starts.iter_mut().find(|s| s.is_none()) {
         *slot = Some((ci as u8, at));
     }
-    // A new start replaces a lead moved by hand on that contour (LE6).
-    t.clear_lead_edit(ci);
+    // A new start replaces a lead moved by hand on that contour (LE6); one
+    // it shared with the holes of its shape stays on them (LE8).
+    let mut list: Vec<nest::LeadEdit> = t.lead_edits.iter().flatten().copied().collect();
+    hand_off(part, &mut list, ci);
+    put_hand_leads(&mut t, list)?;
     part.tech = Some(t);
     Ok(format!("Lead-in placed {where_} the {} ({len:.1} mm).", kind.label().to_lowercase()))
 }
@@ -745,18 +748,20 @@ pub fn contour_number(part: &Part, ci: usize) -> usize {
 }
 
 /// Drag the free end of contour `ci`'s lead-in (its pierce) or lead-out to
-/// `pointer`, part mm (LE2): the GUI's drag, frame by frame. The message
-/// gives lengths in `unit`, the window's (NST-16).
-pub fn drag_lead_end(parts: &mut [Part], idx: usize, spec: &SheetSpec, ci: usize, end: LeadEnd, pointer: P, unit: crate::units::LenUnit) -> Result<String, String> {
-    place_lead_end(parts, idx, spec, ci, end, unit, |frame, open, _| Ok(crate::leads::hand_polar(frame, end == LeadEnd::In, open, pointer)))
+/// `pointer`, part mm (LE2): the GUI's drag, frame by frame. With `same`
+/// (All the same contours) every hole of its shape takes the lead too (LE8).
+/// The message gives lengths in `unit`, the window's (NST-16).
+pub fn drag_lead_end(parts: &mut [Part], idx: usize, spec: &SheetSpec, ci: usize, end: LeadEnd, pointer: P, same: bool, unit: crate::units::LenUnit) -> Result<String, String> {
+    place_lead_end(parts, idx, spec, ci, end, same, unit, |frame, open, _| Ok(crate::leads::hand_polar(frame, end == LeadEnd::In, open, pointer)))
 }
 
 /// Give contour `ci`'s lead-in pierce or lead-out end a length (mm) and/or
 /// an angle (degrees from the contour, into the scrap) by hand (LE1, LE2);
-/// what isn't given stays as the lead is cut now.
-pub fn set_lead_end(parts: &mut [Part], idx: usize, spec: &SheetSpec, ci: usize, end: LeadEnd, len: Option<f64>, angle: Option<f64>) -> Result<String, String> {
+/// what isn't given stays as the lead is cut now. With `same`, every hole of
+/// its shape takes the lead too (LE8).
+pub fn set_lead_end(parts: &mut [Part], idx: usize, spec: &SheetSpec, ci: usize, end: LeadEnd, len: Option<f64>, angle: Option<f64>, same: bool) -> Result<String, String> {
     let no = contour_number(&parts[idx], ci);
-    place_lead_end(parts, idx, spec, ci, end, crate::units::LenUnit::Mm, |_, open, now| {
+    place_lead_end(parts, idx, spec, ci, end, same, crate::units::LenUnit::Mm, |_, open, now| {
         let (lo, hi) = crate::leads::hand_angles(open);
         let what = end.label();
         let len = match (len, now) {
@@ -781,7 +786,8 @@ pub fn set_lead_end(parts: &mut [Part], idx: usize, spec: &SheetSpec, ci: usize,
     })
 }
 
-fn place_lead_end(parts: &mut [Part], idx: usize, spec: &SheetSpec, ci: usize, end: LeadEnd, unit: crate::units::LenUnit, pick: impl FnOnce((P, P, P), f64, Option<(f64, f64)>) -> Result<(f64, f64), String>) -> Result<String, String> {
+#[allow(clippy::too_many_arguments)]
+fn place_lead_end(parts: &mut [Part], idx: usize, spec: &SheetSpec, ci: usize, end: LeadEnd, same: bool, unit: crate::units::LenUnit, pick: impl FnOnce((P, P, P), f64, Option<(f64, f64)>) -> Result<(f64, f64), String>) -> Result<String, String> {
     let part = parts.get(idx).ok_or("No such part.")?;
     let no = contour_number(part, ci);
     let plan = cnc::plan_part(parts, idx, spec);
@@ -797,47 +803,236 @@ fn place_lead_end(parts: &mut [Part], idx: usize, spec: &SheetSpec, ci: usize, e
     // Measured on the drawn contour, not the offset path (KC8).
     let spot = c.lead_spots[usize::from(end == LeadEnd::Out)];
     let (len, ang) = pick(spot.frame, spot.open, spot.end)?;
-    // The lead's foot: the drawn contour's start.
-    let g = part.geometry();
-    let own = if ci < g.holes.len() { g.holes[ci].clone() } else { g.outline.clone() };
-    let mut t = part.tech.unwrap_or_else(cnc::auto_tech);
-    let mut e = t.lead_edit(ci).unwrap_or(nest::LeadEdit { contour: ci as u8, at: cnc::start_at_point(own, c.lead_spots[0].frame.0)[0], rec: c.lead_rec as u8, lead_in: None, lead_out: None });
+    // The lead it is cut with now (its own, or the one its look-alikes share,
+    // LE8), else a new one with its foot at the drawn contour's start.
+    let mut e = hand_lead(part, ci).map(|(e, _)| e).unwrap_or_else(|| {
+        let own = cut_contour(part, ci).unwrap_or_default();
+        nest::LeadEdit { contour: ci as u8, at: cnc::start_at_point(own, c.lead_spots[0].frame.0)[0], rec: c.lead_rec as u8, lead_in: None, lead_out: None, same: false }
+    });
     match end {
         LeadEnd::In => e.lead_in = Some((len, ang)),
         LeadEnd::Out => e.lead_out = Some((len, ang)),
     }
-    let slot = t.lead_edits.iter().position(|s| s.is_some_and(|x| x.contour as usize == ci)).or_else(|| t.lead_edits.iter().position(|s| s.is_none()));
-    let Some(k) = slot else {
-        return Err(format!("This part already has {} leads moved by hand — put one back first (double-click its end, or lead-edit mode=reset).", nest::LEAD_EDITS));
-    };
-    t.lead_edits[k] = Some(e);
-    // The lead now starts where it was moved; a start picked on an element gives way (LE6).
-    for s in t.starts.iter_mut() {
-        if s.is_some_and(|x| x.0 as usize == ci) {
-            *s = None;
-        }
-    }
-    parts[idx].tech = Some(t);
+    let took = store_hand_lead(&mut parts[idx], ci, e, same)?;
     // Say what is cut now: a lead that would cross the part is shortened (LE5).
     let plan = cnc::plan_part(parts, idx, spec);
     let cut = plan.contours.iter().find(|c| c.contour == ci).map(lead_ends);
     let got = cut.and_then(|x| if end == LeadEnd::In { x.lead_in } else { x.lead_out });
     let short = got.filter(|g| g.0 < len - 0.05).map_or(String::new(), |g| format!(" — cut {}: the rest would cross the part", unit.len(g.0, 1)));
-    Ok(format!("Contour {no}'s {} moved by hand: {} at {ang:.0}° from the contour{short}.", end.label(), unit.len(len, 1)))
+    let also = if took > 0 { format!(", and on {} too", others(took)) } else { String::new() };
+    Ok(format!("Contour {no}'s {} moved by hand: {} at {ang:.0}° from the contour{also}{short}.", end.label(), unit.len(len, 1)))
 }
 
-/// Put contour `ci`'s lead (or, with `None`, every lead of the part) back to
-/// what the plan makes of it (LE6). Returns how many were moved by hand.
-pub fn reset_lead_edits(part: &mut Part, ci: Option<usize>) -> usize {
-    let Some(t) = part.tech.as_mut() else { return 0 };
-    match ci {
-        Some(ci) => usize::from(t.clear_lead_edit(ci)),
-        None => {
-            let n = t.lead_edits.iter().flatten().count();
-            t.lead_edits = [None; nest::LEAD_EDITS];
-            n
+/// "the other hole like it" / "the 3 holes like it": the other holes of the
+/// same shape (LE8).
+fn others(n: usize) -> String {
+    if n == 1 {
+        "the other hole like it".into()
+    } else {
+        format!("the {n} holes like it")
+    }
+}
+
+/// A part's cut contours (cut holes first, the outline last, as
+/// `PartTech::starts` and `lead_edits` count them), part coordinates.
+fn cut_contours(part: &Part) -> Vec<Vec<P>> {
+    let g = part.geometry();
+    let mut v = g.holes;
+    v.push(g.outline);
+    v
+}
+
+/// Cut contour `ci` of a part (see `cut_contours`), without making the rest.
+fn cut_contour(part: &Part, ci: usize) -> Option<Vec<P>> {
+    if let (Shape::Custom, Some(c)) = (part.shape, &part.custom) {
+        return c.holes.get(ci).or((ci == c.holes.len()).then_some(&c.outline)).cloned();
+    }
+    cut_contours(part).into_iter().nth(ci)
+}
+
+/// The other cut holes of the same shape as cut contour `ci` (LE8, by CS5:
+/// moved, not turned or mirrored; never the outline), in number order.
+pub fn same_holes(part: &Part, ci: usize) -> Vec<usize> {
+    let list = cut_contours(part);
+    let holes = list.len().saturating_sub(1);
+    match list.get(ci).filter(|_| ci < holes) {
+        Some(own) => (0..holes).filter(|&j| j != ci && contours::same_points(own, &list[j], true)).collect(),
+        None => vec![],
+    }
+}
+
+/// Whether two or more of a part's cut holes are the same shape (LE8): the
+/// Part view offers All the same contours for its leads then. Holes are
+/// compared only with those of the same point count and about the same width.
+pub fn has_same_holes(part: &Part) -> bool {
+    let list = cut_contours(part);
+    let holes = &list[..list.len().saturating_sub(1)];
+    let mut keys: Vec<(usize, f64, usize)> = holes.iter().enumerate().map(|(i, h)| (h.len(), nest::bbox_of(h)[2] - nest::bbox_of(h)[0], i)).collect();
+    keys.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    (0..keys.len()).any(|i| {
+        let (n, w, a) = keys[i];
+        keys[i + 1..].iter().take_while(|k| k.0 == n && k.1 - w <= 2.0 * dxf::JOIN_TOL).any(|k| contours::same_points(&holes[a], &holes[k.2], true))
+    })
+}
+
+/// Lead `e`, set on contour `from`, moved onto cut contour `ci` (`to`) when
+/// that is the same shape (LE8): the same lead at the same place on it.
+fn moved_onto(e: &nest::LeadEdit, from: &[P], to: &[P], ci: usize) -> Option<nest::LeadEdit> {
+    if !contours::same_points(from, to, true) {
+        return None;
+    }
+    let (a, b) = (nest::bbox_of(from), nest::bbox_of(to));
+    Some(nest::LeadEdit { contour: ci as u8, at: [e.at[0] + b[0] - a[0], e.at[1] + b[1] - a[1]], ..*e })
+}
+
+/// Whether a start is picked on an element of contour `ci`: that contour
+/// doesn't take a lead shared by the holes of its shape (LE8).
+fn start_picked(t: &PartTech, ci: usize) -> bool {
+    t.starts.iter().flatten().any(|s| s.0 as usize == ci)
+}
+
+/// The lead moved by hand that cut contour `ci` is cut with, and the contour
+/// it is set on (LE1, LE8): its own, else one set for every hole of its
+/// shape on one of them (unless a start is picked on its element). `None`:
+/// the plan places its lead.
+pub fn hand_lead(part: &Part, ci: usize) -> Option<(nest::LeadEdit, usize)> {
+    let t = part.tech.as_ref()?;
+    if let Some(e) = t.lead_edit(ci) {
+        return Some((e, ci));
+    }
+    if start_picked(t, ci) {
+        return None;
+    }
+    let mut own: Option<Option<Vec<P>>> = None;
+    for g in t.lead_edits.iter().flatten().filter(|e| e.same) {
+        let Some(to) = own.get_or_insert_with(|| cut_contour(part, ci)) else { return None };
+        let k = g.contour as usize;
+        if let Some(e) = cut_contour(part, k).and_then(|from| moved_onto(g, &from, to, ci)) {
+            return Some((e, k));
         }
     }
+    None
+}
+
+/// Every cut contour's lead moved by hand (`hand_lead`), by contour number:
+/// what the cut plan builds. Empty when there is none.
+pub fn hand_leads(part: &Part) -> Vec<Option<nest::LeadEdit>> {
+    let Some(t) = part.tech.as_ref() else { return vec![] };
+    let set: Vec<nest::LeadEdit> = t.lead_edits.iter().flatten().copied().collect();
+    if !set.iter().any(|e| e.same) {
+        let n = set.iter().map(|e| e.contour as usize + 1).max().unwrap_or(0);
+        return (0..n).map(|ci| t.lead_edit(ci)).collect();
+    }
+    let list = cut_contours(part);
+    (0..list.len())
+        .map(|ci| {
+            t.lead_edit(ci).or_else(|| {
+                if start_picked(t, ci) {
+                    return None;
+                }
+                set.iter().filter(|e| e.same).find_map(|g| list.get(g.contour as usize).and_then(|from| moved_onto(g, from, &list[ci], ci)))
+            })
+        })
+        .collect()
+}
+
+/// Take contour `ci`'s own lead out of `list`. One set for every hole of its
+/// shape stays on the others (LE8): it moves to the first of them without a
+/// lead or a start picked on an element of its own.
+fn hand_off(part: &Part, list: &mut Vec<nest::LeadEdit>, ci: usize) {
+    let Some(k) = list.iter().position(|x| x.contour as usize == ci) else { return };
+    let free = |j: usize| !list.iter().any(|x| x.contour as usize == j) && !part.tech.as_ref().is_some_and(|t| start_picked(t, j));
+    let heir = if list[k].same { same_holes(part, ci).into_iter().find(|&j| free(j)) } else { None };
+    let moved = heir.and_then(|j| moved_onto(&list[k], &cut_contour(part, ci)?, &cut_contour(part, j)?, j));
+    match moved {
+        Some(h) => list[k] = h,
+        None => {
+            list.remove(k);
+        }
+    }
+}
+
+/// Write `list` back as the part's leads moved by hand (LE1: at most 16).
+fn put_hand_leads(t: &mut PartTech, list: Vec<nest::LeadEdit>) -> Result<(), String> {
+    if list.len() > nest::LEAD_EDITS {
+        return Err(format!("This part already has {} leads moved by hand — put one back first (double-click its end, or lead-edit mode=reset).", nest::LEAD_EDITS));
+    }
+    t.lead_edits = [None; nest::LEAD_EDITS];
+    for (s, x) in t.lead_edits.iter_mut().zip(list) {
+        *s = Some(x);
+    }
+    Ok(())
+}
+
+/// Give cut contour `ci` the lead `e` moved by hand (LE1): for it alone, or
+/// with `same` for every hole of its shape too (LE8), whose own leads and
+/// starts picked on an element then go. Returns how many other holes take it.
+fn store_hand_lead(part: &mut Part, ci: usize, mut e: nest::LeadEdit, same: bool) -> Result<usize, String> {
+    let family = if same { same_holes(part, ci) } else { vec![] };
+    // A part without its own technology takes the machine's automatic one (LE4).
+    let mut t = part.tech.unwrap_or_else(cnc::auto_tech);
+    let mut list: Vec<nest::LeadEdit> = t.lead_edits.iter().flatten().copied().collect();
+    e.contour = ci as u8;
+    e.same = !family.is_empty();
+    if e.same {
+        list.retain(|x| !family.contains(&(x.contour as usize)));
+    } else {
+        // Its lead alone changes: one it shared stays on the others.
+        hand_off(part, &mut list, ci);
+    }
+    match list.iter().position(|x| x.contour as usize == ci) {
+        Some(k) => list[k] = e,
+        None => list.push(e),
+    }
+    put_hand_leads(&mut t, list)?;
+    // The lead now starts where it was moved; a start picked on an element gives way (LE6).
+    for s in t.starts.iter_mut() {
+        if s.is_some_and(|x| x.0 as usize == ci || family.contains(&(x.0 as usize))) {
+            *s = None;
+        }
+    }
+    part.tech = Some(t);
+    Ok(family.len())
+}
+
+/// Put contour `ci`'s lead moved by hand on every hole of its shape too
+/// (LE8): the Part view's *Apply to them*, and `lead-edit same=true` without
+/// lengths.
+pub fn lead_to_same(part: &mut Part, ci: usize) -> Result<String, String> {
+    let no = contour_number(part, ci);
+    let Some((e, _)) = hand_lead(part, ci) else {
+        return Err(format!("Contour {no}'s lead isn't moved by hand: move it first (drag its end, or lead-edit with in_length / in_angle), then share it."));
+    };
+    if same_holes(part, ci).is_empty() {
+        return Err(format!("No other hole of this part is the same shape as contour {no} (moved, not turned or mirrored)."));
+    }
+    let took = store_hand_lead(part, ci, e, true)?;
+    Ok(format!("Contour {no}'s lead is on {} too.", others(took)))
+}
+
+/// Put contour `ci`'s lead back to what the plan makes of it (LE6), or with
+/// `None` every lead of the part. A lead set for every hole of a shape goes
+/// from all of them (LE8); with `same` (All the same contours) so do the
+/// leads of every hole like `ci`. Returns how many contours' leads changed.
+pub fn reset_lead_edits(part: &mut Part, ci: Option<usize>, same: bool) -> usize {
+    let before = hand_leads(part);
+    let gone: Vec<usize> = match ci {
+        Some(ci) => {
+            let mut v = if same { same_holes(part, ci) } else { vec![] };
+            v.push(ci);
+            v.extend(hand_lead(part, ci).map(|(_, k)| k));
+            v
+        }
+        None => (0..=u8::MAX as usize).collect(),
+    };
+    let Some(t) = part.tech.as_mut() else { return 0 };
+    for e in t.lead_edits.iter_mut() {
+        if e.is_some_and(|x| gone.contains(&(x.contour as usize))) {
+            *e = None;
+        }
+    }
+    let after = hand_leads(part);
+    (0..before.len().max(after.len())).filter(|&k| before.get(k).copied().flatten() != after.get(k).copied().flatten()).count()
 }
 
 /// A micro-joint in the middle of each element listed; returns how many fitted.

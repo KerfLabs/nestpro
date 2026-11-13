@@ -337,6 +337,12 @@ pub struct App {
     /// Part view: the extent the view is framed on while a lead end is dragged
     /// (part index, extent), so the part doesn't move under the pointer.
     pub part_ext_lock: Option<(usize, [f64; 4])>,
+    /// Part view: All the same contours for leads moved by hand (LE8): a
+    /// dragged lead goes on every hole of the same shape.
+    pub lead_same: bool,
+    /// Part view: a lead just moved on one hole alone, offered to the holes
+    /// of its shape (part, contour, how many) (LE8).
+    pub lead_offer: Option<(usize, usize, usize)>,
     /// Follow Windows' light/dark setting (the original's default style takes
     /// the system colours).
     pub follow_system: bool,
@@ -650,6 +656,8 @@ impl App {
             part_pan: Vec2::ZERO,
             part_view_hist: vec![],
             part_ext_lock: None,
+            lead_same: false,
+            lead_offer: None,
             part_view_last: 0.0,
             follow_system: false,
             options_open: false,
@@ -3559,6 +3567,24 @@ fn main() -> eframe::Result {
                 if app.workspace == Workspace::Part {
                     app.tab = Tab::Technology;
                 }
+            }
+            // --lead-offer / --lead-same (screenshots): the Clip (a flange plate
+            // with four equal corner holes) in the Part view with its first
+            // hole's lead-in moved by hand through the engine (LE8): alone,
+            // with Apply to them offered, or with All the same contours on, so
+            // all four holes take it.
+            let (lead_offer, lead_same) = (std::env::args().any(|a| a == "--lead-offer"), std::env::args().any(|a| a == "--lead-same"));
+            if let Some(i) = app.parts.iter().position(|p| p.name == "Clip").filter(|_| lead_offer || lead_same) {
+                app.open_part(i);
+                app.lead_same = lead_same;
+                let spec = app.spec.clone();
+                if let Ok(m) = engine::set_lead_end(&mut app.parts, i, &spec, 0, engine::LeadEnd::In, Some(3.0), Some(40.0), lead_same) {
+                    app.status = m;
+                }
+                if lead_offer {
+                    app.lead_offer = Some((i, 0, engine::same_holes(&app.parts[i], 0).len()));
+                }
+                app.refresh();
             }
             // --sheet-tab (screenshots): the Sheet tab, e.g. its machine-table line.
             if std::env::args().any(|a| a == "--sheet-tab") {
