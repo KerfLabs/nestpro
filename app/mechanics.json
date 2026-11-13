@@ -4209,7 +4209,7 @@
  {
   "name": "Ctrl+Q / Ctrl+W turn the selection (+/- rotation step)",
   "group": "moving parts by hand",
-  "value": "90° steps only in the rebuild",
+  "value": "by the rotation step (Settings → Nesting or the turn bar; 1° when Free)",
   "source": "MECHANICS HM1"
  },
  {
@@ -4325,6 +4325,61 @@
   "value": "80 px",
   "source": "MECHANICS HM13; estimate",
   "estimated": true
+ },
+ {
+  "name": "Ctrl+1/5/0/3/4/9 turn the selection",
+  "group": "moving parts by hand",
+  "value": "1/5/10/30/45/90° (direction as Ctrl+9)",
+  "source": "MECHANICS HM1"
+ },
+ {
+  "name": "Ctrl+T",
+  "group": "moving parts by hand",
+  "value": "type an angle for the selection",
+  "source": "MECHANICS HM1"
+ },
+ {
+  "name": "placed parts keep",
+  "group": "moving parts by hand",
+  "value": "any angle: quarter turns plus the rest; footprint = box of the turned outline",
+  "source": "MECHANICS HM14"
+ },
+ {
+  "name": "angles other than 0/90/180/270° allowed for",
+  "group": "moving parts by hand",
+  "value": "parts that may turn 90°",
+  "source": "MECHANICS HM14; estimate",
+  "estimated": true
+ },
+ {
+  "name": "a typed angle",
+  "group": "moving parts by hand",
+  "value": "the part clicked first goes to it; the others turn with it",
+  "source": "MECHANICS HM14"
+ },
+ {
+  "name": "turn by dragging rounds to",
+  "group": "moving parts by hand",
+  "value": "Round(angle / step) · step; 0.1° when Free or with Alt",
+  "source": "MECHANICS HM15"
+ },
+ {
+  "name": "rotation step choices",
+  "group": "moving parts by hand",
+  "value": "Free, 5, 10, 15, 30, 45, 90° or typed (0.1–180°)",
+  "source": "MECHANICS HM16"
+ },
+ {
+  "name": "rotation step default",
+  "group": "moving parts by hand",
+  "value": "15°",
+  "source": "MECHANICS HM16; rebuild"
+ },
+ {
+  "name": "turn bar",
+  "group": "moving parts by hand",
+  "value": "under the selected parts (above when no room); × hides it, Ctrl+T shows it",
+  "source": "MECHANICS HM17"
  },
  {
   "name": "technology table and time file",

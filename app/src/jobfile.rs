@@ -9,9 +9,15 @@ use crate::cutoff::CutLine;
 use crate::nest::{Part, Placed, SheetSpec};
 use serde::{Deserialize, Serialize};
 
-/// What a job file says it is, and its layout version.
+/// What a job file says it is, and the newest layout version this build
+/// reads. Layout 2: a part on a sheet may sit at an angle that isn't a
+/// quarter turn (HM14), which older builds would show and cut at the wrong
+/// angle, so they refuse it ("made by a newer version").
 pub const FORMAT: &str = "nestpro-job";
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
+/// A job with every part on a quarter turn is written as layout 1, which
+/// older builds still open.
+pub const VERSION_QUARTER_TURNS: u32 = 1;
 /// The job file extension.
 pub const EXT: &str = "snjob";
 
@@ -67,8 +73,22 @@ pub struct JobFile {
     pub library_parts: std::collections::BTreeMap<String, crate::library::Record>,
 }
 
+/// The layout a job needs: 2 only when a part sits at a free angle.
+pub fn layout_for(job: &JobFile) -> u32 {
+    if job.sheets.iter().flatten().any(|p| !p.spin.is_none()) { VERSION } else { VERSION_QUARTER_TURNS }
+}
+
+/// The job as written to its file, marked with the layout it needs.
+pub fn to_text(job: &JobFile) -> Result<String, String> {
+    let v = layout_for(job);
+    if job.version == v {
+        return serde_json::to_string_pretty(job).map_err(|e| e.to_string());
+    }
+    serde_json::to_string_pretty(&JobFile { version: v, ..job.clone() }).map_err(|e| e.to_string())
+}
+
 pub fn save(path: &std::path::Path, job: &JobFile) -> Result<(), String> {
-    let text = serde_json::to_string_pretty(job).map_err(|e| e.to_string())?;
+    let text = to_text(job)?;
     // Write next to it, then rename, so a crash never leaves half a file
     // (as Expert rewrites LANTEKIN.CNI through a temporary file, LK3); the
     // temporary file is this writer's own (LB3).
@@ -102,7 +122,7 @@ mod jobfile_tests {
             Part { name: "Drawn".into(), shape: Shape::Custom, w: geo.w, h: geo.h, qty: 1, rotate: false, color: 4, tech: None, custom: Some(std::sync::Arc::new(geo)), rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] },
         ];
         let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 1, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
-        let sheets = vec![vec![Placed { part: 0, x: 5.0, y: 5.0, w: 120.0, h: 80.0, turns: 1, mirror: true }]];
+        let sheets = vec![vec![Placed { part: 0, x: 5.0, y: 5.0, w: 120.0, h: 80.0, turns: 1, mirror: true, spin: Default::default() }]];
         let cuts = vec![vec![CutLine { pts: vec![[300.0, 0.0], [300.0, 1000.0]], kind: crate::cutoff::CutKind::Remnant }]];
         // The sheet is an L-shaped remnant from stock.
         let outline = crate::stock::Outline { outer: vec![[0.0, 0.0], [2000.0, 0.0], [2000.0, 1000.0], [800.0, 1000.0], [800.0, 400.0], [0.0, 400.0]], holes: vec![] };
@@ -132,5 +152,25 @@ mod jobfile_tests {
         // Something else is refused.
         std::fs::write(&path, "{\"format\":\"other\"}").unwrap();
         assert!(load(&path).is_err());
+    }
+
+    #[test]
+    fn only_a_job_with_a_part_at_a_free_angle_needs_the_new_layout() {
+        // HM14: a part at 30° is written as layout 2, which older builds
+        // refuse rather than cut at the wrong angle; quarter turns stay at 1.
+        let part = Part { name: "P".into(), shape: Shape::Rectangle, w: 100.0, h: 40.0, qty: 1, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
+        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
+        let quarter = Placed { x: 10.0, y: 10.0, ..crate::nest::oriented(&part, 0, 90.0, false) };
+        let mut j = JobFile { format: FORMAT.into(), version: VERSION, name: "DEMO-001".into(), week: String::new(), parts: vec![part.clone()], spec, sheets: vec![vec![quarter]], formats: vec![], held: Default::default(), cut_lines: vec![], method: String::new(), manual_cuts: vec![], stale: false, booked: false, erp: None, saved: None, library: None, library_parts: Default::default() };
+        let version = |j: &JobFile| serde_json::from_str::<serde_json::Value>(&to_text(j).unwrap()).unwrap()["version"].as_u64();
+        assert_eq!(version(&j), Some(1));
+        j.sheets[0].push(Placed { x: 300.0, y: 10.0, ..crate::nest::oriented(&part, 0, 30.0, false) });
+        assert_eq!(version(&j), Some(2));
+        let d = std::env::temp_dir().join(format!("nestpro_layout_{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let path = d.join("DEMO-001.snjob");
+        save(&path, &j).unwrap();
+        assert_eq!(load(&path).unwrap().sheets, j.sheets);
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

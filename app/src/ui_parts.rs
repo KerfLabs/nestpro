@@ -191,6 +191,24 @@ pub fn paint_part_placed(painter: &egui::Painter, part: &Part, pl: &crate::nest:
     }
 }
 
+/// The selection glow's rings: (width in screen pixels, centred on the outline;
+/// white opacity). A wide faint ring under a narrower brighter one, so the glow
+/// fades away from the part's edge.
+const HALO_RINGS: [(f32, u8); 2] = [(12.0, 24), (7.0, 40)];
+
+/// The soft glow round a selected part on the sheet. It follows the part's own
+/// outer profile (a disc gets a round glow, an L-bracket an L-shaped one), never
+/// its bounding box, which would wash over the parts beside it. Paint it under
+/// every part: each part's fill then hides the inner half of the rings, and a
+/// neighbour closer than the glow covers it rather than being lightened by it.
+pub fn selection_halo(part: &Part, pl: &crate::nest::Placed, to_s: impl Fn(P) -> Pos2) -> Vec<EShape> {
+    let ring: Vec<Pos2> = part.geometry().outline.iter().map(|&q| to_s(pl.map(q))).collect();
+    if ring.len() < 3 {
+        return vec![];
+    }
+    HALO_RINGS.iter().map(|&(w, a)| EShape::closed_line(ring.clone(), Stroke::new(w, Color32::from_rgba_unmultiplied(255, 255, 255, a)))).collect()
+}
+
 fn paint_part_ex(painter: &egui::Painter, part: &Part, map: impl Fn(P) -> Pos2, fill: Color32, edge: Stroke, hole: Color32, with_texts: bool) {
     let g = part.geometry();
     // Imported drawings are filled from triangles; paint them as one seamless mesh
@@ -1880,7 +1898,7 @@ impl App {
                 if ribbon_small(ui, Icon::Copy, "Copy part", false, has).on_hover_text(need("Ctrl+D — copy the selected parts to the first free spot (or Ctrl+drag them to where you want the copy)")).clicked() {
                     self.duplicate_selected();
                 }
-                if ribbon_small(ui, Icon::Rotate, "Rotate 90°", false, has).on_hover_text(need("R / Ctrl+Q — turn left 90° about the selection's centre; Ctrl+W turns right")).clicked() {
+                if ribbon_small(ui, Icon::Rotate, "Rotate 90°", false, has).on_hover_text(need("R — turn to the next allowed quarter turn about the selection's centre. Any angle: the turn bar under the selected parts, its round handle, Ctrl+Q / Ctrl+W (by the turn step) or Ctrl+T (type an angle)")).clicked() {
                     self.rotate_selected();
                 }
                 if ribbon_small(ui, Icon::Mirror, "Mirror", false, has).on_hover_text(need("M — mirror left↔right about the selection's centre; Shift+M top↔bottom")).clicked() {
@@ -2922,5 +2940,59 @@ mod tile_label_tests {
         assert_eq!(super::fit_label("DEMO-1", fits), "DEMO-1");
         // Nothing fits: it stops at three characters.
         assert_eq!(super::fit_label("DEMO-BEND-PLATE", |_| false), "DE…");
+    }
+}
+
+#[cfg(test)]
+mod selection_halo_tests {
+    use super::selection_halo;
+    use crate::nest::{Part, Placed, Shape};
+    use eframe::egui::{Pos2, Shape as EShape};
+
+    fn part(shape: Shape, w: f64, h: f64) -> Part {
+        Part { name: "DEMO-001".into(), shape, w, h, qty: 1, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }
+    }
+
+    /// Every ring of the glow, as screen points (1 px per mm).
+    fn rings(part: &Part, pl: &Placed) -> Vec<Vec<Pos2>> {
+        let shapes = selection_halo(part, pl, |q| Pos2::new(q[0] as f32, q[1] as f32));
+        assert!(!shapes.is_empty(), "a selected part has a glow");
+        shapes
+            .into_iter()
+            .map(|s| match s {
+                EShape::Path(p) => {
+                    assert!(p.closed, "the glow goes all the way round the part");
+                    p.points
+                }
+                other => panic!("the glow is drawn along the outline, not as {other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_disc_glows_in_a_circle_not_a_square() {
+        let disc = part(Shape::Disc, 100.0, 100.0);
+        let pl = Placed { part: 0, x: 200.0, y: 50.0, w: 100.0, h: 100.0, turns: 0, mirror: false, spin: Default::default() };
+        for ring in rings(&disc, &pl) {
+            for q in ring {
+                assert!(((q - Pos2::new(250.0, 100.0)).length() - 50.0).abs() < 0.5, "{q:?} is off the disc's edge");
+                // The box corners, where a neighbour sits, stay clear.
+                assert!((q - Pos2::new(200.0, 50.0)).length() > 20.0);
+            }
+        }
+    }
+
+    #[test]
+    fn a_turned_l_bracket_glows_round_its_l_and_leaves_the_notch_clear() {
+        // 100 × 60, legs 24 thick, turned a quarter: a 60 × 100 footprint
+        // with the notch at the bottom left.
+        let l = part(Shape::LBracket, 100.0, 60.0);
+        let pl = Placed { part: 0, x: 0.0, y: 0.0, w: 60.0, h: 100.0, turns: 1, mirror: false, spin: Default::default() };
+        let near = |ring: &[Pos2], p: Pos2| ring.iter().any(|&q| (q - p).length() < 0.01);
+        for ring in rings(&l, &pl) {
+            assert_eq!(ring.len(), 6, "an L has six corners");
+            assert!(near(&ring, Pos2::new(36.0, 24.0)), "the glow turns the notch's inner corner");
+            assert!(!near(&ring, Pos2::new(0.0, 100.0)), "the footprint's corner in the notch is not part of the glow");
+        }
     }
 }

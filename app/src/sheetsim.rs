@@ -554,7 +554,7 @@ mod sim_tests {
         let mut plans: Vec<(crate::cnc::SheetPlan, Vec<String>)> = (0..a.parts.len())
             .map(|i| {
                 let (w, h) = a.parts[i].bbox();
-                let pl = crate::nest::Placed { part: i, x: 0.0, y: 0.0, w, h, turns: 0, mirror: false };
+                let pl = crate::nest::Placed { part: i, x: 0.0, y: 0.0, w, h, turns: 0, mirror: false, spin: Default::default() };
                 (crate::cnc::plan(&a.parts, &[pl], &a.spec), vec![a.parts[i].name.clone()])
             })
             .collect();

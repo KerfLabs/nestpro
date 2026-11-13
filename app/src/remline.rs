@@ -568,7 +568,7 @@ mod tests {
         Part { name: "A".into(), shape: Shape::Rectangle, w, h, qty: 1, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }
     }
     fn at(i: usize, x: f64, y: f64, w: f64, h: f64) -> Placed {
-        Placed { part: i, x, y, w, h, turns: 0, mirror: false }
+        Placed { part: i, x, y, w, h, turns: 0, mirror: false, spin: Default::default() }
     }
     fn settings(shape: LineShape) -> LineSettings {
         LineSettings { shape, offset: 10.0, min_width: 100.0, ..Default::default() }

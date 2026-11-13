@@ -174,7 +174,17 @@ pub struct NestPrefs {
     pub snap_px: f32,
     /// Show the part-gap halo around parts being moved (HM11).
     pub halo: bool,
+    /// The rotation step, degrees: what the turn bar's buttons and Ctrl+Q /
+    /// Ctrl+W turn by and what a turn by the handle snaps to; 0 = free (HM16).
+    pub turn_step: f64,
+    /// Show the turn bar under the selected parts (HM17).
+    pub turn_bar: bool,
 }
+
+/// Rotation step the app starts with, degrees (HM16).
+pub const TURN_STEP_DEFAULT: f64 = 15.0;
+/// The largest rotation step, degrees.
+pub const TURN_STEP_MAX: f64 = 180.0;
 
 /// Movement value the app starts with, mm: the original's factory value (HM4).
 pub const STEP_DEFAULT: f64 = 10.0;
@@ -182,7 +192,7 @@ pub const STEP_DEFAULT: f64 = 10.0;
 impl Default for NestPrefs {
     fn default() -> Self {
         // The gap outline starts off, as in the original (HM11).
-        NestPrefs { units: Default::default(), part_gap: 5.0, edge_margin: 5.0, step: STEP_DEFAULT, keys_clockwise: false, snap: true, snap_px: crate::ghost::SNAP_PX, halo: false }
+        NestPrefs { units: Default::default(), part_gap: 5.0, edge_margin: 5.0, step: STEP_DEFAULT, keys_clockwise: false, snap: true, snap_px: crate::ghost::SNAP_PX, halo: false, turn_step: TURN_STEP_DEFAULT, turn_bar: true }
     }
 }
 
@@ -210,6 +220,7 @@ impl NestPrefs {
         self.part_gap = fix(self.part_gap, 0.0, 50.0, d.part_gap);
         self.edge_margin = fix(self.edge_margin, 0.0, 100.0, d.edge_margin);
         self.step = fix(self.step, 0.001, 1000.0, d.step);
+        self.turn_step = fix(self.turn_step, 0.0, TURN_STEP_MAX, d.turn_step);
         self.snap_px = if self.snap_px.is_finite() && (2.0..=60.0).contains(&self.snap_px) { self.snap_px } else { d.snap_px };
         self
     }
@@ -901,7 +912,7 @@ mod settings_tests {
             scroll_speed: 3.0,
             refresh_minutes: 15,
             stock: crate::stock::StockSettings { order: crate::stock::Order::ByPriority, min_efficiency: 0.6, ..Default::default() },
-            nesting: NestPrefs { units: crate::units::LenUnit::Inch, part_gap: 6.35, edge_margin: 6.35, step: 25.4 / 16.0, keys_clockwise: true, snap: false, snap_px: 20.0, halo: true },
+            nesting: NestPrefs { units: crate::units::LenUnit::Inch, part_gap: 6.35, edge_margin: 6.35, step: 25.4 / 16.0, keys_clockwise: true, snap: false, snap_px: 20.0, halo: true, turn_step: 7.5, turn_bar: false },
             integrations: vec![crate::integrations::Integration {
                 provider: crate::integrations::Provider::Fulcrum,
                 enabled: false,
