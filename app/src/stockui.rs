@@ -6,6 +6,7 @@
 use crate::engine::stockflow::{self, StockUse};
 use crate::nest::{self, FormatSlot, SheetFormat};
 use crate::stock::{self, Criteria, EffMode, Item, Order, Stock};
+use crate::stockpics;
 use crate::theme::th;
 use std::collections::BTreeMap;
 use crate::App;
@@ -17,8 +18,13 @@ pub struct StockUi {
     pub open: bool,
     pub stock: Stock,
     pub loaded: bool,
-    /// Show only the open job's material and thickness.
-    pub job_only: bool,
+    /// What the material shelf on the left picks; None until the window
+    /// opens, then the open job's material and thickness.
+    pub shelf: Option<Shelf>,
+    /// The list as picture cards instead of the table.
+    pub cards: bool,
+    /// Part of a reference to look for.
+    pub find: String,
     pub crit: Criteria,
     pub sel: Option<String>,
     pub qty_step: i32,
@@ -39,7 +45,9 @@ impl Default for StockUi {
             open: false,
             stock: Stock::default(),
             loaded: false,
-            job_only: true,
+            shelf: None,
+            cards: false,
+            find: String::new(),
             crit: Criteria::everything(),
             sel: None,
             qty_step: 1,
@@ -285,6 +293,9 @@ impl App {
 
     pub fn stock_window(&mut self, ctx: &egui::Context) {
         if !self.stockui.open {
+            // Closed (its X or the ribbon): it opens on the job's material
+            // and thickness again next time.
+            self.stockui.shelf = None;
             return;
         }
         if !self.stockui.loaded {
@@ -304,7 +315,7 @@ impl App {
         }
         let held = self.held.clone();
         let clock = self.clock.clone();
-        egui::Window::new(RichText::new("Sheet stock").size(16.0).strong()).id(egui::Id::unique("sheet_stock")).pivot(egui::Align2::CENTER_TOP).default_pos(crate::ui_parts::dialog_pos(ctx)).open(&mut open).default_size([980.0, 560.0]).collapsible(false).show(ctx, |ui| {
+        egui::Window::new(RichText::new("Sheet stock").size(16.0).strong()).id(egui::Id::unique("sheet_stock")).pivot(egui::Align2::CENTER_TOP).default_pos(crate::ui_parts::dialog_pos(ctx)).open(&mut open).default_size([1080.0, 600.0]).collapsible(false).show(ctx, |ui| {
             // Two tabs: the stock itself, and how automatic nesting uses it.
             ui.horizontal(|ui| {
                 for (opts, name) in [(false, "Stock"), (true, "Nesting options")] {
@@ -334,299 +345,352 @@ impl App {
                 return;
             }
             let su = &mut self.stockui;
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut su.job_only, format!("Only {job_mat} (this job)"));
-                ui.separator();
-                ui.label(RichText::new("Show").color(th().text_dim));
-                ui.checkbox(&mut su.crit.sheets, "Sheets");
-                ui.checkbox(&mut su.crit.nest_remnants, "Remnants from nesting");
-                ui.checkbox(&mut su.crit.user_remnants, "Remnants by user");
-                ui.separator();
-                ui.label(RichText::new("Include").color(th().text_dim));
-                ui.checkbox(&mut su.crit.show_zero_qty, "Empty (qty 0)");
-                ui.checkbox(&mut su.crit.include_locked, "Locked");
-            });
-            ui.add_space(4.0);
-            let rows: Vec<Item> = if su.job_only {
-                su.stock.list(mat, thk, &su.crit).into_iter().cloned().collect()
-            } else {
-                let mut v: Vec<Item> = su.stock.items.iter().filter(|i| su.crit.admits(i)).cloned().collect();
-                v.sort_by(|a, b| (a.material, (a.thickness * 1000.0) as i64, a.reference.len(), a.reference.clone()).cmp(&(b.material, (b.thickness * 1000.0) as i64, b.reference.len(), b.reference.clone())));
-                v
-            };
-            let ctrl = ui.input(|i| i.modifiers.command);
-            let list_h = 290.0;
-            // The picked row is highlighted across the whole row (row 0 is the heading).
-            let sel_row = rows.iter().position(|i| su.sel.as_deref() == Some(i.reference.as_str())).map(|k| k + 1);
-            let sel_bg = th().accent_soft;
-            egui::ScrollArea::vertical().id_salt("stock_list").max_height(list_h).auto_shrink([false, false]).show(ui, |ui| {
-                let grid = egui::Grid::new("stock_grid").min_col_width(40.0).spacing([18.0, 6.0]).with_row_color(move |row, style| {
-                    if Some(row) == sel_row {
-                        Some(sel_bg)
-                    } else {
-                        (row % 2 == 1).then_some(style.visuals.faint_bg_color)
-                    }
+            let shelf = *su.shelf.get_or_insert(Shelf::Thickness(mat, thk));
+            let cur = self.cur_sheet;
+            let allow_empty = self.cfg.stock.allow_no_stock;
+            let refs = self.cfg.stock.with_references;
+            let on_cur: &[crate::nest::Placed] = self.result.sheets.get(cur).map_or(&[][..], |v| &v[..]);
+            let spec = &self.spec;
+            ui.horizontal_top(|ui| {
+                // Left: the material shelf picks what the list shows.
+                let left = ui.vertical(|ui| {
+                    ui.set_width(SHELF_W);
+                    material_shelf(ui, su, mat, thk, u);
                 });
-                grid.show(ui, |ui| {
-                    let (len_h, wid_h, thk_h, area_h) = (format!("Length {}", u.suffix()), format!("Width {}", u.suffix()), format!("Thk {}", u.suffix()), format!("Area {}", u.area_suffix()));
-                    for h in ["Reference", "Kind", "Material", thk_h.as_str(), len_h.as_str(), wid_h.as_str(), area_h.as_str(), "Qty", "This job", "Priority", "Locked", "From", "User data", "Added"] {
-                        ui.label(RichText::new(h).strong().size(12.0));
-                    }
-                    ui.end_row();
-                    // Any cell of a row picks it; a double-click puts it on the sheet.
-                    let cell = |ui: &mut egui::Ui, t: RichText| ui.add(egui::Label::new(t).sense(egui::Sense::click()).selectable(false));
-                    for it in &rows {
-                        let mut r = cell(ui, RichText::new(&it.reference).strong());
-                        let kind_col = if it.kind.is_remnant() { th().accent } else { th().text };
-                        r |= cell(ui, RichText::new(it.kind.label()).color(kind_col));
-                        r |= cell(ui, RichText::new(crate::cnc::MATERIALS[it.material.min(2)]));
-                        r |= cell(ui, RichText::new(u.num(it.thickness)));
-                        r |= cell(ui, RichText::new(u.num_dp(it.length, 0)));
-                        r |= cell(ui, RichText::new(u.num_dp(it.width, 0)));
-                        r |= cell(ui, RichText::new(u.area_num(it.area_m2() * 1e6)));
-                        let q = cell(ui, RichText::new(format!("{}", it.qty)).color(if it.qty > 0 { th().text } else { th().text_dim }));
-                        // On the quantity: who changed it last, and who took
-                        // the last ones (SV9), above the row's own hint.
-                        let who = if q.hovered() { it.changed_note(&clock) } else { String::new() };
-                        r |= q;
-                        let hint = "Click to pick; double-click to put it on the sheet you're looking at";
-                        let r = r.on_hover_text(if who.is_empty() { hint.to_string() } else { format!("{who}\n\n{hint}") });
-                        if r.clicked() {
-                            su.sel = Some(it.reference.clone());
-                            su.note = None;
+                ui.add_space(14.0);
+                // Right: the list (or cards) of what's picked, then what to do with it.
+                let right = ui.vertical(|ui| {
+                    let rows = shelf_rows(&su.stock, &su.crit, shelf, &su.find);
+                    ui.horizontal(|ui| {
+                        let (r, _) = ui.allocate_exact_size(egui::vec2(52.0, 28.0), egui::Sense::hover());
+                        match shelf {
+                            Shelf::All => stockpics::paint_all_swatch(ui.painter(), r),
+                            Shelf::Material(m) | Shelf::Thickness(m, _) => stockpics::paint_swatch(ui.painter(), r, m),
                         }
-                        if r.double_clicked() {
-                            // The same as the main button below: when parts would
-                            // no longer fit, it re-nests (all or nothing).
-                            let rf = it.reference.clone();
-                            action = Some(Box::new(move |app: &mut App| app.use_stock_default(&rf)));
-                        }
-                        let (u, hd) = (using.get(&it.reference).copied().unwrap_or(0), held.get(&it.reference).copied().unwrap_or(0));
-                        let job_txt = match (u, hd) {
-                            (0, 0) => String::new(),
-                            (u, h) if u == h => format!("{u}"),
-                            (u, h) => format!("{u} (saved {h})"),
+                        let title = match shelf {
+                            Shelf::All => "All materials".to_string(),
+                            Shelf::Material(m) => format!("{} · every thickness", mat_name(m)),
+                            Shelf::Thickness(m, t) => format!("{} {}{}", mat_name(m), u.thickness(t), if m == mat && (t - thk).abs() <= stock::TOL { "  (this job)" } else { "" }),
                         };
-                        ui.label(RichText::new(job_txt).color(th().accent)).on_hover_text("Sheets of this item the open job uses. Stock changes when the job is saved.");
-                        ui.label(format!("{}", it.priority));
-                        let mut locked = it.locked;
-                        if ui.checkbox(&mut locked, "").on_hover_text("Locked sheets are never used by automatic nesting. Ctrl + click: lock or unlock all listed").changed() {
-                            let r = it.reference.clone();
-                            let all: Vec<String> = rows.iter().map(|i| i.reference.clone()).collect();
+                        let plates: i32 = rows.iter().map(|i| i.qty.max(0)).sum();
+                        let kg: f64 = rows.iter().map(|i| i.weight_kg() * i.qty.max(0) as f64).sum();
+                        ui.vertical(|ui| {
+                            ui.label(RichText::new(title).size(14.5).strong().color(th().text_strong));
+                            ui.label(RichText::new(format!("{} listed · {plates} on hand · ≈ {kg:.0} kg", rows.len())).size(11.5).color(th().text_dim));
+                        });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.add(egui::Button::new(RichText::new("+ New sheet").color(Color32::WHITE).strong()).fill(th().accent)).on_hover_text("Add a sheet to stock, set to the material and thickness picked on the left").clicked() {
+                                start_new(su, shelf, mat, thk);
+                            }
+                            ui.add_space(6.0);
+                            for (cards, name, tip) in [(true, "▦ Cards", "Each item as a picture, all to the same scale"), (false, "☰ List", "The table, one row per item")] {
+                                if ui.selectable_label(su.cards == cards, name).on_hover_text(tip).clicked() {
+                                    su.cards = cards;
+                                }
+                            }
+                            ui.add_space(6.0);
+                            ui.add(egui::TextEdit::singleline(&mut su.find).hint_text("🔍 Find reference").desired_width(130.0));
+                        });
+                    });
+                    ui.add_space(2.0);
+                    let ctrl = ui.input(|i| i.modifiers.command);
+                    let list_h = 290.0;
+                    // A click picks an item; a double-click puts it on the sheet.
+                    let mut picked: Option<String> = None;
+                    let mut use_now: Option<String> = None;
+                    let hint = "Click to pick; double-click to put it on the sheet you're looking at";
+                    let job_txt = |r: &str| match (using.get(r).copied().unwrap_or(0), held.get(r).copied().unwrap_or(0)) {
+                        (0, 0) => String::new(),
+                        (u, h) if u == h => format!("{u}"),
+                        (u, h) => format!("{u} (saved {h})"),
+                    };
+                    egui::ScrollArea::vertical().id_salt("stock_list").max_height(list_h).auto_shrink([false, false]).show(ui, |ui| {
+                        if su.cards {
+                            let scale = stockpics::common_scale(&rows, egui::vec2(CARD_W - 16.0, CARD_DRAW_H));
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+                                for it in &rows {
+                                    let on = su.sel.as_deref() == Some(it.reference.as_str());
+                                    let r = stock_card(ui, it, scale, on, shelf, &job_txt(&it.reference), u);
+                                    let who = if r.hovered() { it.changed_note(&clock) } else { String::new() };
+                                    let r = r.on_hover_text(if who.is_empty() { hint.to_string() } else { format!("{who}\n\n{hint}") });
+                                    if r.clicked() {
+                                        picked = Some(it.reference.clone());
+                                    }
+                                    if r.double_clicked() {
+                                        use_now = Some(it.reference.clone());
+                                    }
+                                }
+                                if !rows.is_empty() && new_card(ui).on_hover_text("Add a sheet to stock, set to the material and thickness picked on the left").clicked() {
+                                    start_new(su, shelf, mat, thk);
+                                }
+                            });
+                        } else {
+                            // The picked row is highlighted across the whole row (row 0 is the heading).
+                            let sel_row = rows.iter().position(|i| su.sel.as_deref() == Some(i.reference.as_str())).map(|k| k + 1);
+                            let sel_bg = th().accent_soft;
+                            let scale = stockpics::common_scale(&rows, egui::vec2(THUMB.x - 2.0, THUMB.y - 2.0));
+                            // The shelf already says the material (and thickness); they
+                            // get a column only when the list mixes them.
+                            let (show_mat, show_thk) = match shelf {
+                                Shelf::All => (true, true),
+                                Shelf::Material(_) => (false, true),
+                                Shelf::Thickness(..) => (false, false),
+                            };
+                            let grid = egui::Grid::new("stock_grid").min_col_width(30.0).spacing([16.0, 6.0]).with_row_color(move |row, style| {
+                                if Some(row) == sel_row {
+                                    Some(sel_bg)
+                                } else {
+                                    (row % 2 == 1).then_some(style.visuals.faint_bg_color)
+                                }
+                            });
+                            grid.show(ui, |ui| {
+                                let (len_h, wid_h, thk_h, area_h) = (format!("Length {}", u.suffix()), format!("Width {}", u.suffix()), format!("Thk {}", u.suffix()), format!("Area {}", u.area_suffix()));
+                                let mut heads = vec!["", "Reference", "Kind"];
+                                if show_mat {
+                                    heads.push("Material");
+                                }
+                                if show_thk {
+                                    heads.push(thk_h.as_str());
+                                }
+                                heads.extend([len_h.as_str(), wid_h.as_str(), area_h.as_str(), "Qty", "This job", "Priority", "Locked", "From", "User data", "Added"]);
+                                for h in heads {
+                                    ui.label(RichText::new(h).strong().size(12.0));
+                                }
+                                ui.end_row();
+                                let cell = |ui: &mut egui::Ui, t: RichText| ui.add(egui::Label::new(t).sense(egui::Sense::click()).selectable(false));
+                                for it in &rows {
+                                    let mut r = stockpics::item_scaled(ui, it, THUMB, scale);
+                                    r |= cell(ui, RichText::new(&it.reference).strong());
+                                    let kind_col = if it.kind.is_remnant() { stockpics::remnant_edge() } else { th().text };
+                                    r |= cell(ui, RichText::new(it.kind.label()).color(kind_col));
+                                    if show_mat {
+                                        r |= cell(ui, RichText::new(mat_name(it.material)));
+                                    }
+                                    if show_thk {
+                                        r |= cell(ui, RichText::new(u.num(it.thickness)));
+                                    }
+                                    r |= cell(ui, RichText::new(u.num_dp(it.length, 0)));
+                                    r |= cell(ui, RichText::new(u.num_dp(it.width, 0)));
+                                    r |= cell(ui, RichText::new(u.area_num(it.area_m2() * 1e6)));
+                                    let q = cell(ui, RichText::new(format!("{}", it.qty)).color(if it.qty > 0 { th().text } else { th().text_dim }));
+                                    // On the quantity: who changed it last, and who took
+                                    // the last ones (SV9), above the row's own hint.
+                                    let who = if q.hovered() { it.changed_note(&clock) } else { String::new() };
+                                    r |= q;
+                                    let r = r.on_hover_text(if who.is_empty() { hint.to_string() } else { format!("{who}\n\n{hint}") });
+                                    if r.clicked() {
+                                        picked = Some(it.reference.clone());
+                                    }
+                                    if r.double_clicked() {
+                                        use_now = Some(it.reference.clone());
+                                    }
+                                    ui.label(RichText::new(job_txt(&it.reference)).color(th().accent)).on_hover_text("Sheets of this item the open job uses. Stock changes when the job is saved.");
+                                    ui.label(format!("{}", it.priority));
+                                    let mut locked = it.locked;
+                                    if ui.checkbox(&mut locked, "").on_hover_text("Locked sheets are never used by automatic nesting. Ctrl + click: lock or unlock all listed").changed() {
+                                        let r = it.reference.clone();
+                                        let all: Vec<String> = rows.iter().map(|i| i.reference.clone()).collect();
+                                        action = Some(Box::new(move |app: &mut App| {
+                                            app.stock_change(|s| {
+                                                if ctrl {
+                                                    for x in &all {
+                                                        s.set_locked(x, locked);
+                                                    }
+                                                } else {
+                                                    s.set_locked(&r, locked);
+                                                }
+                                                Ok(())
+                                            })
+                                        }));
+                                    }
+                                    ui.label(if it.origin.is_empty() { it.from_job.clone() } else { format!("{} {}", it.origin, it.from_job) });
+                                    ui.label(it.user_data.iter().filter(|u| !u.is_empty()).cloned().collect::<Vec<_>>().join(" / "));
+                                    ui.label(RichText::new(&it.created).size(11.0).color(th().text_dim));
+                                    ui.end_row();
+                                }
+                            });
+                        }
+                        if rows.is_empty() {
+                            // Empty: say so and offer the next step right here.
+                            // Empty stock and stock hidden by the filters read differently.
+                            ui.add_space(10.0);
+                            let total = su.stock.items.len();
+                            let msg = if total == 0 {
+                                "The stock is empty — create the first sheet or remnant.".to_string()
+                            } else {
+                                format!("Nothing here matches. {total} sheet(s) and remnant(s) are in stock under other materials, thicknesses or filters.")
+                            };
+                            ui.label(RichText::new(msg).color(th().text));
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                if ui.add(egui::Button::new(RichText::new("Create sheet…").color(Color32::WHITE)).fill(th().accent)).clicked() {
+                                    start_new(su, shelf, mat, thk);
+                                }
+                                if total > 0 && ui.button("Show everything").on_hover_text("Clear the filters: every material, sheets and remnants, empty and locked ones too").clicked() {
+                                    su.shelf = Some(Shelf::All);
+                                    su.find.clear();
+                                    su.crit.sheets = true;
+                                    su.crit.nest_remnants = true;
+                                    su.crit.user_remnants = true;
+                                    su.crit.show_zero_qty = true;
+                                    su.crit.include_locked = true;
+                                }
+                            });
+                        }
+                    });
+                    if let Some(r) = picked {
+                        su.sel = Some(r);
+                        su.note = None;
+                    }
+                    if let Some(rf) = use_now {
+                        // The same as the main button below: when parts would
+                        // no longer fit, it re-nests (all or nothing).
+                        action = Some(Box::new(move |app: &mut App| app.use_stock_default(&rf)));
+                    }
+                    ui.separator();
+                    let selected = su.sel.clone().and_then(|r| su.stock.get(&r).cloned());
+                    // The picked item: its picture and what it is.
+                    if let Some(it) = &selected {
+                        ui.horizontal(|ui| {
+                            stockpics::item_fit(ui, it, egui::vec2(120.0, 44.0));
+                            ui.vertical(|ui| {
+                                ui.label(RichText::new(format!("{}  ·  {}  ·  {} on hand", it.reference, u.size(it.length, it.width, 0), it.qty)).strong().color(th().text_strong));
+                                let jt = job_txt(&it.reference);
+                                let on_job = if jt.is_empty() { String::new() } else { format!(" · on {jt} of this job's sheets") };
+                                ui.label(RichText::new(format!("{} {} · {} · ≈ {:.1} kg each{on_job}", mat_name(it.material), u.thickness(it.thickness), u.area(it.area_m2() * 1e6), it.weight_kg())).size(11.5).color(th().text_dim));
+                            });
+                        });
+                    }
+                    // 1. Put the picked item on the sheet you're looking at.
+                    // A sheet of another material or thickness can't go on this job's
+                    // sheets; it offers to switch the job to it instead (ST16).
+                    let other = selected.as_ref().filter(|i| i.material != mat || (i.thickness - thk).abs() > stock::TOL).map(|i| format!("{} {}", mat_name(i.material), u.thickness(i.thickness)));
+                    let why = match &selected {
+                        None => Some("Pick a sheet or remnant in the list (double-click puts it on straight away).".to_string()),
+                        Some(i) if other.is_some() => Some(format!("{} is {}; this job is {job_mat}.", i.reference, other.as_deref().unwrap_or(""))),
+                        Some(i) if i.qty == 0 && !allow_empty => Some("None of it left in stock.".to_string()),
+                        _ => None,
+                    };
+                    let placed_n = on_cur.len();
+                    let off = selected.as_ref().map_or(0, |it| misfits(on_cur, spec, it));
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new(format!("Put on sheet {}", cur + 1)).strong().color(th().text_strong));
+                        ui.add_space(6.0);
+                        if let Some(w) = &why {
+                            if let (Some(o), Some(it), Some(r)) = (&other, &selected, su.sel.clone()) {
+                                // The change as a picture: the job's material → the sheet's.
+                                stockpics::swatch(ui, mat, egui::vec2(18.0, 18.0));
+                                ui.label(RichText::new(u.num(thk)).color(th().text_dim));
+                                ui.label(RichText::new("→").strong().color(th().warn_fg));
+                                stockpics::swatch(ui, it.material, egui::vec2(18.0, 18.0));
+                                ui.label(RichText::new(u.num(it.thickness)).strong().color(th().warn_fg));
+                                ui.add_space(4.0);
+                                ui.label(RichText::new(w).size(12.5).color(th().text_dim));
+                                let b = egui::Button::new(RichText::new(format!("Switch the job to {o} and use it")).color(Color32::WHITE).strong()).fill(th().accent);
+                                if ui.add(b).on_hover_text("Change the job's material and thickness to this sheet's, then put it on the sheet you're looking at (with parts already nested, you're asked first). Ctrl + Z undoes it.").clicked() {
+                                    action = Some(Box::new(move |app: &mut App| app.use_stock_switching(&r)));
+                                }
+                            } else {
+                                ui.label(RichText::new(w).size(12.5).color(th().text_dim));
+                            }
+                            return;
+                        }
+                        let r = su.sel.clone().unwrap_or_default();
+                        let primary = |t: String| egui::Button::new(RichText::new(t).color(Color32::WHITE).strong()).fill(th().accent);
+                        if off == 0 {
+                            if ui.add(primary(format!("Use on sheet {}", cur + 1))).on_hover_text("Put the selected sheet or remnant on the sheet you're looking at (Ctrl + Z undoes it)").clicked() {
+                                action = Some(Box::new(move |app: &mut App| app.use_stock_item_on_sheet(&r)));
+                            }
+                            let ok = if placed_n == 0 { "The sheet is empty — drag parts onto it from Parts View.".to_string() } else { format!("✔ All {placed_n} parts on sheet {} still fit on it.", cur + 1) };
+                            ui.label(RichText::new(ok).size(12.5).color(if placed_n == 0 { th().text_dim } else { th().ok_fg }));
+                        } else {
+                            if ui.add(primary(format!("Use it and re-nest sheet {}", cur + 1))).on_hover_text("Put it on the sheet and nest that sheet's parts on it again — all or nothing: if they can't all fit, nothing changes and this line says so. Ctrl + Z undoes it.").clicked() {
+                                let r = r.clone();
+                                action = Some(Box::new(move |app: &mut App| app.use_stock_and_renest(&r)));
+                            }
+                            if ui.button("Use anyway — parts stay over the edge").on_hover_text("Put it on the sheet and leave every part where it is: the parts that no longer fit stay over the edge, marked red, until you move them or nest again. Ctrl + Z undoes it.").clicked() {
+                                action = Some(Box::new(move |app: &mut App| app.use_stock_item_on_sheet(&r)));
+                            }
+                        }
+                    });
+                    if why.is_none() && off > 0 {
+                        ui.label(RichText::new(format!("⚠ {off} of the {placed_n} parts on sheet {} won't fit on it — re-nest them onto it (all or nothing), or leave them over the edge.", cur + 1)).size(12.5).color(th().warn_fg)).on_hover_text("Use it and re-nest: the sheet takes the item and its parts are nested on it again; if they can't all fit, nothing changes and this dialog says so.\nUse anyway: the parts stay where they are; those past the new edge are marked red until you move them or nest again.");
+                    }
+                    // What the last "use" did, kept in view here (not only in the status bar).
+                    if let Some((text, ok)) = &su.note {
+                        ui.label(RichText::new(text).size(12.5).color(if *ok { th().ok_fg } else { th().warn_fg }));
+                    }
+                    ui.separator();
+                    // 2. Look after the stock itself (the job is not changed).
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Stock").strong().color(th().text_strong)).on_hover_text("These change the stock list only — the open job is not changed");
+                        ui.add_space(6.0);
+                        ui.add(egui::DragValue::new(&mut su.qty_step).range(1..=stock::MAX_QTY).prefix("Qty ")).on_hover_text("How many sheets the two buttons beside it add to or take from stock");
+                        let has = selected.is_some();
+                        if ui.add_enabled(has, egui::Button::new("Add to stock")).on_hover_text("Put this many more of the selected sheet in stock (the job is not changed)").clicked() {
+                            let (r, n) = (su.sel.clone().unwrap_or_default(), su.qty_step);
+                            action = Some(Box::new(move |app: &mut App| app.stock_change(|s| s.change_qty(&r, n))));
+                        }
+                        if ui.add_enabled(has, egui::Button::new("Reduce stock")).on_hover_text("Lower the stock count by this many; at 0 the sheet is deleted").clicked() {
+                            let (r, n) = (su.sel.clone().unwrap_or_default(), su.qty_step);
+                            action = Some(Box::new(move |app: &mut App| app.stock_change(|s| s.change_qty(&r, -n))));
+                        }
+                        if let Some(it) = &selected {
+                            let mut p = it.priority;
+                            ui.label("Priority");
+                            if ui.add(egui::DragValue::new(&mut p).range(1..=999)).on_hover_text("1 is used first when nesting by priority").changed() {
+                                let r = it.reference.clone();
+                                action = Some(Box::new(move |app: &mut App| {
+                                    app.stock_change(|s| {
+                                        if let Some(x) = s.items.iter_mut().find(|i| i.reference == r) {
+                                            x.priority = p;
+                                        }
+                                        Ok(())
+                                    })
+                                }));
+                            }
+                        }
+                        ui.add_space(12.0);
+                        if ui.add_enabled(has, egui::Button::new(RichText::new("Delete sheet").color(if has { th().warn_fg } else { th().text_dim }))).on_hover_text("Remove the selected sheet or remnant from stock altogether").clicked() {
+                            let r = su.sel.clone().unwrap_or_default();
                             action = Some(Box::new(move |app: &mut App| {
                                 app.stock_change(|s| {
-                                    if ctrl {
-                                        for x in &all {
-                                            s.set_locked(x, locked);
-                                        }
-                                    } else {
-                                        s.set_locked(&r, locked);
-                                    }
+                                    s.delete(&r);
                                     Ok(())
-                                })
+                                });
+                                app.stockui.sel = None;
                             }));
                         }
-                        ui.label(if it.origin.is_empty() { it.from_job.clone() } else { format!("{} {}", it.origin, it.from_job) });
-                        ui.label(it.user_data.iter().filter(|u| !u.is_empty()).cloned().collect::<Vec<_>>().join(" / "));
-                        ui.label(RichText::new(&it.created).size(11.0).color(th().text_dim));
-                        ui.end_row();
-                    }
-                });
-                if rows.is_empty() {
-                    // Empty: say so and offer the next step right here.
-                    // Empty stock and stock hidden by the filters read differently.
-                    ui.add_space(10.0);
-                    let total = su.stock.items.len();
-                    let msg = if total == 0 {
-                        "The stock is empty — create the first sheet or remnant.".to_string()
-                    } else {
-                        format!("None of the {total} sheet(s) and remnant(s) in stock match these filters.")
-                    };
-                    ui.label(RichText::new(msg).color(th().text));
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        if ui.add(egui::Button::new(RichText::new("Create sheet…").color(Color32::WHITE)).fill(th().accent)).clicked() {
-                            su.creating = true;
-                            su.new_item.material = mat;
-                            su.new_item.thickness = thk;
-                        }
-                        if total > 0 && ui.button("Show everything").on_hover_text("Clear the filters: every material, sheets and remnants, empty and locked ones too").clicked() {
-                            su.job_only = false;
-                            su.crit.sheets = true;
-                            su.crit.nest_remnants = true;
-                            su.crit.user_remnants = true;
-                            su.crit.show_zero_qty = true;
-                            su.crit.include_locked = true;
-                        }
                     });
-                }
-            });
-            ui.separator();
-            let selected = su.sel.clone().and_then(|r| su.stock.get(&r).cloned());
-            let cur = self.cur_sheet;
-            // 1. Put the picked item on the sheet you're looking at.
-            let allow_empty = self.cfg.stock.allow_no_stock;
-            // A sheet of another material or thickness can't go on this job's
-            // sheets; it offers to switch the job to it instead (ST16).
-            let other = selected.as_ref().filter(|i| i.material != mat || (i.thickness - thk).abs() > stock::TOL).map(|i| format!("{} {}", crate::cnc::MATERIALS[i.material.min(2)], u.thickness(i.thickness)));
-            let why = match &selected {
-                None => Some("Pick a sheet or remnant in the list (double-click puts it on straight away).".to_string()),
-                Some(i) if other.is_some() => Some(format!("{} is {}; this job is {job_mat}.", i.reference, other.as_deref().unwrap_or(""))),
-                Some(i) if i.qty == 0 && !allow_empty => Some("None of it left in stock.".to_string()),
-                _ => None,
-            };
-            let placed_n = self.result.sheets.get(cur).map_or(0, |v| v.len());
-            let off = selected.as_ref().map_or(0, |it| misfits(self.result.sheets.get(cur).map_or(&[][..], |v| &v[..]), &self.spec, it));
-            ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new(format!("Put on sheet {}", cur + 1)).strong().color(th().text_strong));
-                ui.add_space(6.0);
-                if let Some(w) = &why {
-                    ui.label(RichText::new(w).size(12.5).color(th().text_dim));
-                    if let (Some(o), Some(r)) = (&other, su.sel.clone()) {
-                        let b = egui::Button::new(RichText::new(format!("Switch the job to {o} and use it")).color(Color32::WHITE).strong()).fill(th().accent);
-                        if ui.add(b).on_hover_text("Change the job's material and thickness to this sheet's, then put it on the sheet you're looking at (with parts already nested, you're asked first). Ctrl + Z undoes it.").clicked() {
-                            action = Some(Box::new(move |app: &mut App| app.use_stock_switching(&r)));
-                        }
-                    }
-                    return;
-                }
-                let r = su.sel.clone().unwrap_or_default();
-                let primary = |t: String| egui::Button::new(RichText::new(t).color(Color32::WHITE).strong()).fill(th().accent);
-                if off == 0 {
-                    if ui.add(primary(format!("Use on sheet {}", cur + 1))).on_hover_text("Put the selected sheet or remnant on the sheet you're looking at (Ctrl + Z undoes it)").clicked() {
-                        action = Some(Box::new(move |app: &mut App| app.use_stock_item_on_sheet(&r)));
-                    }
-                    let ok = if placed_n == 0 { "The sheet is empty — drag parts onto it from Parts View.".to_string() } else { format!("✔ All {placed_n} parts on sheet {} still fit on it.", cur + 1) };
-                    ui.label(RichText::new(ok).size(12.5).color(if placed_n == 0 { th().text_dim } else { th().ok_fg }));
-                } else {
-                    if ui.add(primary(format!("Use it and re-nest sheet {}", cur + 1))).on_hover_text("Put it on the sheet and nest that sheet's parts on it again — all or nothing: if they can't all fit, nothing changes and this line says so. Ctrl + Z undoes it.").clicked() {
-                        let r = r.clone();
-                        action = Some(Box::new(move |app: &mut App| app.use_stock_and_renest(&r)));
-                    }
-                    if ui.button("Use anyway — parts stay over the edge").on_hover_text("Put it on the sheet and leave every part where it is: the parts that no longer fit stay over the edge, marked red, until you move them or nest again. Ctrl + Z undoes it.").clicked() {
-                        action = Some(Box::new(move |app: &mut App| app.use_stock_item_on_sheet(&r)));
-                    }
-                }
-            });
-            if why.is_none() && off > 0 {
-                ui.label(RichText::new(format!("⚠ {off} of the {placed_n} parts on sheet {} won't fit on it — re-nest them onto it (all or nothing), or leave them over the edge.", cur + 1)).size(12.5).color(th().warn_fg)).on_hover_text("Use it and re-nest: the sheet takes the item and its parts are nested on it again; if they can't all fit, nothing changes and this dialog says so.\nUse anyway: the parts stay where they are; those past the new edge are marked red until you move them or nest again.");
-            }
-            // What the last "use" did, kept in view here (not only in the status bar).
-            if let Some((text, ok)) = &su.note {
-                ui.label(RichText::new(text).size(12.5).color(if *ok { th().ok_fg } else { th().warn_fg }));
-            }
-            ui.separator();
-            // 2. Look after the stock itself (the job is not changed).
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Stock").strong().color(th().text_strong)).on_hover_text("These change the stock list only — the open job is not changed");
-                ui.add_space(6.0);
-                ui.add(egui::DragValue::new(&mut su.qty_step).range(1..=stock::MAX_QTY).prefix("Qty ")).on_hover_text("How many sheets the two buttons beside it add to or take from stock");
-                let has = selected.is_some();
-                if ui.add_enabled(has, egui::Button::new("Add to stock")).on_hover_text("Put this many more of the selected sheet in stock (the job is not changed)").clicked() {
-                    let (r, n) = (su.sel.clone().unwrap_or_default(), su.qty_step);
-                    action = Some(Box::new(move |app: &mut App| app.stock_change(|s| s.change_qty(&r, n))));
-                }
-                if ui.add_enabled(has, egui::Button::new("Reduce stock")).on_hover_text("Lower the stock count by this many; at 0 the sheet is deleted").clicked() {
-                    let (r, n) = (su.sel.clone().unwrap_or_default(), su.qty_step);
-                    action = Some(Box::new(move |app: &mut App| app.stock_change(|s| s.change_qty(&r, -n))));
-                }
-                if let Some(it) = &selected {
-                    let mut p = it.priority;
-                    ui.label("Priority");
-                    if ui.add(egui::DragValue::new(&mut p).range(1..=999)).on_hover_text("1 is used first when nesting by priority").changed() {
-                        let r = it.reference.clone();
-                        action = Some(Box::new(move |app: &mut App| {
-                            app.stock_change(|s| {
-                                if let Some(x) = s.items.iter_mut().find(|i| i.reference == r) {
-                                    x.priority = p;
+                    if su.creating {
+                        ui.separator();
+                        if let Some(add) = new_sheet_form(ui, su, mat, thk, u) {
+                            let mut item = add;
+                            item.created = stock::today();
+                            action = Some(Box::new(move |app: &mut App| {
+                                let mut made = String::new();
+                                app.stock_change(|s| {
+                                    made = s.add_sheet(item, refs)?;
+                                    Ok(())
+                                });
+                                if !made.is_empty() {
+                                    app.stockui.sel = Some(made.clone());
+                                    app.stockui.creating = false;
+                                    app.status = format!("Sheet {made} added to stock.");
                                 }
-                                Ok(())
-                            })
-                        }));
-                    }
-                }
-                // With nothing listed, the empty list offers Create sheet itself.
-                if !rows.is_empty() && ui.button("Create sheet…").clicked() {
-                    su.creating = !su.creating;
-                    su.new_item.material = mat;
-                    su.new_item.thickness = thk;
-                }
-                ui.add_space(12.0);
-                if ui.add_enabled(has, egui::Button::new(RichText::new("Delete sheet").color(if has { th().warn_fg } else { th().text_dim }))).on_hover_text("Remove the selected sheet or remnant from stock altogether").clicked() {
-                    let r = su.sel.clone().unwrap_or_default();
-                    action = Some(Box::new(move |app: &mut App| {
-                        app.stock_change(|s| {
-                            s.delete(&r);
-                            Ok(())
-                        });
-                        app.stockui.sel = None;
-                    }));
-                }
-            });
-            if let Some(it) = &selected {
-                if let Some(o) = &it.outline {
-                    ui.add_space(4.0);
-                    outline_preview(ui, o, it.length, it.width);
-                }
-            }
-            if su.creating {
-                ui.separator();
-                ui.label(RichText::new("New sheet").strong());
-                egui::Grid::new("stock_new").num_columns(4).show(ui, |ui| {
-                    let n = &mut su.new_item;
-                    ui.label("Reference");
-                    ui.add(egui::TextEdit::singleline(&mut n.reference).hint_text("automatic").desired_width(120.0));
-                    ui.label("Quantity");
-                    ui.add(egui::DragValue::new(&mut n.qty).range(1..=stock::MAX_QTY));
-                    ui.end_row();
-                    ui.label("Length (X)");
-                    crate::units::drag_len_in(ui, &mut n.length, u, 10.0, 20000.0);
-                    ui.label("Width (Y)");
-                    crate::units::drag_len_in(ui, &mut n.width, u, 10.0, 6000.0);
-                    ui.end_row();
-                    ui.label("Material");
-                    egui::ComboBox::from_id_salt("stock_mat").selected_text(crate::cnc::MATERIALS[n.material.min(2)]).show_ui(ui, |ui| {
-                        for (k, m) in crate::cnc::MATERIALS.iter().enumerate() {
-                            ui.selectable_value(&mut n.material, k, *m);
-                        }
-                    });
-                    ui.label("Thickness");
-                    crate::units::thickness_box(ui, "stock_thk", &mut n.thickness, u);
-                    ui.end_row();
-                    ui.label("Priority");
-                    ui.add(egui::DragValue::new(&mut n.priority).range(1..=999));
-                    ui.checkbox(&mut n.locked, "Locked");
-                    ui.end_row();
-                    for k in 0..3 {
-                        ui.label(format!("User data {}", k + 1));
-                        ui.add(egui::TextEdit::singleline(&mut n.user_data[k]).desired_width(120.0));
-                        if k % 2 == 1 {
-                            ui.end_row();
+                            }));
                         }
                     }
-                    ui.end_row();
+                    if !su.msg.is_empty() {
+                        ui.colored_label(Color32::from_rgb(220, 90, 70), &su.msg);
+                    }
                 });
-                if ui.button(RichText::new("Add to stock").strong()).clicked() {
-                    let mut item = su.new_item.clone();
-                    item.created = stock::today();
-                    let refs = self.cfg.stock.with_references;
-                    action = Some(Box::new(move |app: &mut App| {
-                        let mut made = String::new();
-                        app.stock_change(|s| {
-                            made = s.add_sheet(item, refs)?;
-                            Ok(())
-                        });
-                        if !made.is_empty() {
-                            app.stockui.sel = Some(made.clone());
-                            app.stockui.creating = false;
-                            app.status = format!("Sheet {made} added to stock.");
-                        }
-                    }));
-                }
-            }
-            if !self.stockui.msg.is_empty() {
-                ui.colored_label(Color32::from_rgb(220, 90, 70), &self.stockui.msg);
-            }
+                // The line between the shelf and the list, as tall as the taller
+                // side (a separator here would stretch the window to the screen).
+                let (l, r) = (left.response.rect, right.response.rect);
+                ui.painter().vline(l.right() + 7.0, l.top()..=l.bottom().max(r.bottom()), ui.visuals().widgets.noninteractive.bg_stroke);
+            });
             ui.label(RichText::new("Stock file").size(11.0).color(th().text_dim)).on_hover_text(Stock::file(&self.library_dir()).display().to_string());
         });
         if let Some(a) = action {
@@ -890,23 +954,349 @@ pub fn stock_options(ui: &mut egui::Ui, st: &mut stock::StockSettings, u: crate:
     });
 }
 
-/// A small drawing of a remnant's shape.
-fn outline_preview(ui: &mut egui::Ui, o: &crate::stock::Outline, w: f64, h: f64) {
-    let size = egui::vec2(220.0, 120.0);
-    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-    let p = ui.painter_at(rect);
-    let s = ((size.x as f64 - 10.0) / w.max(1.0)).min((size.y as f64 - 10.0) / h.max(1.0)) as f32;
-    let o0 = rect.left_bottom() + egui::vec2(5.0, -5.0);
-    let to = |q: nest::P| egui::pos2(o0.x + q[0] as f32 * s, o0.y - q[1] as f32 * s);
-    p.rect_stroke(egui::Rect::from_two_pos(to([0.0, 0.0]), to([w, h])), 0.0, Stroke::new(1.0, th().border), egui::StrokeKind::Inside);
-    for r in crate::region::free_rects(o) {
-        p.rect_filled(egui::Rect::from_two_pos(to([r.x, r.y]), to([r.x + r.w, r.y + r.h])), 0.0, th().sheet);
+/// What the material shelf on the left of the Sheet stock window picks.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Shelf {
+    All,
+    /// Every thickness of one material.
+    Material(usize),
+    /// One material and thickness (mm).
+    Thickness(usize, f64),
+}
+
+/// Width of the material shelf.
+const SHELF_W: f32 = 196.0;
+/// A card in the Cards view, and the band its drawing sits in.
+const CARD_W: f32 = 176.0;
+const CARD_H: f32 = 132.0;
+const CARD_DRAW_H: f32 = 60.0;
+/// The drawing at the start of each table row.
+const THUMB: egui::Vec2 = egui::vec2(48.0, 20.0);
+
+fn mat_name(m: usize) -> &'static str {
+    crate::cnc::MATERIALS[m.min(crate::cnc::MATERIALS.len() - 1)]
+}
+
+/// The stock items the shelf picks, that the filters let through and whose
+/// reference holds `find` (any case): one thickness in reference order, or a
+/// material or everything by material, thickness and reference.
+pub fn shelf_rows(stock: &Stock, crit: &Criteria, shelf: Shelf, find: &str) -> Vec<Item> {
+    let mut rows: Vec<Item> = match shelf {
+        Shelf::Thickness(m, t) => stock.list(m, t, crit).into_iter().cloned().collect(),
+        _ => {
+            let mut v: Vec<Item> = stock.items.iter().filter(|i| crit.admits(i) && !matches!(shelf, Shelf::Material(m) if i.material != m)).cloned().collect();
+            v.sort_by(|a, b| (a.material, (a.thickness * 1000.0) as i64, a.reference.len(), a.reference.clone()).cmp(&(b.material, (b.thickness * 1000.0) as i64, b.reference.len(), b.reference.clone())));
+            v
+        }
+    };
+    let find = find.trim().to_lowercase();
+    if !find.is_empty() {
+        rows.retain(|i| i.reference.to_lowercase().contains(&find));
     }
-    for ring in std::iter::once(&o.outer).chain(o.holes.iter()) {
-        let mut pts: Vec<egui::Pos2> = ring.iter().map(|&q| to(q)).collect();
-        pts.extend(pts.first().copied());
-        p.add(egui::Shape::line(pts, Stroke::new(1.5, th().accent)));
+    rows
+}
+
+/// The thicknesses the shelf lists under a material: every one in stock
+/// (empty or filtered out ones too) and, for the job's material, the job's.
+pub fn shelf_thicknesses(stock: &Stock, m: usize, job_m: usize, job_t: f64) -> Vec<f64> {
+    let mut v: Vec<f64> = stock.items.iter().filter(|i| i.material == m).map(|i| i.thickness).collect();
+    if m == job_m {
+        v.push(job_t);
     }
+    v.sort_by(f64::total_cmp);
+    v.dedup_by(|a, b| (*a - *b).abs() <= stock::TOL);
+    v
+}
+
+/// The sizes offered as pictures in the New sheet form: the sheet sizes
+/// already in stock, most stocked first, then the common sizes for the unit,
+/// six at most.
+pub fn size_tiles(stock: &Stock, u: crate::units::LenUnit) -> Vec<(f64, f64)> {
+    let same = |a: (f64, f64), b: (f64, f64)| (a.0 - b.0).abs() <= 0.5 && (a.1 - b.1).abs() <= 0.5;
+    let mut seen: Vec<((f64, f64), i32)> = Vec::new();
+    for i in stock.items.iter().filter(|i| i.kind == stock::Kind::Sheet) {
+        match seen.iter_mut().find(|(s, _)| same(*s, (i.length, i.width))) {
+            Some(e) => e.1 += 1,
+            None => seen.push(((i.length, i.width), 1)),
+        }
+    }
+    seen.sort_by(|a, b| b.1.cmp(&a.1));
+    let mut v: Vec<(f64, f64)> = seen.into_iter().map(|x| x.0).take(6).collect();
+    for &p in u.sheet_presets() {
+        if v.len() >= 6 {
+            break;
+        }
+        if !v.iter().any(|&s| same(s, p)) {
+            v.push(p);
+        }
+    }
+    v
+}
+
+/// Open the New sheet form set to what the shelf picks (the job's when it
+/// picks everything, or a material the job isn't).
+fn start_new(su: &mut StockUi, shelf: Shelf, job_m: usize, job_t: f64) {
+    let (m, t) = match shelf {
+        Shelf::Thickness(m, t) => (m, t),
+        Shelf::Material(m) if m == job_m => (m, job_t),
+        Shelf::Material(m) => (m, shelf_thicknesses(&su.stock, m, job_m, job_t).first().copied().unwrap_or(job_t)),
+        Shelf::All => (job_m, job_t),
+    };
+    su.creating = true;
+    su.new_item.material = m;
+    su.new_item.thickness = t;
+}
+
+/// One clickable row of the shelf: a swatch (or none, indented), a name,
+/// a note and a count on the right.
+fn shelf_row(ui: &mut egui::Ui, on: bool, swatch: Option<&dyn Fn(&egui::Painter, egui::Rect)>, name: &str, note: &str, n: usize) -> egui::Response {
+    let h = if swatch.is_some() { 28.0 } else { 22.0 };
+    let (rect, r) = ui.allocate_exact_size(egui::vec2(ui.available_width(), h), egui::Sense::click());
+    let p = ui.painter();
+    if on {
+        p.rect_filled(rect, 4.0, th().accent_soft);
+        p.rect_stroke(rect, 4.0, Stroke::new(1.0, th().accent_border), egui::StrokeKind::Inside);
+    } else if r.hovered() {
+        p.rect_filled(rect, 4.0, th().hover);
+    }
+    let mut x = rect.left() + 6.0;
+    if let Some(f) = swatch {
+        f(p, egui::Rect::from_center_size(egui::pos2(x + 10.0, rect.center().y), egui::vec2(20.0, 20.0)));
+        x += 28.0;
+    } else {
+        x += 28.0;
+    }
+    let font = egui::FontId::proportional(if swatch.is_some() { 13.5 } else { 12.5 });
+    let col = if n == 0 && swatch.is_none() { th().text_dim } else if on { th().text_strong } else { th().text };
+    let g = p.text(egui::pos2(x, rect.center().y), egui::Align2::LEFT_CENTER, name, font, col);
+    if !note.is_empty() {
+        p.text(egui::pos2(g.right() + 6.0, rect.center().y), egui::Align2::LEFT_CENTER, note, egui::FontId::proportional(11.0), th().ok_fg);
+    }
+    p.text(egui::pos2(rect.right() - 8.0, rect.center().y), egui::Align2::RIGHT_CENTER, n.to_string(), egui::FontId::proportional(11.5), if n == 0 { th().text_dim } else { th().text });
+    r
+}
+
+/// The material shelf: every material with its swatch and how many items
+/// show; under the picked one, its thicknesses (the job's marked, empty ones
+/// greyed); then which kinds of item to show.
+fn material_shelf(ui: &mut egui::Ui, su: &mut StockUi, job_m: usize, job_t: f64, u: crate::units::LenUnit) {
+    let shelf = su.shelf.unwrap_or(Shelf::All);
+    let shown = |f: &dyn Fn(&Item) -> bool| su.stock.items.iter().filter(|i| su.crit.admits(i) && f(i)).count();
+    let mut pick: Option<Shelf> = None;
+    let all: &dyn Fn(&egui::Painter, egui::Rect) = &|p, r| stockpics::paint_all_swatch(p, r);
+    if shelf_row(ui, shelf == Shelf::All, Some(all), "All materials", "", shown(&|_| true)).on_hover_text("Every sheet and remnant in stock").clicked() {
+        pick = Some(Shelf::All);
+    }
+    for m in 0..crate::cnc::MATERIALS.len() {
+        let open = matches!(shelf, Shelf::Material(x) | Shelf::Thickness(x, _) if x == m);
+        let sw: &dyn Fn(&egui::Painter, egui::Rect) = &move |p, r| stockpics::paint_swatch(p, r, m);
+        let note = if m == job_m { "● job" } else { "" };
+        if shelf_row(ui, shelf == Shelf::Material(m), Some(sw), mat_name(m), note, shown(&|i| i.material == m)).on_hover_text("Every thickness of this material; pick one below it").clicked() {
+            pick = Some(Shelf::Material(m));
+        }
+        if open {
+            for t in shelf_thicknesses(&su.stock, m, job_m, job_t) {
+                let n = shown(&|i| i.material == m && (i.thickness - t).abs() <= stock::TOL);
+                let on = matches!(shelf, Shelf::Thickness(x, y) if x == m && (y - t).abs() <= stock::TOL);
+                let job = m == job_m && (t - job_t).abs() <= stock::TOL;
+                let tip = if n == 0 { "Nothing of this thickness shows: none in stock, or hidden by the filters below" } else { "Show this thickness" };
+                if shelf_row(ui, on, None, &u.thickness(t), if job { "● job" } else { "" }, n).on_hover_text(tip).clicked() {
+                    pick = Some(Shelf::Thickness(m, t));
+                }
+            }
+        }
+    }
+    if let Some(p) = pick {
+        su.shelf = Some(p);
+    }
+    ui.add_space(6.0);
+    ui.separator();
+    ui.label(RichText::new("Show").size(11.5).color(th().text_dim));
+    ui.checkbox(&mut su.crit.sheets, "Sheets");
+    ui.checkbox(&mut su.crit.nest_remnants, "Remnants from nesting");
+    ui.checkbox(&mut su.crit.user_remnants, "Remnants by user");
+    ui.add_space(2.0);
+    ui.label(RichText::new("Include").size(11.5).color(th().text_dim));
+    ui.checkbox(&mut su.crit.show_zero_qty, "Empty (qty 0)");
+    ui.checkbox(&mut su.crit.include_locked, "Locked");
+}
+
+/// One item as a card: its drawing to the shared `scale` (lower-left aligned,
+/// so sizes compare), how many are on hand, and what it is.
+fn stock_card(ui: &mut egui::Ui, it: &Item, scale: f32, on: bool, shelf: Shelf, job_txt: &str, u: crate::units::LenUnit) -> egui::Response {
+    let (rect, r) = ui.allocate_exact_size(egui::vec2(CARD_W, CARD_H), egui::Sense::click());
+    let p = ui.painter();
+    p.rect_filled(rect, 6.0, if on { th().accent_soft } else { th().card });
+    let edge = if on { Stroke::new(2.0, th().accent) } else if r.hovered() { Stroke::new(1.0, th().accent_border) } else { Stroke::new(1.0, th().border) };
+    p.rect_stroke(rect, 6.0, edge, egui::StrokeKind::Inside);
+    let band = egui::Rect::from_min_size(rect.min + egui::vec2(8.0, 8.0), egui::vec2(CARD_W - 16.0, CARD_DRAW_H));
+    stockpics::paint_item(&p.with_clip_rect(band.expand(1.0)), band.left_bottom(), scale, it);
+    // How many on hand, top right over the drawing.
+    let qty = format!("×{}", it.qty);
+    let g = p.layout_no_wrap(qty, egui::FontId::proportional(12.0), Color32::WHITE);
+    let pill = egui::Rect::from_min_size(egui::pos2(band.right() - g.size().x - 10.0, band.top()), g.size() + egui::vec2(10.0, 2.0));
+    p.rect_filled(pill, 8.0, if it.qty > 0 { Color32::from_black_alpha(170) } else { Color32::from_rgba_unmultiplied(160, 60, 40, 200) });
+    p.galley(pill.min + egui::vec2(5.0, 1.0), g, Color32::WHITE);
+    let mut y = band.bottom() + 6.0;
+    let x = rect.left() + 8.0;
+    p.text(egui::pos2(x, y), egui::Align2::LEFT_TOP, &it.reference, egui::FontId::proportional(13.5), th().text_strong);
+    let (kind, kc) = match it.kind {
+        stock::Kind::Sheet => ("Sheet", th().text_dim),
+        stock::Kind::NestRemnant => ("Remnant", stockpics::remnant_edge()),
+        stock::Kind::UserRemnant => ("Remnant (user)", stockpics::remnant_edge()),
+    };
+    p.text(egui::pos2(rect.right() - 8.0, y + 1.0), egui::Align2::RIGHT_TOP, kind, egui::FontId::proportional(11.0), kc);
+    y += 19.0;
+    let what = match shelf {
+        Shelf::Thickness(..) => u.size(it.length, it.width, 0),
+        Shelf::Material(_) => format!("{} · {}", u.size(it.length, it.width, 0), u.num(it.thickness)),
+        Shelf::All => format!("{} · {} {}", u.dims(it.length, it.width, 0), mat_name(it.material), u.num(it.thickness)),
+    };
+    p.text(egui::pos2(x, y), egui::Align2::LEFT_TOP, what, egui::FontId::proportional(11.5), th().text);
+    y += 16.0;
+    let mut more = format!("P{} · {}", it.priority, u.area(it.area_m2() * 1e6));
+    if it.locked {
+        more.push_str(" · 🔒");
+    }
+    let g = p.text(egui::pos2(x, y), egui::Align2::LEFT_TOP, more, egui::FontId::proportional(11.0), th().text_dim);
+    if !job_txt.is_empty() {
+        p.text(egui::pos2(g.right() + 6.0, y), egui::Align2::LEFT_TOP, format!("job: {job_txt}"), egui::FontId::proportional(11.0), th().accent_fg);
+    }
+    r
+}
+
+/// The dashed "+ New sheet" card at the end of the cards.
+fn new_card(ui: &mut egui::Ui) -> egui::Response {
+    let (rect, r) = ui.allocate_exact_size(egui::vec2(CARD_W, CARD_H), egui::Sense::click());
+    let p = ui.painter();
+    if r.hovered() {
+        p.rect_filled(rect, 6.0, th().hover);
+    }
+    stockpics::dashed_rect(p, rect.shrink(1.0), Stroke::new(1.5, th().accent_border));
+    p.text(rect.center() - egui::vec2(0.0, 10.0), egui::Align2::CENTER_CENTER, "+", egui::FontId::proportional(24.0), th().accent_fg);
+    p.text(rect.center() + egui::vec2(0.0, 16.0), egui::Align2::CENTER_CENTER, "New sheet", egui::FontId::proportional(13.0), th().accent_fg);
+    r
+}
+
+/// A picture tile to pick: `draw` paints into the top part, `name` below.
+fn tile(ui: &mut egui::Ui, size: egui::Vec2, on: bool, name: &str, draw: impl FnOnce(&egui::Painter, egui::Rect)) -> egui::Response {
+    let (rect, r) = ui.allocate_exact_size(size, egui::Sense::click());
+    let p = ui.painter();
+    p.rect_filled(rect, 5.0, if on { th().accent_soft } else if r.hovered() { th().hover } else { th().card });
+    let pic = egui::Rect::from_min_max(rect.min + egui::vec2(5.0, 5.0), egui::pos2(rect.right() - 5.0, rect.bottom() - 20.0));
+    draw(p, pic);
+    let size = if name.chars().count() > 11 { 10.5 } else { 12.0 };
+    p.text(egui::pos2(rect.center().x, rect.bottom() - 10.0), egui::Align2::CENTER_CENTER, name, egui::FontId::proportional(size), if on { th().text_strong } else { th().text });
+    let edge = if on { Stroke::new(2.0, th().accent) } else { Stroke::new(1.0, th().border) };
+    p.rect_stroke(rect, 5.0, edge, egui::StrokeKind::Inside);
+    r
+}
+
+/// The New sheet form: material and size as pictures, the thicknesses in
+/// stock as buttons, and a drawing of the sheet to scale. The item to add
+/// when Add to stock is clicked.
+fn new_sheet_form(ui: &mut egui::Ui, su: &mut StockUi, job_m: usize, job_t: f64, u: crate::units::LenUnit) -> Option<Item> {
+    let mut add = None;
+    let in_stock = shelf_thicknesses(&su.stock, su.new_item.material, job_m, job_t);
+    let sizes = size_tiles(&su.stock, u);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("New sheet").size(14.0).strong().color(th().text_strong));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.button("Cancel").clicked() {
+                su.creating = false;
+            }
+        });
+    });
+    let n = &mut su.new_item;
+    let label = |ui: &mut egui::Ui, t: &str| ui.label(RichText::new(t).size(11.5).color(th().text_dim));
+    ui.horizontal_top(|ui| {
+        ui.vertical(|ui| {
+            ui.set_width(500.0);
+            label(ui, "Material");
+            ui.horizontal(|ui| {
+                for m in 0..crate::cnc::MATERIALS.len() {
+                    if tile(ui, egui::vec2(112.0, 54.0), n.material == m, mat_name(m), |p, r| stockpics::paint_swatch(p, r, m)).clicked() {
+                        n.material = m;
+                    }
+                }
+            });
+            ui.add_space(4.0);
+            label(ui, "Thickness");
+            ui.horizontal_wrapped(|ui| {
+                for &t in &in_stock {
+                    if ui.selectable_label((n.thickness - t).abs() <= stock::TOL, u.num(t)).on_hover_text(format!("{}: already in stock", u.thickness(t))).clicked() {
+                        n.thickness = t;
+                    }
+                }
+                ui.add_space(4.0);
+                crate::units::thickness_box(ui, "stock_thk", &mut n.thickness, u);
+            });
+            ui.add_space(4.0);
+            label(ui, "Size");
+            ui.horizontal(|ui| {
+                let s = sizes.iter().fold(1.0f64, |a, &(l, w)| a.max(l / 66.0).max(w / 24.0));
+                for &(l, w) in &sizes {
+                    let on = (n.length - l).abs() <= 0.5 && (n.width - w).abs() <= 0.5;
+                    if tile(ui, egui::vec2(78.0, 50.0), on, &u.dims(l, w, 0), |p, r| {
+                        let d = egui::vec2((l / s) as f32, (w / s) as f32);
+                        let b = egui::Rect::from_min_size(egui::pos2(r.center().x - d.x / 2.0, r.bottom() - d.y), d);
+                        p.rect_stroke(b, 0.0, Stroke::new(1.2, if on { th().accent } else { th().text_dim }), egui::StrokeKind::Inside);
+                    })
+                    .clicked()
+                    {
+                        n.length = l;
+                        n.width = w;
+                    }
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Length (X)");
+                crate::units::drag_len_in(ui, &mut n.length, u, 10.0, 20000.0);
+                ui.add_space(8.0);
+                ui.label("Width (Y)");
+                crate::units::drag_len_in(ui, &mut n.width, u, 10.0, 6000.0);
+            });
+            ui.horizontal(|ui| {
+                ui.label("Quantity");
+                ui.add(egui::DragValue::new(&mut n.qty).range(1..=stock::MAX_QTY));
+                ui.add_space(8.0);
+                ui.label("Priority");
+                ui.add(egui::DragValue::new(&mut n.priority).range(1..=999)).on_hover_text("1 is used first when nesting by priority");
+                ui.add_space(8.0);
+                ui.checkbox(&mut n.locked, "Locked").on_hover_text("Locked sheets are never used by automatic nesting");
+            });
+            egui::CollapsingHeader::new(RichText::new("Reference and user data").size(12.0)).id_salt("stock_new_more").show(ui, |ui| {
+                egui::Grid::new("stock_new").num_columns(4).show(ui, |ui| {
+                    ui.label("Reference");
+                    ui.add(egui::TextEdit::singleline(&mut n.reference).hint_text("automatic").desired_width(120.0));
+                    ui.end_row();
+                    for k in 0..3 {
+                        ui.label(format!("User data {}", k + 1));
+                        ui.add(egui::TextEdit::singleline(&mut n.user_data[k]).desired_width(120.0));
+                        if k % 2 == 1 {
+                            ui.end_row();
+                        }
+                    }
+                    ui.end_row();
+                });
+            });
+        });
+        ui.add_space(16.0);
+        ui.vertical(|ui| {
+            stockpics::item_dimensioned(ui, n, egui::vec2(270.0, 140.0), u);
+            ui.horizontal(|ui| {
+                stockpics::swatch(ui, n.material, egui::vec2(18.0, 18.0));
+                ui.label(RichText::new(format!("{} {}", mat_name(n.material), u.thickness(n.thickness))).strong());
+            });
+            let each = n.weight_kg();
+            ui.label(RichText::new(format!("{} · ≈ {each:.1} kg each · {} = ≈ {:.0} kg", u.area(n.area_m2() * 1e6), n.qty, each * n.qty as f64)).size(11.5).color(th().text_dim));
+            ui.add_space(6.0);
+            if ui.add(egui::Button::new(RichText::new("Add to stock").color(Color32::WHITE).strong()).fill(th().accent)).clicked() {
+                add = Some(n.clone());
+            }
+        });
+    });
+    add
 }
 
 #[cfg(test)]
@@ -935,6 +1325,53 @@ mod tests {
         s.add_remnant(l, &parent, 1, Some("1-1".into()), "old job");
         s.save(&dir).unwrap();
         (a, dir)
+    }
+
+    #[test]
+    fn the_shelf_opens_on_the_jobs_material_and_lists_what_it_picks() {
+        let (mut a, dir) = app_with_stock("shelf");
+        crate::stock::Stock::update(&a.library_at(), |s| {
+            s.add_sheet(Item::sheet("T5", 0, 5.0, 2000.0, 1000.0, 3), true)?;
+            s.add_sheet(Item::sheet("SS", 1, 10.0, 2000.0, 1000.0, 1), true)
+        })
+        .unwrap();
+        let ctx = egui::Context::default();
+        a.stockui.open = true;
+        ctx.run_pass(egui::RawInput::default(), |c| a.stock_window(c)).textures_delta.clear();
+        assert_eq!(a.stockui.shelf, Some(Shelf::Thickness(0, 10.0)), "opens on the job's material and thickness");
+        let su = &a.stockui;
+        let refs = |sh: Shelf, find: &str| shelf_rows(&su.stock, &su.crit, sh, find).into_iter().map(|i| i.reference).collect::<Vec<_>>();
+        assert_eq!(refs(Shelf::Thickness(0, 10.0), ""), ["1", "1-1"]);
+        assert_eq!(refs(Shelf::Material(0), ""), ["T5", "1", "1-1"], "every thickness, thinnest first");
+        assert_eq!(refs(Shelf::All, ""), ["T5", "1", "1-1", "SS"]);
+        assert_eq!(refs(Shelf::All, "-1"), ["1-1"], "find looks in references");
+        assert_eq!(shelf_thicknesses(&su.stock, 0, 0, 10.0), [5.0, 10.0]);
+        assert_eq!(shelf_thicknesses(&su.stock, 2, 2, 8.0), [8.0], "the job's thickness is listed even with none in stock");
+        // Another pick stays while the window is open.
+        a.stockui.shelf = Some(Shelf::All);
+        ctx.run_pass(egui::RawInput::default(), |c| a.stock_window(c)).textures_delta.clear();
+        assert_eq!(a.stockui.shelf, Some(Shelf::All));
+        // ...and closing it from the ribbon (open turned off) and opening it
+        // again goes back to the job's material and thickness.
+        a.stockui.open = false;
+        ctx.run_pass(egui::RawInput::default(), |c| a.stock_window(c)).textures_delta.clear();
+        a.stockui.open = true;
+        ctx.run_pass(egui::RawInput::default(), |c| a.stock_window(c)).textures_delta.clear();
+        assert_eq!(a.stockui.shelf, Some(Shelf::Thickness(0, 10.0)));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn new_sheet_sizes_are_the_stocked_ones_then_the_common_ones() {
+        let mut s = Stock::default();
+        s.add_sheet(Item::sheet("A", 0, 3.0, 2500.0, 1250.0, 1), true).unwrap();
+        s.add_sheet(Item::sheet("B", 1, 2.0, 1000.0, 500.0, 1), true).unwrap();
+        s.add_sheet(Item::sheet("C", 0, 5.0, 1000.0, 500.0, 1), true).unwrap();
+        let v = size_tiles(&s, crate::units::LenUnit::Mm);
+        assert_eq!(v[0], (1000.0, 500.0), "the size stocked most comes first");
+        assert_eq!(v[1], (2500.0, 1250.0));
+        assert_eq!(v.len(), 6);
+        assert_eq!(v.iter().filter(|&&x| x == (2500.0, 1250.0)).count(), 1, "a common size already stocked isn't offered twice");
     }
 
     #[test]
