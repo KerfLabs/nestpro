@@ -14,6 +14,7 @@ mod mcp;
 mod ct1;
 mod cutpanel;
 mod orderpick;
+mod leadmenu;
 mod joints;
 mod kerf;
 mod leads;
@@ -291,6 +292,8 @@ pub struct App {
     tech_all_box: bool,
     /// Technology tab: lead type and keypad position for Automatic, and "All parts".
     pub lead_choice: nest::LeadType,
+    /// Screenshots only (--lead-menu=<type>): the Type picker shown open on that type.
+    pub lead_menu_demo: Option<nest::LeadType>,
     pub lead_pos: u8,
     pub tech_all: bool,
     /// The scope picked by hand on the sheet (Nesting): None until then,
@@ -635,6 +638,7 @@ impl App {
             tech_answer_all: None,
             tech_all_box: false,
             lead_choice: nest::LeadType::Machine,
+            lead_menu_demo: None,
             lead_pos: 1,
             tech_all: false,
             tech_nest_all: None,
@@ -3675,6 +3679,13 @@ fn main() -> eframe::Result {
                 app.order_pick.demo_quality = flag("--order-quality");
                 app.order_pick.demo_card = arg("--order-card=");
                 app.order_pick.demo_menu = flag("--order-menu") || app.order_pick.demo_quality || app.order_pick.demo_card.is_some();
+            }
+            // --lead-menu=<machine|perpendicular|line|arc|line-arc|corner>
+            // (screenshots): the Technology tab with the lead Type picker
+            // open, previewing that type.
+            if let Some(t) = std::env::args().find_map(|a| a.strip_prefix("--lead-menu=").and_then(leadmenu::named)) {
+                app.tab = Tab::Technology;
+                app.lead_menu_demo = Some(t);
             }
             // --tech-result (screenshots): Auto lead-ins run on one part type,
             // with its result card and "Apply to all".
