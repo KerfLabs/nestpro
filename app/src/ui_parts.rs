@@ -2972,7 +2972,7 @@ mod selection_halo_tests {
     #[test]
     fn a_disc_glows_in_a_circle_not_a_square() {
         let disc = part(Shape::Disc, 100.0, 100.0);
-        let pl = Placed { part: 0, x: 200.0, y: 50.0, w: 100.0, h: 100.0, turns: 0, mirror: false };
+        let pl = Placed { part: 0, x: 200.0, y: 50.0, w: 100.0, h: 100.0, turns: 0, mirror: false, spin: Default::default() };
         for ring in rings(&disc, &pl) {
             for q in ring {
                 assert!(((q - Pos2::new(250.0, 100.0)).length() - 50.0).abs() < 0.5, "{q:?} is off the disc's edge");
@@ -2987,7 +2987,7 @@ mod selection_halo_tests {
         // 100 × 60, legs 24 thick, turned a quarter: a 60 × 100 footprint
         // with the notch at the bottom left.
         let l = part(Shape::LBracket, 100.0, 60.0);
-        let pl = Placed { part: 0, x: 0.0, y: 0.0, w: 60.0, h: 100.0, turns: 1, mirror: false };
+        let pl = Placed { part: 0, x: 0.0, y: 0.0, w: 60.0, h: 100.0, turns: 1, mirror: false, spin: Default::default() };
         let near = |ring: &[Pos2], p: Pos2| ring.iter().any(|&q| (q - p).length() < 0.01);
         for ring in rings(&l, &pl) {
             assert_eq!(ring.len(), 6, "an L has six corners");
