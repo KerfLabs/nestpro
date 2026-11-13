@@ -3423,7 +3423,7 @@ fn an_agent_puts_one_holes_lead_on_every_hole_of_the_same_shape() {
 fn dragging_with_all_the_same_contours_moves_every_hole_of_that_shape() {
     // A flange plate with no technology of its own: the machine's leads.
     let mut parts = vec![Part { name: "F".into(), shape: Shape::Flange, w: 300.0, h: 200.0, qty: 1, rotate: false, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
-    let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
+    let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None };
     assert!(has_same_holes(&parts[0]));
     assert_eq!(same_holes(&parts[0], 0), vec![1, 2, 3]);
     assert!(same_holes(&parts[0], 4).is_empty() && same_holes(&parts[0], 5).is_empty(), "the centre hole and the outline");
