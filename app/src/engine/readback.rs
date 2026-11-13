@@ -449,7 +449,7 @@ mod tests {
 
     fn job() -> (Vec<Part>, Vec<Placed>, SheetPlan, BlmSet) {
         let parts = vec![Part { name: "DEMO-001".into(), shape: Shape::Disc, w: 200.0, h: 200.0, qty: 2, rotate: false, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
-        let placed = vec![Placed { part: 0, x: 10.0, y: 10.0, w: 200.0, h: 200.0, turns: 0, mirror: false }, Placed { part: 0, x: 300.0, y: 10.0, w: 200.0, h: 200.0, turns: 0, mirror: false }];
+        let placed = vec![Placed { part: 0, x: 10.0, y: 10.0, w: 200.0, h: 200.0, turns: 0, mirror: false, spin: Default::default() }, Placed { part: 0, x: 300.0, y: 10.0, w: 200.0, h: 200.0, turns: 0, mirror: false, spin: Default::default() }];
         let plan = crate::cnc::plan(&parts, &placed, &spec());
         let set = crate::blm::sheet_set(1, &parts, &placed, &spec(), &plan, &[], &crate::blm::BlmSettings::for_spec(&spec(), "LC5", "J"));
         (parts, placed, plan, set)

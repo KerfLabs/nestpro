@@ -1898,7 +1898,7 @@ impl App {
                 if ribbon_small(ui, Icon::Copy, "Copy part", false, has).on_hover_text(need("Ctrl+D — copy the selected parts to the first free spot (or Ctrl+drag them to where you want the copy)")).clicked() {
                     self.duplicate_selected();
                 }
-                if ribbon_small(ui, Icon::Rotate, "Rotate 90°", false, has).on_hover_text(need("R / Ctrl+Q — turn left 90° about the selection's centre; Ctrl+W turns right")).clicked() {
+                if ribbon_small(ui, Icon::Rotate, "Rotate 90°", false, has).on_hover_text(need("R — turn to the next allowed quarter turn about the selection's centre. Any angle: the turn bar under the selected parts, its round handle, Ctrl+Q / Ctrl+W (by the turn step) or Ctrl+T (type an angle)")).clicked() {
                     self.rotate_selected();
                 }
                 if ribbon_small(ui, Icon::Mirror, "Mirror", false, has).on_hover_text(need("M — mirror left↔right about the selection's centre; Shift+M top↔bottom")).clicked() {

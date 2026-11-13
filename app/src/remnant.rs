@@ -94,6 +94,9 @@ pub fn sheet_remnants_cached(parts: &[Part], sheet: &[Placed], f: &SheetFormat, 
     }
     for p in sheet {
         (p.part, p.turns, p.mirror).hash(&mut h);
+        if !p.spin.is_none() {
+            p.spin.deg.to_bits().hash(&mut h);
+        }
         for v in [p.x, p.y, p.w, p.h] {
             v.to_bits().hash(&mut h);
         }
@@ -130,7 +133,7 @@ mod tests {
     #[test]
     fn a_straight_line_leaves_the_far_side() {
         let parts = vec![part(1000.0, 800.0)];
-        let sheet = vec![Placed { part: 0, x: 10.0, y: 10.0, w: 1000.0, h: 800.0, turns: 0, mirror: false }];
+        let sheet = vec![Placed { part: 0, x: 10.0, y: 10.0, w: 1000.0, h: 800.0, turns: 0, mirror: false, spin: Default::default() }];
         let f = SheetFormat::rect(3000.0, 1500.0);
         let line = CutLine { pts: vec![[1100.0, 0.0], [1100.0, 1500.0]], kind: CutKind::Remnant };
         let r = sheet_remnants(&parts, &sheet, &f, &[line], 0.3, 0.1, false);
@@ -143,8 +146,8 @@ mod tests {
     fn a_stepped_line_gives_an_l_shaped_remnant() {
         let parts = vec![part(1000.0, 800.0), part(400.0, 1400.0)];
         let sheet = vec![
-            Placed { part: 0, x: 10.0, y: 10.0, w: 1000.0, h: 800.0, turns: 0, mirror: false },
-            Placed { part: 1, x: 10.0, y: 10.0 + 800.0 + 10.0, w: 400.0, h: 600.0, turns: 0, mirror: false },
+            Placed { part: 0, x: 10.0, y: 10.0, w: 1000.0, h: 800.0, turns: 0, mirror: false, spin: Default::default() },
+            Placed { part: 1, x: 10.0, y: 10.0 + 800.0 + 10.0, w: 400.0, h: 600.0, turns: 0, mirror: false, spin: Default::default() },
         ];
         let f = SheetFormat::rect(3000.0, 1500.0);
         // Up at x = 1100 to y = 820, across to 500, up to the top.
@@ -160,7 +163,7 @@ mod tests {
     #[test]
     fn small_pieces_are_scrap_and_no_line_means_no_remnant() {
         let parts = vec![part(2800.0, 1400.0)];
-        let sheet = vec![Placed { part: 0, x: 10.0, y: 10.0, w: 2800.0, h: 1400.0, turns: 0, mirror: false }];
+        let sheet = vec![Placed { part: 0, x: 10.0, y: 10.0, w: 2800.0, h: 1400.0, turns: 0, mirror: false, spin: Default::default() }];
         let f = SheetFormat::rect(3000.0, 1500.0);
         let line = CutLine { pts: vec![[2850.0, 0.0], [2850.0, 1500.0]], kind: CutKind::Remnant };
         // 150 × 1500 = 0.225 m²: kept at 0.1 m², scrap at 0.3 m².
@@ -172,7 +175,7 @@ mod tests {
     #[test]
     fn a_completed_sheet_keeps_everything_but_the_parts() {
         let parts = vec![part(1000.0, 800.0)];
-        let sheet = vec![Placed { part: 0, x: 10.0, y: 10.0, w: 1000.0, h: 800.0, turns: 0, mirror: false }];
+        let sheet = vec![Placed { part: 0, x: 10.0, y: 10.0, w: 1000.0, h: 800.0, turns: 0, mirror: false, spin: Default::default() }];
         let f = SheetFormat::rect(3000.0, 1500.0);
         let r = sheet_remnants(&parts, &sheet, &f, &[], 0.3, 0.1, true);
         assert_eq!(r.len(), 1);
@@ -182,7 +185,7 @@ mod tests {
     #[test]
     fn a_remnant_of_a_remnant_follows_its_shape() {
         let parts = vec![part(300.0, 300.0)];
-        let sheet = vec![Placed { part: 0, x: 10.0, y: 10.0, w: 300.0, h: 300.0, turns: 0, mirror: false }];
+        let sheet = vec![Placed { part: 0, x: 10.0, y: 10.0, w: 300.0, h: 300.0, turns: 0, mirror: false, spin: Default::default() }];
         // L-shaped remnant sheet; cut off the right part at x = 400.
         let l = Outline { outer: vec![[0.0, 0.0], [1000.0, 0.0], [1000.0, 1000.0], [600.0, 1000.0], [600.0, 400.0], [0.0, 400.0]], holes: vec![] };
         let f = SheetFormat { w: 1000.0, h: 1000.0, outline: Some(l), stock_ref: "2-16".into(), remnant: true, made: vec![], made_from: 0 };
