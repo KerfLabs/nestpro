@@ -57,6 +57,8 @@ pub enum Icon {
     Redo,
     Compact,
     Copy,
+    /// A pair of triangles repeated: copy a pattern again and again.
+    Pattern,
     Export,
     Import,
     LeadIn,
@@ -482,6 +484,15 @@ pub fn draw_icon_with(p: &egui::Painter, r: Rect, icon: Icon, ink: Color32, acce
         Icon::Copy => {
             rr(Rect::from_min_size(v(-9.0, -9.0), Vec2::new(12.0, 14.0)), s);
             rr(Rect::from_min_size(v(-3.0, -4.0), Vec2::new(12.0, 14.0)), a);
+        }
+        Icon::Pattern => {
+            // Two squares, each split into a pair of triangles: the one
+            // placed, and its copy waiting on the pointer.
+            for (x, st) in [(-10.0, s), (1.0, a)] {
+                rr(Rect::from_min_size(v(x, -5.0), Vec2::new(9.0, 9.0)), st);
+                p.line_segment([v(x, -5.0), v(x + 9.0, 4.0)], st);
+            }
+            p.line_segment([v(-5.5, 8.0), v(5.5, 8.0)], Stroke::new(1.0, accent));
         }
         Icon::Export => {
             poly(vec![v(-9.0, 2.0), v(-9.0, 8.0), v(9.0, 8.0), v(9.0, 2.0)], s);
@@ -1895,6 +1906,17 @@ impl App {
                 }
                 if ribbon_small(ui, Icon::Clear, "Clear sheets", false, has_sheets).on_hover_text("Take every part off every sheet (Ctrl+Z undoes it)").clicked() {
                     self.clear();
+                }
+                let on = self.pattern_on();
+                if ribbon_small(ui, Icon::Pattern, "Copy pattern", on, has || on)
+                    .on_hover_text(need("Ctrl+C — the selected parts go on the pointer as a pattern: each click drops a copy and the pattern stays for the next. Copies use the pieces still to place; when one needs more than are left it asks: add extras or place just those left. Esc puts it away."))
+                    .clicked()
+                {
+                    if on {
+                        self.cancel_carry();
+                    } else {
+                        self.start_pattern(None);
+                    }
                 }
             });
         });

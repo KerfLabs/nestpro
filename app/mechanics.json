@@ -4284,9 +4284,9 @@
   "source": "MECHANICS HM10"
  },
  {
-  "name": "each copy adds to the part's order",
+  "name": "a copy of a placed part counts",
   "group": "moving parts by hand",
-  "value": true,
+  "value": "against the pieces still to place; the order grows only beyond it (the original adds one per copy)",
   "source": "MECHANICS HM10"
  },
  {
@@ -4325,6 +4325,36 @@
   "value": "80 px",
   "source": "MECHANICS HM13; estimate",
   "estimated": true
+ },
+ {
+  "name": "Ctrl+C on the sheet",
+  "group": "moving parts by hand",
+  "value": "selection on the pointer as a pattern; it stays after each drop",
+  "source": "MECHANICS HM14"
+ },
+ {
+  "name": "pattern copies use",
+  "group": "moving parts by hand",
+  "value": "the pieces still to place; the order grows only beyond it",
+  "source": "MECHANICS HM15"
+ },
+ {
+  "name": "pattern label",
+  "group": "moving parts by hand",
+  "value": "what one copy uses, pieces left, whole copies to go",
+  "source": "MECHANICS HM15"
+ },
+ {
+  "name": "pattern copy short of pieces",
+  "group": "moving parts by hand",
+  "value": "asks: place just those left (held piece first, then nearest) / add extras / cancel; the answer holds for the pattern",
+  "source": "MECHANICS HM16"
+ },
+ {
+  "name": "pattern put away",
+  "group": "moving parts by hand",
+  "value": "when none of its parts has a piece left after a drop (Shift + click keeps it); follows other sheets and undo",
+  "source": "MECHANICS HM17"
  },
  {
   "name": "technology table and time file",
