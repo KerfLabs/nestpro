@@ -156,7 +156,7 @@ mod tests {
         Part { name: name.into(), shape: Shape::Rectangle, w: 100.0, h: 100.0, qty, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }
     }
     fn at(part: usize, x: f64) -> Placed {
-        Placed { part, x, y: 0.0, w: 100.0, h: 100.0, turns: 0, mirror: false }
+        Placed { part, x, y: 0.0, w: 100.0, h: 100.0, turns: 0, mirror: false, spin: Default::default() }
     }
 
     #[test]

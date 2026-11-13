@@ -7,6 +7,7 @@
 //! `every_ribbon_command_is_mapped` fails when a ribbon button is added
 //! without an entry, so a new GUI feature can't silently skip the agents.
 
+use super::selection::{Take, Window};
 use super::*;
 use crate::nest::{CutQuality, JointType, LeadType, TextKind};
 use serde_json::{json, Map, Value};
@@ -237,9 +238,10 @@ pub static OPS: &[Op] = &[
     Op { name: "rotate", group: "Nesting", kind: Kind::Write, help: "Turn a placed part to its next allowed quarter turn (counter-clockwise), or with back=true to its previous one (clockwise), where there is room.", args: &[
         SHEET, ITEM, a("back", Ty::Bool, "Turn to the previous allowed turn (clockwise) instead of the next"),
     ] },
-    Op { name: "turn", group: "Nesting", kind: Kind::Write, help: "Turn placed parts together about the centre of their box by 90° (counter-clockwise), -90° or 180°; when the turned group would overlap a part or leave the sheet it moves to the nearest free spot.", args: &[
+    Op { name: "turn", group: "Nesting", kind: Kind::Write, help: "Turn placed parts together about the centre of their box, by any angle (angle) or so the first of them sits at an angle (to) — the turn bar on the sheet; when the turned group would overlap a part or leave the sheet it moves to the nearest free spot. Angles other than 0/90/180/270° need parts that may turn 90°.", args: &[
         SHEET, ITEM_ONE, ITEMS,
-        Arg { name: "angle", ty: Ty::Int, required: false, help: "90 (default, counter-clockwise), -90 or 180", choices: &[] },
+        Arg { name: "angle", ty: Ty::Num, required: false, help: "Turn by this many degrees: positive counter-clockwise, negative clockwise (default 90; any angle, e.g. 15 or -32.5)", choices: &[] },
+        a("to", Ty::Num, "Instead of angle: turn so the first of the parts sits at this angle (degrees, counter-clockwise from as drawn); the others turn with it"),
     ] },
     Op { name: "mirror", group: "Nesting", kind: Kind::Write, help: "Mirror placed parts together about the centre of their box: axis x = left↔right (default), y = top↔bottom; moved to the nearest free spot when needed.", args: &[
         SHEET, ITEM_ONE, ITEMS,
@@ -295,12 +297,13 @@ pub static OPS: &[Op] = &[
         a("text", Ty::Str, "add: the text"), a("height", Ty::Num, "add: capital height, mm (default 8)"), c("kind", TEXTS, "add: text kind (default special)"),
     ] },
     // --- machining ---
-    Op { name: "cut-order", group: "Machining", kind: Kind::Write, help: "Manual cutting order: pick the contour nearest x,y (cut first, from there); take whole parts (parts: placed parts in the order given, the parts a sweep along points passes in the order it passes them, or the parts wholly inside a box in the automatic order; each cut whole in its own cut order, after the picks before it; parts the picks already finish are skipped); undo the last pick or the last parts command; or clear them (all automatic).", args: &[
+    Op { name: "cut-order", group: "Machining", kind: Kind::Write, help: "Manual cutting order: pick the contour nearest x,y (cut first, from there); take whole parts (parts: placed parts in the order given, the parts a sweep along points passes in the order it passes them, or the parts wholly inside a box (with touching, every part it touches) in the automatic order; each cut whole in its own cut order, after the picks before it; parts the picks already finish are skipped); undo the last pick or the last parts command; or clear them (all automatic).", args: &[
         Arg { name: "mode", ty: Ty::Str, required: true, help: "pick, parts, undo or clear", choices: &["pick", "parts", "undo", "clear"] }, SHEET,
         a("x", Ty::Num, "pick: X on the sheet, mm"), a("y", Ty::Num, "pick: Y, mm"), a("reverse", Ty::Bool, "pick: cut it the other way"), a("tol", Ty::Num, "pick, parts with points: how near, mm (default 5)"),
         a("items", Ty::Str, "parts: placed parts in the order to cut them, e.g. \"3,1,2\" (#n as in info/render; 4-2 is 4, 3, 2)"),
         a("points", Ty::Points, "parts: a sweep \"x,y;x,y;…\" in sheet mm: the parts it passes within tol of their contours, in the order passed"),
         a("box", Ty::Points, "parts: two opposite corners \"x,y;x,y\" in sheet mm: the parts wholly inside, in the sheet's automatic order"),
+        a("touching", Ty::Bool, "parts with box: take every part the box touches, not only those wholly inside (as a box dragged to the left on the sheet)"),
     ] },
     Op { name: "remnant", group: "Machining", kind: Kind::Write, help: "Cut off the remnant: auto (the automatic remnant line in the shape set in the Sheet Remnants options), exact (stepped around the parts), or a line at x= or y=. A new remnant line replaces the sheet's old one.", args: &[
         Arg { name: "mode", ty: Ty::Str, required: true, help: "auto, exact or line", choices: &["auto", "exact", "line"] }, SHEET,
@@ -717,7 +720,7 @@ fn spec_json(spec: &SheetSpec) -> Value {
 
 fn placed_json(job: &JobFile, s: usize) -> Value {
     json!(job.sheets[s].iter().enumerate().map(|(i, p)| json!({
-        "item": i + 1, "part": p.part + 1, "name": job.parts[p.part].name, "x": r1(p.x), "y": r1(p.y), "w": r1(p.w), "h": r1(p.h), "angle": p.angle(), "mirror": p.mirror,
+        "item": i + 1, "part": p.part + 1, "name": job.parts[p.part].name, "x": r1(p.x), "y": r1(p.y), "w": r1(p.w), "h": r1(p.h), "angle": (p.angle() * 100.0).round() / 100.0, "mirror": p.mirror,
     })).collect::<Vec<_>>())
 }
 
@@ -2356,7 +2359,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             let c = match (a.num("x")?, a.num("y")?) {
                 (Some(x), Some(y)) => {
                     let (w, h) = footprint(&job.parts[pi], turns);
-                    let c = Placed { part: pi, x, y, w, h, turns, mirror };
+                    let c = Placed { part: pi, x, y, w, h, turns, mirror, spin: Default::default() };
                     if !placement_ok(&job.parts, &job.sheets[s], &job.spec, &job.format(s), None, &c, true) {
                         job.tidy();
                         return Err(format!("There is no room for '{}' at X {x} Y {y} on sheet {} (it would overlap a part or leave the margin).", job.parts[pi].name, s + 1));
@@ -2444,20 +2447,23 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             }
             job.sheets[s][i] = c;
             job.sheet_changed(s);
-            Ok(Outcome::msg(format!("Turned #{} to {}°.", i + 1, c.angle())))
+            Ok(Outcome::msg(format!("Turned #{} to {}.", i + 1, nest::angle_text(c.angle()))))
         }
         "turn" | "mirror" => {
             let s = sheet_idx(job, &a)?;
             let sel = items_idx(job, s, &a)?;
             let f = job.format(s);
             let (new, what) = if name == "turn" {
-                let q = match a.int("angle")?.unwrap_or(90) {
-                    90 | -270 => 1,
-                    180 | -180 => 2,
-                    -90 | 270 => 3,
-                    v => return Err(format!("angle: {v}° — parts turn by 90, -90 or 180.")),
+                // HM14: by any angle, or to an angle for the first part.
+                let deg = match (a.num("angle")?, a.num("to")?) {
+                    (Some(_), Some(_)) => return Err("Give angle (turn by) or to (turn to an angle), not both.".into()),
+                    (None, Some(t)) => t - job.sheets[s][sel[0]].angle(),
+                    (by, None) => by.unwrap_or(90.0),
                 };
-                (arrange::turn(&job.parts, &job.sheets[s], &sel, q, &job.spec, &f, true)?, format!("Turned {}", names(&sel)))
+                if !deg.is_finite() {
+                    return Err("angle: give a number of degrees.".into());
+                }
+                (arrange::turn_by(&job.parts, &job.sheets[s], &sel, deg, &job.spec, &f, true)?, format!("Turned {} by {}", names(&sel), nest::angle_text(deg)))
             } else {
                 let vertical = match a.str("axis").as_deref().map(str::trim) {
                     None | Some("x") | Some("X") => true,
@@ -2812,8 +2818,12 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                     let got = match (a.str("items"), a.points("points")?, a.points("box")?) {
                         (Some(list), None, None) => sheetpick::listed(&done, &arrange::parse_items_in_order(&list, sheet.len())?),
                         (None, Some(path), None) if !path.is_empty() => sheetpick::sweep(&parts, &sheet, &done, &path, a.num("tol")?.unwrap_or(5.0)),
-                        (None, None, Some(b)) if b.len() == 2 => sheetpick::boxed(&parts, &sheet, &job.spec_at(s), &done, b[0], b[1]),
-                        _ => return Err("parts takes whole parts by one of: items=\"3,1,2\" (placed parts in the order to cut them), points=\"x,y;x,y;…\" (a sweep: the parts it passes, in that order) or box=\"x,y;x,y\" (two corners: the parts wholly inside).".into()),
+                        (None, None, Some(b)) if b.len() == 2 => {
+                            // SW1: a box takes what lies wholly inside it unless told to take what it touches.
+                            let take = if a.bool("touching")?.unwrap_or(false) { Take::Touching } else { Take::Inside };
+                            sheetpick::boxed(&parts, &sheet, &job.spec_at(s), &done, &Window::new(b[0], b[1], take))
+                        }
+                        _ => return Err("parts takes whole parts by one of: items=\"3,1,2\" (placed parts in the order to cut them), points=\"x,y;x,y;…\" (a sweep: the parts it passes, in that order) or box=\"x,y;x,y\" (two corners: the parts wholly inside, or with touching=true every part it touches).".into()),
                     };
                     // One engine function for agents and the sheet's sweep and box (MM8, MM9).
                     let message = sheetpick::take(&parts, &sheet, job.manual_mut(s), &got)?;

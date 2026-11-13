@@ -350,7 +350,7 @@
   {
    "name": "cut technology panel: a drag with a row chosen",
    "group": "part technology",
-   "value": "from a contour: sweep (every contour passed over); from open space: box (the contours wholly inside)",
+   "value": "from a contour: sweep (every contour passed over); from open space: box (the contours wholly inside; dragged left, those it touches)",
    "source": "CS6",
    "estimated": true
   },
@@ -518,7 +518,7 @@
   {
    "name": "a box while picking a part's cut order",
    "group": "part cut order",
-   "value": "adds the cut and marked contours wholly inside it, in the automatic order among themselves",
+   "value": "adds the cut and marked contours wholly inside it (dragged left, those it touches), in the automatic order among themselves",
    "source": "CO12",
    "estimated": true
   },
@@ -772,6 +772,41 @@
    "group": "element picking",
    "value": true,
    "source": "MECHANICS E2"
+  },
+  {
+   "name": "which way a selection box is dragged",
+   "group": "selection windows",
+   "value": "right (or straight up/down): window, takes what is wholly inside; left: crossing window, takes everything it touches",
+   "source": "SW1",
+   "estimated": true
+  },
+  {
+   "name": "crossing window takes a line",
+   "group": "selection windows",
+   "value": "when any stretch of it passes through or touches the box",
+   "source": "SW2",
+   "estimated": true
+  },
+  {
+   "name": "crossing window takes a part or a text",
+   "group": "selection windows",
+   "value": "when it touches an edge (holes too) or lies on its material; not from inside a hole",
+   "source": "SW3",
+   "estimated": true
+  },
+  {
+   "name": "selection box look",
+   "group": "selection windows",
+   "value": "window: solid light indigo edge (165, 180, 252); crossing window: dashed green edge (74, 222, 128); faint fill of its colour",
+   "source": "SW4",
+   "estimated": true
+  },
+  {
+   "name": "agents' crossing window",
+   "group": "selection windows",
+   "value": "cut-order mode=parts box=... touching=true",
+   "source": "SW5",
+   "estimated": true
   },
   {
    "name": "capture square half-size",
@@ -1174,7 +1209,7 @@
   {
    "name": "a box on the sheet in Manual cutting",
    "group": "manual machining",
-   "value": "takes the parts wholly inside it, in the sheet's automatic order among themselves",
+   "value": "takes the parts wholly inside it (dragged left, every part it touches), in the sheet's automatic order among themselves",
    "source": "MM9",
    "estimated": true
   },
@@ -4209,7 +4244,7 @@
  {
   "name": "Ctrl+Q / Ctrl+W turn the selection (+/- rotation step)",
   "group": "moving parts by hand",
-  "value": "90° steps only in the rebuild",
+  "value": "by the rotation step (Settings → Nesting or the turn bar; 1° when Free)",
   "source": "MECHANICS HM1"
  },
  {
@@ -4252,7 +4287,7 @@
  {
   "name": "window selection picks",
   "group": "moving parts by hand",
-  "value": "parts wholly inside the window",
+  "value": "parts wholly inside the window; dragged left, every part it touches (SW1)",
   "source": "MECHANICS HM7; estimate",
   "estimated": true
  },
@@ -4325,6 +4360,61 @@
   "value": "80 px",
   "source": "MECHANICS HM13; estimate",
   "estimated": true
+ },
+ {
+  "name": "Ctrl+1/5/0/3/4/9 turn the selection",
+  "group": "moving parts by hand",
+  "value": "1/5/10/30/45/90° (direction as Ctrl+9)",
+  "source": "MECHANICS HM1"
+ },
+ {
+  "name": "Ctrl+T",
+  "group": "moving parts by hand",
+  "value": "type an angle for the selection",
+  "source": "MECHANICS HM1"
+ },
+ {
+  "name": "placed parts keep",
+  "group": "moving parts by hand",
+  "value": "any angle: quarter turns plus the rest; footprint = box of the turned outline",
+  "source": "MECHANICS HM14"
+ },
+ {
+  "name": "angles other than 0/90/180/270° allowed for",
+  "group": "moving parts by hand",
+  "value": "parts that may turn 90°",
+  "source": "MECHANICS HM14; estimate",
+  "estimated": true
+ },
+ {
+  "name": "a typed angle",
+  "group": "moving parts by hand",
+  "value": "the part clicked first goes to it; the others turn with it",
+  "source": "MECHANICS HM14"
+ },
+ {
+  "name": "turn by dragging rounds to",
+  "group": "moving parts by hand",
+  "value": "Round(angle / step) · step; 0.1° when Free or with Alt",
+  "source": "MECHANICS HM15"
+ },
+ {
+  "name": "rotation step choices",
+  "group": "moving parts by hand",
+  "value": "Free, 5, 10, 15, 30, 45, 90° or typed (0.1–180°)",
+  "source": "MECHANICS HM16"
+ },
+ {
+  "name": "rotation step default",
+  "group": "moving parts by hand",
+  "value": "15°",
+  "source": "MECHANICS HM16; rebuild"
+ },
+ {
+  "name": "turn bar",
+  "group": "moving parts by hand",
+  "value": "under the selected parts (above when no room); × hides it, Ctrl+T shows it",
+  "source": "MECHANICS HM17"
  },
  {
   "name": "Ctrl+C on the sheet",

@@ -978,7 +978,8 @@ pub fn centroid(poly: &[P]) -> P {
 
 /// A part placed on a sheet. `w`/`h` are the placed footprint. The part is
 /// first mirrored (if `mirror`), then turned `turns` × 90° counter-clockwise —
-/// the original allows 0/90/180/270°, plain or mirrored (rule R1).
+/// the original allows 0/90/180/270°, plain or mirrored (rule R1) — and, when
+/// turned by hand to another angle, `spin` more (HM14).
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Placed {
     pub part: usize,
@@ -988,6 +989,94 @@ pub struct Placed {
     pub h: f64,
     pub turns: u8,
     pub mirror: bool,
+    /// The rest of a turn to an angle that isn't a quarter turn (HM14). None
+    /// for every part the nester places.
+    #[serde(default, skip_serializing_if = "Spin::is_none")]
+    pub spin: Spin,
+}
+
+/// The part of a turn beyond the quarter turns, for a part turned by hand to
+/// any angle (HM14): `deg` in (0°, 90°). Such a part is mirrored, turned by
+/// its whole angle about its own origin, then moved by `dx`, `dy` so the box
+/// of its turned outline starts at the placement's x, y.
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Spin {
+    pub deg: f64,
+    pub dx: f64,
+    pub dy: f64,
+}
+
+impl Spin {
+    pub const NONE: Spin = Spin { deg: 0.0, dx: 0.0, dy: 0.0 };
+    /// A plain quarter turn.
+    pub fn is_none(&self) -> bool {
+        self.deg == 0.0
+    }
+}
+
+/// Angles this close to a quarter turn are that quarter turn (degrees).
+pub const ANGLE_EPS: f64 = 1e-6;
+
+/// An angle (degrees, any sign) as quarter turns and the rest in [0°, 90°).
+pub fn split_angle(angle: f64) -> (u8, f64) {
+    let a = if angle.is_finite() { angle.rem_euclid(360.0) } else { 0.0 };
+    let mut q = (a / 90.0).floor() as i64;
+    let mut rest = a - q as f64 * 90.0;
+    if rest < ANGLE_EPS {
+        rest = 0.0;
+    } else if 90.0 - rest < ANGLE_EPS {
+        rest = 0.0;
+        q += 1;
+    }
+    (q.rem_euclid(4) as u8, rest)
+}
+
+/// An angle as a plain number to 0.01°: "90", "32.5".
+pub fn angle_num(angle: f64) -> String {
+    let r = (angle * 100.0).round() / 100.0;
+    format!("{}", if r == 0.0 { 0.0 } else { r })
+}
+
+/// An angle for people: "90°", "32.5°".
+pub fn angle_text(angle: f64) -> String {
+    format!("{}°", angle_num(angle))
+}
+
+/// May the part sit at `angle`°, plain or mirrored? Quarter turns follow its
+/// eight rotations (R1); any other angle needs "may turn 90°" (HM14).
+pub fn angle_allowed(p: &Part, angle: f64, mirror: bool) -> bool {
+    match split_angle(angle) {
+        (k, rest) if rest == 0.0 => turn_allowed(p, k, mirror),
+        _ => free_angles_allowed(p, mirror),
+    }
+}
+
+/// May the part (plain or mirrored) take angles other than quarter turns?
+/// Only when it may turn 90° (HM14).
+pub fn free_angles_allowed(p: &Part, mirror: bool) -> bool {
+    p.rotate && (!mirror || p.rots.mirrored.iter().any(|&m| m))
+}
+
+/// Part `part` (= `p`) at `angle`° counter-clockwise, after the mirror, with
+/// its footprint's corner at 0, 0: a quarter turn takes the part's box, as the
+/// nester places it; any other angle the box of the turned outline (HM14).
+pub fn oriented(p: &Part, part: usize, angle: f64, mirror: bool) -> Placed {
+    let (turns, deg) = split_angle(angle);
+    let (w, h) = p.bbox();
+    if deg == 0.0 {
+        let (w, h) = if turns % 2 == 1 { (h, w) } else { (w, h) };
+        return Placed { part, x: 0.0, y: 0.0, w, h, turns, mirror, spin: Spin::NONE };
+    }
+    let probe = Placed { part, x: 0.0, y: 0.0, w, h, turns, mirror, spin: Spin { deg, dx: 0.0, dy: 0.0 } };
+    let b = bbox_of(&p.geometry().outline.iter().map(|&q| probe.map(q)).collect::<Vec<P>>());
+    Placed { w: b[2] - b[0], h: b[3] - b[1], spin: Spin { deg, dx: -b[0], dy: -b[1] }, ..probe }
+}
+
+/// Where the middle of the part's own box lands on the sheet: the point a
+/// part turns about (HM5, HM14).
+pub fn placed_pivot(p: &Part, pl: &Placed) -> P {
+    let (w, h) = p.bbox();
+    pl.map([w / 2.0, h / 2.0])
 }
 
 impl Placed {
@@ -995,11 +1084,17 @@ impl Placed {
     pub fn rotated(&self) -> bool {
         self.turns % 2 == 1
     }
-    pub fn angle(&self) -> u16 {
-        (self.turns % 4) as u16 * 90
+    /// The turn in degrees, counter-clockwise, in [0°, 360°).
+    pub fn angle(&self) -> f64 {
+        (self.turns % 4) as f64 * 90.0 + self.spin.deg
     }
     /// Map a point in the part's local coordinates onto the sheet.
     pub fn map(&self, p: P) -> P {
+        if !self.spin.is_none() {
+            let (s, c) = self.angle().to_radians().sin_cos();
+            let lx = if self.mirror { -p[0] } else { p[0] };
+            return [self.x + self.spin.dx + lx * c - p[1] * s, self.y + self.spin.dy + lx * s + p[1] * c];
+        }
         let (bw, bh) = if self.rotated() { (self.h, self.w) } else { (self.w, self.h) };
         let lx = if self.mirror { bw - p[0] } else { p[0] };
         let ly = p[1];
@@ -1491,7 +1586,7 @@ pub fn norm_angle(a: f64) -> f64 {
 
 /// Special rotations (rule R3): mode 0 never,
 /// 1 always, otherwise only for angles that aren't 0/90/180/270 within `tol`.
-#[cfg_attr(not(test), allow(dead_code))] // original rule; the rebuild only turns by quarters
+#[cfg_attr(not(test), allow(dead_code))] // original rule; the rebuild's nester only turns by quarters
 pub fn special_rotation_possible(mode: u8, angle: f64, tol: f64) -> bool {
     match mode {
         0 => false,
@@ -1631,7 +1726,7 @@ fn pair_module(parts: &[Part], i: usize, gap: f64, mirrored: bool, min_eff: f64)
     if outline.len() < 3 {
         return None;
     }
-    let a_pl = Placed { part: i, x: 0.0, y: 0.0, w, h, turns: 0, mirror: false };
+    let a_pl = Placed { part: i, x: 0.0, y: 0.0, w, h, turns: 0, mirror: false, spin: Default::default() };
     let a: Vec<P> = outline.iter().map(|&q| a_pl.map(q)).collect();
     let mut best: Option<(f64, f64, f64)> = None; // (efficiency, dx, dy)
     let step = (w.max(h) / 160.0).max(0.5);
@@ -1641,7 +1736,7 @@ fn pair_module(parts: &[Part], i: usize, gap: f64, mirrored: bool, min_eff: f64)
         let mut dx = w + gap;
         let mut last_ok = None;
         while dx >= -w {
-            let b_pl = Placed { part: i, x: dx, y: dy, w, h, turns: 2, mirror: mirrored };
+            let b_pl = Placed { part: i, x: dx, y: dy, w, h, turns: 2, mirror: mirrored, spin: Default::default() };
             let b: Vec<P> = outline.iter().map(|&q| b_pl.map(q)).collect();
             if too_close(&a, &b, gap) {
                 break;
@@ -2023,7 +2118,7 @@ impl<'a> Engine<'a> {
         let mut polys: Vec<Vec<P>> = vec![];
         for m in &it.members {
             let g = self.parts[m.part].geometry();
-            let pl = Placed { part: m.part, x: m.dx, y: m.dy, w: m.w, h: m.h, turns: m.turns, mirror: m.mirror };
+            let pl = Placed { part: m.part, x: m.dx, y: m.dy, w: m.w, h: m.h, turns: m.turns, mirror: m.mirror, spin: Default::default() };
             polys.push(g.outline.iter().map(|&q| pl.map(q)).collect());
             for hole in g.holes.iter().filter(|h| polygon_area(h) > self.min_hole) {
                 polys.push(hole.iter().map(|&q| pl.map(q)).collect());
@@ -2216,7 +2311,7 @@ impl<'a> Engine<'a> {
             let (fu, fv) = (s.px as f64 / UNITS + o.prof.grow, s.py as f64 / UNITS + o.prof.grow);
             let (ox, oy) = if swap { (fv, fu) } else { (fu, fv) };
             for mb in &o.item.members {
-                placed.push(Placed { part: mb.part, x: ox + mb.dx, y: oy + mb.dy, w: mb.w, h: mb.h, turns: mb.turns, mirror: mb.mirror });
+                placed.push(Placed { part: mb.part, x: ox + mb.dx, y: oy + mb.dy, w: mb.w, h: mb.h, turns: mb.turns, mirror: mb.mirror, spin: Default::default() });
             }
             kinds[ki].qty -= 1;
         }
@@ -2520,7 +2615,7 @@ mod level_tests {
     fn a_disc_in_a_round_parts_hole_is_no_clash() {
         // A Ø300 disc has a Ø90 hole: a Ø20 disc fits in it, not on the ring.
         let parts = vec![part("Ring", Shape::Disc, 300.0, 300.0, 1), part("Pin", Shape::Disc, 20.0, 20.0, 1)];
-        let at = |part, x, y, w| Placed { part, x, y, w, h: w, turns: 0, mirror: false };
+        let at = |part, x, y, w| Placed { part, x, y, w, h: w, turns: 0, mirror: false, spin: Default::default() };
         let ring = at(0, 0.0, 0.0, 300.0);
         assert!(!clash_exact(&parts, &at(1, 140.0, 140.0, 20.0), &ring, 5.0), "in the hole");
         assert!(clash_exact(&parts, &at(1, 140.0, 40.0, 20.0), &ring, 5.0), "on the ring");
@@ -2563,16 +2658,52 @@ mod level_tests {
         for turns in 0..4u8 {
             for mirror in [false, true] {
                 let (w, h) = if turns % 2 == 1 { (60.0, 100.0) } else { (100.0, 60.0) };
-                let pl = Placed { part: 0, x: 10.0, y: 20.0, w, h, turns, mirror };
+                let pl = Placed { part: 0, x: 10.0, y: 20.0, w, h, turns, mirror, spin: Default::default() };
                 for q in p.geometry().outline {
                     let s = pl.map(q);
                     assert!(s[0] >= 10.0 - 1e-9 && s[0] <= 10.0 + w + 1e-9 && s[1] >= 20.0 - 1e-9 && s[1] <= 20.0 + h + 1e-9);
                 }
             }
         }
-        let pl = Placed { part: 0, x: 0.0, y: 0.0, w: 100.0, h: 60.0, turns: 2, mirror: false };
+        let pl = Placed { part: 0, x: 0.0, y: 0.0, w: 100.0, h: 60.0, turns: 2, mirror: false, spin: Default::default() };
         assert_eq!(pl.map([0.0, 0.0]), [100.0, 60.0]);
-        assert_eq!(pl.angle(), 180);
+        assert_eq!(pl.angle(), 180.0);
+    }
+
+    #[test]
+    fn a_part_keeps_any_angle() {
+        // HM14: angles split into quarter turns and the rest; a turned part's
+        // footprint is the box of its turned outline, at any angle and mirrored.
+        assert_eq!(split_angle(0.0), (0, 0.0));
+        assert_eq!(split_angle(-90.0), (3, 0.0));
+        assert_eq!(split_angle(450.0), (1, 0.0));
+        assert_eq!(split_angle(89.9999999), (1, 0.0));
+        let (q, r) = split_angle(-30.0);
+        assert!(q == 3 && (r - 60.0).abs() < 1e-9);
+        assert_eq!(angle_text(32.499), "32.5°");
+        assert_eq!(angle_num(-0.001), "0");
+        let mut p = Part { name: "T".into(), shape: Shape::Triangle, w: 100.0, h: 60.0, qty: 1, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
+        for a in [0.0, 17.5, 90.0, 133.0, 270.0, 301.25] {
+            for mirror in [false, true] {
+                let pl = Placed { x: 10.0, y: 20.0, ..oriented(&p, 0, a, mirror) };
+                assert!((pl.angle() - a).abs() < 1e-9, "{a} {pl:?}");
+                let b = bbox_of(&p.geometry().outline.iter().map(|&q| pl.map(q)).collect::<Vec<P>>());
+                for (got, want) in b.iter().zip([10.0, 20.0, 10.0 + pl.w, 20.0 + pl.h]) {
+                    assert!((got - want).abs() < 1e-6, "{a} {mirror}: {b:?} {pl:?}");
+                }
+            }
+        }
+        // A quarter turn is placed exactly as the nester places it.
+        assert_eq!(oriented(&p, 0, 90.0, false), Placed { part: 0, x: 0.0, y: 0.0, w: 60.0, h: 100.0, turns: 1, mirror: false, spin: Spin::NONE });
+        // Other angles need "may turn 90°"; mirrored, mirroring must be allowed.
+        assert!(angle_allowed(&p, 30.0, false) && !angle_allowed(&p, 30.0, true));
+        p.rotate = false;
+        assert!(!angle_allowed(&p, 30.0, false) && angle_allowed(&p, 180.0, false));
+        // Saved jobs: no "spin" for a quarter turn, so older files read the same.
+        let q = oriented(&p, 0, 0.0, false);
+        assert!(!serde_json::to_string(&q).unwrap().contains("spin"));
+        let back: Placed = serde_json::from_str(&serde_json::to_string(&Placed { x: 3.0, ..oriented(&p, 0, 12.5, false) }).unwrap()).unwrap();
+        assert!((back.angle() - 12.5).abs() < 1e-9 && back.x == 3.0);
     }
 
     #[test]
@@ -2913,7 +3044,7 @@ mod readable_text_tests {
         let t = PartText { text: "TA".into(), at: [20.0, 10.0], height: 12.0, angle: 0.0, curve: 0.0, kind: TextKind::Mark };
         for (turns, mirror) in [(0u8, false), (1, false), (2, false), (3, true), (0, true)] {
             let (w, h) = if turns % 2 == 1 { (60.0, 100.0) } else { (100.0, 60.0) };
-            let pl = Placed { part: 0, x: 500.0, y: 300.0, w, h, turns, mirror };
+            let pl = Placed { part: 0, x: 500.0, y: 300.0, w, h, turns, mirror, spin: Default::default() };
             let st = t.sheet_strokes("TA", &pl, TEXT_ANGLE_STEP);
             // The T's top bar is level and runs left to right.
             let bar = &st[0];

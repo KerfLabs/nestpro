@@ -952,7 +952,7 @@ fn an_agent_arranges_parts_by_hand() {
     // Turn and mirror a group about its centre.
     call(&mut s, "turn", None, json!({"items": "1,2", "angle": -90}));
     assert!(at(0).turns == 3 && at(1).turns == 3);
-    assert!(err(&mut s, "turn", json!({"item": 1, "angle": 45})).contains("90"));
+    assert!(err(&mut s, "turn", json!({"item": 1, "angle": 45, "to": 0})).contains("not both"));
     assert!(err(&mut s, "mirror", json!({"items": "1,2"})).contains("mirrored"));
     call(&mut s, "edit-part", None, json!({"part": 1, "mirror": true}));
     call(&mut s, "mirror", None, json!({"items": "1,2", "axis": "y"}));
@@ -1058,7 +1058,7 @@ fn turning_back_steps_to_the_previous_allowed_turn() {
     // QR3: back from 0° is 270° (a quarter clockwise); with only 0° and 180°
     // allowed, either way goes to 180°.
     let mut p = Part { name: "P".into(), shape: Shape::Rectangle, w: 100.0, h: 40.0, qty: 1, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
-    let at = Placed { part: 0, x: 0.0, y: 0.0, w: 100.0, h: 40.0, turns: 0, mirror: false };
+    let at = Placed { part: 0, x: 0.0, y: 0.0, w: 100.0, h: 40.0, turns: 0, mirror: false, spin: Default::default() };
     let b = step_turn(&p, at, true).unwrap();
     assert_eq!((b.turns, b.w, b.h), (3, 40.0, 100.0));
     assert_eq!(step_turn(&p, at, false).unwrap().turns, 1);
@@ -1074,7 +1074,7 @@ fn overlapping_parts_are_reported_and_the_export_warns() {
     // a part gap of 0 is meant to touch and isn't reported.
     let d = dir("overlap");
     let p = Part { name: "Plate".into(), shape: Shape::Rectangle, w: 100.0, h: 100.0, qty: 3, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
-    let at = |x: f64| Placed { part: 0, x, y: 10.0, w: 100.0, h: 100.0, turns: 0, mirror: false };
+    let at = |x: f64| Placed { part: 0, x, y: 10.0, w: 100.0, h: 100.0, turns: 0, mirror: false, spin: Default::default() };
     let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
     let parts = vec![p];
     let clear = vec![at(10.0), at(115.0)];
@@ -1091,6 +1091,43 @@ fn overlapping_parts_are_reported_and_the_export_warns() {
     let ex = export(&d, "DEMO-001", &parts, &sheets, &formats, &plans, &spec, &[], &[], &crate::post::PostConfig::default(), None, 0.0).unwrap();
     assert!(ex.warning.as_deref().is_some_and(|w| w.contains("overlap")), "{:?}", ex.warning);
     assert!(ex.files.len() >= 3, "the programs are still written");
+}
+
+#[test]
+fn an_agent_turns_parts_to_any_angle() {
+    // HM14 through the operations: turn by any angle or to an angle; the
+    // listing, the saved job and the program follow the turned part.
+    let d = dir("anyangle");
+    let jp = d.join("a.snjob");
+    let jp = jp.to_str().unwrap();
+    let mut s = Session::new(Ctx::builtin());
+    call(&mut s, "new", Some(jp), json!({"w": 1000, "h": 500, "margin": 10, "gap": 5}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 100, "h": 40, "qty": 1}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 80, "h": 30, "qty": 1, "rotate": false}));
+    call(&mut s, "place", None, json!({"part": 1, "x": 200, "y": 200}));
+    call(&mut s, "place", None, json!({"part": 2, "x": 600, "y": 200}));
+    let at = |n: usize| jobfile::load(Path::new(jp)).unwrap().sheets[0][n];
+    let before = call(&mut s, "program", None, json!({"sheet": 1}))["data"].as_str().unwrap().to_string();
+    let r = call(&mut s, "turn", None, json!({"item": 1, "angle": 30}));
+    assert!(r["message"].as_str().unwrap().contains("30°"), "{r}");
+    let p = at(0);
+    assert!((p.angle() - 30.0).abs() < 1e-9, "{p:?}");
+    assert!((p.x + p.w / 2.0 - 250.0).abs() < 0.01 && (p.y + p.h / 2.0 - 220.0).abs() < 0.01, "turned about its middle: {p:?}");
+    let info = call(&mut s, "info", None, json!({"sheet": 1}));
+    assert_eq!(info["data"]["sheets"][0]["placed"][0]["angle"].as_f64(), Some(30.0), "{info}");
+    let prog = call(&mut s, "program", None, json!({"sheet": 1}))["data"].as_str().unwrap().to_string();
+    assert!(prog != before && prog.contains("ROT30"), "{prog}");
+    // to=: the part sits at the angle asked for, whatever it was at.
+    call(&mut s, "turn", None, json!({"item": 1, "to": -15}));
+    assert!((at(0).angle() - 345.0).abs() < 1e-9, "{:?}", at(0));
+    call(&mut s, "turn", None, json!({"item": 1, "to": 90}));
+    let p = at(0);
+    assert!(p.turns == 1 && p.spin.is_none() && (p.w - 40.0).abs() < 1e-6, "back on a quarter turn: {p:?}");
+    // A part that may not turn 90° takes no other angle, but may turn 180°.
+    assert!(err(&mut s, "turn", json!({"item": 2, "angle": 15})).contains("may turn 90°"));
+    call(&mut s, "turn", None, json!({"item": 2, "angle": 180}));
+    assert_eq!(at(1).turns, 2);
+    let _ = std::fs::remove_dir_all(&d);
 }
 
 #[test]
@@ -3245,7 +3282,7 @@ fn dragging_a_lead_end_in_the_part_view_moves_that_lead_only() {
     let m = drag_lead_end(&mut parts, 0, &spec, 1, LeadEnd::In, [5.0, 8.0], crate::units::LenUnit::Inch).unwrap();
     // The window's message follows its unit (NST-16).
     assert!(m.contains(" in at "), "{m}");
-    let (o, _) = nest::placed_shape(&parts, &Placed { part: 0, x: 0.0, y: 0.0, w: 200.0, h: 150.0, turns: 0, mirror: false });
+    let (o, _) = nest::placed_shape(&parts, &Placed { part: 0, x: 0.0, y: 0.0, w: 200.0, h: 150.0, turns: 0, mirror: false, spin: Default::default() });
     let c = cnc::plan_part(&parts, 0, &spec).contours.into_iter().find(|c| c.contour == 1).unwrap();
     assert!(!nest::point_in_poly(&o, c.lead_in), "{:?}", c.lead_in);
     // The lead-out's end too; then double-click (reset) puts the contour back.
@@ -3638,8 +3675,8 @@ fn a_sheet_pick_wins_on_its_sheet_and_the_rest_follows_the_parts_order() {
     // Sheet 1: two copies turned 90°; sheet 2: one mirrored.
     let mut s = ordered_plate_job(&d, false, "3, 1, 2", &[(50, 50, 90, false), (400, 50, 90, false)]);
     call(&mut s, "place", None, json!({"part": 1, "sheet": "new", "x": 50, "y": 50, "mirror": true}));
-    let turned = |x: f64| Placed { part: 0, x, y: 50.0, w: 100.0, h: 300.0, turns: 1, mirror: false };
-    let mirrored = Placed { part: 0, x: 50.0, y: 50.0, w: 300.0, h: 100.0, turns: 0, mirror: true };
+    let turned = |x: f64| Placed { part: 0, x, y: 50.0, w: 100.0, h: 300.0, turns: 1, mirror: false, spin: Default::default() };
+    let mirrored = Placed { part: 0, x: 50.0, y: 50.0, w: 300.0, h: 100.0, turns: 0, mirror: true, spin: Default::default() };
     // CO10: hole 2, which the part's order names, picked on sheet 2: cut
     // first there, then the rest in the part's order (3, 1, the mark, 4, 5),
     // the outline last.
@@ -3856,7 +3893,7 @@ fn parts_taken_whole_are_cut_first_in_that_order_each_in_its_own_order() {
 /// Where `TURNED` puts each copy (#1–#4).
 fn turned_copy(k: usize) -> Placed {
     let (x, y, w, h, turns, mirror) = [(50.0, 50.0, 100.0, 300.0, 1, false), (400.0, 50.0, 300.0, 100.0, 2, false), (50.0, 500.0, 100.0, 300.0, 3, true), (400.0, 500.0, 300.0, 100.0, 0, true)][k - 1];
-    Placed { part: 0, x, y, w, h, turns, mirror }
+    Placed { part: 0, x, y, w, h, turns, mirror, spin: Default::default() }
 }
 
 /// (placed part, paths in a row) in the order a G-code program cuts and
@@ -3909,6 +3946,28 @@ fn a_sweep_and_a_box_take_parts_and_undo_takes_back_one_command() {
         assert_eq!(order, want, "copy #{part}");
     }
     verify_clean(&mut s);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_box_with_touching_takes_every_part_it_touches() {
+    // SW1: an agent's box takes the parts wholly inside it, or with
+    // touching=true every part it touches, as a box dragged to the left on
+    // the sheet does; both in the automatic order (MM9).
+    let d = dir("sheet_parts_box_touching");
+    let mut s = ordered_plate_job(&d, false, "3, 1, 2", &TURNED);
+    // Up to Y 550: round #1 and #2, and over the lower ends of #3 and #4.
+    let r = call(&mut s, "cut-order", None, json!({"mode": "parts", "box": "0,0; 720,550"}));
+    assert_eq!(r["data"]["added"], json!([1, 2]), "{r}");
+    call(&mut s, "cut-order", None, json!({"mode": "undo"}));
+    let r = call(&mut s, "cut-order", None, json!({"mode": "parts", "box": "0,0; 720,550", "touching": true}));
+    assert_eq!(r["data"]["added"], json!([1, 3, 2, 4]), "{r}");
+    assert_eq!(iso_parts(&mut s, 1), vec![1, 3, 2, 4]);
+    verify_clean(&mut s);
+    // Over open sheet it touches nothing: refused, nothing changes.
+    call(&mut s, "cut-order", None, json!({"mode": "clear"}));
+    let e = err(&mut s, "cut-order", json!({"mode": "parts", "box": "180,400; 350,450", "touching": true}));
+    assert!(e.starts_with("No part there"), "{e}");
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -4080,7 +4139,7 @@ fn scattered_holes(d: &Path) -> PathBuf {
 fn copy_at(x: f64, y: f64, angle: i64, mirror: bool) -> Placed {
     let turns = (angle / 90).rem_euclid(4) as u8;
     let (w, h) = if turns % 2 == 1 { (200.0, 300.0) } else { (300.0, 200.0) };
-    Placed { part: 0, x, y, w, h, turns, mirror }
+    Placed { part: 0, x, y, w, h, turns, mirror, spin: Default::default() }
 }
 
 /// A job with DEMO-HOLES on the machine the thread works on, written on the

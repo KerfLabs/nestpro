@@ -6,6 +6,7 @@
 
 use crate::engine::arrange::{self, Dir};
 use crate::engine::pattern::{self, Over};
+use crate::engine::selection::{Take, Window};
 use crate::nest::{self, Placed, P};
 use crate::theme::th;
 use crate::App;
@@ -125,7 +126,7 @@ impl App {
         self.status = format!("{n} part(s) selected.");
     }
 
-    fn sel_label(&self, sel: &[usize]) -> String {
+    pub(crate) fn sel_label(&self, sel: &[usize]) -> String {
         match sel {
             [i] => {
                 let p = self.result.sheets[self.cur_sheet][*i];
@@ -182,6 +183,12 @@ impl App {
         };
     }
 
+    /// Parts are being dragged or turned by hand: the cut plan and overlap
+    /// list on screen are from before.
+    pub fn moving_parts(&self) -> bool {
+        self.drag.is_some() || self.turn_drag.is_some()
+    }
+
     /// Turn the selection by quarter turns about its centre (HM5).
     pub fn turn_selected(&mut self, quarters: u8) {
         let sel = self.selection();
@@ -232,7 +239,7 @@ impl App {
     /// The Nesting screen's keys for the selected parts (HM1, HM5, HM6).
     pub fn sheet_keys(&mut self, ctx: &egui::Context) {
         // Only a text box being typed in keeps the keys (a focused button doesn't).
-        if ctx.egui_wants_keyboard_input() || self.ghost.is_some() || self.cut_tool.is_some() || self.manual_mode || self.drag.is_some() || self.carry.is_some() || self.result.sheets.is_empty() {
+        if ctx.egui_wants_keyboard_input() || self.ghost.is_some() || self.cut_tool.is_some() || self.manual_mode || self.drag.is_some() || self.turn_drag.is_some() || self.carry.is_some() || self.result.sheets.is_empty() {
             return;
         }
         let now = ctx.input(|i| i.time);
@@ -240,7 +247,10 @@ impl App {
         let mut moves: Vec<(Dir, bool)> = vec![];
         let mut pan = Vec2::ZERO;
         let mut zoom = 0i32;
-        let (mut turn, mut mirror, mut all, mut step, mut esc, mut copy) = (None, None, false, false, false, false);
+        let (mut turn, mut mirror, mut all, mut step, mut esc, mut typed, mut copy) = (None::<f64>, None, false, false, false, false, false);
+        let by = self.key_turn_step();
+        // The fixed-angle keys turn the way the setting says (HM5).
+        let fixed = if self.cfg.nesting.keys_clockwise { -1.0 } else { 1.0 };
         let has = self.sel_placed.is_some();
         ctx.input_mut(|i| {
             for (k, d) in arrows {
@@ -258,15 +268,22 @@ impl App {
             }
             zoom += i.count_and_consume_key(Modifiers::NONE, Key::PageDown) as i32;
             zoom -= i.count_and_consume_key(Modifiers::NONE, Key::PageUp) as i32;
+            // Ctrl+Q / Ctrl+W turn by the rotation step (HM1, HM16).
             if i.consume_key(Modifiers::COMMAND, Key::Q) {
-                turn = Some(1);
-            }
-            if i.consume_key(Modifiers::COMMAND, Key::Num9) {
-                // The fixed-angle key turns the way the setting says (HM5).
-                turn = Some(if self.cfg.nesting.keys_clockwise { 3 } else { 1 });
+                turn = Some(by);
             }
             if i.consume_key(Modifiers::COMMAND, Key::W) {
-                turn = Some(3);
+                turn = Some(-by);
+            }
+            // Ctrl+1/5/0/3/4/9: 1/5/10/30/45/90° (HM1).
+            for (k, deg) in [(Key::Num1, 1.0), (Key::Num5, 5.0), (Key::Num0, 10.0), (Key::Num3, 30.0), (Key::Num4, 45.0), (Key::Num9, 90.0)] {
+                if i.consume_key(Modifiers::COMMAND, k) {
+                    turn = Some(deg * fixed);
+                }
+            }
+            // Ctrl+T: type an angle (HM1, the turn bar's angle box).
+            if i.consume_key(Modifiers::COMMAND, Key::T) {
+                typed = true;
             }
             if i.consume_key(Modifiers::COMMAND, Key::E) || i.consume_key(Modifiers::COMMAND, Key::A) {
                 all = true;
@@ -304,8 +321,11 @@ impl App {
             self.pan *= z / self.zoom;
             self.zoom = z;
         }
-        if let Some(q) = turn {
-            self.turn_selected(q);
+        if let Some(d) = turn.filter(|_| has) {
+            self.turn_selected_by(d);
+        }
+        if typed {
+            self.focus_turn_angle();
         }
         if let Some(v) = mirror {
             self.mirror_selected(v);
@@ -331,6 +351,11 @@ impl App {
         let (mods, space) = ui.input(|i| (i.modifiers, i.key_down(Key::Space)));
         if self.carry.is_some() {
             self.carry_pointer(ui, resp, to_w, s, mods.alt);
+            return;
+        }
+        // The turn handle above the selection (HM15, turnbar.rs); a turn under
+        // way keeps the pointer even while Space is held.
+        if (self.turn_drag.is_some() || !space) && self.turn_pointer(ui, resp, to_w, s) {
             return;
         }
         let hit = |app: &App, w: P| app.result.sheets[si].iter().rposition(|p| nest::placed_contains(&app.parts, p, w));
@@ -359,7 +384,9 @@ impl App {
                     self.start_drag(i, w, mods.command);
                     self.panning = false;
                 } else {
-                    // Empty sheet: a selection window (HM7).
+                    // Empty sheet: a selection window (HM7), from where the
+                    // button went down; which way it is dragged says what it
+                    // takes (SW1).
                     self.window_sel = Some((w, w, mods.shift || mods.command));
                     self.panning = false;
                 }
@@ -382,7 +409,10 @@ impl App {
             self.cut_drag_end();
             self.end_drag();
             if let Some((a, b, add)) = self.window_sel.take() {
-                let mut v = arrange::window_select(&self.result.sheets[si], a, b);
+                // Where the button came up, which says the direction (SW1).
+                let b = resp.interact_pointer_pos().map(to_w).unwrap_or(b);
+                let win = Window::dragged(a, b);
+                let mut v = arrange::window_select(&self.parts, &self.result.sheets[si], &win);
                 if add {
                     let mut cur = self.selection();
                     cur.retain(|i| !v.contains(i));
@@ -390,7 +420,11 @@ impl App {
                 }
                 let n = v.len();
                 self.set_selection(v);
-                self.status = if n == 0 { "No part lies wholly inside the window.".into() } else { format!("{n} part(s) selected — Alt+arrows move them by the step, Ctrl+arrows slide them to the next part.") };
+                self.status = match (n, win.take) {
+                    (0, Take::Inside) => "No part lies wholly inside the window — drag to the left to take the parts it touches.".into(),
+                    (0, Take::Touching) => "The window touches no part.".into(),
+                    _ => format!("{n} part(s) selected — Alt+arrows move them by the step, Ctrl+arrows slide them to the next part."),
+                };
             }
             self.panning = false;
         }
@@ -903,9 +937,7 @@ impl App {
             }
         }
         if let Some((a, b, _)) = self.window_sel {
-            let r = Rect::from_two_pos(to_s(a), to_s(b));
-            painter.rect_filled(r, CornerRadius::ZERO, th().accent.gamma_multiply(0.12));
-            painter.rect_stroke(r, CornerRadius::ZERO, Stroke::new(1.0, th().accent), egui::StrokeKind::Middle);
+            crate::ui_parts::paint_select_window(painter, Rect::from_two_pos(to_s(a), to_s(b)), Take::of_drag(a[0], b[0]));
         }
     }
 
@@ -915,7 +947,7 @@ impl App {
         let red = Color32::from_rgb(239, 68, 68);
         let Some(sheet) = self.result.sheets.get(self.cur_sheet) else { return };
         // While parts are being moved the list is from before the move.
-        if self.drag.is_none() {
+        if !self.moving_parts() {
             let mut bad: Vec<usize> = self.overlaps.iter().flat_map(|&(i, j)| [i, j]).filter(|&i| i < sheet.len()).collect();
             bad.sort_unstable();
             bad.dedup();
@@ -956,7 +988,9 @@ impl App {
     }
 
     /// Screenshots: `--select=1,3` selects those parts on the sheet;
-    /// `--drag-sel=dx,dy` then holds a drag of them moved by dx, dy (mm).
+    /// `--drag-sel=dx,dy` then holds a drag of them moved by dx, dy (mm);
+    /// `--turn-sel=deg` turns them; `--turn-drag=deg` holds their turn
+    /// handle dragged round by deg (HM14, HM15).
     pub fn shot_arrange(&mut self) {
         let arg = |k: &str| std::env::args().find_map(|a| a.strip_prefix(k).map(str::to_string));
         let n = self.result.sheets.get(self.cur_sheet).map_or(0, |s| s.len());
@@ -985,6 +1019,18 @@ impl App {
                 if k <= drops {
                     self.carry_drop(false);
                 }
+            }
+        }
+        if let Some(deg) = arg("--turn-sel=").and_then(|v| v.parse::<f64>().ok()) {
+            self.turn_selected_by(deg);
+        }
+        if let Some(deg) = arg("--turn-drag=").and_then(|v| v.parse::<f64>().ok()) {
+            let s = 0.5;
+            if let Some((c, h)) = self.turn_handle(s) {
+                self.start_turn_drag(h, s);
+                let (sn, cs) = deg.to_radians().sin_cos();
+                let v = [h[0] - c[0], h[1] - c[1]];
+                self.turn_drag_move([c[0] + v[0] * cs - v[1] * sn, c[1] + v[0] * sn + v[1] * cs], true);
             }
         }
     }
@@ -1091,7 +1137,7 @@ mod quick_ring_tests {
         a.parts = vec![r];
         a.spec.gap = 5.0;
         a.result = NestResult {
-            sheets: vec![vec![Placed { part: 0, x: 100.0, y: 100.0, w: 100.0, h: 100.0, turns: 0, mirror: false }, Placed { part: 0, x: 300.0, y: 100.0, w: 100.0, h: 100.0, turns: 0, mirror: false }]],
+            sheets: vec![vec![Placed { part: 0, x: 100.0, y: 100.0, w: 100.0, h: 100.0, turns: 0, mirror: false, spin: Default::default() }, Placed { part: 0, x: 300.0, y: 100.0, w: 100.0, h: 100.0, turns: 0, mirror: false, spin: Default::default() }]],
             formats: vec![SheetFormat::rect(2000.0, 1000.0)],
             method: String::new(),
             tried: 0,
@@ -1256,7 +1302,7 @@ mod pattern_tests {
         let r = Part { name: "A".into(), shape: Shape::Rectangle, w: 100.0, h: 100.0, qty, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
         a.parts = vec![r];
         a.spec.gap = 5.0;
-        let at = |x: f64, y: f64| Placed { part: 0, x, y, w: 100.0, h: 100.0, turns: 0, mirror: false };
+        let at = |x: f64, y: f64| Placed { part: 0, x, y, w: 100.0, h: 100.0, turns: 0, mirror: false, spin: Default::default() };
         a.result = NestResult { sheets: vec![vec![at(100.0, 100.0), at(300.0, 100.0)]], formats: vec![SheetFormat::rect(2000.0, 1000.0)], method: String::new(), tried: 0 };
         a.cur_sheet = 0;
         a.workspace = crate::Workspace::Nesting;
@@ -1354,7 +1400,7 @@ mod pattern_tests {
         let mut a = app(10);
         a.parts.push(Part { name: "B".into(), qty: 1, ..a.parts[0].clone() });
         a.result.sheets[0][1].part = 1;
-        a.result.sheets[0].push(Placed { part: 0, x: 300.0, y: 400.0, w: 100.0, h: 100.0, turns: 0, mirror: false });
+        a.result.sheets[0].push(Placed { part: 0, x: 300.0, y: 400.0, w: 100.0, h: 100.0, turns: 0, mirror: false, spin: Default::default() });
         a.refresh();
         a.set_selection(vec![0, 1]);
         a.start_pattern(Some([150.0, 150.0]));
@@ -1393,7 +1439,7 @@ mod pattern_tests {
     fn a_pattern_goes_along_to_another_sheet_but_not_to_another_screen() {
         // HM21.
         let mut a = app(10);
-        a.result.sheets.push(vec![Placed { part: 0, x: 1500.0, y: 800.0, w: 100.0, h: 100.0, turns: 0, mirror: false }]);
+        a.result.sheets.push(vec![Placed { part: 0, x: 1500.0, y: 800.0, w: 100.0, h: 100.0, turns: 0, mirror: false, spin: Default::default() }]);
         a.result.formats.push(SheetFormat::rect(2000.0, 1000.0));
         a.refresh();
         a.set_selection(vec![0, 1]);

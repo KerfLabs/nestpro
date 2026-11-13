@@ -218,7 +218,7 @@ pub fn auto_tech() -> PartTech {
 /// leads (VP3 applies on a sheet only).
 pub fn plan_part(parts: &[Part], idx: usize, spec: &SheetSpec) -> SheetPlan {
     let (w, h) = parts[idx].bbox();
-    let placed = Placed { part: idx, x: 0.0, y: 0.0, w, h, turns: 0, mirror: false };
+    let placed = Placed { part: idx, x: 0.0, y: 0.0, w, h, turns: 0, mirror: false, spin: Default::default() };
     plan(parts, &[placed], &SheetSpec { w: 0.0, h: 0.0, ..spec.clone() })
 }
 
@@ -1488,7 +1488,7 @@ fn program_mm(sheet_no: usize, parts: &[Part], placed: &[Placed], spec: &SheetSp
         }
         if c.part_no != last_part {
             let pl = &placed[c.part_no - 1];
-            let _ = writeln!(s, "( PART {} : {}{} )", c.part_no, parts[pl.part].name, match (pl.angle(), pl.mirror) { (0, false) => String::new(), (a, m) => format!(" ROT{a}{}", if m { " MIRROR" } else { "" }) });
+            let _ = writeln!(s, "( PART {} : {}{} )", c.part_no, parts[pl.part].name, if pl.angle() == 0.0 && !pl.mirror { String::new() } else { format!(" ROT{}{}", crate::nest::angle_num(pl.angle()), if pl.mirror { " MIRROR" } else { "" }) });
             last_part = c.part_no;
         }
         // The part's marks made before this contour (CO9): with no order set
@@ -1780,7 +1780,7 @@ mod joint_tests {
 
     fn plan_for(tech: PartTech) -> SheetPlan {
         let parts = vec![Part { name: "S".into(), shape: Shape::Rectangle, w: 200.0, h: 100.0, qty: 1, rotate: false, color: 0, tech: Some(tech), custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
-        let pl = Placed { part: 0, x: 50.0, y: 50.0, w: 200.0, h: 100.0, turns: 0, mirror: false };
+        let pl = Placed { part: 0, x: 50.0, y: 50.0, w: 200.0, h: 100.0, turns: 0, mirror: false, spin: Default::default() };
         let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
         plan(&parts, &[pl], &spec)
     }
@@ -1844,7 +1844,7 @@ mod joint_tests {
         let plain = plan_for(PartTech { micro_joints: 4, ..PartTech::default() });
         assert!(p.cut_len > plain.cut_len);
         let parts = vec![Part { name: "S".into(), shape: Shape::Rectangle, w: 200.0, h: 100.0, qty: 1, rotate: false, color: 0, tech: Some(t), custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
-        let pl = Placed { part: 0, x: 50.0, y: 50.0, w: 200.0, h: 100.0, turns: 0, mirror: false };
+        let pl = Placed { part: 0, x: 50.0, y: 50.0, w: 200.0, h: 100.0, turns: 0, mirror: false, spin: Default::default() };
         let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
         let prog = program(1, &parts, &[pl], &spec, &p);
         assert_eq!(prog.matches("JOINT LEAD-OUT").count(), 4);
@@ -1859,7 +1859,7 @@ mod joint_tests {
         assert!((ov.cut_len - base.cut_len - 0.5).abs() < 1e-6);
         assert_eq!(ov.contours[0].overlap, 0.5);
         let parts = vec![Part { name: "S".into(), shape: Shape::Rectangle, w: 200.0, h: 100.0, qty: 1, rotate: false, color: 0, tech: Some(PartTech { overlap: 0.5, ..PartTech::default() }), custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
-        let pl = Placed { part: 0, x: 50.0, y: 50.0, w: 200.0, h: 100.0, turns: 0, mirror: false };
+        let pl = Placed { part: 0, x: 50.0, y: 50.0, w: 200.0, h: 100.0, turns: 0, mirror: false, spin: Default::default() };
         let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
         assert!(program(1, &parts, &[pl], &spec, &plan(&parts, &[pl], &spec)).contains("( OVERLAP )"));
         // 600 mm round at one per 100 mm (CT1 F150): 6 joints.
@@ -1930,7 +1930,7 @@ mod joint_tests {
         // Plate 200 × 200 with a Ø80 hole (251 mm round): ceil 2.5 = 3 → 4 joints;
         // the outside (800 mm): 8. A fixed count stays on the outside only.
         let parts = vec![Part { name: "H".into(), shape: Shape::PlateHole, w: 200.0, h: 200.0, qty: 1, rotate: false, color: 0, tech: Some(PartTech { joint_every: 100.0, ..PartTech::default() }), custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
-        let pl = Placed { part: 0, x: 50.0, y: 50.0, w: 200.0, h: 200.0, turns: 0, mirror: false };
+        let pl = Placed { part: 0, x: 50.0, y: 50.0, w: 200.0, h: 200.0, turns: 0, mirror: false, spin: Default::default() };
         let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
         let p = plan(&parts, &[pl], &spec);
         let hole = p.contours.iter().find(|c| c.inner).unwrap();
@@ -1946,7 +1946,7 @@ mod joint_tests {
     fn machine_leads_reach_the_program_and_keep_clear_of_neighbours() {
         // Parts without technology get the machine's tables: a rectangle's lead is a
         // 7 mm corner lead extending its first side (laser template B209/B232).
-        let r = |x: f64| Placed { part: 0, x, y: 20.0, w: 100.0, h: 50.0, turns: 0, mirror: false };
+        let r = |x: f64| Placed { part: 0, x, y: 20.0, w: 100.0, h: 50.0, turns: 0, mirror: false, spin: Default::default() };
         let parts = vec![Part { name: "R".into(), shape: Shape::Rectangle, w: 100.0, h: 50.0, qty: 2, rotate: false, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
         let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 3.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
         let alone = plan(&parts, &[r(200.0)], &spec);
@@ -1989,8 +1989,8 @@ mod manual_tests {
         let p = |shape, w, h| Part { name: "P".into(), shape, w, h, qty: 1, rotate: false, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
         let parts = vec![p(Shape::PlateHole, 200.0, 200.0), p(Shape::Rectangle, 100.0, 50.0)];
         let placed = vec![
-            Placed { part: 0, x: 10.0, y: 10.0, w: 200.0, h: 200.0, turns: 0, mirror: false },
-            Placed { part: 1, x: 300.0, y: 10.0, w: 100.0, h: 50.0, turns: 0, mirror: false },
+            Placed { part: 0, x: 10.0, y: 10.0, w: 200.0, h: 200.0, turns: 0, mirror: false, spin: Default::default() },
+            Placed { part: 1, x: 300.0, y: 10.0, w: 100.0, h: 50.0, turns: 0, mirror: false, spin: Default::default() },
         ];
         (parts, placed, SheetSpec { w: 1000.0, h: 500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() })
     }
@@ -2024,7 +2024,7 @@ mod manual_tests {
         parts[0].h = 600.0;
         parts[1].w = 50.0;
         parts[1].h = 50.0;
-        let at = |part, x, y, w, h| Placed { part, x, y, w, h, turns: 0, mirror: false };
+        let at = |part, x, y, w, h| Placed { part, x, y, w, h, turns: 0, mirror: false, spin: Default::default() };
         (parts, vec![at(0, 10.0, 10.0, 600.0, 600.0), at(1, 285.0, 285.0, 50.0, 50.0), at(1, 700.0, 10.0, 50.0, 50.0)], spec)
     }
 
@@ -2086,7 +2086,7 @@ mod kerf_plan_tests {
         Part { name: "P".into(), shape, w, h, qty: 1, rotate: false, color: 0, tech: None, custom: custom.map(std::sync::Arc::new), rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }
     }
     fn at(x: f64, y: f64, w: f64, h: f64, mirror: bool) -> Placed {
-        Placed { part: 0, x, y, w, h, turns: 0, mirror }
+        Placed { part: 0, x, y, w, h, turns: 0, mirror, spin: Default::default() }
     }
     fn spec() -> SheetSpec {
         SheetSpec { w: 1000.0, h: 500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() }
@@ -2241,7 +2241,7 @@ mod kerf_plan_tests {
         }).collect();
         part.custom = Some(std::sync::Arc::new(crate::dxf::CustomGeo { outline: vec![[0.0, 0.0], [200.0, 0.0], [200.0, 100.0], [0.0, 100.0]], holes: vec![hole], fills: vec![], hole_fills: vec![], marks: vec![], texts: vec![], w: 200.0, h: 100.0, contours: vec![], hand_order: vec![] }));
         part.shape = Shape::Custom;
-        let pl = Placed { part: 0, x: 50.0, y: 50.0, w: 200.0, h: 100.0, turns: 0, mirror: false };
+        let pl = Placed { part: 0, x: 50.0, y: 50.0, w: 200.0, h: 100.0, turns: 0, mirror: false, spin: Default::default() };
         let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material, thickness, level: 3, machine: Default::default(), kerf: Default::default() };
         (vec![part], vec![pl], spec)
     }
@@ -2405,12 +2405,12 @@ mod edge_lead_tests {
         let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 0.0, gap: 5.0, material: 0, thickness: 5.0, level: 3, machine: Default::default(), kerf: Default::default() };
         let on = |q: &P| q[0] >= -0.01 && q[1] >= -0.01 && q[0] <= spec.w + 0.01 && q[1] <= spec.h + 0.01;
         // Flush in the sheet's corner, an automatic lead moves to a free side.
-        let flush = vec![Placed { part: 0, x: 0.0, y: 0.0, w: 100.0, h: 100.0, turns: 0, mirror: false }];
+        let flush = vec![Placed { part: 0, x: 0.0, y: 0.0, w: 100.0, h: 100.0, turns: 0, mirror: false, spin: Default::default() }];
         let plan = super::plan(&[plate(true)], &flush, &spec);
         let c = &plan.contours[0];
         assert!(c.lead_path.iter().all(on) && crate::leads::path_len(&c.lead_path) > 5.0, "{:?}", c.lead_path);
         // 3 mm in from the edges, a fixed-position lead is shortened to fit.
-        let near = vec![Placed { part: 0, x: 3.0, y: 3.0, w: 100.0, h: 100.0, turns: 0, mirror: false }];
+        let near = vec![Placed { part: 0, x: 3.0, y: 3.0, w: 100.0, h: 100.0, turns: 0, mirror: false, spin: Default::default() }];
         let c = &super::plan(&[plate(false)], &near, &spec).contours[0];
         assert!(c.lead_path.iter().all(on), "{:?}", c.lead_path);
         assert!(crate::drawing::pierces_off_sheet(&super::plan(&[plate(false)], &near, &spec), spec.w, spec.h).is_empty());
@@ -2454,7 +2454,7 @@ mod hand_lead_tests {
         assert!(dist(c.points[0], [0.0, 0.0]) < 1e-9, "{:?}", c.points[0]);
         assert!((crate::leads::path_len(&c.lead_path) - 7.0).abs() < 1e-6);
         // At the sheet's own corner the same lead would leave the sheet (VP3), so it moves.
-        let pl = Placed { part: 0, x: 0.0, y: 0.0, w: 200.0, h: 100.0, turns: 0, mirror: false };
+        let pl = Placed { part: 0, x: 0.0, y: 0.0, w: 200.0, h: 100.0, turns: 0, mirror: false, spin: Default::default() };
         assert!(dist(plan(&parts, &[pl], &spec()).contours[0].points[0], [0.0, 0.0]) > 1.0);
     }
 
@@ -2466,7 +2466,7 @@ mod hand_lead_tests {
         let parts = vec![part(Shape::PlateHole, 200.0, 150.0, Some(with_edit(e)))];
         for (turns, mirror) in [(0, false), (1, false), (2, true), (3, true)] {
             let (w, h) = if turns % 2 == 1 { (150.0, 200.0) } else { (200.0, 150.0) };
-            let pl = Placed { part: 0, x: 300.0, y: 300.0, w, h, turns, mirror };
+            let pl = Placed { part: 0, x: 300.0, y: 300.0, w, h, turns, mirror, spin: Default::default() };
             let p = plan(&parts, &[pl], &spec());
             let c = p.contours.iter().find(|c| c.contour == 1).unwrap();
             assert!(c.lead_hand && c.lead_rec == 3);
@@ -2486,8 +2486,8 @@ mod hand_lead_tests {
         // A 20 mm lead-in square off the right side, toward a part 5 mm away (LE5).
         let e = LeadEdit { contour: 0, at: [100.0, 50.0], rec: 3, lead_in: Some((20.0, 90.0)), lead_out: None };
         let parts = vec![part(Shape::Rectangle, 100.0, 100.0, Some(with_edit(e))), part(Shape::Rectangle, 100.0, 100.0, None)];
-        let a = Placed { part: 0, x: 100.0, y: 100.0, w: 100.0, h: 100.0, turns: 0, mirror: false };
-        let b = Placed { part: 1, x: 205.0, y: 100.0, w: 100.0, h: 100.0, turns: 0, mirror: false };
+        let a = Placed { part: 0, x: 100.0, y: 100.0, w: 100.0, h: 100.0, turns: 0, mirror: false, spin: Default::default() };
+        let b = Placed { part: 1, x: 205.0, y: 100.0, w: 100.0, h: 100.0, turns: 0, mirror: false, spin: Default::default() };
         let p = plan(&parts, &[a, b], &spec());
         let c = p.contours.iter().find(|c| c.part_no == 1).unwrap();
         assert!(dist(c.points[0], [200.0, 150.0]) < 1e-6, "the start stays: {:?}", c.points[0]);

@@ -346,7 +346,7 @@ mod v44_tests {
     #[test]
     fn finds_parts_closer_than_the_safe_distance() {
         let parts = vec![part("A")];
-        let pl = |x: f64| Placed { part: 0, x, y: 0.0, w: 100.0, h: 50.0, turns: 0, mirror: false };
+        let pl = |x: f64| Placed { part: 0, x, y: 0.0, w: 100.0, h: 50.0, turns: 0, mirror: false, spin: Default::default() };
         // 3 mm apart: fine for 3, too close for 5.
         let sheet = vec![pl(0.0), pl(103.0)];
         assert!(safe_distance_issues(&parts, &sheet, 3.0).is_empty());

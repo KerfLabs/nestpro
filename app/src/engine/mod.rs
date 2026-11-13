@@ -18,6 +18,7 @@ pub mod pattern;
 pub mod readback;
 pub mod refresh;
 pub mod render;
+pub mod selection;
 pub mod session;
 pub mod sheetpick;
 pub mod stockflow;
@@ -473,6 +474,11 @@ pub fn step_turn(part: &Part, old: Placed, back: bool) -> Result<Placed, &'stati
     if !part.rotate {
         return Err("This part is not allowed to rotate.");
     }
+    if !old.spin.is_none() {
+        // At a free angle (HM14): a quarter turn about its own middle.
+        let c = nest::placed_pivot(part, &old);
+        return Ok(arrange::turn_about(part, old, c, if back { -90.0 } else { 90.0 }));
+    }
     let step = |k: u8| if back { (old.turns + 4 - k) % 4 } else { (old.turns + k) % 4 };
     let Some(k) = (1..4u8).find(|&k| nest::turn_allowed(part, step(k), old.mirror)) else {
         return Err("No other rotation is allowed for this part.");
@@ -506,7 +512,7 @@ pub fn free_spot(parts: &[Part], sheet: &[Placed], spec: &SheetSpec, f: &SheetFo
     let mut best: Option<Placed> = None;
     for &y in &ys {
         for &x in &xs {
-            let c = Placed { part, x, y, w: fw, h: fh, turns, mirror };
+            let c = Placed { part, x, y, w: fw, h: fh, turns, mirror, spin: Default::default() };
             if placement_ok(parts, sheet, spec, f, None, &c, collision) && best.is_none_or(|b| (c.y, c.x) < (b.y, b.x)) {
                 best = Some(c);
             }

@@ -8,6 +8,7 @@
 //! stops them. The GUI and the agent operations both call these.
 
 use super::part_fits_format;
+use super::selection::Window;
 use crate::nest::{self, Part, Placed, SheetFormat, SheetSpec, P};
 
 /// A direction on the sheet (X right, Y up).
@@ -93,13 +94,10 @@ pub fn group_box(sheet: &[Placed], sel: &[usize]) -> [f64; 4] {
     })
 }
 
-/// Window selection (HM7): the parts whose box lies wholly inside the window
-/// (two opposite corners, any order).
-pub fn window_select(sheet: &[Placed], a: P, b: P) -> Vec<usize> {
-    let (x0, x1) = (a[0].min(b[0]), a[0].max(b[0]));
-    let (y0, y1) = (a[1].min(b[1]), a[1].max(b[1]));
-    let e = 1e-6;
-    sheet.iter().enumerate().filter(|(_, p)| p.x >= x0 - e && p.y >= y0 - e && p.x + p.w <= x1 + e && p.y + p.h <= y1 + e).map(|(i, _)| i).collect()
+/// Window selection (HM7, SW1, SW3): the parts lying wholly inside a window
+/// dragged to the right, or every part a window dragged to the left touches.
+pub fn window_select(parts: &[Part], sheet: &[Placed], w: &Window) -> Vec<usize> {
+    sheet.iter().enumerate().filter(|(_, p)| w.takes_placed(parts, p)).map(|(i, _)| i).collect()
 }
 
 /// Can the selection sit moved by `d`: every moved part inside the sheet (its
@@ -334,40 +332,70 @@ pub fn nearest_free(parts: &[Part], sheet: &[Placed], sel: &[usize], spec: &Shee
 }
 
 /// Turn the selection a number of quarter turns (1 = 90° counter-clockwise,
-/// 3 = 90° clockwise, 2 = 180°) about the centre of its box (HM5). Every part
-/// must allow its new turn. With collision on, a turned selection that lands on
-/// another part or off the sheet moves to the nearest free spot. Returns the
-/// new places of the selected parts (in `sel` order).
+/// 3 = 90° clockwise, 2 = 180°) about the centre of its box (HM5). See `turn_by`.
 pub fn turn(parts: &[Part], sheet: &[Placed], sel: &[usize], quarters: u8, spec: &SheetSpec, f: &SheetFormat, collision: bool) -> Result<Vec<Placed>, String> {
-    let q = quarters % 4;
+    turn_by(parts, sheet, sel, (quarters % 4) as f64 * 90.0, spec, f, collision)
+}
+
+/// Turn the selection `deg` degrees (positive = counter-clockwise) about the
+/// centre of its box (HM5, HM14). Every part must allow its new angle. With
+/// collision on, a turned selection that lands on another part or off the
+/// sheet moves to the nearest free spot. Returns the new places of the
+/// selected parts (in `sel` order).
+pub fn turn_by(parts: &[Part], sheet: &[Placed], sel: &[usize], deg: f64, spec: &SheetSpec, f: &SheetFormat, collision: bool) -> Result<Vec<Placed>, String> {
     let sel = clean(sheet, sel);
     if sel.is_empty() {
         return Err("Select the parts to turn first.".into());
     }
-    if q == 0 {
+    if nest::split_angle(deg) == (0, 0.0) {
         return Ok(sel.iter().map(|&i| sheet[i]).collect());
     }
-    if let Some(p) = refuses_turn(parts, sheet, &sel, q) {
-        return Err(format!("'{}' isn't allowed to turn {}° (its rotations, Part Properties).", p.name, q as u16 * 90));
+    if let Some(p) = refuses_turn(parts, sheet, &sel, deg) {
+        let why = if nest::split_angle(deg).1 == 0.0 { "its rotations, Part Properties" } else { "only parts that may turn 90° take other angles — Part Properties" };
+        return Err(format!("'{}' isn't allowed to turn {} ({why}).", p.name, nest::angle_text(signed(deg))));
     }
-    let b = group_box(sheet, &sel);
-    let c = [(b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0];
-    let turned: Vec<Placed> = sel
-        .iter()
-        .map(|&i| {
-            let p = sheet[i];
-            let m = [p.x + p.w / 2.0 - c[0], p.y + p.h / 2.0 - c[1]];
-            // Counter-clockwise quarter turns about the centre.
-            let r = match q {
-                1 => [-m[1], m[0]],
-                2 => [-m[0], -m[1]],
-                _ => [m[1], -m[0]],
-            };
-            let (w, h) = if q % 2 == 1 { (p.h, p.w) } else { (p.w, p.h) };
-            Placed { x: c[0] + r[0] - w / 2.0, y: c[1] + r[1] - h / 2.0, w, h, turns: (p.turns + q) % 4, ..p }
-        })
-        .collect();
+    let turned = turned_about(parts, sheet, &sel, deg);
     place_changed(parts, sheet, &sel, turned, spec, f, collision, "turn")
+}
+
+/// The selected parts turned `deg` about the centre of their box, where they
+/// land before any search for room (`sel` clean). A drag of the turn handle
+/// shows this while the button is held (HM15).
+pub fn turned_about(parts: &[Part], sheet: &[Placed], sel: &[usize], deg: f64) -> Vec<Placed> {
+    let b = group_box(sheet, sel);
+    let c = [(b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0];
+    sel.iter().map(|&i| turn_about(&parts[sheet[i].part], sheet[i], c, deg)).collect()
+}
+
+/// An angle in (-180°, 180°], for messages.
+fn signed(deg: f64) -> f64 {
+    let a = deg.rem_euclid(360.0);
+    if a > 180.0 { a - 360.0 } else { a }
+}
+
+/// One placed part turned `deg` counter-clockwise about the sheet point `c`:
+/// its angle grows by `deg` and the middle of its own box goes round `c`.
+pub fn turn_about(part: &Part, p: Placed, c: P, deg: f64) -> Placed {
+    let (q, rest) = nest::split_angle(deg);
+    if rest == 0.0 && p.spin.is_none() {
+        // Quarter turns of a part on a quarter turn: its box turns exactly.
+        let m = [p.x + p.w / 2.0 - c[0], p.y + p.h / 2.0 - c[1]];
+        let r = match q {
+            0 => m,
+            1 => [-m[1], m[0]],
+            2 => [-m[0], -m[1]],
+            _ => [m[1], -m[0]],
+        };
+        let (w, h) = if q % 2 == 1 { (p.h, p.w) } else { (p.w, p.h) };
+        return Placed { x: c[0] + r[0] - w / 2.0, y: c[1] + r[1] - h / 2.0, w, h, turns: (p.turns + q) % 4, ..p };
+    }
+    let pv = nest::placed_pivot(part, &p);
+    let (s, co) = deg.to_radians().sin_cos();
+    let m = [pv[0] - c[0], pv[1] - c[1]];
+    let to = [c[0] + m[0] * co - m[1] * s, c[1] + m[0] * s + m[1] * co];
+    let n = nest::oriented(part, p.part, p.angle() + deg, p.mirror);
+    let at = nest::placed_pivot(part, &n);
+    Placed { x: to[0] - at[0], y: to[1] - at[1], ..n }
 }
 
 /// Mirror the selection about the centre of its box (HM6): `vertical` = about
@@ -383,41 +411,47 @@ pub fn mirror(parts: &[Part], sheet: &[Placed], sel: &[usize], vertical: bool, s
     let mut out = vec![];
     for &i in &sel {
         let p = sheet[i];
-        // Left↔right mirror = mirror in the part's own X and the turn reversed;
-        // top↔bottom adds a half turn.
-        let turns = mirror_turns(p, vertical);
         let part = &parts[p.part];
-        if !nest::turn_allowed(part, turns, !p.mirror) {
+        let angle = mirror_angle(p, vertical);
+        if !nest::angle_allowed(part, angle, !p.mirror) {
             return Err(format!("'{}' isn't allowed to be mirrored (its rotations, Part Properties).", part.name));
         }
+        // The mirror image of the footprint is the footprint of the mirror image.
         let (x, y) = if vertical { (b[0] + b[2] - (p.x + p.w), p.y) } else { (p.x, b[1] + b[3] - (p.y + p.h)) };
-        out.push(Placed { x, y, turns, mirror: !p.mirror, ..p });
+        let n = if p.spin.is_none() { Placed { turns: nest::split_angle(angle).0, mirror: !p.mirror, ..p } } else { nest::oriented(part, p.part, angle, !p.mirror) };
+        out.push(Placed { x, y, ..n });
     }
     place_changed(parts, sheet, &sel, out, spec, f, collision, "mirror")
 }
 
-/// The turn a part takes when mirrored: left↔right (`vertical`) is its own
-/// X mirror with the turn reversed; top↔bottom adds a half turn.
-fn mirror_turns(p: Placed, vertical: bool) -> u8 {
-    if vertical { (4 - p.turns % 4) % 4 } else { (6 - p.turns % 4) % 4 }
+/// The angle a part takes when mirrored: left↔right (`vertical`) is its own
+/// X mirror with the angle reversed; top↔bottom adds a half turn.
+fn mirror_angle(p: Placed, vertical: bool) -> f64 {
+    let a = if vertical { -p.angle() } else { 180.0 - p.angle() };
+    a.rem_euclid(360.0)
 }
 
-/// The first selected part whose rotations don't allow turning it by
-/// `quarters` (None = all may turn).
-fn refuses_turn<'a>(parts: &'a [Part], sheet: &[Placed], sel: &[usize], quarters: u8) -> Option<&'a Part> {
-    clean(sheet, sel).into_iter().map(|i| (&parts[sheet[i].part], sheet[i])).find(|(p, s)| !nest::turn_allowed(p, s.turns + quarters % 4, s.mirror)).map(|(p, _)| p)
+/// The first selected part whose rotations don't allow turning it by `deg`
+/// (None = all may turn).
+fn refuses_turn<'a>(parts: &'a [Part], sheet: &[Placed], sel: &[usize], deg: f64) -> Option<&'a Part> {
+    clean(sheet, sel).into_iter().map(|i| (&parts[sheet[i].part], sheet[i])).find(|(p, s)| !nest::angle_allowed(p, s.angle() + deg, s.mirror)).map(|(p, _)| p)
 }
 
 /// The selection may turn by `quarters` (each part's allowed rotations; room
 /// is found when it turns). The quick ring greys Turn when not (QR2).
 pub fn can_turn(parts: &[Part], sheet: &[Placed], sel: &[usize], quarters: u8) -> bool {
-    !clean(sheet, sel).is_empty() && refuses_turn(parts, sheet, sel, quarters).is_none()
+    can_turn_by(parts, sheet, sel, (quarters % 4) as f64 * 90.0)
+}
+
+/// The selection may turn by `deg` (HM14).
+pub fn can_turn_by(parts: &[Part], sheet: &[Placed], sel: &[usize], deg: f64) -> bool {
+    !clean(sheet, sel).is_empty() && refuses_turn(parts, sheet, sel, deg).is_none()
 }
 
 /// The selection may be mirrored left↔right (`vertical`) or top↔bottom.
 pub fn can_mirror(parts: &[Part], sheet: &[Placed], sel: &[usize], vertical: bool) -> bool {
     let sel = clean(sheet, sel);
-    !sel.is_empty() && sel.iter().all(|&i| nest::turn_allowed(&parts[sheet[i].part], mirror_turns(sheet[i], vertical), !sheet[i].mirror))
+    !sel.is_empty() && sel.iter().all(|&i| nest::angle_allowed(&parts[sheet[i].part], mirror_angle(sheet[i], vertical), !sheet[i].mirror))
 }
 
 /// Put the changed selection in, moving it to the nearest free spot when it
@@ -539,7 +573,7 @@ mod tests {
     }
     fn at(part: usize, x: f64, y: f64, parts: &[Part]) -> Placed {
         let (w, h) = parts[part].bbox();
-        Placed { part, x, y, w, h, turns: 0, mirror: false }
+        Placed { part, x, y, w, h, turns: 0, mirror: false, spin: Default::default() }
     }
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 0.01
@@ -661,6 +695,78 @@ mod tests {
     }
 
     #[test]
+    fn a_part_turns_to_any_angle_and_back() {
+        // HM14: a 100 × 40 part turned 30° about its middle; its footprint is
+        // the box of the turned outline and every corner lies on that box.
+        let ps = parts();
+        let sheet = vec![at(0, 300.0, 200.0, &ps)];
+        let new = turn_by(&ps, &sheet, &[0], 30.0, &spec(), &fmt(), true).unwrap();
+        let p = new[0];
+        assert!(close(p.angle(), 30.0) && p.turns == 0 && close(p.spin.deg, 30.0), "{p:?}");
+        let (s, c) = 30f64.to_radians().sin_cos();
+        assert!(close(p.w, 100.0 * c + 40.0 * s) && close(p.h, 100.0 * s + 40.0 * c), "{p:?}");
+        assert!(close(p.x + p.w / 2.0, 350.0) && close(p.y + p.h / 2.0, 220.0), "same middle: {p:?}");
+        let (o, _) = nest::placed_shape(&ps, &p);
+        let b = nest::bbox_of(&o);
+        assert!(close(b[0], p.x) && close(b[1], p.y) && close(b[2], p.x + p.w) && close(b[3], p.y + p.h), "{b:?} {p:?}");
+        // The first corner went round the middle by 30°.
+        let m = [350.0, 220.0];
+        let q = [m[0] + (-50.0) * c - (-20.0) * s, m[1] + (-50.0) * s + (-20.0) * c];
+        assert!(o.iter().any(|v| close(v[0], q[0]) && close(v[1], q[1])), "{o:?}");
+        // On by 60° more it is a plain quarter turn again, in the same middle.
+        let mut after = sheet.clone();
+        after[0] = p;
+        let q = turn_by(&ps, &after, &[0], 60.0, &spec(), &fmt(), true).unwrap()[0];
+        assert!(q.turns == 1 && q.spin.is_none() && close(q.w, 40.0) && close(q.h, 100.0), "{q:?}");
+        assert!(close(q.x, 330.0) && close(q.y, 170.0), "{q:?}");
+        // Back by -30°: where it started.
+        let back = turn_by(&ps, &after, &[0], -30.0, &spec(), &fmt(), true).unwrap()[0];
+        assert!(back.spin.is_none() && close(back.x, 300.0) && close(back.y, 200.0) && back.turns == 0, "{back:?}");
+    }
+
+    #[test]
+    fn a_group_turns_to_any_angle_about_its_centre() {
+        // HM5, HM14: two parts turned 45° together keep their spacing; their
+        // middles go round the middle of the group's box.
+        let ps = parts();
+        let sheet = vec![at(0, 300.0, 200.0, &ps), at(0, 410.0, 200.0, &ps)];
+        let new = turn_by(&ps, &sheet, &[0, 1], 45.0, &spec(), &fmt(), true).unwrap();
+        let mid = |p: &Placed| nest::placed_pivot(&ps[0], p);
+        let (a, b) = (mid(&new[0]), mid(&new[1]));
+        assert!(close((b[0] - a[0]).hypot(b[1] - a[1]), 110.0), "spacing kept: {a:?} {b:?}");
+        assert!(close((b[1] - a[1]).atan2(b[0] - a[0]).to_degrees(), 45.0));
+        assert!(close((a[0] + b[0]) / 2.0, 405.0) && close((a[1] + b[1]) / 2.0, 220.0));
+        assert!(new.iter().all(|p| close(p.angle(), 45.0)));
+        // A part that may not turn 90° takes no other angle either.
+        let mut stiff = ps.clone();
+        stiff[0].rotate = false;
+        assert!(turn_by(&stiff, &sheet, &[0], 15.0, &spec(), &fmt(), true).unwrap_err().contains("may turn 90°"));
+        assert!(!can_turn_by(&stiff, &sheet, &[0], 15.0) && can_turn_by(&ps, &sheet, &[0], 15.0));
+    }
+
+    #[test]
+    fn a_part_at_any_angle_mirrors_and_turns_by_quarters() {
+        // HM6 with HM14: mirroring left↔right reverses the angle, top↔bottom
+        // adds a half turn; the footprint is mirrored in the group's box.
+        let mut ps = parts();
+        ps[1].rots.mirrored = [true; 4];
+        let sheet = vec![at(1, 300.0, 100.0, &ps)];
+        let p = turn_by(&ps, &sheet, &[0], 20.0, &spec(), &fmt(), true).unwrap()[0];
+        let lr = mirror(&ps, &[p], &[0], true, &spec(), &fmt(), true).unwrap()[0];
+        assert!(lr.mirror && close(lr.angle(), 340.0) && close(lr.w, p.w) && close(lr.h, p.h) && close(lr.x, p.x) && close(lr.y, p.y), "{lr:?}");
+        // Its outline is the mirror image about the box's middle line.
+        let (o1, _) = nest::placed_shape(&ps, &p);
+        let (o2, _) = nest::placed_shape(&ps, &lr);
+        let axis = p.x + p.w / 2.0;
+        assert!(o1.iter().all(|q| o2.iter().any(|v| close(v[0], 2.0 * axis - q[0]) && close(v[1], q[1]))), "{o1:?} {o2:?}");
+        let tb = mirror(&ps, &[p], &[0], false, &spec(), &fmt(), true).unwrap()[0];
+        assert!(tb.mirror && close(tb.angle(), 160.0), "{tb:?}");
+        // A quarter turn keeps the free part of the angle.
+        let q = turn(&ps, &[p], &[0], 1, &spec(), &fmt(), true).unwrap()[0];
+        assert!(q.turns == 1 && close(q.spin.deg, 20.0), "{q:?}");
+    }
+
+    #[test]
     fn a_turned_part_that_would_overlap_moves_to_the_nearest_free_spot() {
         let ps = parts();
         // A 100 × 40 part between two others 50 mm apart can't turn in place.
@@ -709,10 +815,17 @@ mod tests {
     }
 
     #[test]
-    fn a_window_selects_the_parts_wholly_inside() {
+    fn a_window_selects_the_parts_wholly_inside_and_a_crossing_one_those_it_touches() {
+        use crate::engine::selection::Take;
         let ps = parts();
         let sheet = vec![at(0, 10.0, 10.0, &ps), at(0, 200.0, 10.0, &ps), at(3, 120.0, 20.0, &ps)];
-        assert_eq!(window_select(&sheet, [250.0, 100.0], [0.0, 0.0]), vec![0, 2]);
+        // Dragged to the right: #2 sticks out past X 250, so only #1 and #3.
+        assert_eq!(window_select(&ps, &sheet, &Window::dragged([0.0, 0.0], [250.0, 100.0])), vec![0, 2]);
+        // The same box dragged to the left takes #2 too, as it touches it.
+        assert_eq!(window_select(&ps, &sheet, &Window::dragged([250.0, 100.0], [0.0, 0.0])), vec![0, 1, 2]);
+        // A small crossing box on #2's edge takes #2 alone.
+        let edge = Window::new([195.0, 15.0], [205.0, 25.0], Take::Touching);
+        assert_eq!(window_select(&ps, &sheet, &edge), vec![1]);
     }
 
     #[test]
