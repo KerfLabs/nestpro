@@ -35,28 +35,7 @@ pub fn stock_plan(spec: &SheetSpec, u: &StockUse, exclude: &[String]) -> Option<
         return None;
     }
     let stock = Stock::load(&u.dir).ok()?;
-    let held = |r: &str| u.held.get(r).copied().unwrap_or(0);
-    // What this job holds is available to it again (SS12).
-    let mut s = stock.clone();
-    for it in s.items.iter_mut() {
-        it.qty = (it.qty + held(&it.reference)).min(stock::MAX_QTY);
-    }
-    let excl: Vec<String> = exclude.iter().chain(u.exclude.iter()).cloned().collect();
-    let cands = s.candidates(spec.material, spec.thickness, &st.criteria, false, 1, st.allow_no_stock, &excl);
-    let (rem, sht): (Vec<&Item>, Vec<&Item>) = cands.iter().partition(|i| i.kind.is_remnant());
-    let order = |mut v: Vec<&Item>| -> Vec<Item> {
-        let mut out = vec![];
-        while let Some(n) = s.next_sheet(&v, st.order) {
-            out.push(n.clone());
-            v.retain(|i| i.reference != n.reference);
-        }
-        out
-    };
-    let items: Vec<Item> = if st.remnants_first {
-        order(rem).into_iter().chain(order(sht)).collect()
-    } else {
-        order(cands.clone())
-    };
+    let items = usable_items(&stock, spec, u, exclude);
     if items.is_empty() {
         // Nothing in stock for this job: the job's sheet size only when the
         // options allow it, else no sheets (never a sheet that isn't there).
@@ -79,6 +58,209 @@ pub fn stock_plan(spec: &SheetSpec, u: &StockUse, exclude: &[String]) -> Option<
         plan.push(FormatSlot { format: SheetFormat::rect(spec.w, spec.h), qty: None });
     }
     Some(plan)
+}
+
+/// The stock items Do All may take for this job, in the order it takes them
+/// (SS4–SS6, SS12): each with what's in stock plus what this job already
+/// holds; remnants first when the options say so.
+fn usable_items(stock: &Stock, spec: &SheetSpec, u: &StockUse, exclude: &[String]) -> Vec<Item> {
+    let st = u.st;
+    let held = |r: &str| u.held.get(r).copied().unwrap_or(0);
+    // What this job holds is available to it again (SS12).
+    let mut s = stock.clone();
+    for it in s.items.iter_mut() {
+        it.qty = (it.qty + held(&it.reference)).min(stock::MAX_QTY);
+    }
+    let excl: Vec<String> = exclude.iter().chain(u.exclude.iter()).cloned().collect();
+    let cands = s.candidates(spec.material, spec.thickness, &st.criteria, false, 1, st.allow_no_stock, &excl);
+    let (rem, sht): (Vec<&Item>, Vec<&Item>) = cands.iter().partition(|i| i.kind.is_remnant());
+    let order = |mut v: Vec<&Item>| -> Vec<Item> {
+        let mut out = vec![];
+        while let Some(n) = s.next_sheet(&v, st.order) {
+            out.push(n.clone());
+            v.retain(|i| i.reference != n.reference);
+        }
+        out
+    };
+    if st.remnants_first {
+        order(rem).into_iter().chain(order(sht)).collect()
+    } else {
+        order(cands.clone())
+    }
+}
+
+/// What Nest all will nest on, said before nesting (the Sheet tab's "Nest
+/// on" line, the Home tab and agents' `nest-on`): the same choice `nest_all`
+/// and `stock_plan` make, so the job's typed sheet size is never shown as the
+/// sheet when the stock will be used first.
+#[derive(Clone, Debug, PartialEq)]
+pub enum NestOnMode {
+    /// From the stock, then the job's sheet size when it runs out (STK-10).
+    StockThenSize,
+    /// From the stock only: what doesn't fit stays unnested.
+    StockOnly,
+    /// The job's sheet size: the Do All options don't use the stock.
+    StockOff,
+    /// The job's sheet size: part groups nest in their own zones, without
+    /// stock (STK-11).
+    Grouped,
+    /// The job's sheet size: the stock has nothing for this material and thickness.
+    NoneInStock,
+    /// Nothing: the stock has nothing for this job and the options don't fall
+    /// back to the job's sheet size.
+    NoSheets,
+    /// The job's sheet size: the Library's stock can't be reached or read (LB11).
+    Unreachable(String),
+    /// The job's sheet size: this PC has no Library yet, so no stock.
+    NoLibrary,
+}
+
+/// One stocked sheet size and how many of it Do All may take.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StockSize {
+    pub length: f64,
+    pub width: f64,
+    pub qty: i32,
+}
+
+/// What Nest all will nest on (see `NestOnMode`), with what the stock holds
+/// for the job.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NestOn {
+    pub mode: NestOnMode,
+    /// Sheets and remnants Do All may take (quantities; locked items and
+    /// what the criteria leave out aren't counted).
+    pub sheets: i32,
+    pub remnants: i32,
+    /// The stocked sheet sizes (not remnants), largest first.
+    pub sizes: Vec<StockSize>,
+}
+
+impl NestOn {
+    /// The mode's key for agents.
+    pub fn key(&self) -> &'static str {
+        match self.mode {
+            NestOnMode::StockThenSize => "stock-then-size",
+            NestOnMode::StockOnly => "stock-only",
+            NestOnMode::StockOff => "size-stock-off",
+            NestOnMode::Grouped => "size-groups",
+            NestOnMode::NoneInStock => "size-none-in-stock",
+            NestOnMode::NoSheets => "nothing",
+            NestOnMode::Unreachable(_) => "size-stock-unreachable",
+            NestOnMode::NoLibrary => "size-no-library",
+        }
+    }
+
+    /// Does the stock come first?
+    pub fn from_stock(&self) -> bool {
+        matches!(self.mode, NestOnMode::StockThenSize | NestOnMode::StockOnly)
+    }
+
+    /// Worth a warning colour: nothing to nest on, or the stock can't be read.
+    pub fn warn(&self) -> bool {
+        matches!(self.mode, NestOnMode::NoSheets | NestOnMode::Unreachable(_))
+    }
+
+    /// "14 sheets · 2 remnants" (what's in stock for the job).
+    pub fn counts(&self) -> String {
+        let n = |k: i32, one: &str, many: &str| format!("{k} {}", if k == 1 { one } else { many });
+        match (self.sheets, self.remnants) {
+            (s, 0) => n(s, "sheet", "sheets"),
+            (0, r) => n(r, "remnant", "remnants"),
+            (s, r) => format!("{} · {}", n(s, "sheet", "sheets"), n(r, "remnant", "remnants")),
+        }
+    }
+
+    /// One short line: where the sheets come from; `size` is the job's
+    /// sheet size as shown ("78.74 × 39.37").
+    pub fn line(&self, size: &str) -> String {
+        match &self.mode {
+            NestOnMode::StockThenSize => format!("Stock first ({}), then {size}", self.counts()),
+            NestOnMode::StockOnly => format!("Stock only ({})", self.counts()),
+            NestOnMode::StockOff => format!("{size} (stock not used)"),
+            NestOnMode::Grouped => format!("{size} (groups don't use stock)"),
+            NestOnMode::NoneInStock => format!("{size} (none in stock)"),
+            NestOnMode::NoSheets => "Nothing: none in stock".into(),
+            NestOnMode::Unreachable(_) => format!("{size} (stock not reachable)"),
+            NestOnMode::NoLibrary => format!("{size} (no Library yet)"),
+        }
+    }
+
+    /// Shorter, for the Home tab: "From stock: 14 sheets", or "78.74 × 39.37 in sheet".
+    pub fn short(&self, size: &str) -> String {
+        match &self.mode {
+            NestOnMode::StockThenSize | NestOnMode::StockOnly => format!("From stock: {}", self.counts()),
+            NestOnMode::NoSheets => "None in stock".into(),
+            NestOnMode::Unreachable(_) => "Stock not reachable".into(),
+            _ => format!("{size} sheet"),
+        }
+    }
+
+    /// Why, and what to change, in a sentence or two.
+    pub fn explain(&self) -> String {
+        match &self.mode {
+            NestOnMode::StockThenSize => format!(
+                "Nest all takes the sheets and remnants in stock for this material and thickness first ({}), then this job's sheet size when they run out. Change it in Sheet stock → Options.",
+                self.counts()
+            ),
+            NestOnMode::StockOnly => format!(
+                "Nest all uses only the sheets and remnants in stock for this material and thickness ({}); parts that don't fit on them stay unnested. Change it in Sheet stock → Options.",
+                self.counts()
+            ),
+            NestOnMode::StockOff => "Nest all nests on this job's sheet size: the Do All options don't use the sheet stock (Sheet stock → Options).".into(),
+            NestOnMode::Grouped => "With Group by attribute on and several groups, each group is nested in its own zone on this job's sheet size; the sheet stock isn't used.".into(),
+            NestOnMode::NoneInStock => "Nothing in stock for this material and thickness, so Nest all nests on this job's sheet size.".into(),
+            NestOnMode::NoSheets => "Nothing in stock for this material and thickness, and the Do All options don't fall back to the job's sheet size: add sheets to stock, or turn that option on (Sheet stock → Options).".into(),
+            NestOnMode::Unreachable(e) => format!("Nest all would take sheets from stock, but the stock can't be read, so it nests on this job's sheet size. {e}"),
+            NestOnMode::NoLibrary => format!("Nest all nests on this job's sheet size: {}", crate::library::unreachable(&crate::library::default_dir())),
+        }
+    }
+}
+
+/// What Nest all will nest on for this job (see `NestOn`). `grouped`: Group
+/// by attribute is on and the parts have several groups. Reads the stock
+/// file, so the window asks only when something changed.
+pub fn nest_on(spec: &SheetSpec, u: &StockUse, grouped: bool) -> NestOn {
+    let none = |mode| NestOn { mode, sheets: 0, remnants: 0, sizes: vec![] };
+    if grouped {
+        return none(NestOnMode::Grouped);
+    }
+    if !u.st.use_stock {
+        return none(NestOnMode::StockOff);
+    }
+    // This PC's own default folder that was never made: no stock yet, not a
+    // share that's down.
+    if !u.dir.is_dir() && u.dir == crate::library::default_dir() {
+        return none(NestOnMode::NoLibrary);
+    }
+    if let Err(e) = crate::library::usable(&u.dir) {
+        return none(NestOnMode::Unreachable(e));
+    }
+    let stock = match Stock::load(&u.dir) {
+        Ok(s) => s,
+        Err(e) => return none(NestOnMode::Unreachable(format!("The stock file can't be read: {e}"))),
+    };
+    let items = usable_items(&stock, spec, u, &[]);
+    if items.is_empty() {
+        return none(if u.st.fallback_job_size { NestOnMode::NoneInStock } else { NestOnMode::NoSheets });
+    }
+    let (rem, sht): (Vec<&Item>, Vec<&Item>) = items.iter().partition(|i| i.kind.is_remnant());
+    let count = |v: &[&Item]| v.iter().map(|i| i.qty.max(0)).sum::<i32>();
+    let mut sizes: Vec<StockSize> = vec![];
+    for it in &sht {
+        let (l, w) = (it.length, it.width);
+        match sizes.iter_mut().find(|s| (s.length - l).abs() < 0.05 && (s.width - w).abs() < 0.05) {
+            Some(s) => s.qty += it.qty.max(0),
+            None => sizes.push(StockSize { length: l, width: w, qty: it.qty.max(0) }),
+        }
+    }
+    sizes.sort_by(|a, b| (b.length * b.width).total_cmp(&(a.length * a.width)));
+    NestOn {
+        mode: if u.st.fallback_job_size { NestOnMode::StockThenSize } else { NestOnMode::StockOnly },
+        sheets: count(&sht),
+        remnants: count(&rem),
+        sizes,
+    }
 }
 
 /// Said after Do All when it would have nested from the sheet stock but the
