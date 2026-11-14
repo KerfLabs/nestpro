@@ -523,7 +523,8 @@ impl App {
                     ui.end_row();
                 };
                 row(ui, "Job", self.job_name.clone());
-                row(ui, "Material", format!("{} · {}", cnc::MATERIALS[self.spec.material], self.unit().thickness(self.spec.thickness)));
+                // GS16: the gas beside the material and thickness.
+                row(ui, "Material", format!("{} · {} · {}", cnc::MATERIALS[self.spec.material], self.unit().thickness(self.spec.thickness), crate::engine::job_gas(&self.spec, &self.blm).shown()));
                 row(ui, "Sheet", self.unit().size(self.spec.w, self.spec.h, 0));
                 row(ui, "Products", format!("{} / {} pcs", self.parts.len(), need));
                 row(ui, "Sheets", format!("{sheets}"));

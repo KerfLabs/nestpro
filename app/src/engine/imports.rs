@@ -187,13 +187,54 @@ pub struct ProgramJob {
     pub notes: Vec<String>,
 }
 
+/// GS18: the gas a job opened from an LC5 program set takes, and what to
+/// say about it. The set names its gas in the sheet program's header
+/// (`;IDGAS=` number, `;NOMEGAS=` name), else in its XML job sheet (`GasId`,
+/// `GasName`); a number and name that are a pair the LC5 list writes (GS2)
+/// give the job that gas. None when the set names no gas (empty, GS2), none
+/// at all, or a pair off the list: the job keeps a new job's gas (GS12),
+/// `new_job`, and the note says so. When the sheet program and the XML name
+/// different gases, the sheet program's wins: it is what the machine runs
+/// (FEATURES MAC-71).
+pub fn program_gas(program: Option<&(String, String)>, xml: Option<&(String, String)>, new_job: &crate::gas::JobGas) -> (Option<crate::gas::Gas>, Vec<String>) {
+    let listed = |p: &(String, String)| p.0.trim().parse::<u32>().ok().and_then(|n| crate::gas::Gas::listed(n, p.1.trim()));
+    let words = |p: &(String, String)| match (listed(p), p.0.trim(), p.1.trim()) {
+        (Some(g), ..) => g.label(),
+        (None, "", "") => "no gas".to_string(),
+        (None, n, name) => format!("gas {n} \"{name}\""),
+    };
+    let mut notes = vec![];
+    if let (Some(p), Some(x)) = (program, xml) {
+        if (p.0.trim(), p.1.trim()) != (x.0.trim(), x.1.trim()) {
+            notes.push(format!("the sheet program names {} and its XML job sheet {}: the job takes the sheet program's", words(p), words(x)));
+        }
+    }
+    let named = program.or(xml);
+    let gas = named.and_then(listed);
+    if gas.is_none() {
+        let said = match named.filter(|p| !(p.0.trim().is_empty() && p.1.trim().is_empty())) {
+            Some(p) => format!("the programs name {}, which isn't one of the LC5's gases ({})", words(p), crate::gas::program_words()),
+            None => "the programs name no gas".to_string(),
+        };
+        let then = if new_job.own { format!("so the job starts with the machine's gas, {}", new_job.shown()) } else { format!("so the job has none of its own and is cut with the machine's: {}", new_job.shown()) };
+        notes.push(format!("{said}, {then}"));
+    }
+    (gas, notes)
+}
+
 /// Open a BLM LC5 program set (`<NEST>.zip`, its `.XML`, or a Lantek `.nxp`
 /// list) as an editable nesting: each part subprogram a part, each call a
-/// placed part, the header's sheet, material and thickness over `base`, and
-/// cut-offs back as remnant lines (edge to edge) or free cuts.
+/// placed part, and cut-offs back as remnant lines (edge to edge) or free
+/// cuts. The sheet is a new job's (`with_prefs` over `base`, GS12) with the
+/// header's sheet, material and thickness and the set's gas (GS18).
 pub fn program_job(cfg: &AppSettings, base: &SheetSpec, path: &Path, color0: usize) -> Result<ProgramJob, String> {
     let im = crate::progimport::open(path).map_err(|e| format!("Couldn't open {}: {e}", path.display()))?;
-    let mut spec = base.clone();
+    let mut spec = with_prefs(base, cfg);
+    let m = cfg.machine();
+    let (gas, gas_notes) = program_gas(im.gas.as_ref(), im.xml_gas.as_ref(), &crate::gas::JobGas::of(spec.gas, m.gas_id, &m.gas_name));
+    if gas.is_some() {
+        spec.gas = gas;
+    }
     if im.sheet_w > 0.0 && im.sheet_h > 0.0 {
         spec.w = im.sheet_w;
         spec.h = im.sheet_h;
@@ -234,7 +275,9 @@ pub fn program_job(cfg: &AppSettings, base: &SheetSpec, path: &Path, color0: usi
             })
         })
         .collect();
-    Ok(ProgramJob { name: im.name, spec, parts, sheet, cuts, notes: im.notes })
+    let mut notes = im.notes;
+    notes.extend(gas_notes);
+    Ok(ProgramJob { name: im.name, spec, parts, sheet, cuts, notes })
 }
 
 impl ProgramJob {

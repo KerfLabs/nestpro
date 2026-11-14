@@ -122,12 +122,132 @@ pub fn blm_base(m: &settings::Machine) -> crate::blm::BlmSettings {
     b
 }
 
-/// BLM settings with the job's name, material and thickness filled in
-/// (material name and code from Settings → Materials).
+/// BLM settings with the job's name, material, thickness and gas filled in
+/// (material name and code from Settings → Materials; the gas: GS11).
 pub fn blm_for(spec: &SheetSpec, base: &crate::blm::BlmSettings, job_name: &str, cfg: &AppSettings) -> crate::blm::BlmSettings {
     let b = crate::blm::BlmSettings::for_spec(spec, &base.machine, job_name);
     let (mat_name, mat_id) = cfg.materials.get(spec.material).cloned().unwrap_or((b.mat_name.clone(), b.mat_id.clone()));
-    crate::blm::BlmSettings { on: base.on, gas_id: base.gas_id, gas_name: base.gas_name.clone(), mat_name, mat_id, ..b }
+    let gas = job_gas(spec, base);
+    crate::blm::BlmSettings { on: base.on, gas_id: gas.number, gas_name: gas.program_name, mat_name, mat_id, ..b }
+}
+
+/// The gas a job is cut with, as its programs name it (GS11): its own, else
+/// the machine's gas as saved in Settings → Machines (`base`, from
+/// `blm_base`), even a number and name that aren't the list's pair.
+pub fn job_gas(spec: &SheetSpec, base: &crate::blm::BlmSettings) -> crate::gas::JobGas {
+    crate::gas::JobGas::of(spec.gas, base.gas_id, &base.gas_name)
+}
+
+/// The gas a new job starts with (GS12): that of the machine `m` it's made
+/// for (Settings → Machines) when its saved number and name are one of the
+/// list's pairs; otherwise none of its own, so the job is cut with the
+/// machine's as saved (GS11; our choice, FEATURES MAC-69).
+pub fn new_job_gas(m: &settings::Machine) -> Option<crate::gas::Gas> {
+    m.gas()
+}
+
+/// What picking a job's gas changed, in words (GS14): the gas, the machine
+/// file's section and the technology table's record picked again for it,
+/// whether the automatic lead tables changed, on how many parts the
+/// automatic micro-joints followed, and the job's cut time. The nested
+/// sheets stay as they are; `before` and `after` are the job's sheet
+/// settings, `old` and `parts` its parts, the sheets those of the job.
+pub fn gas_change_note(old: &[Part], parts: &[Part], sheets: &[Vec<Placed>], formats: &[SheetFormat], manual: &[Vec<ManualCut>], before: &SheetSpec, after: &SheetSpec, base: &crate::blm::BlmSettings) -> String {
+    let (g0, g1) = (job_gas(before, base), job_gas(after, base));
+    if before.gas == after.gas {
+        return format!("Gas: already {}.", g1.label());
+    }
+    let whose = |g: &crate::gas::JobGas| if g.own { g.label() } else { format!("{} (the machine's)", g.label()) };
+    let mut said = vec![format!("Gas: {} → {}", whose(&g0), whose(&g1))];
+    let (t0, t1) = (crate::ct1::for_spec(before), crate::ct1::for_spec(after));
+    let section = |t: &crate::ct1::MachineTech| t.applied().map_or("none (the machine's own values)".to_string(), |s| s.label());
+    if t0.section == t1.section {
+        said.push(format!("machine table section unchanged: {}", section(&t1)));
+    } else {
+        said.push(format!("machine table section {} → {}", section(&t0), section(&t1)));
+    }
+    let record = |spec: &SheetSpec, t: &crate::ct1::MachineTech| {
+        let files = &t.speed_files;
+        let keys = crate::techtable::Keys::for_spec(spec, files.gas);
+        match files.table.as_ref().and_then(|tb| tb.pick(&keys).map(|(i, _)| tb.records[i].label())) {
+            Some(l) => l,
+            None if files.table.is_some() => "none".to_string(),
+            None => "no technology table".to_string(),
+        }
+    };
+    let (r0, r1) = (record(before, &t0), record(after, &t1));
+    if r0 == r1 {
+        said.push(format!("technology record unchanged: {r1}"));
+    } else {
+        said.push(format!("technology record {r0} → {r1}"));
+    }
+    said.push(if t0.leads == t1.leads {
+        "automatic lead tables unchanged".to_string()
+    } else {
+        "automatic leads follow the new section's lead tables (leads moved by hand stay)".to_string()
+    });
+    // Parts that have micro-joints and whose gap or spacing changed.
+    let joints = |t: &Option<PartTech>| t.map(|t| (t.joint_width, t.joint_every));
+    let has_joints = |t: &Option<PartTech>| t.is_some_and(|t| t.joint_every > 0.0 || t.micro_joints > 0 || t.joint_picks.iter().any(Option::is_some));
+    let followed = old.iter().zip(parts).filter(|(a, b)| (has_joints(&a.tech) || has_joints(&b.tech)) && joints(&a.tech) != joints(&b.tech)).count();
+    said.push(match followed {
+        0 => "automatic micro-joints unchanged".to_string(),
+        n => format!("automatic micro-joints follow the new gas on {n} part{} (a joint gap or spacing set by hand stays)", if n == 1 { "" } else { "s" }),
+    });
+    if sheets.is_empty() {
+        said.push("no nested sheets".to_string());
+    } else {
+        let time = |parts: &[Part], spec: &SheetSpec| plans(parts, sheets, formats, spec, manual).iter().map(|p| p.seconds).sum::<f64>();
+        said.push(format!("{} nested sheet(s) kept; cut time {:.1} s → {:.1} s", sheets.len(), time(old, before), time(parts, after)));
+    }
+    format!("{}.", said.join("; "))
+}
+
+/// A gas picked for a job (GS14, GS15).
+#[derive(Clone, Debug, PartialEq)]
+pub struct GasPick {
+    /// The job's gas changed. Picking the gas it already has changes nothing:
+    /// nothing to save, back up or undo.
+    pub changed: bool,
+    /// What changed, in words (`gas_change_note`).
+    pub note: String,
+}
+
+/// Pick a job's gas (GS14, GS15): `spec`, the job's sheet settings, takes
+/// `gas` as the job's own. The nested sheets, parts and leads moved by hand
+/// stay, and the sheets aren't marked changed; the machine file's section
+/// and the technology record follow the new gas, and so do the parts'
+/// micro-joint gaps and spacings taken from the machine
+/// (`joints_follow_machine`). The Sheet tab's gas pick and the agents'
+/// `set-sheet gas=` both change the job through this.
+pub fn pick_job_gas(spec: &mut SheetSpec, gas: crate::gas::Gas, parts: &mut [Part], sheets: &[Vec<Placed>], formats: &[SheetFormat], manual: &[Vec<ManualCut>], base: &crate::blm::BlmSettings) -> GasPick {
+    let before = spec.clone();
+    spec.gas = Some(gas);
+    let changed = before.gas != spec.gas;
+    let old = parts.to_vec();
+    if changed {
+        let mt = crate::ct1::for_spec(spec);
+        for t in parts.iter_mut().filter_map(|p| p.tech.as_mut()) {
+            joints_follow_machine(t, &mt);
+        }
+    }
+    GasPick { changed, note: gas_change_note(&old, parts, sheets, formats, manual, &before, spec, base) }
+}
+
+/// GS16: what the message after a job's programs are written starts with:
+/// how many, and the material, thickness and gas they're for ("3 programs
+/// written: Mild steel 12.7 mm, Oxygen"), the thickness in `unit`.
+pub fn programs_written(n: usize, spec: &SheetSpec, base: &crate::blm::BlmSettings, unit: crate::units::LenUnit) -> String {
+    let mat = cnc::MATERIALS.get(spec.material).copied().unwrap_or("?");
+    format!("{n} program{} written: {mat} {}, {}", if n == 1 { "" } else { "s" }, unit.thickness(spec.thickness), job_gas(spec, base).shown())
+}
+
+/// The whole message after an export (GS16): `programs_written`, then what
+/// was written where, and the export's warning.
+pub fn export_note(ex: &Exported, n: usize, spec: &SheetSpec, base: &crate::blm::BlmSettings, unit: crate::units::LenUnit) -> String {
+    let what = if base.on { "BLM LC5 program sets (.zip + .XML)" } else { "The programs" };
+    let warn = ex.warning.as_ref().map_or(String::new(), |w| format!(" But {w}."));
+    format!("{}. {what} and a parts report are in {}.{warn}", programs_written(n, spec, base, unit), ex.dir.display())
 }
 
 impl Ctx {
@@ -606,16 +726,19 @@ impl TechEdit {
             }
             TechEdit::AutoJoints { dist, gap, every, gap_wins } => {
                 let mut x = t.unwrap_or_default();
+                // What it takes from the machine is kept as the machine's,
+                // so a gas change can bring it up to date (GS14).
                 if let Some(e) = every {
                     x.joint_every = e.max(0.0);
+                    x.joint_every_machine = None;
                 } else if x.joint_every <= 0.0 {
-                    // The part's own quality, else the outline's usual one (CQ1).
-                    let q = x.quality.unwrap_or(crate::nest::CutQuality::FALLBACK).number();
-                    x.joint_every = dist[q - 1][0];
+                    x.joint_every = auto_joint_every(&x, dist);
+                    x.joint_every_machine = Some(x.joint_every);
                 }
                 x.micro_joints = 0;
                 if x.joint_width <= 0.0 || (*gap_wins && *gap > 0.0) {
                     x.joint_width = *gap;
+                    x.joint_width_machine = Some(*gap);
                 }
                 *t = Some(x);
             }
@@ -624,6 +747,7 @@ impl TechEdit {
                     x.micro_joints = 0;
                     // Automatic joints are spaced by distance: that goes too.
                     x.joint_every = 0.0;
+                    x.joint_every_machine = None;
                     x.joint_picks = [None; 12];
                 }
             }
@@ -643,6 +767,31 @@ impl TechEdit {
             }
             TechEdit::Delete => *t = None,
         }
+    }
+}
+
+/// The spacing Automatic micro-joints give a part (BN4): the machine's
+/// distance `dist` for the part's own quality, else the outline's usual one
+/// (CQ1).
+fn auto_joint_every(t: &PartTech, dist: &[[f64; 4]; 12]) -> f64 {
+    let q = t.quality.unwrap_or(crate::nest::CutQuality::FALLBACK).number();
+    dist[q - 1][0]
+}
+
+/// GS14: after a gas change, a part's micro-joint gap and spacing that
+/// Automatic micro-joints took from the machine take what the machine gives
+/// for the new gas, `mt` (the section the gas picks, else the machine's own
+/// values, MTL6/MTL7): the gap, and the spacing for the part's quality, as
+/// Automatic picks them. A gap or spacing the programmer set, and the
+/// places of joints placed on an element, stay.
+pub fn joints_follow_machine(t: &mut PartTech, mt: &crate::ct1::MachineTech) {
+    if t.joint_every_is_machines() {
+        t.joint_every = auto_joint_every(t, &mt.joint_dist);
+        t.joint_every_machine = Some(t.joint_every);
+    }
+    if t.joint_width_is_machines() && mt.joint_gap > 0.0 {
+        t.joint_width = mt.joint_gap;
+        t.joint_width_machine = Some(mt.joint_gap);
     }
 }
 
@@ -1493,16 +1642,26 @@ impl JobFile {
     }
 }
 
-/// A new job's sheet with the part gap and edge margin from Settings → Nesting
-/// (HM12). It keeps the size it was made from, but Nest all starts with any
-/// size in stock: a size picked for another job isn't picked for this one (ST18).
+/// A new job's sheet with the part gap and edge margin from Settings →
+/// Nesting (HM12) and the active machine's gas (GS12). It keeps the size it
+/// was made from, but Nest all starts with any size in stock: a size picked
+/// for another job isn't picked for this one (ST18). Every way a job is made
+/// starts from it: New job, the agents' `new`, the XML import, a job opened
+/// from programs, the ERP link (`with_prefs_for`).
 pub fn with_prefs(spec: &SheetSpec, cfg: &AppSettings) -> SheetSpec {
-    SheetSpec { gap: cfg.nesting.part_gap, margin: cfg.nesting.edge_margin, pick: crate::nest::SheetPick::Stock, ..spec.clone() }
+    with_prefs_for(spec, cfg, &cfg.machine())
+}
+
+/// `with_prefs` for a job made for machine `m`, which becomes the active one
+/// once the job is made: the ERP link's work runs on the machine its step is
+/// scheduled on (F21), and the job starts with that machine's gas (GS12).
+pub fn with_prefs_for(spec: &SheetSpec, cfg: &AppSettings, m: &settings::Machine) -> SheetSpec {
+    SheetSpec { gap: cfg.nesting.part_gap, margin: cfg.nesting.edge_margin, gas: new_job_gas(m), pick: crate::nest::SheetPick::Stock, ..spec.clone() }
 }
 
 /// The default sheet of a new job: 2000 × 1000 mm, 3 mm mild steel, level 3.
 pub fn default_spec() -> SheetSpec {
-    SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), pick: Default::default() }
+    SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() }
 }
 
 #[cfg(test)]

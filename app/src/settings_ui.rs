@@ -283,8 +283,9 @@ impl App {
         }
     }
 
-    fn shot_mode_now(&self) -> bool {
-        std::env::args().any(|a| a == "--screenshot")
+    /// A screenshot run (--screenshot), which never saves the settings.
+    pub(crate) fn shot_mode_now(&self) -> bool {
+        self.shot.is_some() || std::env::args().any(|a| a == "--screenshot")
     }
 
     pub fn settings_window(&mut self, ctx: &egui::Context) {
@@ -811,6 +812,36 @@ impl App {
                     ui.radio_value(&mut m.output, o, title);
                 }
             });
+            // GS17: the machine's gas, a pick from the list: the gas a new
+            // job starts with (GS12). A saved number and name that aren't the
+            // list's pair stay as saved until a gas is picked; nothing is
+            // written by just looking.
+            row(ui, "Gas", |ui| {
+                let shown = m.gas().map_or_else(|| format!("{} \"{}\" (as saved)", m.gas_id, m.gas_name), |g| g.name().to_string());
+                let mut picked = None;
+                egui::ComboBox::from_id_salt("machine_gas")
+                    .width(180.0)
+                    .selected_text(shown)
+                    .show_ui(ui, |ui| {
+                        for g in crate::gas::Gas::ALL {
+                            let what = if g.program_name() == g.name() { format!("Gas {} in the LC5 program", g.number()) } else { format!("Gas {} in the LC5 program, written {}", g.number(), g.program_name()) };
+                            if ui.selectable_label(m.gas() == Some(g), g.name()).on_hover_text(what).clicked() {
+                                picked = Some(g);
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text("The gas a new job on this machine starts with; each job keeps its own, picked on the Sheet tab. Jobs saved before jobs carried a gas are cut with this one.");
+                if let Some(g) = picked {
+                    m.pick_gas(g);
+                }
+            });
+            if let Some(note) = m.gas_mismatch() {
+                ui.horizontal(|ui| {
+                    ui.add_space(154.0);
+                    ui.add(egui::Label::new(RichText::new(format!("⚠ {note}")).size(11.5).color(th().warn_fg)).wrap());
+                });
+            }
             ui.horizontal(|ui| {
                 ui.add_space(154.0);
                 if ui.add_enabled(!active, egui::Button::new(if active { "● In use" } else { "Use this machine" })).on_hover_text("Cut the open job on this machine (the same as picking it on the Sheet tab)").clicked() {
@@ -889,10 +920,6 @@ impl App {
                 let a = crate::blm::AdiParams::from_files(&m.blm_ps1, &m.blm_cf1);
                 row(ui, "Values in use", |ui| {
                     ui.label(RichText::new(format!("overrun −{} / +{} mm · CORNER ≤ {}° · arcs within {} mm", a.trim_neg, a.trim_pos, a.corner_deg, a.arc_tol)).size(12.0));
-                });
-                row(ui, "Gas id / name", |ui| {
-                    ui.add(egui::DragValue::new(&mut m.gas_id).range(0..=99));
-                    ui.add(egui::TextEdit::singleline(&mut m.gas_name).desired_width(140.0));
                 });
             });
         }

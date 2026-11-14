@@ -82,6 +82,11 @@ pub struct Entry {
     /// before saves recorded it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub saved_by: Option<Who>,
+    /// Jobs: their own gas (GS16), so the list can show it; none for a job
+    /// saved before jobs carried a gas, which is cut with the machine's.
+    /// Products never carry one: a part takes the job's.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "crate::gas::number")]
+    pub gas: Option<crate::gas::Gas>,
 }
 
 impl Entry {
@@ -854,14 +859,14 @@ fn saved_line(saved: Option<&Saved>, written: u64) -> (u64, Option<Who>) {
 
 fn job_entry(id: u64, j: &JobFile, written: u64) -> Entry {
     let (updated, saved_by) = saved_line(j.saved.as_ref(), written);
-    Entry { kind: Kind::Job, id, name: j.name.clone(), folder: j.week.clone(), material: j.spec.material, thickness: j.spec.thickness, w: j.spec.w, h: j.spec.h, count_a: j.parts.len(), count_b: j.sheets.len(), updated, tech: false, saved_by }
+    Entry { kind: Kind::Job, id, name: j.name.clone(), folder: j.week.clone(), material: j.spec.material, thickness: j.spec.thickness, w: j.spec.w, h: j.spec.h, count_a: j.parts.len(), count_b: j.sheets.len(), updated, tech: false, saved_by, gas: j.spec.gas }
 }
 
 fn product_entry(id: u64, p: &ProductFile, written: u64) -> Entry {
     let (w, h) = p.part.bbox();
     let tech = p.part.tech.is_some() || !p.part.texts.is_empty();
     let (updated, saved_by) = saved_line(p.saved.as_ref(), written);
-    Entry { kind: Kind::Product, id, name: p.part.name.clone(), folder: p.folder.clone(), material: p.material, thickness: p.thickness, w, h, count_a: p.part.qty as usize, count_b: 0, updated, tech, saved_by }
+    Entry { kind: Kind::Product, id, name: p.part.name.clone(), folder: p.folder.clone(), material: p.material, thickness: p.thickness, w, h, count_a: p.part.qty as usize, count_b: 0, updated, tech, saved_by, gas: None }
 }
 
 /// Thickness filters below this mean "any thickness" (rule PK3: Lantek adds
@@ -936,7 +941,7 @@ mod library_tests {
         lib.delete(Kind::Product, p3).unwrap();
         assert_eq!((p1, p2), (1, 2));
         assert_eq!(lib.path(Kind::Product, 1234), dir.join("Products").join("1").join("1234.json"));
-        let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), pick: Default::default() };
+        let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
         let job = JobFile { format: crate::jobfile::FORMAT.into(), version: crate::jobfile::VERSION, name: "Frames".into(), week: "W12".into(), parts: vec![part.clone()], spec, sheets: vec![vec![Placed { part: 0, x: 5.0, y: 5.0, w: 120.0, h: 80.0, turns: 0, mirror: false, spin: Default::default() }]], formats: vec![], held: Default::default(), cut_lines: vec![], method: String::new(), manual_cuts: vec![], stale: false, booked: false, erp: None, saved: None, library: None, library_parts: Default::default() };
         let j = lib.save_job(&job, SaveTo::New).unwrap().id;
         // Saving again over the same number keeps one record.
@@ -963,7 +968,7 @@ mod library_tests {
     }
 
     fn job(name: &str) -> JobFile {
-        let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), pick: Default::default() };
+        let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
         JobFile::new_job(name, spec)
     }
 

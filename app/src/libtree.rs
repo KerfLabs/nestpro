@@ -646,7 +646,7 @@ mod libtree_tests {
         let dir = scratch("old_format");
         let clock = Clock::at(NOV_9_0920);
         let job = |name: &str, week: &str| {
-            let spec = crate::nest::SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), pick: Default::default() };
+            let spec = crate::nest::SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
             let mut j = crate::jobfile::JobFile::new_job(name, spec);
             j.week = week.into();
             j

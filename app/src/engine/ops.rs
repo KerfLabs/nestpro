@@ -139,10 +139,11 @@ const CONTOUR_STATES: &[&str] = &["cut", "mark", "no-cut", "bend-line", "leave-o
 
 pub static OPS: &[Op] = &[
     // --- job ---
-    Op { name: "new", group: "Job", kind: Kind::Create, help: "Make a new, empty job file with its sheet (size, material, thickness).", args: &[
+    Op { name: "new", group: "Job", kind: Kind::Create, help: "Make a new, empty job file with its sheet (size, material, thickness, gas).", args: &[
         a("name", Ty::Str, "Job name (default: the file name)"), a("week", Ty::Str, "Folder/week the job belongs to"),
         a("w", Ty::Num, "Sheet length X, mm (default 2000)"), a("h", Ty::Num, "Sheet width Y, mm (default 1000)"),
         a("material", Ty::Str, "Material name or number (see catalog), default mild steel"), a("thickness", Ty::Num, "Thickness, mm (default 3)"),
+        a("gas", Ty::Str, "Gas the job is cut with: its name or number (1 Nitrogen, 2 Air, 3 Oxygen, 4 Argon, 5 Water); default the machine's (Settings → Machines)"),
         a("margin", Ty::Num, "Sheet margin, mm (default 5)"), a("gap", Ty::Num, "Gap between parts, mm (default 5)"),
         a("level", Ty::Int, "Automatic nesting level 1-5 (default 3)"), c("machine", MACHINES, "Machine type (default laser)"),
         a("force", Ty::Bool, "Overwrite an existing file"),
@@ -159,7 +160,7 @@ pub static OPS: &[Op] = &[
     Op { name: "import-xml", group: "Job", kind: Kind::Global, help: "Import a Lantek import XML (DXF Import / Parts Import): one new job file per material and thickness, each product's drawing (Fich) or its library product, with its quantity and rotations.", args: &[
         r("path", Ty::Path, "The XML file"), a("dir", Ty::Path, "Folder for the new job files (default: next to the XML)"), a("force", Ty::Bool, "Overwrite job files that exist"),
     ] },
-    Op { name: "import-program", group: "Job", kind: Kind::Create, help: "Open a BLM LC5 machine program set (<NEST>.zip, its .XML, or a Lantek .nxp) as a new editable job: its parts, where they sit, the sheet, material and thickness, and the cut-off as a remnant line.", args: &[
+    Op { name: "import-program", group: "Job", kind: Kind::Create, help: "Open a BLM LC5 machine program set (<NEST>.zip, its .XML, or a Lantek .nxp) as a new editable job: its parts, where they sit, the sheet, material and thickness, the gas its programs name (else the machine's, as for a new job), and the cut-off as a remnant line.", args: &[
         r("path", Ty::Path, "The program set (.zip / .XML / .nxp)"), a("force", Ty::Bool, "Overwrite the job file if it exists"),
     ] },
     Op { name: "drawing-layers", group: "Parts", kind: Kind::Global, help: "List a part drawing's layers (DXF/DWG layers, IGES levels, DSTV blocks, ESSI cut/mark…) and how many objects each holds, before importing it. Objects the drawing hides (frozen or off layers, invisible) or draws in a centre / hidden / dashed line type get their own row, such as `0 [CENTER]`, that starts as left out. Each part's size, holes and contours (numbered as part-info numbers them, with the state each starts in) are given as the part comes in with `layers`, so import-drawing's `contours` can be chosen before importing. Also answers to dxf-layers.", args: &[
@@ -203,9 +204,9 @@ pub static OPS: &[Op] = &[
         a("copy", Ty::Bool, "save-job: save as a new job under the first free name (\"DEMO-7 (1)\") instead of over its record; the copy holds no stock of the original (default false)"),
     ] },
     // --- sheet and nesting ---
-    Op { name: "set-sheet", group: "Nesting", kind: Kind::Write, help: "Change the sheet: size, margin, gap, material, thickness, nesting level, machine. A size given (w or h) is picked for the job, as typing it in the window does: nest then nests only on that size, the stock's sheets of it first, then more of it (ST18; pick=stock goes back to any size in stock). A new material or thickness with nested sheets needs nestings=keep or nestings=remove.", args: &[
+    Op { name: "set-sheet", group: "Nesting", kind: Kind::Write, help: "Change the sheet: size, margin, gap, material, thickness, gas, nesting level, machine. A size given (w or h) is picked for the job, as typing it in the window does: nest then nests only on that size, the stock's sheets of it first, then more of it (ST18; pick=stock goes back to any size in stock). A new material or thickness with nested sheets needs nestings=keep or nestings=remove. A new gas keeps the nested sheets and picks the machine file's section and the technology record again (leads, the micro-joint gaps and spacings Automatic took from the machine, speeds and times follow it; values set by hand stay); the reply says what changed.", args: &[
         a("w", Ty::Num, "Length X, mm"), a("h", Ty::Num, "Width Y, mm"), a("margin", Ty::Num, "Margin, mm"), a("gap", Ty::Num, "Gap between parts, mm"),
-        a("material", Ty::Str, "Material name or number"), a("thickness", Ty::Num, "Thickness, mm"), a("level", Ty::Int, "Nesting level 1-5"), c("machine", MACHINES, "Machine type"),
+        a("material", Ty::Str, "Material name or number"), a("thickness", Ty::Num, "Thickness, mm"), a("gas", Ty::Str, "Gas the job is cut with: its name or number (1 Nitrogen, 2 Air, 3 Oxygen, 4 Argon, 5 Water)"), a("level", Ty::Int, "Nesting level 1-5"), c("machine", MACHINES, "Machine type"),
         c("nestings", &["keep", "remove"], "What happens to nested sheets on a material/thickness change"),
         a("machine_spacing", Ty::Bool, "true = take the part gap and margin from the machine file for the (new) material and thickness (see machine-tech); gap/margin given here still win"),
         c("pick", &["size", "stock"], "What nest nests on: size = only this sheet size, the stock's sheets of it first (the default when w or h is given); stock = any size in stock, in the stock's order, then this size"),
@@ -272,8 +273,9 @@ pub static OPS: &[Op] = &[
         Arg { name: "mode", ty: Ty::Str, required: true, help: "auto or delete", choices: &["auto", "delete"] }, PARTS,
         a("every", Ty::Num, "auto: one joint per this many mm of each contour (default: the machine's maximum distance for the part's quality)"),
     ] },
-    Op { name: "machine-tech", group: "Technology", kind: Kind::Read, help: "Which material × thickness section of the machine's technology file applies to the job (or to another material/thickness), and the values it gives: lead and joint tables, joint gap, pierce and loop radius, kerf, part gap and margins (compare with the sheet's; take them with set-sheet machine_spacing=true), the cutting speeds, pierce times and time settings that time the job (from the machine's technology table and time file), and the machine's 12 cut qualities by name and colour (offered = listed in the window's pickers).", args: &[
+    Op { name: "machine-tech", group: "Technology", kind: Kind::Read, help: "Which material × thickness section of the machine's technology file applies to the job (or to another material/thickness/gas), picked by the job's material, thickness and gas, and the values it gives: lead and joint tables, joint gap, pierce and loop radius, kerf, part gap and margins (compare with the sheet's; take them with set-sheet machine_spacing=true), the cutting speeds, pierce times and time settings that time the job (from the machine's technology table and time file), and the machine's 12 cut qualities by name and colour (offered = listed in the window's pickers).", args: &[
         a("material", Ty::Str, "Look at this material instead of the job's (name or number)"), a("thickness", Ty::Num, "Look at this thickness instead of the job's, mm"),
+        a("gas", Ty::Str, "Look at this gas instead of the job's (name or number: 1 Nitrogen, 2 Air, 3 Oxygen, 4 Argon, 5 Water)"),
     ] },
     Op { name: "compensation", group: "Machining", kind: Kind::Write, help: "Kerf compensation: how the beam is kept half a kerf on the scrap side of each cut — control (the program writes G41/G42 and the corrector number, the CNC offsets) and/or system (the program carries the already-offset path). Shows the machine's settings, the job's choice and, per contour of a sheet, its side, corrector and radius, plus the contours system compensation can't cut (holes no bigger than the kerf, slots narrower than it). control/system set the job's choice (on, off, or machine = the machine file's).", args: &[
         c("control", &["on", "off", "machine"], "Control compensation (G41/G42 + corrector) for this job"),
@@ -361,7 +363,7 @@ pub static OPS: &[Op] = &[
     ] },
     // --- reference ---
     Op { name: "catalog", group: "Reference", kind: Kind::Global, help: "Choices the other operations take: shapes, materials, thicknesses, nesting levels, machine types, lead/joint types, qualities, text kinds and fields, layer roles.", args: &[] },
-    Op { name: "machines", group: "Reference", kind: Kind::Global, help: "The machines in Settings (read-only here): what each does (laser, plasma, punch…), output, post library, the sheet and hole order changed for it in Settings → Machines (order_changes), and the active machine's technology (CT1) values, with how it orders the parts on a sheet (sheet_order: start corner, columns or rows, zig-zag, zones) and a part's holes nobody ordered by hand (hole_order: none, by proximity or by direction with its start corner, rows or columns and tolerance, and cut small holes first with its size limits); for each, where the value comes from (Settings → Machines, the machine file or the default) and what the machine file alone gives.", args: &[] },
+    Op { name: "machines", group: "Reference", kind: Kind::Global, help: "The machines in Settings (read-only here): what each does (laser, plasma, punch…), output, post library, its gas as saved (the gas a new job starts with; gas_note when its number and name aren't one of the list's pairs, written as saved until a gas is picked in Settings → Machines), the sheet and hole order changed for it in Settings → Machines (order_changes), and the active machine's technology (CT1) values, with how it orders the parts on a sheet (sheet_order: start corner, columns or rows, zig-zag, zones) and a part's holes nobody ordered by hand (hole_order: none, by proximity or by direction with its start corner, rows or columns and tolerance, and cut small holes first with its size limits); for each, where the value comes from (Settings → Machines, the machine file or the default) and what the machine file alone gives.", args: &[] },
 ];
 
 pub fn find(name: &str) -> Option<&'static Op> {
@@ -712,13 +714,35 @@ pub fn tech_json(t: &Option<PartTech>) -> Value {
     }
 }
 
-fn spec_json(spec: &SheetSpec) -> Value {
-    json!({
+/// The job's sheet settings; its gas (GS11) as the job's own, or the
+/// machine's as saved (`base`) for a job without one.
+fn spec_json(spec: &SheetSpec, base: &crate::blm::BlmSettings) -> Value {
+    let gas = job_gas(spec, base);
+    let mut v = json!({
         "w": spec.w, "h": spec.h, "margin": spec.margin, "gap": spec.gap,
         "material": cnc::MATERIALS.get(spec.material).copied().unwrap_or("?"), "material_no": spec.material, "thickness": spec.thickness,
         "level": spec.nest_level().name, "machine": spec.machine.label(),
         "pick": spec.pick,
-    })
+    });
+    put_gas(&mut v, &gas);
+    if gas.listed().is_none() {
+        v["gas_note"] = json!(format!("The machine's gas as saved in Settings → Machines, written as saved: {} named \"{}\", which isn't a pair the LC5 list writes ({}). Pick a gas with set-sheet gas=.", gas.number, gas.program_name, crate::gas::program_words()));
+    }
+    v
+}
+
+/// A job's gas in its line of `info` or the library list: its name, number
+/// and whose it is (the job's own, or the machine's for a job saved before
+/// jobs carried a gas, GS11).
+fn put_gas(v: &mut Value, g: &crate::gas::JobGas) {
+    v["gas"] = json!(g.name);
+    v["gas_no"] = json!(g.number);
+    v["gas_from"] = json!(if g.own { "job" } else { "machine" });
+}
+
+/// The gas as a job's machine-tech shows it.
+fn gas_json(g: &crate::gas::JobGas) -> Value {
+    json!({"number": g.number, "name": g.name, "program_name": g.program_name, "label": g.label(), "from": if g.own { "job" } else { "machine" }})
 }
 
 /// What `nest` will nest on, before nesting (the window's "Nest on" line):
@@ -799,7 +823,7 @@ pub fn info(job: &JobFile, ctx: &Ctx, detail_sheet: Option<usize>) -> Value {
         }
     }
     json!({
-        "job": job.name, "week": job.week, "changed_since_nest": job.stale, "sheet": spec_json(&job.spec),
+        "job": job.name, "week": job.week, "changed_since_nest": job.stale, "sheet": spec_json(&job.spec, &ctx.blm),
         "machine": { "name": ctx.cfg.machine().name, "output": if ctx.blm.on { "BLM LC5 (Siemens 840D set)" } else { "ISO G-code" } },
         "parts": parts, "sheets": sheets,
         "totals": { "ordered": need, "nested": placed, "sheets": job.sheets.len(), "cut_len_mm": r1(tot.0), "rapid_len_mm": r1(tot.1), "pierces": tot.2, "time_s": r1(tot.3), "method": job.method },
@@ -904,10 +928,11 @@ fn catalog() -> Value {
     })
 }
 
-/// The machine's values for a sheet's material and thickness (MTL1–MTL9):
-/// which section applies and what it gives, beside the job's own spacing.
-fn machine_tech_report(spec: &SheetSpec, job: &SheetSpec) -> (String, Value) {
+/// The machine's values for a sheet's material, thickness and gas (MTL1–MTL9,
+/// GS13): which section applies and what it gives, beside the job's own spacing.
+fn machine_tech_report(spec: &SheetSpec, job: &SheetSpec, base: &crate::blm::BlmSettings) -> (String, Value) {
     let t = crate::ct1::for_spec(spec);
+    let gas = job_gas(spec, base);
     let q1 = t.leads.quality(1);
     let opt = |v: Option<f64>| v.map_or(Value::Null, |x| json!(r1(x * 1000.0) / 1000.0));
     let section = t.applied().map(|s| {
@@ -917,7 +942,7 @@ fn machine_tech_report(spec: &SheetSpec, job: &SheetSpec) -> (String, Value) {
         })
     });
     let mat = cnc::MATERIALS.get(spec.material).copied().unwrap_or("?");
-    let mut msg = format!("{mat} {} mm: {}.", spec.thickness, t.table_label());
+    let mut msg = format!("{mat} {} mm, {}: {}.", spec.thickness, gas.label(), t.table_label());
     match (t.part_gap, t.sheet_margin()) {
         (None, None) => msg.push_str(" The machine file gives no part gap or margins."),
         (g, m) => msg.push_str(&format!(
@@ -929,7 +954,7 @@ fn machine_tech_report(spec: &SheetSpec, job: &SheetSpec) -> (String, Value) {
         )),
     }
     let data = json!({
-        "material": mat, "material_key": t.picked_for.as_ref().map(|p| p.0.clone()), "thickness": spec.thickness,
+        "material": mat, "material_key": t.picked_for.as_ref().map(|p| p.0.clone()), "thickness": spec.thickness, "gas": gas_json(&gas),
         "table": t.table_label(), "section": section, "sections_in_file": t.file.sections.len(),
         "default_rule": t.default_rule,
         "source": t.source.as_ref().map_or("built-in values".to_string(), |p| p.display().to_string()),
@@ -968,7 +993,7 @@ fn speeds_json(spec: &crate::nest::SheetSpec, t: &crate::ct1::MachineTech) -> Va
     let name = |p: &Option<std::path::PathBuf>| p.as_ref().map(|p| p.display().to_string());
     json!({
         "source": sp.label(), "time_settings": tm.settings.label(),
-        "table_file": f.table.as_ref().and_then(|t| name(&t.source)), "time_file": name(&f.time.source), "gas": f.gas,
+        "table_file": f.table.as_ref().and_then(|t| name(&t.source)), "time_file": name(&f.time.source), "gas": crate::techtable::Keys::for_spec(spec, f.gas).gas,
         "cut_mm_min_by_quality": (1..=12).map(|q| r1(sp.cut_for(q))).collect::<Vec<_>>(),
         "pierce_s_by_quality": (1..=12).map(|q| (sp.pierce_for(q) * 1000.0).round() / 1000.0).collect::<Vec<_>>(),
         "pierce_mode_by_quality": (1..=12).map(|q| sp.pierce_mode(q)).collect::<Vec<_>>(),
@@ -1109,10 +1134,17 @@ fn machines(ctx: &Ctx) -> Value {
     let t = &ctx.tech;
     json!({
         "active": ctx.cfg.active_machine + 1,
-        "machines": ctx.cfg.machines.iter().enumerate().map(|(i, m)| json!({
-            "machine": i + 1, "name": m.name, "does": m.kind.key(), "output": m.output.key(), "post_lib": m.post_lib, "blm_ps1": m.blm_ps1, "blm_cf1": m.blm_cf1, "gas": m.gas_name,
-            "order_changes": m.order.valid(),
-        })).collect::<Vec<_>>(),
+        "machines": ctx.cfg.machines.iter().enumerate().map(|(i, m)| {
+            let mut v = json!({
+                "machine": i + 1, "name": m.name, "does": m.kind.key(), "output": m.output.key(), "post_lib": m.post_lib, "blm_ps1": m.blm_ps1, "blm_cf1": m.blm_cf1, "gas": m.gas_name, "gas_no": m.gas_id,
+                "order_changes": m.order.valid(),
+            });
+            // GS17: a saved gas that isn't one of the list's pairs, as Settings shows it.
+            if let Some(n) = m.gas_mismatch() {
+                v["gas_note"] = json!(n);
+            }
+            v
+        }).collect::<Vec<_>>(),
         "technology": {
             "source": t.source.as_ref().map_or("built-in values".to_string(), |p| p.display().to_string()),
             "lead_in": t.lead_in, "lead_out": t.lead_out, "overlap": t.overlap, "position": t.zone, "hole_lead_in": t.hole_lead_in,
@@ -1191,7 +1223,7 @@ pub fn create(ctx: &Ctx, op_name: &str, default_name: &str, args: &Value) -> Res
         let path = PathBuf::from(a.need_str("path")?);
         let pj = imports::program_job(&ctx.cfg, &default_spec(), &path, 0)?;
         let m = format!(
-            "Opened {}: {} placed part(s) of {} kind(s) on a {:.0} × {:.0} mm sheet, {} {} mm{}.{}",
+            "Opened {}: {} placed part(s) of {} kind(s) on a {:.0} × {:.0} mm sheet, {} {} mm, {}{}.{}",
             pj.name,
             pj.sheet.len(),
             pj.parts.len(),
@@ -1199,6 +1231,7 @@ pub fn create(ctx: &Ctx, op_name: &str, default_name: &str, args: &Value) -> Res
             pj.spec.h,
             cnc::MATERIALS.get(pj.spec.material).copied().unwrap_or("?"),
             pj.spec.thickness,
+            job_gas(&pj.spec, &ctx.blm).label(),
             if pj.cuts.is_empty() { String::new() } else { format!(", {} cut line(s)", pj.cuts.len()) },
             if pj.notes.is_empty() { String::new() } else { format!(" ({})", pj.notes.join("; ")) }
         );
@@ -1206,9 +1239,12 @@ pub fn create(ctx: &Ctx, op_name: &str, default_name: &str, args: &Value) -> Res
     }
     let mut spec = with_prefs(&default_spec(), &ctx.cfg);
     set_spec_fields(&mut spec, &a, ctx)?;
+    if let Some(v) = a.str("gas") {
+        spec.gas = Some(crate::gas::Gas::parse(&v)?);
+    }
     let mut job = JobFile::new_job(&a.str("name").unwrap_or_else(|| default_name.to_string()), spec);
     job.week = a.str("week").unwrap_or_default();
-    let m = format!("New job '{}' — sheet {} × {} mm, {} {} mm. Add parts next.", job.name, job.spec.w, job.spec.h, cnc::MATERIALS.get(job.spec.material).copied().unwrap_or("?"), job.spec.thickness);
+    let m = format!("New job '{}' — sheet {} × {} mm, {} {} mm, {}. Add parts next.", job.name, job.spec.w, job.spec.h, cnc::MATERIALS.get(job.spec.material).copied().unwrap_or("?"), job.spec.thickness, job_gas(&job.spec, &ctx.blm).label());
     Ok((job, m))
 }
 
@@ -1912,7 +1948,15 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                         .filter(|e| find.is_empty() || e.name.to_lowercase().contains(&find) || folder(e).to_lowercase().contains(&find))
                         // Who last saved it and when, in this PC's local time (LB6);
                         // no one for a record saved before saves recorded it.
-                        .map(|e| json!({"id": e.id, "kind": format!("{:?}", e.kind).to_lowercase(), "name": e.name, "folder": folder(&e), "material": cnc::MATERIALS.get(e.material).copied().unwrap_or("?"), "thickness": e.thickness, "w": r1(e.w), "h": r1(e.h), "preprogrammed": e.tech, "saved_by": e.saved_by.as_ref().map(|w| w.label()), "saved_at": (e.updated > 0).then(|| ctx.clock.stamp(e.updated))}))
+                        .map(|e| {
+                            let mut v = json!({"id": e.id, "kind": format!("{:?}", e.kind).to_lowercase(), "name": e.name, "folder": folder(&e), "material": cnc::MATERIALS.get(e.material).copied().unwrap_or("?"), "thickness": e.thickness, "w": r1(e.w), "h": r1(e.h), "preprogrammed": e.tech, "saved_by": e.saved_by.as_ref().map(|w| w.label()), "saved_at": (e.updated > 0).then(|| ctx.clock.stamp(e.updated))});
+                            // A job's gas (GS16): its own, else the machine's
+                            // as saved. A library part carries none.
+                            if e.kind == crate::library::Kind::Job {
+                                put_gas(&mut v, &crate::gas::JobGas::of(e.gas, ctx.blm.gas_id, &ctx.blm.gas_name));
+                            }
+                            v
+                        })
                         .collect();
                     // Jobs that share their name with another job (JX17:
                     // Libraries saved before names were unique): the others'
@@ -2120,8 +2164,21 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             }
         }
         "set-sheet" => {
+            let gas = a.str("gas").map(|v| crate::gas::Gas::parse(&v)).transpose()?;
             let mut spec = job.spec.clone();
             set_spec_fields(&mut spec, &a, ctx)?;
+            let mat_change = spec.material != job.spec.material || (spec.thickness - job.spec.thickness).abs() > 1e-9;
+            let nested = !job.sheets.is_empty();
+            // GS14, GS15: a new gas keeps the nested sheets, unmarked; the
+            // section and the technology record are picked again. The Sheet
+            // tab's pick does the same. Sheets this call removes (a new
+            // material or thickness with nestings=remove, below) aren't kept,
+            // so the gas's note is about none.
+            let removing = nested && mat_change && a.str("nestings").as_deref() == Some("remove");
+            let gas_note = gas.map(|g| {
+                let (sheets, formats, manual) = if removing { (&[][..], &[][..], &[][..]) } else { (&job.sheets[..], &job.formats[..], &job.manual_cuts[..]) };
+                pick_job_gas(&mut spec, g, &mut job.parts, sheets, formats, manual, &ctx.blm).note
+            });
             // A size given is picked for the job, as typed in the window (ST18).
             if a.num("w")?.is_some() || a.num("h")?.is_some() {
                 spec.pick = nest::SheetPick::Size;
@@ -2137,9 +2194,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             } else {
                 None
             };
-            let mat_change = spec.material != job.spec.material || (spec.thickness - job.spec.thickness).abs() > 1e-9;
-            let nested = !job.sheets.is_empty();
-            let mut m = format!("Sheet: {} × {} mm, {} {} mm, {}, gap {} mm, margin {} mm.", spec.w, spec.h, cnc::MATERIALS.get(spec.material).copied().unwrap_or("?"), spec.thickness, spec.nest_level().name, spec.gap, spec.margin);
+            let mut m = format!("Sheet: {} × {} mm, {} {} mm, {}, {}, gap {} mm, margin {} mm.", spec.w, spec.h, cnc::MATERIALS.get(spec.material).copied().unwrap_or("?"), spec.thickness, job_gas(&spec, &ctx.blm).label(), spec.nest_level().name, spec.gap, spec.margin);
             if let Some(s) = spacing {
                 m = format!("{m} {s}");
             }
@@ -2154,15 +2209,23 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                     _ => return Err(format!("{} sheet(s) are nested in the old material/thickness. Say nestings=keep or nestings=remove.", job.sheets.len())),
                 }
             }
+            // What the new gas changed.
+            if let Some(n) = gas_note {
+                m.push(' ');
+                m.push_str(&n);
+            }
             if spec.pick == nest::SheetPick::Size {
                 m.push_str(" Nest nests only on this size (the stock's sheets of it first).");
             }
             let changed = spec.w != job.spec.w || spec.h != job.spec.h || spec.margin != job.spec.margin || spec.gap != job.spec.gap || mat_change || spec.machine != job.spec.machine || spec.pick != job.spec.pick;
+            // The sheet as it was (the same gas, thickness, size pick … again):
+            // nothing to save, back up or undo.
+            let unchanged = spec == job.spec;
             job.spec = spec;
             if changed && !job.sheets.is_empty() {
                 job.stale = true;
             }
-            Ok(Outcome::msg(m))
+            Ok(if unchanged { Outcome::read(m, Value::Null) } else { Outcome::msg(m) })
         }
         "nest" => {
             if let Some(l) = a.int("level")? {
@@ -2702,7 +2765,10 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                 }
                 spec.thickness = v;
             }
-            let (msg, data) = machine_tech_report(&spec, &job.spec);
+            if let Some(v) = a.str("gas") {
+                spec.gas = Some(crate::gas::Gas::parse(&v)?);
+            }
+            let (msg, data) = machine_tech_report(&spec, &job.spec, &ctx.blm);
             Ok(Outcome::read(msg, data))
         }
         "compensation" => {
@@ -2819,6 +2885,10 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                 set!(joint_lead, jl);
                 set!(joint_angle, ja);
                 set!(joint_every, je);
+                // A gap or spacing given here is the programmer's: a gas
+                // change leaves it (GS14).
+                set!(joint_width_machine, jw.map(|_| None));
+                set!(joint_every_machine, je.map(|_| None));
                 set!(joint_lead_out, jlo.map(Some));
                 set!(loops, lp);
                 set!(loop_size, ls);
@@ -3006,11 +3076,8 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             let blm = blm_for(&job.spec, &ctx.blm, &job.name, &ctx.cfg);
             let marks = stockflow::all_remnant_marks(&ctx.library_dir, &job.stock_sheets(&ctx.cfg), &job.formats, &ctx.cfg.stock);
             let ex = export(&base, &job.name, &job.parts, &job.sheets, &job.formats, &plans, &job.spec, &job.cut_lines, &marks, &ctx.post, Some(&blm), ctx.cfg.stock.line.edge_offset)?;
-            let what = if blm.on { "BLM LC5 program set(s) (.zip + .XML)" } else { "program(s)" };
-            let mut o = Outcome::read(
-                format!("Exported {} {what} and a parts report to {}{}", job.sheets.len(), ex.dir.display(), ex.warning.as_ref().map_or(String::new(), |w| format!(" — but {w}"))),
-                Value::Null,
-            );
+            // GS16: the material, thickness and gas they're for.
+            let mut o = Outcome::read(export_note(&ex, job.sheets.len(), &job.spec, &ctx.blm, crate::units::LenUnit::Mm), Value::Null);
             o.files = ex.files;
             Ok(o)
         }

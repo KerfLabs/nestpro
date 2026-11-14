@@ -897,9 +897,9 @@ impl App {
                 // folders, then its parts; a search lists the matching parts
                 // with their folders.
                 let parts = self.lib_records(Kind::Product);
-                let (cut, clock) = (self.libui.parts.cut, self.clock.clone());
+                let (cut, clock, base) = (self.libui.parts.cut, self.clock.clone(), self.blm.clone());
                 let row = move |ui: &mut egui::Ui, e: &Entry, path: Option<&str>, act: &mut Option<TreeAct>| {
-                    lib_row(ui, e, path, None, None, &record_info(e, un), &e.saved_note(&clock), cut == Some(LibItem::Part(e.id)), act);
+                    lib_row(ui, e, path, None, None, &record_info(e, un, &base), &e.saved_note(&clock), cut == Some(LibItem::Part(e.id)), act);
                 };
                 let look = TreeLook {
                     title: format!("📦 Library parts ({})", parts.len()),
@@ -949,7 +949,7 @@ impl App {
                     });
                     // Another PC has it in use (CU10).
                     let in_use = self.in_use_note(e.id);
-                    lib_row(ui, e, Some(&folder(e)), same.as_deref(), in_use.as_deref(), &record_info(e, un), &e.saved_note(&self.clock), false, &mut act);
+                    lib_row(ui, e, Some(&folder(e)), same.as_deref(), in_use.as_deref(), &record_info(e, un, &self.blm), &e.saved_note(&self.clock), false, &mut act);
                 }
             });
             if let Some(a) = act {
@@ -1156,11 +1156,15 @@ impl App {
 }
 
 /// What a library record is, for its row: its material, thickness and size,
-/// and its products and sheets (a job) or its quantity (a part).
-fn record_info(e: &Entry, un: crate::units::LenUnit) -> String {
+/// and its products and sheets (a job) or its quantity (a part). A job's gas
+/// follows its thickness (GS16): its own, or the machine's (`base`, from
+/// Settings → Machines) for a job saved before jobs carried a gas. A part
+/// carries none.
+fn record_info(e: &Entry, un: crate::units::LenUnit, base: &crate::blm::BlmSettings) -> String {
     let mat = crate::cnc::MATERIALS.get(e.material).copied().unwrap_or("");
     if e.kind == Kind::Job {
-        format!("{mat} {} · {} · {} products · {} sheets", un.thickness(e.thickness), un.size(e.w, e.h, 0), e.count_a, e.count_b)
+        let gas = crate::gas::JobGas::of(e.gas, base.gas_id, &base.gas_name).shown();
+        format!("{mat} {} · {gas} · {} · {} products · {} sheets", un.thickness(e.thickness), un.size(e.w, e.h, 0), e.count_a, e.count_b)
     } else {
         format!("{mat} {} · {} · qty {}", un.thickness(e.thickness), un.size(e.w, e.h, 0), e.count_a)
     }
@@ -2278,7 +2282,7 @@ pub(crate) mod libui_tests {
 
     /// A job kim saved on PROG-3 into the Library, in `folder`.
     fn saved_elsewhere(dir: &Path, name: &str, folder: &str) -> u64 {
-        let mut j = JobFile::new_job(name, crate::nest::SheetSpec { w: 3000.0, h: 1500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 10.0, level: 3, machine: Default::default(), kerf: Default::default(), pick: Default::default() });
+        let mut j = JobFile::new_job(name, crate::nest::SheetSpec { w: 3000.0, h: 1500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 10.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() });
         j.week = folder.into();
         Library::open(dir, &Who::new("kim", "PROG-3"), &Clock::at(NOV_9_0920)).unwrap().save_job(&j, crate::library::SaveTo::New).unwrap().id
     }

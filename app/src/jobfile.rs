@@ -121,7 +121,7 @@ mod jobfile_tests {
             Part { name: "Plate".into(), shape: Shape::PlateHole, w: 120.0, h: 80.0, qty: 2, rotate: true, color: 3, tech: Some(tech), custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] },
             Part { name: "Drawn".into(), shape: Shape::Custom, w: geo.w, h: geo.h, qty: 1, rotate: false, color: 4, tech: None, custom: Some(std::sync::Arc::new(geo)), rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] },
         ];
-        let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 1, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), pick: Default::default() };
+        let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 1, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
         let sheets = vec![vec![Placed { part: 0, x: 5.0, y: 5.0, w: 120.0, h: 80.0, turns: 1, mirror: true, spin: Default::default() }]];
         let cuts = vec![vec![CutLine { pts: vec![[300.0, 0.0], [300.0, 1000.0]], kind: crate::cutoff::CutKind::Remnant }]];
         // The sheet is an L-shaped remnant from stock.
@@ -159,7 +159,7 @@ mod jobfile_tests {
         // HM14: a part at 30° is written as layout 2, which older builds
         // refuse rather than cut at the wrong angle; quarter turns stay at 1.
         let part = Part { name: "P".into(), shape: Shape::Rectangle, w: 100.0, h: 40.0, qty: 1, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
-        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), pick: Default::default() };
+        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
         let quarter = Placed { x: 10.0, y: 10.0, ..crate::nest::oriented(&part, 0, 90.0, false) };
         let mut j = JobFile { format: FORMAT.into(), version: VERSION, name: "DEMO-001".into(), week: String::new(), parts: vec![part.clone()], spec, sheets: vec![vec![quarter]], formats: vec![], held: Default::default(), cut_lines: vec![], method: String::new(), manual_cuts: vec![], stale: false, booked: false, erp: None, saved: None, library: None, library_parts: Default::default() };
         let version = |j: &JobFile| serde_json::from_str::<serde_json::Value>(&to_text(j).unwrap()).unwrap()["version"].as_u64();

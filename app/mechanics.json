@@ -3943,7 +3943,7 @@
  {
   "name": "job gas / lens / nozzle keys",
   "group": "machine file sections",
-  "value": "not given (jobs carry none)",
+  "value": "gas: the job's (GS13); lens, nozzle and the rest: not given (jobs carry none)",
   "source": "MECHANICS MTL4; own design"
  },
  {
@@ -6540,6 +6540,273 @@
   "group": "sheet stock",
   "value": "any size in stock",
   "source": "MECHANICS ST18"
+ },
+ {
+  "name": "gas list",
+  "group": "gas",
+  "value": "per machine: its post settings' G lines in order (gas n = the n-th line), each with a name and on/off; without them 1 Nitrogen, 2 Compressed air, 3 Oxygen, all on",
+  "source": "GS1"
+ },
+ {
+  "name": "gas 0",
+  "group": "gas",
+  "value": "any gas",
+  "source": "GS1"
+ },
+ {
+  "name": "LC5 gas names",
+  "group": "gas",
+  "value": "1 Nitrogen, 2 Air, 3 Oxygen, 4 Argon, 5 H2O",
+  "source": "GS2"
+ },
+ {
+  "name": "LC5 gas lines for another number (0, 6 and above)",
+  "group": "gas",
+  "value": "IDGAS, NOMEGAS, GasId and GasName written empty",
+  "source": "GS2"
+ },
+ {
+  "name": "where a program's gas comes from",
+  "group": "gas",
+  "value": "the sheet's cutting set-up (type of cut, sheets, lens, power, gas) at the top of its machining",
+  "source": "GS3"
+ },
+ {
+  "name": "stored gas counted as none",
+  "group": "gas",
+  "value": "32000 or more",
+  "source": "GS3"
+ },
+ {
+  "name": "machine reference gas, laser",
+  "group": "gas",
+  "value": "technology file B045 (0 = any; template 3)",
+  "source": "GS4"
+ },
+ {
+  "name": "machine reference gas, oxy-fuel and plasma",
+  "group": "gas",
+  "value": "technology file B399 (-1 in the shipped files)",
+  "source": "GS4"
+ },
+ {
+  "name": "how the reference gas fills a sheet's cutting set-up",
+  "group": "gas",
+  "value": "not found",
+  "source": "GS4",
+  "estimated": true
+ },
+ {
+  "name": "Type of cut starts from",
+  "group": "gas",
+  "value": "the set-up already in the sheet's machining (no gas when there is none)",
+  "source": "GS3"
+ },
+ {
+  "name": "machine configuration keys",
+  "group": "gas",
+  "value": "configuration alias, lens, gas, power, default technology mark",
+  "source": "GS5"
+ },
+ {
+  "name": "machine configurations offered",
+  "group": "gas",
+  "value": "the machine's custom configuration sets that cover the part's material and thickness, when it has such sets; otherwise its own fitting material/thickness sections, only when it shows lens, gas and power (A086) or the alias (A099) in them",
+  "source": "GS5"
+ },
+ {
+  "name": "job grouped by",
+  "group": "gas",
+  "value": "machine, material, thickness, machine configuration; two configurations match when either is empty, or equal apart from case and the default mark",
+  "source": "GS6"
+ },
+ {
+  "name": "nesting in a group with a configuration",
+  "group": "gas",
+  "value": "takes the group's configuration when its own differs",
+  "source": "GS6"
+ },
+ {
+  "name": "group a part joins when several fit",
+  "group": "gas",
+  "value": "the first whose configuration matches",
+  "source": "GS6",
+  "estimated": true
+ },
+ {
+  "name": "new part's configuration",
+  "group": "gas",
+  "value": "none, or its last order's for the same machine, material and thickness when that option is on",
+  "source": "GS7"
+ },
+ {
+  "name": "part's or group's configuration filled from the technology records",
+  "group": "gas",
+  "value": false,
+  "source": "GS7",
+  "estimated": true
+ },
+ {
+  "name": "shipped report templates and help mention the gas",
+  "group": "gas",
+  "value": false,
+  "source": "GS8"
+ },
+ {
+  "name": "a report of the original prints the gas",
+  "group": "gas",
+  "value": false,
+  "source": "GS8",
+  "estimated": true
+ },
+ {
+  "name": "library part carries a gas",
+  "group": "gas",
+  "value": false,
+  "source": "GS9"
+ },
+ {
+  "name": "nested sheets when a job's configuration changes",
+  "group": "gas",
+  "value": "not found",
+  "source": "GS9",
+  "estimated": true
+ },
+ {
+  "name": "gas list shown to people",
+  "group": "gas",
+  "value": "1 Nitrogen, 2 Air, 3 Oxygen, 4 Argon, 5 Water",
+  "source": "MECHANICS GS10"
+ },
+ {
+  "name": "gas names a job's LC5 programs write",
+  "group": "gas",
+  "value": "1 Nitrogen, 2 Air, 3 Oxygen, 4 Argon, 5 H2O",
+  "source": "MECHANICS GS10; GS2"
+ },
+ {
+  "name": "job file gas",
+  "group": "gas",
+  "value": "the gas's number, beside material and thickness; none = saved before jobs carried a gas",
+  "source": "MECHANICS GS10"
+ },
+ {
+  "name": "job without a gas",
+  "group": "gas",
+  "value": "the machine's gas number and name as saved, even off the list; file unchanged until a gas is picked",
+  "source": "MECHANICS GS11"
+ },
+ {
+  "name": "new job gas",
+  "group": "gas",
+  "value": "the gas of the machine the job is made for (the active one; for the ERP link, the machine its work runs on) when its number and name are a pair the LC5 list writes (5 is H2O), else none of its own; every path a job is made takes it the same way",
+  "source": "MECHANICS GS12"
+ },
+ {
+  "name": "section and record keys",
+  "group": "gas",
+  "value": "the job's gas; a section or record with no gas fits any job; no gas of its own: none for the section, the machine's for the record",
+  "source": "MECHANICS GS13"
+ },
+ {
+  "name": "default-technology rule with a gas",
+  "group": "gas",
+  "value": "applies when the job gives only material, thickness and gas (among the sections its gas fits)",
+  "source": "MECHANICS GS13",
+  "estimated": true
+ },
+ {
+  "name": "gas change keeps the nested sheets",
+  "group": "gas",
+  "value": true,
+  "source": "MECHANICS GS14"
+ },
+ {
+  "name": "gas change marks the sheets changed",
+  "group": "gas",
+  "value": false,
+  "source": "MECHANICS GS14"
+ },
+ {
+  "name": "gas change and automatic micro-joints",
+  "group": "gas",
+  "value": "a joint gap or spacing a part took from the machine with Automatic micro-joints takes the machine's for the new gas (the section's; the spacing for the part's quality); a gap or spacing set by the programmer stays",
+  "source": "MECHANICS GS14"
+ },
+ {
+  "name": "gas change and micro-joints, open cases",
+  "group": "gas",
+  "value": "no section for the new gas: the machine's own joint values; joints placed on an element keep their place with the part's gap; automatic joints a job got before nestpro remembered which values came from the machine stay",
+  "source": "MECHANICS GS14",
+  "estimated": true
+ },
+ {
+  "name": "gas pick on the Sheet tab",
+  "group": "gas",
+  "value": "beside the thickness: the five gases by name; a pick changes the job as set-sheet gas= does",
+  "source": "MECHANICS GS15"
+ },
+ {
+  "name": "gas pick on Home's material button",
+  "group": "gas",
+  "value": true,
+  "source": "MECHANICS GS15",
+  "estimated": true
+ },
+ {
+  "name": "picking the gas a job has",
+  "group": "gas",
+  "value": "no change: nothing to save, no undo step",
+  "source": "MECHANICS GS15"
+ },
+ {
+  "name": "where a job's gas shows",
+  "group": "gas",
+  "value": "Sheet tab, job list, Library window, job summary, library list, info, the message after programs are written",
+  "source": "MECHANICS GS16"
+ },
+ {
+  "name": "message after programs are written",
+  "group": "gas",
+  "value": "3 programs written: Mild steel 12.7 mm, Oxygen",
+  "source": "MECHANICS GS16"
+ },
+ {
+  "name": "machine's gas shown for a job without one",
+  "group": "gas",
+  "value": "Nitrogen (the machine's); off the list: Oxygen (gas 2, the machine's as saved)",
+  "source": "MECHANICS GS16",
+  "estimated": true
+ },
+ {
+  "name": "library part gas",
+  "group": "gas",
+  "value": false,
+  "source": "MECHANICS GS16"
+ },
+ {
+  "name": "machine gas in Settings",
+  "group": "gas",
+  "value": "a pick from the list; writes the number and the name the LC5 writes (5 H2O)",
+  "source": "MECHANICS GS17"
+ },
+ {
+  "name": "machine gas off the list in Settings",
+  "group": "gas",
+  "value": "shown as saved and flagged; written as saved until a gas is picked; opening Settings rewrites nothing",
+  "source": "MECHANICS GS17"
+ },
+ {
+  "name": "gas of a job opened from LC5 programs",
+  "group": "gas",
+  "value": "the sheet program's ;IDGAS= and ;NOMEGAS= (else the XML's GasId and GasName) when they are a pair the LC5 list writes; else a new job's gas, and the reply says what the set named",
+  "source": "MECHANICS GS18"
+ },
+ {
+  "name": "sheet program and XML naming different gases",
+  "group": "gas",
+  "value": "the sheet program's gas, and the reply says the XML named another",
+  "source": "MECHANICS GS18"
  }
 ]
 }
