@@ -24,6 +24,13 @@ pub struct Imported {
     pub thickness: f64,
     /// Material name in the header (e.g. "STAINLESS").
     pub material: String,
+    /// The gas the sheet program's header names, as written: its `;IDGAS=`
+    /// number and `;NOMEGAS=` name (GS2), both empty for no gas. None when
+    /// the header has no gas lines.
+    pub gas: Option<(String, String)>,
+    /// The gas the XML job sheet names, as written: `GasId` and `GasName`.
+    /// None without an XML or without those tags.
+    pub xml_gas: Option<(String, String)>,
     /// (part name, subprogram, geometry)
     pub parts: Vec<(String, String, CustomGeo)>,
     /// (part index, x, y) of the part's lower-left corner on the sheet.
@@ -278,8 +285,21 @@ pub fn parse_set(files: &[(String, String)], xml: Option<&str>) -> Result<Import
             }
         }
     }
+    // The gas lines of the header (GS2), before the nesting starts.
+    for l in main.1.lines().map(str::trim).take_while(|l| !l.starts_with("INITNEST")) {
+        if let Some(v) = l.strip_prefix(";IDGAS=") {
+            im.gas.get_or_insert_with(Default::default).0 = v.trim().to_string();
+        }
+        if let Some(v) = l.strip_prefix(";NOMEGAS=") {
+            im.gas.get_or_insert_with(Default::default).1 = v.trim().to_string();
+        }
+    }
     let names = xml.map(xml_names).unwrap_or_default();
     if let Some(x) = xml {
+        let (id, name) = (xml_tag(x, "GasId"), xml_tag(x, "GasName"));
+        if id.is_some() || name.is_some() {
+            im.xml_gas = Some((id.unwrap_or_default(), name.unwrap_or_default()));
+        }
         im.job = xml_tag(x, "JobName").unwrap_or_default();
         if let Some(n) = xml_tag(x, "NestingName") {
             im.name = n;
@@ -553,6 +573,22 @@ mod progimport_tests {
         assert!(open.is_empty() && loops.len() == 2, "{loops:?} {open:?}");
         let (g, _) = part_geo(&loops, &[]).unwrap();
         assert_eq!((g.w.round(), g.h.round(), g.holes.len()), (100.0, 50.0, 1));
+    }
+
+    #[test]
+    fn reads_the_gas_the_sheet_program_and_its_xml_name() {
+        // GS2: the header's ;IDGAS= / ;NOMEGAS= and the XML's GasId / GasName,
+        // as written (empty for no gas); None without them.
+        let sub = ("A701.SPF".to_string(), "NEXT_L(0,0,0,1,3)\nPROFILE\nG01 X10. Y0.\nG01 X10. Y5.\nG01 X0. Y5.\nLASTLINE(0,0,0,1,0.,5.,0.,0.,0,0)\nENDGEO\n".to_string());
+        let set = |gas: &str| vec![("A.SPF".to_string(), format!(";ADILAS\r\n;STEEL,1000,500,12.7\r\n;IDMAT=0010\r\n;NOMEMAT=STEEL\r\n{gas};Postprocessor version 2.0.0\r\nINITNEST\r\nORIG(10,10,0)\r\nN1 CALL\"/_n_wks_dir/_n_sheet_wpd/_n_A701_spf\"\r\nENDNEST\r\n")), sub.clone()];
+        let xml = "<General>\r\n\t<GasId>5</GasId>\r\n\t<GasName>H2O</GasName>\r\n</General>\r\n";
+        let pair = |a: &str, b: &str| Some((a.to_string(), b.to_string()));
+        let im = parse_set(&set(";IDGAS=3\r\n;NOMEGAS=Oxygen\r\n"), Some(xml)).unwrap();
+        assert_eq!((im.gas, im.xml_gas, im.thickness), (pair("3", "Oxygen"), pair("5", "H2O"), 12.7));
+        let im = parse_set(&set(";IDGAS=\r\n;NOMEGAS=\r\n"), None).unwrap();
+        assert_eq!((im.gas, im.xml_gas), (pair("", ""), None));
+        let im = parse_set(&set(""), Some("<General></General>")).unwrap();
+        assert_eq!((im.gas, im.xml_gas), (None, None));
     }
 
     #[test]

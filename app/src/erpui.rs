@@ -280,7 +280,13 @@ impl App {
     fn erp_make_job(&mut self, im: Imported) {
         let integ = self.integ();
         let provider = integ.provider;
-        let mut spec = crate::engine::with_prefs(&self.spec, &self.cfg);
+        // The machine the work runs on (F21): the scheduled equipment's, else
+        // the operation's. The job is made for it, so it starts with its gas
+        // (GS12), though it becomes the active machine only once the job is made.
+        let mapped = integ.machine_for(&im.operation.id, &im.equipment.id);
+        let machine = mapped.as_ref().and_then(|m| self.cfg.machines.iter().position(|x| &x.name == m));
+        let on = machine.map_or_else(|| self.cfg.machine(), |k| self.cfg.machines[k].clone());
+        let mut spec = crate::engine::with_prefs_for(&self.spec, &self.cfg, &on);
         let mut notes = im.notes;
         if let Some(m) = &im.info {
             match erp::pick_material(&self.cfg, m) {
@@ -317,10 +323,9 @@ impl App {
         };
         let name = self.unique_job_name(base.trim()).unwrap_or(base);
         let link = ErpJob { provider, material_id: im.material.id.clone(), material_name: im.material.name.clone(), operation_id: im.operation.id.clone(), operation_name: im.operation.name.clone(), work_order: im.work_order.clone(), sent: None, sheet_item: String::new() };
-        // The machine the work runs on (F21): the scheduled equipment's, else the operation's.
         let mut machine_note = String::new();
-        if let Some(m) = integ.machine_for(&im.operation.id, &im.equipment.id) {
-            match self.cfg.machines.iter().position(|x| x.name == m) {
+        if let Some(m) = mapped {
+            match machine {
                 Some(k) => {
                     // Applied (post, technology) with the next frame's settings pass.
                     self.cfg.active_machine = k;
@@ -1299,6 +1304,42 @@ mod tests {
         let seen = seen.lock().unwrap();
         assert!(!seen.iter().any(|s| s.0 == "POST /api/work-orders"));
         assert!(seen.iter().any(|s| s.0.starts_with("PUT ")));
+    }
+
+    #[test]
+    fn a_job_from_the_erp_starts_with_the_gas_of_the_machine_its_work_runs_on() {
+        use crate::gas::Gas;
+        // GS12, F21: the work order's step is scheduled on the 6 kW machine
+        // (Fiber 2, saved with oxygen) while Fiber 1 (nitrogen) is in use.
+        // The job is made for Fiber 2, so it starts with oxygen.
+        let ctx = egui::Context::default();
+        let (url, _seen) = mock_planner(true);
+        let mut a = planner_app(url);
+        a.cfg.machines[0].pick_gas(Gas::Nitrogen);
+        a.cfg.machines[1].pick_gas(Gas::Oxygen);
+        a.erp_refresh();
+        wait(&mut a, &ctx, |a| a.erp.load.is_none());
+        a.erp_open_step(0, 0);
+        wait(&mut a, &ctx, |a| a.erp.import.is_none());
+        assert!(a.erp.msg_ok, "{} {:?}", a.erp.msg, a.erp.notes);
+        assert_eq!(a.cfg.machine().name, "Fiber 2");
+        assert_eq!(a.spec.gas, Some(Gas::Oxygen), "Fiber 2's gas");
+        // Work taken from Waiting runs on its operation's machine, Fiber 1
+        // (saved with air here), while Fiber 2 is in use: an air job.
+        let (url, _seen) = mock_planner(true);
+        let mut a = planner_app(url);
+        a.cfg.machines[0].pick_gas(Gas::Air);
+        a.cfg.machines[1].pick_gas(Gas::Oxygen);
+        a.cfg.active_machine = 1;
+        a.erp_refresh();
+        wait(&mut a, &ctx, |a| a.erp.load.is_none());
+        a.erp.sel_group = 0;
+        a.erp.picked.insert(("6650aaaaaaaaaaaaaaaaaaaa".into(), "jo1".into()));
+        a.erp_import();
+        wait(&mut a, &ctx, |a| a.erp.import.is_none());
+        assert!(a.erp.msg_ok, "{} {:?}", a.erp.msg, a.erp.notes);
+        assert_eq!(a.cfg.machine().name, "Fiber 1");
+        assert_eq!(a.spec.gas, Some(Gas::Air), "Fiber 1's gas");
     }
 
     #[test]

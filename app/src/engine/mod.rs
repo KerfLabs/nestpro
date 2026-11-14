@@ -138,12 +138,12 @@ pub fn job_gas(spec: &SheetSpec, base: &crate::blm::BlmSettings) -> crate::gas::
     crate::gas::JobGas::of(spec.gas, base.gas_id, &base.gas_name)
 }
 
-/// The gas a new job starts with (GS12): the active machine's (Settings →
-/// Machines) when its saved number and name are one of the list's pairs;
-/// otherwise none of its own, so the job is cut with the machine's as saved
-/// (GS11; our choice, FEATURES MAC-69).
-pub fn new_job_gas(cfg: &AppSettings) -> Option<crate::gas::Gas> {
-    cfg.machine().gas()
+/// The gas a new job starts with (GS12): that of the machine `m` it's made
+/// for (Settings → Machines) when its saved number and name are one of the
+/// list's pairs; otherwise none of its own, so the job is cut with the
+/// machine's as saved (GS11; our choice, FEATURES MAC-69).
+pub fn new_job_gas(m: &settings::Machine) -> Option<crate::gas::Gas> {
+    m.gas()
 }
 
 /// What picking a job's gas changed, in words (GS14): the gas, the machine
@@ -1595,9 +1595,18 @@ impl JobFile {
 }
 
 /// A new job's sheet with the part gap and edge margin from Settings →
-/// Nesting (HM12) and the machine's gas (GS12).
+/// Nesting (HM12) and the active machine's gas (GS12). Every way a job is
+/// made starts from it: New job, the agents' `new`, the XML import, a job
+/// opened from programs, the ERP link (`with_prefs_for`).
 pub fn with_prefs(spec: &SheetSpec, cfg: &AppSettings) -> SheetSpec {
-    SheetSpec { gap: cfg.nesting.part_gap, margin: cfg.nesting.edge_margin, gas: new_job_gas(cfg), ..spec.clone() }
+    with_prefs_for(spec, cfg, &cfg.machine())
+}
+
+/// `with_prefs` for a job made for machine `m`, which becomes the active one
+/// once the job is made: the ERP link's work runs on the machine its step is
+/// scheduled on (F21), and the job starts with that machine's gas (GS12).
+pub fn with_prefs_for(spec: &SheetSpec, cfg: &AppSettings, m: &settings::Machine) -> SheetSpec {
+    SheetSpec { gap: cfg.nesting.part_gap, margin: cfg.nesting.edge_margin, gas: new_job_gas(m), ..spec.clone() }
 }
 
 /// The default sheet of a new job: 2000 × 1000 mm, 3 mm mild steel, level 3.
