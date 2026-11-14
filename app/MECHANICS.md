@@ -10,6 +10,8 @@ private research notes.
 
 **Reserved:** spec #132 (Programming screen) holds rule IDs F24–F33.
 
+**Reserved:** spec #142 (the shop's own materials) holds rule IDs MA8–MA35.
+
 **Jobs (CAM).** In the original, the Jobs manager keeps work orders, products and nested
 sheets in a database, and nesting runs in a separate nesting program. Part placement and the
 usage percentages come from that nesting side; in the rebuild they remain estimates (see the

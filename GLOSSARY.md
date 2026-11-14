@@ -64,6 +64,20 @@ _Avoid_: ignore, delete
 **Bend line**:
 A no-cut line showing where the part is bent later, shown in its own colour. The programmer may mark it instead.
 
+## Materials
+
+**Material**:
+One kind of sheet the shop cuts, named by the shop, e.g. "304 Stainless", "316 Stainless", "A36" or "5052 Aluminium". Each grade is its own material: a job, a part and a stock sheet each have exactly one, and a 316 job never takes 304 sheets.
+_Avoid_: grade, family, alloy (as a separate thing from the material)
+
+**Standard**:
+An entry of the standard material catalogue (e.g. mild steel, stainless steel, aluminium-magnesium) that a material is based on. It gives the material its kind, its weight per volume and, unless the shop sets its own, its key in the machine file, so grades on one standard share cutting technology.
+_Avoid_: norm, base material, catalogue number
+
+**Material list**:
+The shop's materials, kept in the Library so every programming PC sees the same ones.
+_Avoid_: material table, material master
+
 ## How a part is cut
 
 **Machine**:
