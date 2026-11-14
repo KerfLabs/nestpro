@@ -5733,3 +5733,27 @@ fn the_machines_report_flags_a_saved_gas_that_isnt_on_the_list() {
         let _ = std::fs::remove_dir_all(&d);
     }
 }
+
+#[test]
+fn a_new_gas_with_a_new_thickness_and_nestings_removed_says_no_sheet_was_kept() {
+    // GS14: the reply says what the gas changed on the sheets that stay. With
+    // nestings=remove there are none left: no sheet kept, no cut time.
+    let d = dir("gas_remove");
+    let (mut s, _on) = gas_session(&d, true, (1, "Nitrogen"));
+    let job = gas_job(&d, &mut s);
+    let r = call(&mut s, "set-sheet", None, json!({"thickness": 2.5, "gas": "oxygen", "nestings": "remove"}));
+    let m = r["message"].as_str().unwrap();
+    assert!(m.contains("Mild steel 2.5 mm, Oxygen (3)") && m.contains("Removed 2 nested sheet(s)"), "{m}");
+    assert!(m.contains("Gas: Nitrogen (1) → Oxygen (3)") && m.contains("no nested sheets"), "{m}");
+    assert!(!m.contains("kept") && !m.contains("cut time"), "{m}");
+    let j = jobfile::load(&job).unwrap();
+    assert!(j.sheets.is_empty() && j.formats.is_empty(), "{:?}", j.sheets);
+    assert_eq!(info_gas(&mut s), ("Oxygen".into(), 3, "job".into()));
+    // nestings=keep: the sheets stay, and the reply says so with their cut time.
+    let (mut s, _on) = gas_session(&d, true, (1, "Nitrogen"));
+    gas_job(&d, &mut s);
+    let r = call(&mut s, "set-sheet", None, json!({"thickness": 2.5, "gas": "oxygen", "nestings": "keep"}));
+    let m = r["message"].as_str().unwrap();
+    assert!(m.contains("Kept the nested sheets") && m.contains("2 nested sheet(s) kept; cut time"), "{m}");
+    let _ = std::fs::remove_dir_all(&d);
+}

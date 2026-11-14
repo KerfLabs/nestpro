@@ -2154,19 +2154,25 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             let gas = a.str("gas").map(|v| crate::gas::Gas::parse(&v)).transpose()?;
             let mut spec = job.spec.clone();
             set_spec_fields(&mut spec, &a, ctx)?;
+            let mat_change = spec.material != job.spec.material || (spec.thickness - job.spec.thickness).abs() > 1e-9;
+            let nested = !job.sheets.is_empty();
             // GS14, GS15: a new gas keeps the nested sheets, unmarked; the
             // section and the technology record are picked again. The Sheet
-            // tab's pick does the same.
-            let gas_note = gas.map(|g| pick_job_gas(&mut spec, g, &job.parts, &job.sheets, &job.formats, &job.manual_cuts, &ctx.blm).note);
+            // tab's pick does the same. Sheets this call removes (a new
+            // material or thickness with nestings=remove, below) aren't kept,
+            // so the gas's note is about none.
+            let removing = nested && mat_change && a.str("nestings").as_deref() == Some("remove");
+            let gas_note = gas.map(|g| {
+                let (sheets, formats, manual) = if removing { (&[][..], &[][..], &[][..]) } else { (&job.sheets[..], &job.formats[..], &job.manual_cuts[..]) };
+                pick_job_gas(&mut spec, g, &job.parts, sheets, formats, manual, &ctx.blm).note
+            });
             // "Use machine values" (MTL9): only the fields not given here.
             let spacing = if a.bool("machine_spacing")? == Some(true) {
                 Some(use_machine_spacing(&mut spec, a.num("gap")?.is_none(), a.num("margin")?.is_none())?)
             } else {
                 None
             };
-            let mat_change = spec.material != job.spec.material || (spec.thickness - job.spec.thickness).abs() > 1e-9;
-            let nested = !job.sheets.is_empty();
-            let mut m = format!("Sheet: {} × {} mm, {} {} mm, {}, {}, gap {} mm, margin {} mm.", spec.w, spec.h, cnc::MATERIALS.get(spec.material).copied().unwrap_or("?"), spec.thickness, job_gas(&spec, &ctx.blm).label(), spec.nest_level().name, spec.gap, spec.margin);
+            let mut m = format!("Sheet:{} × {} mm, {} {} mm, {}, {}, gap {} mm, margin {} mm.", spec.w, spec.h, cnc::MATERIALS.get(spec.material).copied().unwrap_or("?"), spec.thickness, job_gas(&spec, &ctx.blm).label(), spec.nest_level().name, spec.gap, spec.margin);
             if let Some(s) = spacing {
                 m = format!("{m} {s}");
             }

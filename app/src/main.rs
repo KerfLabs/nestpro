@@ -3115,8 +3115,11 @@ fn main() -> eframe::Result {
             }
             // --machine-gas=<number>:<name>: the active machine saved with
             // that gas number and name, as settings from before the gas was
-            // a pick may hold (screenshots of GS17's flag; never saved).
-            if let Some((n, name)) = std::env::args().find_map(|a| a.strip_prefix("--machine-gas=").and_then(|v| v.split_once(':').map(|(n, s)| (n.parse::<u32>().ok(), s.to_string())))) {
+            // a pick may hold (screenshots of GS17's flag). Only with
+            // --screenshot, which never saves the settings: launched by hand
+            // it's ignored, so the real machine's gas is never overwritten.
+            let machine_gas = app.shot.as_ref().and_then(|_| std::env::args().find_map(|a| a.strip_prefix("--machine-gas=").and_then(|v| v.split_once(':').map(|(n, s)| (n.parse::<u32>().ok(), s.to_string())))));
+            if let Some((n, name)) = machine_gas {
                 if let (Some(n), Some(m)) = (n, app.cfg.machines.get_mut(app.cfg.active_machine)) {
                     m.gas_id = n;
                     m.gas_name = name;
