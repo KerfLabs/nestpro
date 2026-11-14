@@ -98,10 +98,15 @@ impl App {
         });
         ribbon_group(ui, "Nesting", |ui| {
             if ribbon_button(ui, Icon::Program, "Open CNC\nprogram", false, true)
-                .on_hover_text("Open a nesting from its machine programs (LC5 .zip / .XML / .SPF — Lantek's or this app's) to edit it")
+                .on_hover_text("Open a nesting from its machine programs (LC5 .zip / .XML / .SPF — Lantek's or this app's — or a ByStar Fiber laser job, .bvc) to edit it")
                 .clicked()
             {
-                if let Some(f) = rfd::FileDialog::new().add_filter("Machine programs or Lantek export", &["zip", "ZIP", "xml", "XML", "spf", "SPF", "nxp", "NXP"]).add_filter("Lantek nesting files", &["mec", "MEC", "chp", "CHP"]).pick_file() {
+                if let Some(f) = rfd::FileDialog::new()
+                    .add_filter("Machine programs or Lantek export", &["zip", "ZIP", "xml", "XML", "spf", "SPF", "nxp", "NXP", "bvc", "BVC"])
+                    .add_filter("ByStar Fiber laser job", &["bvc", "BVC"])
+                    .add_filter("Lantek nesting files", &["mec", "MEC", "chp", "CHP"])
+                    .pick_file()
+                {
                     self.open_nesting_file(&f);
                 }
             }

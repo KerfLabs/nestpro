@@ -4,6 +4,7 @@ mod appicon;
 mod arrange_ui;
 mod bands;
 mod blm;
+mod bvc;
 mod startup;
 mod iconfile;
 mod cli;
@@ -797,7 +798,8 @@ impl App {
     }
 
     /// Open a nesting from machine programs (.zip / .XML / .SPF, see
-    /// progimport.rs) as a new job, ready to edit in the Nesting module.
+    /// progimport.rs, or a ByStar Fiber .bvc, see bvc.rs) as a new job, ready
+    /// to edit in the Nesting module.
     pub fn open_nesting_file(&mut self, path: &std::path::Path) {
         let pj = match engine::imports::program_job(&self.cfg, &self.spec, path, self.color_seq) {
             Ok(pj) => pj,
@@ -809,16 +811,18 @@ impl App {
         self.color_seq += pj.parts.len();
         let name = self.unique_job_name(&pj.name).unwrap_or_else(|| pj.name.clone());
         let spec = pj.spec.clone();
-        let n_parts = pj.sheet.len();
+        let n_parts: usize = pj.sheets.iter().map(Vec::len).sum();
+        let n_sheets = pj.sheets.len();
         let notes = pj.notes.clone();
         let cuts = pj.cuts.clone();
+        let formats = if pj.formats.is_empty() { vec![nest::SheetFormat::rect(spec.w, spec.h); n_sheets] } else { pj.formats.clone() };
         self.store_job();
         self.jobs.push(Job {
             week: "Opened programs".into(),
             name: name.clone(),
             parts: pj.parts,
             spec: spec.clone(),
-            result: nest::NestResult { sheets: vec![pj.sheet], formats: vec![nest::SheetFormat::rect(spec.w, spec.h)], method: "opened from machine program".into(), tried: 0 },
+            result: nest::NestResult { sheets: pj.sheets, formats, method: "opened from machine program".into(), tried: 0 },
             stale: false,
             lib_id: None,
             lib_read: Default::default(),
@@ -834,11 +838,12 @@ impl App {
         let i = self.jobs.len() - 1;
         self.open_job(i);
         // Cut-offs come back as remnant lines (edge to edge) or free cuts.
-        self.cut_lines = vec![cuts];
+        self.cut_lines = cuts;
         self.workspace = Workspace::Nesting;
         self.refresh();
         let extra = if notes.is_empty() { String::new() } else { format!(" ({})", notes.join("; ")) };
-        self.status = format!("Opened {name}: {n_parts} parts of {} kinds on a {} sheet — move, rotate, add or remove parts, then export.{extra}", self.parts.len(), self.unit().size(spec.w, spec.h, 0));
+        let on = if n_sheets == 1 { format!("a {} sheet", self.unit().size(spec.w, spec.h, 0)) } else { format!("{n_sheets} sheets") };
+        self.status = format!("Opened {name}: {n_parts} parts of {} kinds on {on} — move, rotate, add or remove parts, then export.{extra}", self.parts.len());
     }
 
     /// Save the open job (Save as… asks where; Save reuses the last place).
