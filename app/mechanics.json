@@ -7176,6 +7176,12 @@
   "group": "ByStar Fiber job (.bvc)",
   "value": 0.01,
   "source": "MECHANICS BV20"
+ },
+ {
+  "name": "part version shape compare",
+  "group": "ByStar Fiber job (.bvc)",
+  "value": "lines and true arcs, every move's ends and middle within the tolerance of the other path, both ways (however the moves are split)",
+  "source": "MECHANICS BV20"
  }
 ]
 }

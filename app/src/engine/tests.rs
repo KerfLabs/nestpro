@@ -5217,6 +5217,11 @@ struct DemoBvc {
     /// The second nest cuts DEMO-001 another way: its round hole in mode 5,
     /// its square hole started at another corner.
     variant: bool,
+    /// The second nest draws DEMO-001's outline with an extra point along
+    /// its bottom edge (the same shape).
+    extra_point: bool,
+    /// The second nest draws DEMO-001's outline 0.02 mm taller.
+    taller: bool,
 }
 
 /// A made-up ByStar Fiber job: part DEMO-001 (a 100 × 60 plate with a round
@@ -5234,7 +5239,7 @@ fn demo_bvc(o: DemoBvc) -> Vec<(String, String)> {
     let mv = |x, y| format!("<MoveLineTo {} />", xy(x, y));
     let mode = |m: i32| format!("<SetOperationMode Value=\"{m}\" /><SetToolCorrection Value=\"None\" />");
     let pierce = |m: &str| format!("<SetPiercingMode Value=\"{m}\" /><ExecPiercing />");
-    let plate = |unknown: bool, variant: bool| {
+    let plate = |unknown: bool, variant: bool, extra_point: bool, top: f64| {
         let (hole_mode, sq) = if variant { (5, [(60.0, 40.0), (80.0, 40.0), (80.0, 20.0), (60.0, 20.0), (60.0, 40.0)]) } else { (3, [(60.0, 20.0), (60.0, 40.0), (80.0, 40.0), (80.0, 20.0), (60.0, 20.0)]) };
         [
             // The engraved label: open, no leads.
@@ -5250,8 +5255,8 @@ fn demo_bvc(o: DemoBvc) -> Vec<(String, String)> {
             // The outline: lead-in from outside, a joint part-way, a top edge
             // written as an arc of almost no sweep, a lead-out.
             mode(0), mv(-4.0, 30.0), "<BeginLeadIn />".into(), pierce("Normal"), line(0.0, 30.0), "<EndLeadIn />".into(),
-            "<BeginCutOut Contour=\"Exterior\" /><SetToolCorrection Value=\"Right\" />".into(), line(0.0, 0.0), line(100.0, 0.0), "<ExecMicrojoint />".into(), line(100.0, 60.0),
-            arc(0.0, 60.0, 1e-12), line(0.0, 30.0), "<EndCutOut />".into(), "<BeginLeadOut />".into(), line(-2.0, 32.0), "<EndLeadOut /><SetToolCorrection Value=\"None\" />".into(),
+            "<BeginCutOut Contour=\"Exterior\" /><SetToolCorrection Value=\"Right\" />".into(), line(0.0, 0.0), if extra_point { line(50.0, 0.0) } else { String::new() }, line(100.0, 0.0), "<ExecMicrojoint />".into(), line(100.0, top),
+            arc(0.0, top, 1e-12), line(0.0, 30.0), "<EndCutOut />".into(), "<BeginLeadOut />".into(), line(-2.0, 32.0), "<EndLeadOut /><SetToolCorrection Value=\"None\" />".into(),
         ]
         .concat()
     };
@@ -5278,12 +5283,12 @@ fn demo_bvc(o: DemoBvc) -> Vec<(String, String)> {
     };
     let first_call = if o.bad_call { "Missing" } else { "Sub1" };
     let nest1 = ccp(
-        [sub("Sub1", &plate(o.unknown, false)), sub("Sub2", &disc), sub("ResidualSheetCuts_1", &cutoff)].concat(),
+        [sub("Sub1", &plate(o.unknown, false, false, 60.0)), sub("Sub2", &disc), sub("ResidualSheetCuts_1", &cutoff)].concat(),
         [call(10.0, 10.0, "-0", first_call), call(200.0, 10.0, "90", "Sub1"), call(300.0, 200.0, "13", "Sub2"), call(400.0, 0.0, "0", "ResidualSheetCuts_1")].concat(),
     );
     // The second nest's subprogram for DEMO-001 has another name: the job
     // file links it to the part.
-    let nest2 = ccp([sub("PartA", &plate(false, o.variant)), sub("Sub2", &disc)].concat(), [call(110.0, 70.0, "180", "PartA"), call(150.0, 10.0, "-0", "Sub2")].concat());
+    let nest2 = ccp([sub("PartA", &plate(false, o.variant, o.extra_point, if o.taller { 60.02 } else { 60.0 })), sub("Sub2", &disc)].concat(), [call(110.0, 70.0, "180", "PartA"), call(150.0, 10.0, "-0", "Sub2")].concat());
     let part1 = if o.bad_part { 9 } else { 1 };
     let link1 = if o.bad_link { "Missing" } else { "Sub1" };
     let job = format!(
@@ -5473,5 +5478,21 @@ fn a_part_cut_two_ways_in_two_nests_opens_as_two_parts() {
     // The same part cut the same way in both nests stays one part.
     let (j, _) = open_bvc(&d, "same", &write_bvc(&d, "same.bvc", &demo_bvc(DemoBvc::default())));
     assert_eq!(j.parts.iter().map(|p| (p.name.as_str(), p.qty)).collect::<Vec<_>>(), [("DEMO-001", 3), ("DEMO-002", 4)]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_part_drawn_with_more_points_stays_one_part_with_its_ordered_quantity() {
+    let d = dir("bvc_same_shape");
+    // Nest DEMO-02 draws DEMO-001's outline with an extra point along the
+    // bottom edge: the same rectangle, so still one part, ordered 3.
+    let (j, m) = open_bvc(&d, "extra", &write_bvc(&d, "extra.bvc", &demo_bvc(DemoBvc { extra_point: true, ..Default::default() })));
+    assert_eq!(j.parts.iter().map(|p| (p.name.as_str(), p.qty)).collect::<Vec<_>>(), [("DEMO-001", 3), ("DEMO-002", 4)], "{m}");
+    assert!(!m.contains("different ways"), "{m}");
+    assert!(j.sheets[1..].iter().all(|s| s.iter().any(|p| p.part == 0)), "nest 2's sheets place the same part");
+    // 0.02 mm taller is a real difference: two versions.
+    let (j, m) = open_bvc(&d, "taller", &write_bvc(&d, "taller.bvc", &demo_bvc(DemoBvc { taller: true, ..Default::default() })));
+    assert_eq!(j.parts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["DEMO-001", "DEMO-002", "DEMO-001 (DEMO-02)"], "{m}");
+    assert!((j.parts[2].h - 60.02).abs() < 1e-9 && m.contains("DEMO-001 is cut 2 different ways"), "{m}");
     let _ = std::fs::remove_dir_all(&d);
 }

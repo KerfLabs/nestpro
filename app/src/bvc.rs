@@ -868,6 +868,9 @@ pub struct SubPart {
     pub open_cuts: usize,
     /// Contours whose mode isn't one of the machine's columns.
     pub unknown_modes: Vec<i64>,
+    /// Each contour's cut path as the file gives it (lines and true arcs),
+    /// in the order of `geo.contours`, part coordinates.
+    pub paths: Vec<Path>,
 }
 
 /// A subprogram as a part: its closed cut-outs the outline (the exterior
@@ -898,7 +901,7 @@ pub fn sub_part(sub: &Sub) -> Option<SubPart> {
     }
     let sh = |q: P| [q[0] - lo[0], q[1] - lo[1]];
     let empty = CustomGeo { outline: vec![], holes: vec![], fills: vec![], hole_fills: vec![], marks: vec![], texts: vec![], w: 0.0, h: 0.0, contours: vec![], hand_order: vec![] };
-    let mut out = SubPart { geo: empty, origin: lo, starts: vec![], joints: vec![], open_cuts: 0, unknown_modes: vec![] };
+    let mut out = SubPart { geo: empty, origin: lo, starts: vec![], joints: vec![], open_cuts: 0, unknown_modes: vec![], paths: vec![] };
     // Contours in the app's numbering (CS1): closed ones inside the outline,
     // the outline, then the open lines; each with the cut it came from.
     let mut list: Vec<(Contour, usize)> = vec![];
@@ -928,6 +931,17 @@ pub fn sub_part(sub: &Sub) -> Option<SubPart> {
     list.push((o, oi));
     list.extend(open);
     let contours: Vec<Contour> = list.iter().map(|c| c.0.clone()).collect();
+    out.paths = list
+        .iter()
+        .map(|c| {
+            let p = &sub.cuts[c.1].path;
+            let segs = p.segs.iter().map(|s| match *s {
+                Seg::Line(q) => Seg::Line(sh(q)),
+                Seg::Arc(q, sw) => Seg::Arc(sh(q), sw),
+            });
+            Path { start: sh(p.start), segs: segs.collect() }
+        })
+        .collect();
     for (ci, &k) in crate::dxf::cut_order(&contours).iter().enumerate() {
         let c = &sub.cuts[list[k].1];
         out.starts.push((ci, sh(c.path.start)));
@@ -944,16 +958,84 @@ pub fn sub_part(sub: &Sub) -> Option<SubPart> {
 /// within this (mm).
 pub const SAME_TOL: f64 = 0.01;
 
+/// Distance from `q` to the move from `a` along `s` (a true arc for an arc).
+fn seg_dist(q: P, a: P, s: &Seg) -> f64 {
+    let line = |b: P| {
+        let d = [b[0] - a[0], b[1] - a[1]];
+        let l2 = d[0] * d[0] + d[1] * d[1];
+        let t = if l2 > 0.0 { (((q[0] - a[0]) * d[0] + (q[1] - a[1]) * d[1]) / l2).clamp(0.0, 1.0) } else { 0.0 };
+        (q[0] - a[0] - t * d[0]).hypot(q[1] - a[1] - t * d[1])
+    };
+    match *s {
+        Seg::Line(b) => line(b),
+        Seg::Arc(b, sweep) => {
+            let Some(c) = arc_centre(a, b, sweep) else { return line(b) };
+            let r = (a[0] - c[0]).hypot(a[1] - c[1]);
+            let a0 = (a[1] - c[1]).atan2(a[0] - c[0]);
+            let ang = (q[1] - c[1]).atan2(q[0] - c[0]);
+            let tau = std::f64::consts::TAU;
+            let along = if sweep > 0.0 { (ang - a0).rem_euclid(tau) } else { (a0 - ang).rem_euclid(tau) };
+            if along <= sweep.abs().to_radians() {
+                ((q[0] - c[0]).hypot(q[1] - c[1]) - r).abs()
+            } else {
+                (q[0] - a[0]).hypot(q[1] - a[1]).min((q[0] - b[0]).hypot(q[1] - b[1]))
+            }
+        }
+    }
+}
+
+/// Points along a path to compare it by: its start, and each move's end
+/// and middle (an arc's on the arc).
+fn path_samples(p: &Path) -> Vec<P> {
+    let mut v = vec![p.start];
+    let mut at = p.start;
+    for s in &p.segs {
+        let mid = match *s {
+            Seg::Line(b) => [(at[0] + b[0]) / 2.0, (at[1] + b[1]) / 2.0],
+            Seg::Arc(b, sweep) => match arc_centre(at, b, sweep) {
+                Some(c) => {
+                    let r = rot([at[0] - c[0], at[1] - c[1]], sweep / 2.0);
+                    [c[0] + r[0], c[1] + r[1]]
+                }
+                None => [(at[0] + b[0]) / 2.0, (at[1] + b[1]) / 2.0],
+            },
+        };
+        v.push(mid);
+        at = s.end();
+        v.push(at);
+    }
+    v
+}
+
+/// Whether two paths are the same shape within `tol`, however their moves
+/// are split: every start, end and middle of each move of one lies within
+/// `tol` of the other, both ways.
+pub fn same_shape(a: &Path, b: &Path, tol: f64) -> bool {
+    let near = |q: P, p: &Path| {
+        let mut at = p.start;
+        let mut best = (q[0] - at[0]).hypot(q[1] - at[1]);
+        for s in &p.segs {
+            best = best.min(seg_dist(q, at, s));
+            at = s.end();
+        }
+        best <= tol
+    };
+    path_samples(a).into_iter().all(|q| near(q, b)) && path_samples(b).into_iter().all(|q| near(q, a))
+}
+
 /// Whether two subprograms cut a part the same way: the same contours in
-/// the same order, each with the same state and cut quality, and the same
-/// cut starts and joints, within `SAME_TOL`.
+/// the same order, each the same shape (however its moves are split) with
+/// the same state and cut quality, and the same cut starts and joints, all
+/// within `SAME_TOL`.
 pub fn same_version(a: &SubPart, b: &SubPart) -> bool {
     let near = |p: &P, q: &P| (p[0] - q[0]).hypot(p[1] - q[1]) <= SAME_TOL;
-    let pts = |x: &[P], y: &[P]| x.len() == y.len() && x.iter().zip(y).all(|(p, q)| near(p, q));
     let marks = |x: &[(usize, P)], y: &[(usize, P)]| x.len() == y.len() && x.iter().zip(y).all(|(p, q)| p.0 == q.0 && near(&p.1, &q.1));
     let (ca, cb) = (&a.geo.contours, &b.geo.contours);
     ca.len() == cb.len()
-        && ca.iter().zip(cb).all(|(x, y)| x.state == y.state && x.closed == y.closed && x.quality == y.quality && pts(&x.pts, &y.pts))
+        && a.paths.len() == ca.len()
+        && b.paths.len() == cb.len()
+        && ca.iter().zip(cb).all(|(x, y)| x.state == y.state && x.closed == y.closed && x.quality == y.quality)
+        && a.paths.iter().zip(&b.paths).all(|(x, y)| same_shape(x, y, SAME_TOL))
         && marks(&a.starts, &b.starts)
         && marks(&a.joints, &b.joints)
 }
@@ -1300,6 +1382,22 @@ mod bvc_tests {
         assert!(cuts[1].lead_in.is_none());
         let sp = sub_part(&p.subs[0]).unwrap();
         assert!((sp.geo.w - 50.8).abs() < 1e-9 && (sp.geo.h - 25.4).abs() < 1e-9, "{} x {}", sp.geo.w, sp.geo.h);
+    }
+
+    #[test]
+    fn a_shape_split_into_more_moves_is_the_same_shape() {
+        let rect = |pts: &[P]| Path { start: pts[0], segs: pts[1..].iter().map(|&p| Seg::Line(p)).collect() };
+        let four = rect(&[[0.0, 0.0], [100.0, 0.0], [100.0, 60.0], [0.0, 60.0], [0.0, 0.0]]);
+        let five = rect(&[[0.0, 0.0], [50.0, 0.0], [100.0, 0.0], [100.0, 60.0], [0.0, 60.0], [0.0, 0.0]]);
+        assert!(same_shape(&four, &five, SAME_TOL), "an extra point along a side");
+        let taller = rect(&[[0.0, 0.0], [100.0, 0.0], [100.0, 60.02], [0.0, 60.02], [0.0, 0.0]]);
+        assert!(!same_shape(&four, &taller, SAME_TOL), "0.02 mm taller is another shape");
+        // A half circle as one arc, and as two quarter arcs.
+        let one = Path { start: [10.0, 0.0], segs: vec![Seg::Arc([-10.0, 0.0], 180.0)] };
+        let two = Path { start: [10.0, 0.0], segs: vec![Seg::Arc([0.0, 10.0], 90.0), Seg::Arc([-10.0, 0.0], 90.0)] };
+        assert!(same_shape(&one, &two, SAME_TOL));
+        let other_way = Path { start: [10.0, 0.0], segs: vec![Seg::Arc([-10.0, 0.0], -180.0)] };
+        assert!(!same_shape(&one, &other_way, SAME_TOL), "the lower half isn't the upper half");
     }
 
     #[test]
