@@ -898,6 +898,12 @@ pub fn documents_dir() -> PathBuf {
 
 /// The default library folder: Documents\Sheet Nesting\Library.
 pub fn default_dir() -> PathBuf {
+    // Tests never read or change this PC's own Library (its stock would
+    // change what they nest on): theirs is a folder of the test run's own,
+    // not made, as on a PC without a Library.
+    if cfg!(test) {
+        return std::env::temp_dir().join(format!("nestpro_test_library_{}", std::process::id()));
+    }
     documents_dir().join("Library")
 }
 

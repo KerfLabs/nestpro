@@ -1319,6 +1319,60 @@ fn row(ui: &mut egui::Ui, k: &str, v: String) {
     ui.end_row();
 }
 
+/// A small ▾ button beside a field that opens a list under it (the Sheet
+/// tab's common thicknesses and sheet sizes); a click in the list closes it.
+fn drop_list(ui: &mut egui::Ui, tip: &str, add: impl FnOnce(&mut egui::Ui)) {
+    let resp = ui
+        .scope(|ui| {
+            ui.spacing_mut().button_padding.x = 4.0;
+            ui.add(egui::Button::new(RichText::new("▾").size(12.0)).min_size(Vec2::new(20.0, 20.0)))
+        })
+        .inner
+        .on_hover_text(tip);
+    egui::Popup::from_toggle_button_response(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClick).show(|ui| {
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+        add(ui);
+    });
+}
+
+/// Height of one row of a ribbon form (the Sheet tab): a field's name above
+/// the field. Two rows fill a group exactly, so the rows of every group line
+/// up across the ribbon.
+const FORM_ROW_H: f32 = 34.0;
+
+/// A ribbon form: rows of named fields (`form_row`, `form_field`), with the
+/// fields a little lower than elsewhere so two rows fit a group.
+pub(crate) fn form(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 2.0;
+        ui.spacing_mut().interact_size.y = 20.0;
+        ui.spacing_mut().button_padding.y = 2.0;
+        add(ui);
+    });
+}
+
+/// One row of a ribbon form, top-aligned at its fixed height.
+pub(crate) fn form_row(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+    ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
+        ui.set_min_height(FORM_ROW_H);
+        ui.spacing_mut().item_spacing.x = 10.0;
+        add(ui);
+    });
+}
+
+/// A field with its name above it. The response covers both (for its tooltip).
+pub(crate) fn form_field<R>(ui: &mut egui::Ui, name: impl Into<egui::WidgetText>, add: impl FnOnce(&mut egui::Ui) -> R) -> egui::InnerResponse<R> {
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 1.0;
+        let name: egui::WidgetText = name.into();
+        ui.label(match name {
+            egui::WidgetText::Text(t) => egui::WidgetText::from(RichText::new(t).size(10.5).color(th().text_dim)),
+            other => other,
+        });
+        add(ui)
+    })
+}
+
 /// Height of the ribbon bar: a group (big buttons and caption) plus the bar's margins.
 pub const RIBBON_H: f32 = 98.0;
 
@@ -1913,7 +1967,11 @@ impl App {
                     self.after_material_edit(before);
                 });
                 ui.add_space(2.0);
-                ui.label(RichText::new(format!("{} sheet", self.unit().size(self.spec.w, self.spec.h, 0))).size(11.5).color(th().text_dim));
+                // Where the sheets come from, as the Sheet tab says (stock first, or this size).
+                let on = self.nest_on(ui.ctx());
+                let size = self.unit().size(self.spec.w, self.spec.h, 0);
+                let colour = if on.warn() { th().warn_fg } else { th().text_dim };
+                ui.label(RichText::new(on.short(&size)).size(11.5).color(colour)).on_hover_text(on.explain());
             });
         });
         ribbon_group(ui, "Edit", |ui| {
@@ -2095,127 +2153,171 @@ impl App {
         let mut changed = false;
         let mut cost_changed = false;
         let spec_before = self.spec.clone();
-        ribbon_group(ui, "Material", |ui| {
-            egui::Grid::new("mat_grid").num_columns(4).spacing([6.0, 5.0]).show(ui, |ui| {
-                ui.label("Material");
-                egui::ComboBox::from_id_salt("mat").width(130.0).selected_text(cnc::MATERIALS[self.spec.material]).show_ui(ui, |ui| {
-                    for (k, m) in cnc::MATERIALS.iter().enumerate() {
-                        cost_changed |= ui.selectable_value(&mut self.spec.material, k, *m).changed();
-                    }
+        let u = self.cfg.nesting.units;
+        // The set-up groups are one grid: each field has its name above it,
+        // and every group's two rows line up across the ribbon.
+        ribbon_group(ui, "Material & machine", |ui| {
+            form(ui, |ui| {
+                form_row(ui, |ui| {
+                    form_field(ui, "Material", |ui| {
+                        egui::ComboBox::from_id_salt("mat").width(118.0).selected_text(cnc::MATERIALS[self.spec.material]).show_ui(ui, |ui| {
+                            for (k, m) in cnc::MATERIALS.iter().enumerate() {
+                                cost_changed |= ui.selectable_value(&mut self.spec.material, k, *m).changed();
+                            }
+                        });
+                    });
+                    // Typed (decimal, fraction, gauge, either unit) or picked
+                    // from the common ones (TH1, TH2).
+                    form_field(ui, "Thickness", |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 2.0;
+                            ui.spacing_mut().interact_size.x = 74.0;
+                            let thk = &mut self.spec.thickness;
+                            cost_changed |= crate::units::drag_len_in(ui, thk, u, crate::units::MIN_THICKNESS, crate::units::MAX_THICKNESS).changed();
+                            drop_list(ui, "Common thicknesses", |ui| {
+                                for (t, name) in u.thickness_presets() {
+                                    if ui.selectable_label((t - *thk).abs() < 1e-6, name).clicked() {
+                                        *thk = t;
+                                        cost_changed = true;
+                                    }
+                                }
+                            });
+                        });
+                    })
+                    .response
+                    .on_hover_text("Type it (0.25, 3/16, 10ga, 6mm…) or pick a common one with ▾");
+                    // GS15: the job's gas, beside the thickness.
+                    form_field(ui, "Gas", |ui| self.gas_combo(ui, "gas", 140.0)).response.on_hover_text(self.gas_tip());
                 });
-                ui.end_row();
-                ui.label("Thickness").on_hover_text("Type it (0.25, 3/16, 10ga, 6mm…) or pick a common one with ▾");
-                cost_changed |= crate::units::thickness_box(ui, "thk", &mut self.spec.thickness, self.cfg.nesting.units);
-                // GS15: the job's gas, beside the thickness.
-                ui.label("Gas").on_hover_text("The gas the job is cut with");
-                self.gas_combo(ui, "gas", 150.0);
-                ui.end_row();
+                form_row(ui, |ui| {
+                    let (name, tip) = self.machine_field_name();
+                    form_field(ui, name, |ui| {
+                        if self.machine_combo(ui, 225.0) {
+                            self.refresh();
+                        }
+                    })
+                    .response
+                    .on_hover_text(tip);
+                });
             });
-            // Which section of the machine file applies (MTL1–MTL6).
-            let mt = crate::ct1::for_spec(&self.spec);
-            let short = match mt.applied() {
-                Some(s) => format!("Machine table {}", s.label()),
-                None => "Machine table: global".to_string(),
-            };
-            ui.label(RichText::new(short).size(11.5).color(th().text_dim)).on_hover_text(format!(
-                "{}.\nLeads, micro-joints, joint gap, pierce and loop radius come from it; the part gap and margin are offered in Spacing.",
-                mt.table_label()
-            ));
-        });
-        ribbon_group(ui, "Machine", |ui| {
-            if self.machine_picker(ui) {
-                self.refresh();
-            }
         });
         ribbon_group(ui, "Sheet", |ui| {
-            let u = self.cfg.nesting.units;
-            egui::Grid::new("sheet_grid").num_columns(4).spacing([6.0, 5.0]).show(ui, |ui| {
-                ui.label("Size");
-                let cur = u.dims(self.spec.w, self.spec.h, 0);
-                egui::ComboBox::from_id_salt("sheet").width(110.0).selected_text(cur).show_ui(ui, |ui| {
-                    for &(w, h) in u.sheet_presets() {
-                        let on = (self.spec.w - w).abs() < 1e-6 && (self.spec.h - h).abs() < 1e-6;
-                        if ui.selectable_label(on, u.size(w, h, 0)).clicked() {
-                            self.spec.w = w;
-                            self.spec.h = h;
-                            changed = true;
-                        }
+            form(ui, |ui| {
+                let on = self.nest_on(ui.ctx());
+                form_row(ui, |ui| {
+                    form_field(ui, "Length X", |ui| {
+                        ui.spacing_mut().interact_size.x = 82.0;
+                        changed |= crate::units::drag_len_in(ui, &mut self.spec.w, u, 200.0, 12000.0).changed();
+                    });
+                    form_field(ui, "Width Y", |ui| {
+                        ui.spacing_mut().interact_size.x = 82.0;
+                        changed |= crate::units::drag_len_in(ui, &mut self.spec.h, u, 200.0, 3000.0).changed();
+                    });
+                    form_field(ui, " ", |ui| {
+                        changed |= self.sheet_size_list(ui, &on);
+                    });
+                });
+                form_row(ui, |ui| {
+                    let size = u.dims(self.spec.w, self.spec.h, 0);
+                    let colour = if on.warn() { th().warn_fg } else { th().text };
+                    let resp = form_field(ui, "Nest on", |ui| {
+                        ui.add(egui::Label::new(RichText::new(on.line(&size)).size(12.0).color(colour)).sense(Sense::click()))
+                    });
+                    let line = resp.inner.on_hover_text(format!("{}\n\nClick for the sheet stock.", on.explain()));
+                    if line.clicked() {
+                        self.stockui.open = true;
+                        self.stockui.loaded = false;
                     }
                 });
-                ui.label("Length X");
-                changed |= crate::units::drag_len_in(ui, &mut self.spec.w, u, 200.0, 12000.0).changed();
-                ui.end_row();
-                ui.label("");
-                ui.label("");
-                ui.label("Width Y");
-                changed |= crate::units::drag_len_in(ui, &mut self.spec.h, u, 200.0, 3000.0).changed();
-                ui.end_row();
             });
         });
         ribbon_group(ui, "Spacing", |ui| {
-            egui::Grid::new("space_grid").num_columns(2).spacing([6.0, 5.0]).show(ui, |ui| {
-                let u = self.cfg.nesting.units;
-                ui.label("Edge margin").on_hover_text("Distance every part keeps from the sheet edge (type 1/4 or 6.35mm…)");
-                changed |= crate::units::drag_len(ui, &mut self.spec.margin, u, 100.0).changed();
-                ui.end_row();
-                ui.label("Part gap").on_hover_text("Smallest distance between two parts (type 1/4 or 6.35mm…)");
-                changed |= crate::units::drag_len(ui, &mut self.spec.gap, u, 50.0).changed();
-                ui.end_row();
-            });
-            // The machine's gap and margin for this material and thickness
-            // (MTL9): offered, never applied by themselves.
-            let (g, m) = crate::engine::machine_spacing(&self.spec);
-            if g.is_some() || m.is_some() {
-                let u = self.cfg.nesting.units;
-                let fmt = |v: Option<f64>| v.map_or("—".to_string(), |v| u.show(v));
-                let same = g.is_none_or(|g| (g - self.spec.gap).abs() < 1e-9) && m.is_none_or(|m| (m - self.spec.margin).abs() < 1e-9);
-                let txt = format!("Machine: gap {} · margin {}", fmt(g), fmt(m));
-                if same {
-                    ui.label(RichText::new(txt).size(11.5).color(th().text_dim)).on_hover_text("The sheet already uses the machine's part gap and margin for this material and thickness.");
-                } else if ui.small_button(RichText::new(format!("Use {txt}")).size(11.5)).on_hover_text("Take the machine's part gap and margin for this material and thickness (the widest of its four margins)").clicked() {
-                    match crate::engine::use_machine_spacing(&mut self.spec, true, true) {
-                        Ok(s) => {
-                            self.status = s;
-                            changed = true;
+            form(ui, |ui| {
+                form_row(ui, |ui| {
+                    form_field(ui, "Edge margin", |ui| {
+                        ui.spacing_mut().interact_size.x = 74.0;
+                        changed |= crate::units::drag_len(ui, &mut self.spec.margin, u, 100.0).changed();
+                    })
+                    .response
+                    .on_hover_text("Distance every part keeps from the sheet edge (type 1/4 or 6.35mm…)");
+                    form_field(ui, "Part gap", |ui| {
+                        ui.spacing_mut().interact_size.x = 74.0;
+                        changed |= crate::units::drag_len(ui, &mut self.spec.gap, u, 50.0).changed();
+                    })
+                    .response
+                    .on_hover_text("Smallest distance between two parts (type 1/4 or 6.35mm…)");
+                });
+                form_row(ui, |ui| {
+                    // The machine's gap and margin for this material and
+                    // thickness (MTL9): offered, never applied by themselves.
+                    form_field(ui, "Machine values", |ui| {
+                        let (g, m) = crate::engine::machine_spacing(&self.spec);
+                        let fmt = |v: Option<f64>| v.map_or("—".to_string(), |v| u.show(v));
+                        if g.is_none() && m.is_none() {
+                            ui.label(RichText::new("none for this thickness").size(12.0).color(th().text_dim))
+                                .on_hover_text("The machine file gives no part gap or margin for this material and thickness.");
+                            return;
                         }
-                        Err(e) => self.status = e,
-                    }
-                }
-            }
+                        let same = g.is_none_or(|g| (g - self.spec.gap).abs() < 1e-9) && m.is_none_or(|m| (m - self.spec.margin).abs() < 1e-9);
+                        let txt = format!("gap {} · margin {}", fmt(g), fmt(m));
+                        if same {
+                            ui.label(RichText::new(format!("✓ in use ({txt})")).size(12.0).color(th().ok_fg))
+                                .on_hover_text("The sheet already uses the machine's part gap and margin for this material and thickness.");
+                        } else if ui
+                            .small_button(RichText::new(format!("Use {txt}")).size(12.0))
+                            .on_hover_text("Take the machine's part gap and margin for this material and thickness (the widest of its four margins)")
+                            .clicked()
+                        {
+                            match crate::engine::use_machine_spacing(&mut self.spec, true, true) {
+                                Ok(s) => {
+                                    self.status = s;
+                                    changed = true;
+                                }
+                                Err(e) => self.status = e,
+                            }
+                        }
+                    });
+                });
+            });
         });
         ribbon_group(ui, "Nest", |ui| {
             if ribbon_button_ex(ui, Icon::NestAll, "Nest\nall", false, !self.parts.is_empty(), true).clicked() {
                 self.run_nesting();
             }
-            ui.add_space(4.0);
-            ui.vertical(|ui| {
-                // Three rows, as tall as a big button, so every tab's ribbon is the
-                // same height; the methods count is in the level's tooltip.
+            ui.add_space(6.0);
+            // On the set-up groups' grid; the methods count is in the level's tooltip.
+            form(ui, |ui| {
                 let cur = self.spec.nest_level().name;
                 let level_tip = if self.result.method.is_empty() {
                     format!("{} methods tried. {}", self.spec.nest_level().methods, level_summary(self.spec.nest_level()))
                 } else {
                     format!("{} methods tried. {}\n\nLast run won with: {}.", self.spec.nest_level().methods, level_summary(self.spec.nest_level()), self.result.method)
                 };
-                ui.spacing_mut().item_spacing.y = 3.0;
-                ui.add_space(2.0);
-                ui.label(RichText::new("Automatic level").size(11.5).color(th().text_dim)).on_hover_text(level_tip.as_str());
-                egui::ComboBox::from_id_salt("nest_level").width(150.0).selected_text(cur).show_ui(ui, |ui| {
-                    for (k, lv) in crate::nest::LEVELS.iter().enumerate() {
-                        let tip = level_summary(lv);
-                        if ui.selectable_label(self.spec.level as usize == k + 1, lv.name).on_hover_text(tip).clicked() {
-                            self.spec.level = k as u8 + 1;
-                            changed = true;
-                        }
+                form_row(ui, |ui| {
+                    form_field(ui, "Automatic level", |ui| {
+                        egui::ComboBox::from_id_salt("nest_level").width(140.0).selected_text(cur).show_ui(ui, |ui| {
+                            for (k, lv) in crate::nest::LEVELS.iter().enumerate() {
+                                let tip = level_summary(lv);
+                                if ui.selectable_label(self.spec.level as usize == k + 1, lv.name).on_hover_text(tip).clicked() {
+                                    self.spec.level = k as u8 + 1;
+                                    changed = true;
+                                }
+                            }
+                        });
+                    })
+                    .response
+                    .on_hover_text(level_tip.as_str());
+                });
+                form_row(ui, |ui| {
+                    let ng = crate::nest::part_groups(&self.parts).len();
+                    if ui
+                        .checkbox(&mut self.group_nest, RichText::new("Group by attribute").size(11.5))
+                        .on_hover_text(format!("Nest each group of parts (Part Properties → Group: customer, order, date…) in its own zone of the sheet, one after another. {ng} group(s) now. Groups don't take sheets from stock."))
+                        .changed()
+                    {
+                        changed = true;
                     }
                 });
-                let ng = crate::nest::part_groups(&self.parts).len();
-                if ui.checkbox(&mut self.group_nest, RichText::new("Group by attribute").size(11.0))
-                    .on_hover_text(format!("Nest each group of parts (Part Properties → Group: customer, order, date…) in its own zone of the sheet, one after another. {ng} group(s) now."))
-                    .changed()
-                {
-                    changed = true;
-                }
             });
         });
         self.ribbon_cutoff(ui);
@@ -2236,6 +2338,84 @@ impl App {
         if changed || cost_changed {
             self.refresh();
         }
+    }
+
+    /// The name over the Sheet tab's machine list: the process and whether a
+    /// machine table for this material applies (MTL1–MTL6), or a warning when
+    /// the job is set for another kind of machine; and its tooltip.
+    fn machine_field_name(&self) -> (RichText, String) {
+        let mt = crate::ct1::for_spec(&self.spec);
+        let table = if mt.applied().is_some() { "material table" } else { "global table" };
+        let tables = format!(
+            "{}.\nLeads, micro-joints, joint gap, pierce and loop radius come from it; the part gap and margin are offered in Spacing.",
+            mt.table_label()
+        );
+        let dim = |t: String| RichText::new(t).size(10.5).color(th().text_dim);
+        match self.cfg.machines.get(self.cfg.active_machine).map(|m| (m.kind, m.output)) {
+            // A job made for another kind of machine says so; picking the
+            // machine again sets the job to it.
+            Some((kind, _)) if kind != self.spec.machine => (
+                RichText::new(format!("Machine · ⚠ job set for {}", self.spec.machine.process().to_lowercase())).size(10.5).color(th().warn_fg),
+                format!(
+                    "This job is machined as on a {} ({}). Pick the machine in the list to set the job to it.\n\n{tables}",
+                    self.spec.machine.process().to_lowercase(),
+                    self.spec.machine.describe().to_lowercase()
+                ),
+            ),
+            Some((kind, out)) => (dim(format!("Machine · {} · {table}", kind.process())), format!("{} · {}.\n{tables}", kind.describe(), crate::settings_ui::output_name(out))),
+            None => (dim("Machine".into()), tables),
+        }
+    }
+
+    /// What Nest all will nest on (`engine::stockflow::nest_on`). It reads
+    /// the stock file, so it is asked again only when the material, thickness
+    /// or grouping change, or every few seconds (another PC may take sheets).
+    pub(crate) fn nest_on(&self, ctx: &egui::Context) -> crate::engine::stockflow::NestOn {
+        type Key = (usize, u64, bool, bool, bool, usize);
+        #[derive(Clone)]
+        struct Memo(Key, f64, crate::engine::stockflow::NestOn);
+        let grouped = self.group_nest && crate::nest::part_groups(&self.parts).len() > 1;
+        let key: Key = (self.spec.material, self.spec.thickness.to_bits(), grouped, self.cfg.stock.use_stock, self.cfg.stock.fallback_job_size, self.held.len());
+        let now = ctx.input(|i| i.time);
+        let id = egui::Id::unique("nest_on_memo");
+        if let Some(m) = ctx.data(|d| d.get_temp::<Memo>(id)).filter(|m| m.0 == key && now - m.1 < 3.0) {
+            return m.2;
+        }
+        let on = crate::engine::stockflow::nest_on(&self.spec, &self.stock_use(), grouped);
+        ctx.data_mut(|d| d.insert_temp(id, Memo(key, now, on.clone())));
+        on
+    }
+
+    /// The ▾ list beside the sheet size: the sizes in stock for this
+    /// material and thickness, with how many, then the standard sizes.
+    /// Picking one sets the job's sheet size. True when it changed.
+    fn sheet_size_list(&mut self, ui: &mut egui::Ui, on: &crate::engine::stockflow::NestOn) -> bool {
+        let u = self.cfg.nesting.units;
+        let spec = &mut self.spec;
+        let mut changed = false;
+        let mut pick = |ui: &mut egui::Ui, w: f64, h: f64, text: String| {
+            let cur = (spec.w - w).abs() < 1e-6 && (spec.h - h).abs() < 1e-6;
+            if ui.selectable_label(cur, text).clicked() {
+                spec.w = w;
+                spec.h = h;
+                changed = true;
+            }
+        };
+        drop_list(ui, "Sheet sizes: the ones in stock for this material and thickness, then standard ones", |ui| {
+            ui.set_min_width(220.0);
+            if !on.sizes.is_empty() {
+                ui.label(RichText::new("In stock").size(11.0).color(th().text_dim));
+                for s in &on.sizes {
+                    pick(ui, s.length, s.width, format!("{}   ·  {} on hand", u.size(s.length, s.width, 0), s.qty));
+                }
+                ui.separator();
+                ui.label(RichText::new("Standard sizes").size(11.0).color(th().text_dim));
+            }
+            for &(w, h) in u.sheet_presets() {
+                pick(ui, w, h, u.size(w, h, 0));
+            }
+        });
+        changed
     }
 
     fn ribbon_view(&mut self, ui: &mut egui::Ui) {

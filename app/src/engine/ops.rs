@@ -148,7 +148,7 @@ pub static OPS: &[Op] = &[
         a("level", Ty::Int, "Automatic nesting level 1-5 (default 3)"), c("machine", MACHINES, "Machine type (default laser)"),
         a("force", Ty::Bool, "Overwrite an existing file"),
     ] },
-    Op { name: "info", group: "Job", kind: Kind::Read, help: "Job report: sheet, parts (ordered / nested / missing, technology), sheets (usage, cut length, pierces, time, remnant). With sheet=N, also every placed part on that sheet.", args: &[a("sheet", Ty::Int, "Also list the parts placed on this sheet")] },
+    Op { name: "info", group: "Job", kind: Kind::Read, help: "Job report: sheet, what nest will nest on (nest_on: the stock first, with its sheets and remnants for the job, or the job's sheet size, and why), parts (ordered / nested / missing, technology), sheets (usage, cut length, pierces, time, remnant). With sheet=N, also every placed part on that sheet.", args: &[a("sheet", Ty::Int, "Also list the parts placed on this sheet")] },
     Op { name: "rename", group: "Job", kind: Kind::Write, help: "Rename the job or move it to another week/folder.", args: &[a("name", Ty::Str, "New job name"), a("week", Ty::Str, "New week/folder")] },
     Op { name: "undo", group: "Job", kind: Kind::Write, help: "Undo the last change (the MCP session keeps every step; the command line keeps one, in <job>.snjob~).", args: &[] },
     // --- parts ---
@@ -743,6 +743,18 @@ fn gas_json(g: &crate::gas::JobGas) -> Value {
     json!({"number": g.number, "name": g.name, "program_name": g.program_name, "label": g.label(), "from": if g.own { "job" } else { "machine" }})
 }
 
+/// What `nest` will nest on, before nesting (the window's "Nest on" line):
+/// from the stock (with what it holds for the job) or the job's sheet size, and why.
+fn nest_on_json(job: &JobFile, ctx: &Ctx) -> Value {
+    let grouped = crate::ct1::active().group_parts && nest::part_groups(&job.parts).len() > 1;
+    let on = stockflow::nest_on(&job.spec, &ctx.stock_use(job), grouped);
+    let sizes: Vec<Value> = on.sizes.iter().map(|s| json!({"w": r1(s.length), "h": r1(s.width), "qty": s.qty})).collect();
+    json!({
+        "mode": on.key(), "from_stock": on.from_stock(), "sheets": on.sheets, "remnants": on.remnants, "stock_sizes": sizes,
+        "line": on.line(&format!("{:.0} × {:.0} mm", job.spec.w, job.spec.h)), "why": on.explain(),
+    })
+}
+
 fn placed_json(job: &JobFile, s: usize) -> Value {
     json!(job.sheets[s].iter().enumerate().map(|(i, p)| json!({
         "item": i + 1, "part": p.part + 1, "name": job.parts[p.part].name, "x": r1(p.x), "y": r1(p.y), "w": r1(p.w), "h": r1(p.h), "angle": (p.angle() * 100.0).round() / 100.0, "mirror": p.mirror,
@@ -814,6 +826,7 @@ pub fn info(job: &JobFile, ctx: &Ctx, detail_sheet: Option<usize>) -> Value {
         "parts": parts, "sheets": sheets,
         "totals": { "ordered": need, "nested": placed, "sheets": job.sheets.len(), "cut_len_mm": r1(tot.0), "rapid_len_mm": r1(tot.1), "pierces": tot.2, "time_s": r1(tot.3), "method": job.method },
         "warnings": warnings,
+        "nest_on": nest_on_json(job, ctx),
         "stock": {
             "booked": job.booked,
             "held": job.held,
