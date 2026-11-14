@@ -13,6 +13,7 @@ pub mod folderops;
 pub mod imports;
 pub mod inuse;
 pub mod librarycheck;
+pub mod material;
 pub mod ops;
 pub mod pattern;
 pub mod readback;
@@ -73,8 +74,7 @@ pub fn install_machine(m: &settings::Machine, lantek_dir: &str) -> crate::ct1::M
 /// Tell the rules which machine-file key each material has (Settings →
 /// Materials → Machine table, MTL2). Shared with the GUI's Settings → Apply.
 pub fn install_material_keys(cfg: &AppSettings) {
-    let names: Vec<String> = cfg.materials.iter().map(|m| m.0.clone()).collect();
-    crate::ct1::set_material_keys(&cfg.material_refs, &names);
+    crate::ct1::set_material_keys(material::machine_keys(cfg));
 }
 
 /// The machine's part gap and sheet margin for a sheet's material and
@@ -103,7 +103,7 @@ pub fn use_machine_spacing(spec: &mut SheetSpec, gap: bool, margin: bool) -> Res
     if said.is_empty() {
         return Err(format!(
             "The machine file has no part gap or margins for {} {} mm ({}); the sheet keeps gap {} mm and margin {} mm.",
-            cnc::MATERIALS.get(spec.material).copied().unwrap_or("?"),
+            material::name_or(spec.material, "?"),
             spec.thickness,
             crate::ct1::for_spec(spec).table_label(),
             spec.gap,
@@ -126,7 +126,7 @@ pub fn blm_base(m: &settings::Machine) -> crate::blm::BlmSettings {
 /// (material name and code from Settings → Materials).
 pub fn blm_for(spec: &SheetSpec, base: &crate::blm::BlmSettings, job_name: &str, cfg: &AppSettings) -> crate::blm::BlmSettings {
     let b = crate::blm::BlmSettings::for_spec(spec, &base.machine, job_name);
-    let (mat_name, mat_id) = cfg.materials.get(spec.material).cloned().unwrap_or((b.mat_name.clone(), b.mat_id.clone()));
+    let (mat_name, mat_id) = material::program(cfg, spec.material);
     crate::blm::BlmSettings { on: base.on, gas_id: base.gas_id, gas_name: base.gas_name.clone(), mat_name, mat_id, ..b }
 }
 
@@ -212,16 +212,7 @@ pub fn next_color(parts: &[Part]) -> usize {
 /// grade that starts with an alias holding a digit ("S355J2" → the material
 /// with alias S355); then a look-alike name (as the XML import does).
 pub fn material_like(cfg: &AppSettings, text: &str) -> Option<usize> {
-    let t = text.trim().to_lowercase();
-    cfg.material_for(text)
-        .or_else(|| {
-            (0..cnc::MATERIALS.len()).find(|&i| {
-                cfg.material_aliases.get(i).is_some_and(|a| {
-                    a.split(',').map(|x| x.trim().to_lowercase()).any(|x| x.len() >= 3 && x.chars().any(|c| c.is_ascii_digit()) && t.starts_with(&x))
-                })
-            })
-        })
-        .or_else(|| crate::xmlimport::material_index(text, &cnc::MATERIALS, &cfg.materials))
+    material::like(cfg, text)
 }
 
 /// What a drawing's import left out or changed, for the user (every format's
@@ -265,7 +256,7 @@ fn spec_mismatch(cfg: &AppSettings, spec: &SheetSpec, material: Option<&str>, th
     if let Some(t) = thickness.filter(|t| *t > 0.0 && (t - spec.thickness).abs() > 1e-6) {
         info.push(format!("thickness {t} mm"));
     }
-    (!info.is_empty()).then(|| format!("{} (the job is {} {} mm)", info.join(", "), cnc::MATERIALS.get(spec.material).copied().unwrap_or(""), spec.thickness))
+    (!info.is_empty()).then(|| format!("{} (the job is {} {} mm)", info.join(", "), material::name_or(spec.material, ""), spec.thickness))
 }
 
 /// Build a part from a drawing with the given layer roles and the part data its
@@ -1432,7 +1423,7 @@ impl JobFile {
 
     /// The job's sheets as the stock's remnant generation sees them.
     pub fn stock_sheets(&self, cfg: &AppSettings) -> stockflow::JobSheets<'_> {
-        stockflow::JobSheets { name: &self.name, parts: &self.parts, spec: &self.spec, sheets: &self.sheets, cut_lines: &self.cut_lines, material_name: stockflow::material_name(cfg, self.spec.material) }
+        stockflow::JobSheets { name: &self.name, parts: &self.parts, spec: &self.spec, sheets: &self.sheets, cut_lines: &self.cut_lines, material_name: material::program_name_or_name(cfg, self.spec.material) }
     }
 
     /// Bring the stock in step with the job (what the window does on save):

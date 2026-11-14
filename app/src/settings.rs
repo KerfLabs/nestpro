@@ -259,27 +259,6 @@ pub const LANTEK_STYLES: [(&str, bool); 5] = [
     ("Office 2016 White", false),
 ];
 
-/// Default aliases per material (common grades and shop names; estimated).
-pub fn default_material_aliases() -> Vec<String> {
-    vec![
-        "Mild steel, S235, S235JR, S275, S355, DC01, CR, HR, MS".into(),
-        "Stainless, 304, 304L, 316, 316L, AISI304, AISI316, 1.4301, INOX, SS".into(),
-        "Aluminum, AL, 5052, 5754, 6061, AlMg3".into(),
-    ]
-}
-
-/// Default machine-file keys of the materials (MTL2 catalogue numbers): mild
-/// steel 0010, stainless 0100, aluminium 0210 (the aluminium-magnesium grades
-/// the aliases list; pure aluminium is 0200 — our choice, editable).
-pub fn default_material_refs() -> Vec<String> {
-    vec!["0010".into(), "0100".into(), "0210".into()]
-}
-
-/// Default material names and codes (BLM codes from PstAdi06.PS1's D-lines).
-pub fn default_materials() -> Vec<(String, String)> {
-    vec![("STEEL".into(), "0010".into()), ("STAINLESS".into(), "0100".into()), ("ALUMINIUM".into(), "0200".into())]
-}
-
 impl Default for AppSettings {
     fn default() -> Self {
         AppSettings {
@@ -298,9 +277,9 @@ impl Default for AppSettings {
             active_conn: 0,
             machines: vec![Machine::default()],
             active_machine: 0,
-            materials: default_materials(),
-            material_aliases: default_material_aliases(),
-            material_refs: default_material_refs(),
+            materials: crate::engine::material::default_pc_programs(),
+            material_aliases: crate::engine::material::default_pc_other_names(),
+            material_refs: crate::engine::material::default_pc_machine_refs(),
             theme: "system".into(),
             warn_tech: true,
             in_use_warn: true,
@@ -377,15 +356,7 @@ impl AppSettings {
     /// one of its aliases, without case. As in the original (MA6), an
     /// alias gives its main material; an unknown name gives None.
     pub fn material_for(&self, name: &str) -> Option<usize> {
-        let n = name.trim().to_lowercase();
-        if n.is_empty() {
-            return None;
-        }
-        (0..crate::cnc::MATERIALS.len()).find(|&i| {
-            crate::cnc::MATERIALS[i].to_lowercase() == n
-                || self.materials.get(i).is_some_and(|(p, c)| p.to_lowercase() == n || c.to_lowercase() == n)
-                || self.material_aliases.get(i).is_some_and(|a| a.split(',').any(|x| x.trim().to_lowercase() == n))
-        })
+        crate::engine::material::find(self, name)
     }
 
     pub fn conn(&self) -> Option<&Connection> {
@@ -427,15 +398,7 @@ impl AppSettings {
         s += &format!("refresh_minutes = {}\n", self.refresh_minutes);
         s += &format!("stock = {}\n", serde_json::to_string(&self.stock).unwrap_or_default());
         s += &format!("nesting = {}\n", serde_json::to_string(&self.nesting).unwrap_or_default());
-        for (k, (n, id)) in self.materials.iter().enumerate() {
-            s += &format!("material{k} = {}|{}\n", esc(n), esc(id));
-        }
-        for (k, a) in self.material_aliases.iter().enumerate() {
-            s += &format!("material_alias{k} = {}\n", esc(a));
-        }
-        for (k, r) in self.material_refs.iter().enumerate() {
-            s += &format!("material_ref{k} = {}\n", esc(r));
-        }
+        crate::engine::material::write_pc(self, &mut s, |x| esc(x));
         for c in &self.connections {
             s += &format!(
                 "[connection]\nname = {}\nserver = {}\ndatabase = {}\nwindows = {}\nuser = {}\npassword_enc = {}\n",
@@ -537,26 +500,8 @@ impl AppSettings {
                     "nesting" => st.nesting = serde_json::from_str::<NestPrefs>(&v).unwrap_or_default().sane(),
                     "refresh_minutes" => st.refresh_minutes = crate::engine::refresh::period(v.parse::<i64>().unwrap_or(0)),
                     "scroll_speed" => st.scroll_speed = v.parse::<f32>().ok().filter(|x| (0.5..=6.0).contains(x)).unwrap_or(SCROLL_SPEED_DEFAULT),
-                    _ if k.starts_with("material_ref") => {
-                        if let Ok(i) = k["material_ref".len()..].parse::<usize>() {
-                            if i < st.material_refs.len() {
-                                st.material_refs[i] = v;
-                            }
-                        }
-                    }
-                    _ if k.starts_with("material_alias") => {
-                        if let Ok(i) = k["material_alias".len()..].parse::<usize>() {
-                            if i < st.material_aliases.len() {
-                                st.material_aliases[i] = v;
-                            }
-                        }
-                    }
                     _ if k.starts_with("material") => {
-                        if let (Ok(i), Some((n, id))) = (k["material".len()..].parse::<usize>(), v.split_once('|')) {
-                            if i < st.materials.len() {
-                                st.materials[i] = (n.to_string(), id.to_string());
-                            }
-                        }
+                        crate::engine::material::read_pc(&mut st, k, v);
                     }
                     _ => {}
                 },

@@ -578,15 +578,16 @@ fn contour_state_from(s: &str) -> Result<dxf::ContourState, String> {
 
 /// Material by number (from 0 as in catalog), name, or a Settings alias.
 pub fn material_from(s: &str, cfg: &AppSettings) -> Result<usize, String> {
+    use super::material;
     if let Ok(n) = s.trim().parse::<usize>() {
-        return if n < cnc::MATERIALS.len() { Ok(n) } else { Err(format!("material {n}: there are {} (0-{})", cnc::MATERIALS.len(), cnc::MATERIALS.len() - 1)) };
+        return if material::exists(n) { Ok(n) } else { Err(format!("material {n}: there are {} (0-{})", material::count(), material::count() - 1)) };
     }
     let l = s.trim().to_lowercase();
-    cnc::MATERIALS
-        .iter()
-        .position(|m| m.to_lowercase() == l || m.to_lowercase().starts_with(&l))
+    material::ids()
+        .into_iter()
+        .find(|&i| material::name(i).is_some_and(|m| m.to_lowercase() == l || m.to_lowercase().starts_with(&l)))
         .or_else(|| cfg.material_for(s))
-        .ok_or_else(|| format!("material '{s}' is not one of: {}", cnc::MATERIALS.join(", ")))
+        .ok_or_else(|| format!("material '{s}' is not one of: {}", material::names().join(", ")))
 }
 
 fn key(s: &str) -> String {
@@ -715,7 +716,7 @@ pub fn tech_json(t: &Option<PartTech>) -> Value {
 fn spec_json(spec: &SheetSpec) -> Value {
     json!({
         "w": spec.w, "h": spec.h, "margin": spec.margin, "gap": spec.gap,
-        "material": cnc::MATERIALS.get(spec.material).copied().unwrap_or("?"), "material_no": spec.material, "thickness": spec.thickness,
+        "material": super::material::name_or(spec.material, "?"), "material_no": spec.material, "thickness": spec.thickness,
         "level": spec.nest_level().name, "machine": spec.machine.label(),
         "pick": spec.pick,
     })
@@ -891,7 +892,7 @@ fn times_json(t: &cnc::TimeSplit) -> Value {
 fn catalog() -> Value {
     json!({
         "shapes": SHAPES,
-        "materials": cnc::MATERIALS.iter().enumerate().map(|(i, m)| json!({"material": i, "name": m})).collect::<Vec<_>>(),
+        "materials": super::material::ids().into_iter().map(|i| json!({"material": i, "name": super::material::name_or(i, "?")})).collect::<Vec<_>>(),
         "thicknesses_mm": cnc::THICKNESSES,
         "levels": nest::LEVELS.iter().enumerate().map(|(i, l)| json!({"level": i + 1, "name": l.name, "methods": l.methods})).collect::<Vec<_>>(),
         "machines": crate::machine::MachineKind::ALL.iter().map(|m| json!({"key": format!("{m:?}").to_lowercase(), "name": m.label(), "does": m.describe()})).collect::<Vec<_>>(),
@@ -916,7 +917,7 @@ fn machine_tech_report(spec: &SheetSpec, job: &SheetSpec) -> (String, Value) {
             "thickness_from": s.t_min, "thickness_to": s.t_max, "gas": s.gas, "default": s.default, "hole_size_bands": s.hole_bands.len(),
         })
     });
-    let mat = cnc::MATERIALS.get(spec.material).copied().unwrap_or("?");
+    let mat = super::material::name_or(spec.material, "?");
     let mut msg = format!("{mat} {} mm: {}.", spec.thickness, t.table_label());
     match (t.part_gap, t.sheet_margin()) {
         (None, None) => msg.push_str(" The machine file gives no part gap or margins."),
@@ -1197,7 +1198,7 @@ pub fn create(ctx: &Ctx, op_name: &str, default_name: &str, args: &Value) -> Res
             pj.parts.len(),
             pj.spec.w,
             pj.spec.h,
-            cnc::MATERIALS.get(pj.spec.material).copied().unwrap_or("?"),
+            super::material::name_or(pj.spec.material, "?"),
             pj.spec.thickness,
             if pj.cuts.is_empty() { String::new() } else { format!(", {} cut line(s)", pj.cuts.len()) },
             if pj.notes.is_empty() { String::new() } else { format!(" ({})", pj.notes.join("; ")) }
@@ -1208,7 +1209,7 @@ pub fn create(ctx: &Ctx, op_name: &str, default_name: &str, args: &Value) -> Res
     set_spec_fields(&mut spec, &a, ctx)?;
     let mut job = JobFile::new_job(&a.str("name").unwrap_or_else(|| default_name.to_string()), spec);
     job.week = a.str("week").unwrap_or_default();
-    let m = format!("New job '{}' — sheet {} × {} mm, {} {} mm. Add parts next.", job.name, job.spec.w, job.spec.h, cnc::MATERIALS.get(job.spec.material).copied().unwrap_or("?"), job.spec.thickness);
+    let m = format!("New job '{}' — sheet {} × {} mm, {} {} mm. Add parts next.", job.name, job.spec.w, job.spec.h, super::material::name_or(job.spec.material, "?"), job.spec.thickness);
     Ok((job, m))
 }
 
@@ -1238,7 +1239,7 @@ fn import_xml(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
         let mut spec = with_prefs(&default_spec(), &ctx.cfg);
         match xj.material {
             Some(m) => spec.material = m,
-            None if !xj.material_text.is_empty() => notes.push(format!("{}: material '{}' isn't one of the app's — set to {}", xj.name, xj.material_text, cnc::MATERIALS[spec.material])),
+            None if !xj.material_text.is_empty() => notes.push(format!("{}: material '{}' isn't one of the app's — set to {}", xj.name, xj.material_text, super::material::name_or(spec.material, "?"))),
             None => {}
         }
         if xj.thickness > 0.0 {
@@ -1247,7 +1248,7 @@ fn import_xml(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
         let mut j = JobFile::new_job(&xj.name, spec);
         j.week = "XML import".into();
         j.stale = !xj.parts.is_empty();
-        jobs.push(json!({"job": f.display().to_string(), "name": xj.name, "material": cnc::MATERIALS.get(j.spec.material).copied().unwrap_or("?"), "thickness": j.spec.thickness, "parts": xj.parts.iter().map(|p| json!({"name": p.name, "qty": p.qty})).collect::<Vec<_>>()}));
+        jobs.push(json!({"job": f.display().to_string(), "name": xj.name, "material": super::material::name_or(j.spec.material, "?"), "thickness": j.spec.thickness, "parts": xj.parts.iter().map(|p| json!({"name": p.name, "qty": p.qty})).collect::<Vec<_>>()}));
         j.parts = xj.parts;
         jobfile::save(f, &j)?;
     }
@@ -1441,7 +1442,7 @@ fn sheet_source(job: &JobFile, ctx: &Ctx, a: &Args, replacing: Option<usize>) ->
         let st = ctx.stock()?;
         let it = st.get(&r).ok_or_else(|| format!("No sheet '{r}' in stock — see stock mode=list."))?;
         if it.material != job.spec.material || (it.thickness - job.spec.thickness).abs() > crate::stock::TOL {
-            return Err(format!("'{r}' is {} {} mm; the job is {} {} mm.", cnc::MATERIALS.get(it.material).copied().unwrap_or("?"), it.thickness, cnc::MATERIALS.get(job.spec.material).copied().unwrap_or("?"), job.spec.thickness));
+            return Err(format!("'{r}' is {} {} mm; the job is {} {} mm.", super::material::name_or(it.material, "?"), it.thickness, super::material::name_or(job.spec.material, "?"), job.spec.thickness));
         }
         if !ctx.cfg.stock.allow_no_stock && !stockflow::one_free(it, &job.held, &job.formats, job.sheets.len(), replacing) {
             let used = job.formats.iter().take(job.sheets.len()).filter(|f| f.stock_ref == r).count();
@@ -1478,7 +1479,7 @@ pub fn auto_remnant_lines(parts: &[Part], sheet: &[Placed], spec: &SheetSpec, ls
 
 fn stock_json(s: &crate::stock::Item, clock: &crate::shared::Clock) -> Value {
     json!({
-        "ref": s.reference, "kind": s.kind.label(), "material": cnc::MATERIALS.get(s.material).copied().unwrap_or("?"), "thickness": s.thickness, "w": r1(s.length), "h": r1(s.width), "qty": s.qty,
+        "ref": s.reference, "kind": s.kind.label(), "material": super::material::name_or(s.material, "?"), "thickness": s.thickness, "w": r1(s.length), "h": r1(s.width), "qty": s.qty,
         "priority": s.priority, "blocked": s.locked, "remnant": s.kind.is_remnant(), "area_m2": (s.area_m2() * 1000.0).round() / 1000.0,
         "origin": s.origin, "job": s.from_job, "irregular": s.outline.is_some(), "user": s.user_data, "created": s.created,
         // Who changed it last, and when (SV9); null for a stock from before.
@@ -1575,7 +1576,7 @@ fn stock_op(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
             it.user_data = user();
             let r = st.add_sheet(it, ctx.cfg.stock.with_references)?;
             let it = st.get(&r).ok_or("the new sheet went missing")?;
-            let msg = format!("Stock: {} {} {} mm — {} on the rack.", describe(it), cnc::MATERIALS.get(m).copied().unwrap_or("?"), t, it.qty);
+            let msg = format!("Stock: {} {} {} mm — {} on the rack.", describe(it), super::material::name_or(m, "?"), t, it.qty);
             Ok(msg)
         }
         "add" | "remove" => {
@@ -1912,7 +1913,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                         .filter(|e| find.is_empty() || e.name.to_lowercase().contains(&find) || folder(e).to_lowercase().contains(&find))
                         // Who last saved it and when, in this PC's local time (LB6);
                         // no one for a record saved before saves recorded it.
-                        .map(|e| json!({"id": e.id, "kind": format!("{:?}", e.kind).to_lowercase(), "name": e.name, "folder": folder(&e), "material": cnc::MATERIALS.get(e.material).copied().unwrap_or("?"), "thickness": e.thickness, "w": r1(e.w), "h": r1(e.h), "preprogrammed": e.tech, "saved_by": e.saved_by.as_ref().map(|w| w.label()), "saved_at": (e.updated > 0).then(|| ctx.clock.stamp(e.updated))}))
+                        .map(|e| json!({"id": e.id, "kind": format!("{:?}", e.kind).to_lowercase(), "name": e.name, "folder": folder(&e), "material": super::material::name_or(e.material, "?"), "thickness": e.thickness, "w": r1(e.w), "h": r1(e.h), "preprogrammed": e.tech, "saved_by": e.saved_by.as_ref().map(|w| w.label()), "saved_at": (e.updated > 0).then(|| ctx.clock.stamp(e.updated))}))
                         .collect();
                     // Jobs that share their name with another job (JX17:
                     // Libraries saved before names were unique): the others'
@@ -1984,7 +1985,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                     }
                     let mut note = String::new();
                     if pf.material != job.spec.material || (pf.thickness - job.spec.thickness).abs() > 1e-6 {
-                        note = format!(" (stored for {} {} mm; the job is {} {} mm)", cnc::MATERIALS.get(pf.material).copied().unwrap_or("?"), pf.thickness, cnc::MATERIALS.get(job.spec.material).copied().unwrap_or("?"), job.spec.thickness);
+                        note = format!(" (stored for {} {} mm; the job is {} {} mm)", super::material::name_or(pf.material, "?"), pf.thickness, super::material::name_or(job.spec.material, "?"), job.spec.thickness);
                     }
                     let m = format!("Added {} from the library as part {}{note}.", p.name, job.parts.len() + 1);
                     job.parts.push(p);
@@ -2139,7 +2140,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             };
             let mat_change = spec.material != job.spec.material || (spec.thickness - job.spec.thickness).abs() > 1e-9;
             let nested = !job.sheets.is_empty();
-            let mut m = format!("Sheet: {} × {} mm, {} {} mm, {}, gap {} mm, margin {} mm.", spec.w, spec.h, cnc::MATERIALS.get(spec.material).copied().unwrap_or("?"), spec.thickness, spec.nest_level().name, spec.gap, spec.margin);
+            let mut m = format!("Sheet: {} × {} mm, {} {} mm, {}, gap {} mm, margin {} mm.", spec.w, spec.h, super::material::name_or(spec.material, "?"), spec.thickness, spec.nest_level().name, spec.gap, spec.margin);
             if let Some(s) = spacing {
                 m = format!("{m} {s}");
             }

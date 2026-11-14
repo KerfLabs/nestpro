@@ -376,7 +376,7 @@ impl PaintTarget for PreviewPaint<'_> {
 /// The settings a preview depends on: a preview read with other ones is read again.
 fn preview_key(cfg: &AppSettings, spec: &crate::nest::SheetSpec) -> String {
     // Material names and aliases decide whether the file's material matches the job's.
-    format!("{:?}|{}|{}|{}|{}|{:?}|{:?}|{}|{}", cfg.nesting.units, cfg.name_format, cfg.ref_prefix, cfg.ref_suffix, cfg.lantek_dir, cfg.materials, cfg.material_aliases, spec.material, spec.thickness)
+    format!("{:?}|{}|{}|{}|{}|{}|{}|{}", cfg.nesting.units, cfg.name_format, cfg.ref_prefix, cfg.ref_suffix, cfg.lantek_dir, crate::engine::material::fingerprint(cfg), spec.material, spec.thickness)
 }
 
 /// Read a file for the preview (runs off the window's thread).

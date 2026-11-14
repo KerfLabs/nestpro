@@ -1616,7 +1616,7 @@ impl App {
                 "Drawing - {} ({} / {} / {:.4}) - [{}]",
                 self.parts[i].name,
                 self.machine_name(),
-                cnc::MATERIALS[self.spec.material].to_uppercase(),
+                crate::engine::material::name_or(self.spec.material, "?").to_uppercase(),
                 self.spec.thickness / self.unit().factor(),
                 self.db_label()
             )
@@ -1922,7 +1922,7 @@ impl App {
             // What Nest all will nest in, in view before nesting.
             ui.vertical(|ui| {
                 ui.add_space(8.0);
-                let mat = format!("{} · {}  ▾", cnc::MATERIALS[self.spec.material.min(cnc::MATERIALS.len() - 1)], self.unit().thickness(self.spec.thickness));
+                let mat = format!("{} · {}  ▾", crate::engine::material::nearest_name(self.spec.material), self.unit().thickness(self.spec.thickness));
                 let resp = ui.add(egui::Button::new(RichText::new(mat).strong()).min_size(Vec2::new(120.0, 26.0))).on_hover_text("The job's material and thickness — click to change them");
                 // Change them in place; the rest of the sheet set-up is on the Sheet tab.
                 egui::Popup::from_toggle_button_response(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
@@ -1930,8 +1930,8 @@ impl App {
                     ui.set_min_width(300.0);
                     ui.label(RichText::new("Material").strong());
                     ui.horizontal_wrapped(|ui| {
-                        for (k, m) in cnc::MATERIALS.iter().enumerate() {
-                            ui.selectable_value(&mut self.spec.material, k, *m);
+                        for k in crate::engine::material::ids() {
+                            ui.selectable_value(&mut self.spec.material, k, crate::engine::material::name_or(k, "?"));
                         }
                     });
                     ui.add_space(4.0);
@@ -2078,9 +2078,9 @@ impl App {
             form(ui, |ui| {
                 form_row(ui, |ui| {
                     form_field(ui, "Material", |ui| {
-                        egui::ComboBox::from_id_salt("mat").width(118.0).selected_text(cnc::MATERIALS[self.spec.material]).show_ui(ui, |ui| {
-                            for (k, m) in cnc::MATERIALS.iter().enumerate() {
-                                cost_changed |= ui.selectable_value(&mut self.spec.material, k, *m).changed();
+                        egui::ComboBox::from_id_salt("mat").width(118.0).selected_text(crate::engine::material::name_or(self.spec.material, "?")).show_ui(ui, |ui| {
+                            for k in crate::engine::material::ids() {
+                                cost_changed |= ui.selectable_value(&mut self.spec.material, k, crate::engine::material::name_or(k, "?")).changed();
                             }
                         });
                     });

@@ -3,18 +3,19 @@
 //! Drawn, not photos: mild steel blue-grey with mill scale, stainless brushed,
 //! aluminium light and brushed.
 
+use crate::engine::material::{kind, Kind};
 use crate::stock::Item;
 use crate::theme::th;
 use eframe::egui;
 use egui::{pos2, vec2, Color32, Painter, Pos2, Rect, Response, Sense, Stroke, Ui, Vec2};
 
-/// Base, light and dark tone of a material (`cnc::MATERIALS` order).
+/// Base, light and dark tone of a material, by its kind.
 fn tones(material: usize) -> (Color32, Color32, Color32) {
     let c = Color32::from_rgb;
-    match material {
-        0 => (c(0x4a, 0x53, 0x5e), c(0x66, 0x71, 0x7d), c(0x33, 0x39, 0x41)),
-        1 => (c(0xbd, 0xc3, 0xc9), c(0xe2, 0xe6, 0xe9), c(0x98, 0x9f, 0xa6)),
-        _ => (c(0xdd, 0xe1, 0xe5), c(0xf6, 0xf7, 0xf8), c(0xc4, 0xc9, 0xce)),
+    match kind(material) {
+        Kind::MildSteel => (c(0x4a, 0x53, 0x5e), c(0x66, 0x71, 0x7d), c(0x33, 0x39, 0x41)),
+        Kind::Stainless => (c(0xbd, 0xc3, 0xc9), c(0xe2, 0xe6, 0xe9), c(0x98, 0x9f, 0xa6)),
+        Kind::Aluminium => (c(0xdd, 0xe1, 0xe5), c(0xf6, 0xf7, 0xf8), c(0xc4, 0xc9, 0xce)),
     }
 }
 
@@ -43,8 +44,8 @@ fn hash(n: i64) -> f32 {
 fn row_colour(material: usize, k: i64, seed: i64) -> Color32 {
     let (base, light, dark) = tones(material);
     let n = hash(k + seed * 7919);
-    match material {
-        0 => {
+    match kind(material) {
+        Kind::MildSteel => {
             let wave = ((k as f32 + seed as f32) * 0.21).sin() * 0.5 + 0.5;
             if wave > 0.5 { mix(base, light, (wave - 0.5) * 0.9 + n * 0.08) } else { mix(base, dark, (0.5 - wave) * 0.9 + n * 0.08) }
         }
@@ -107,7 +108,7 @@ fn mill_scale(p: &Painter, rect: Rect, seed: i64) {
 pub fn paint_swatch(p: &Painter, rect: Rect, material: usize) {
     let ring = vec![rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom()];
     fill_rings(p, &[ring], material, 1);
-    if material == 0 {
+    if kind(material) == Kind::MildSteel {
         mill_scale(p, rect, 1);
     }
     p.rect_stroke(rect, 2.0, Stroke::new(1.0, Color32::from_black_alpha(90)), egui::StrokeKind::Inside);
@@ -122,10 +123,11 @@ pub fn swatch(ui: &mut Ui, material: usize, size: Vec2) -> Response {
 
 /// A swatch for every material at once (the "All materials" row).
 pub fn paint_all_swatch(p: &Painter, rect: Rect) {
-    let n = crate::cnc::MATERIALS.len();
-    for m in 0..n {
+    let ids = crate::engine::material::ids();
+    let n = ids.len();
+    for (k, m) in ids.into_iter().enumerate() {
         let w = rect.width() / n as f32;
-        let r = Rect::from_min_size(pos2(rect.left() + w * m as f32, rect.top()), vec2(w, rect.height()));
+        let r = Rect::from_min_size(pos2(rect.left() + w * k as f32, rect.top()), vec2(w, rect.height()));
         let ring = vec![r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom()];
         fill_rings(p, &[ring], m, 1);
     }
@@ -159,7 +161,7 @@ pub fn paint_item(p: &Painter, origin: Pos2, scale: f32, it: &Item) -> Rect {
     let bx = Rect::from_two_pos(to([0.0, 0.0]), to([it.length, it.width]));
     let seed = seed_of(it);
     fill_rings(p, &rings, it.material, seed);
-    if it.material == 0 && it.outline.is_none() {
+    if kind(it.material) == Kind::MildSteel && it.outline.is_none() {
         mill_scale(p, bx, seed);
     }
     let edge = if it.kind.is_remnant() { Stroke::new(1.2, remnant_edge()) } else { Stroke::new(1.0, Color32::from_black_alpha(140)) };

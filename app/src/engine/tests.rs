@@ -5195,3 +5195,63 @@ fn an_agent_sees_another_pcs_save_at_once() {
     assert_eq!(jobfile::load(Path::new(jp)).unwrap().parts.iter().map(|p| p.qty).collect::<Vec<_>>(), [4], "opened as saved now");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+#[test]
+fn files_with_only_a_material_number_open_with_the_same_material() {
+    // Spec #142, invariant 1: jobs, library parts and stock saved with only a
+    // material number (0, 1, 2) read back as mild steel, stainless steel and
+    // aluminium, and reading them rewrites nothing.
+    let d = dir("material_numbers");
+    let ctx = stock_ctx(&d);
+    let lib_dir = ctx.library_dir.clone();
+    let mut st = crate::stock::Stock::default();
+    for m in 0..3 {
+        st.add_sheet(crate::stock::Item::sheet(&format!("DEMO-S{m}"), m, 3.0, 1500.0, 750.0, 1), true).unwrap();
+    }
+    st.save(&lib_dir).unwrap();
+    let lib = crate::library::Library::open(&lib_dir, &Who::new("demo", "DEMO-PC"), &Clock::pc()).unwrap();
+    lib.save_product(&shape_part(Shape::Flange, 1, 0), "", 2, 3.0, crate::library::SaveTo::New).unwrap();
+    let jobs: Vec<PathBuf> = (0..3).map(|m| d.join(format!("DEMO-{m}.snjob"))).collect();
+    for (m, j) in jobs.iter().enumerate() {
+        jobfile::save(j, &JobFile::new_job(&format!("DEMO-{m}"), SheetSpec { material: m, ..default_spec() })).unwrap();
+        assert!(std::fs::read_to_string(j).unwrap().contains(&format!("\"material\": {m}")), "the file holds the number alone");
+    }
+    // Every file in the folder (jobs, library, stock) and what it holds.
+    let files = |d: &Path| -> Vec<(PathBuf, Vec<u8>)> {
+        let mut out = vec![];
+        let mut todo = vec![d.to_path_buf()];
+        while let Some(p) = todo.pop() {
+            for e in std::fs::read_dir(&p).unwrap().flatten() {
+                if e.path().is_dir() { todo.push(e.path()) } else { out.push((e.path(), std::fs::read(e.path()).unwrap())) }
+            }
+        }
+        out.sort();
+        out
+    };
+    let before = files(&d);
+
+    let mut s = Session::new(ctx);
+    let names = ["Mild steel", "Stainless steel", "Aluminium"];
+    for (m, j) in jobs.iter().enumerate() {
+        let info = call(&mut s, "info", Some(j.to_str().unwrap()), json!({}));
+        assert_eq!((info["data"]["sheet"]["material"].as_str(), info["data"]["sheet"]["material_no"].as_u64()), (Some(names[m]), Some(m as u64)), "{info}");
+    }
+    let l = call(&mut s, "stock", None, json!({"mode": "list"}));
+    let mut on_rack: Vec<(String, String)> = l["data"]["sheets"].as_array().unwrap().iter().map(|i| (i["ref"].as_str().unwrap().to_string(), i["material"].as_str().unwrap().to_string())).collect();
+    on_rack.sort();
+    assert_eq!(on_rack, names.iter().enumerate().map(|(m, n)| (format!("DEMO-S{m}"), n.to_string())).collect::<Vec<_>>(), "{l}");
+    let parts = call(&mut s, "library", None, json!({"mode": "list"}));
+    assert!(parts["data"].as_array().unwrap().iter().any(|e| e["kind"] == "product" && e["material"] == "Aluminium"), "{parts}");
+    for (p, bytes) in &before {
+        assert!(std::fs::read(p).unwrap() == *bytes, "reading rewrote {}", p.display());
+    }
+
+    // Plain numbers keep meaning the old three; a number past them is refused.
+    let jp = d.join("DEMO-new.snjob");
+    let jp = jp.to_str().unwrap();
+    call(&mut s, "new", Some(jp), json!({"material": 2, "thickness": 3}));
+    assert_eq!(call(&mut s, "info", None, json!({}))["data"]["sheet"]["material"], "Aluminium");
+    let refused = err(&mut s, "set-sheet", json!({"material": 3}));
+    assert!(refused.contains("material 3: there are 3 (0-2)"), "{refused}");
+    let _ = std::fs::remove_dir_all(&d);
+}

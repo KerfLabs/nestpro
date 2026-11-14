@@ -7,13 +7,12 @@ use crate::engine::cutorder::{HoleAt, Step};
 use crate::leads::LeadRec;
 use crate::nest::{perimeter, CutQuality, LeadType, Part, PartTech, Placed, SheetSpec, P};
 
-pub const MATERIALS: [&str; 3] = ["Mild steel", "Stainless steel", "Aluminium"];
 pub const THICKNESSES: [f64; 7] = [1.0, 2.0, 3.0, 5.0, 8.0, 10.0, 15.0];
-const DENSITY: [f64; 3] = [7.85, 8.0, 2.70];
 
 /// Typical fibre-laser cutting speed (mm/min), used only when the machine
-/// file gives no speed at all (estimate).
+/// file gives no speed at all (estimate), by the material's kind.
 pub fn cut_speed(material: usize, t: f64) -> f64 {
+    use crate::engine::material::Kind;
     let table: [[f64; 7]; 3] = [
         [20000.0, 9000.0, 5000.0, 3000.0, 1800.0, 1300.0, 800.0],
         [22000.0, 10000.0, 4500.0, 2000.0, 900.0, 600.0, 300.0],
@@ -21,7 +20,11 @@ pub fn cut_speed(material: usize, t: f64) -> f64 {
     ];
     // A thickness between two in the list (any can be typed, TH1) is read
     // in a straight line between them; outside the list, the nearest end.
-    let row = &table[material.min(2)];
+    let row = &table[match crate::engine::material::kind(material) {
+        Kind::MildSteel => 0,
+        Kind::Stainless => 1,
+        Kind::Aluminium => 2,
+    }];
     let t = t.clamp(THICKNESSES[0], THICKNESSES[THICKNESSES.len() - 1]);
     let i = THICKNESSES.iter().position(|&x| x >= t - 1e-9).unwrap_or(THICKNESSES.len() - 1);
     if i == 0 || (THICKNESSES[i] - t).abs() < 1e-9 {
@@ -32,7 +35,7 @@ pub fn cut_speed(material: usize, t: f64) -> f64 {
 }
 
 pub fn weight_kg(material: usize, area_mm2: f64, t: f64) -> f64 {
-    area_mm2 * t * DENSITY[material.min(2)] / 1.0e6
+    area_mm2 * t * crate::engine::material::density(material) / 1.0e6
 }
 
 pub struct Contour {
@@ -1095,9 +1098,9 @@ pub fn plan_manual(parts: &[Part], placed: &[Placed], spec: &SheetSpec, manual: 
         // notes are not machined (rule T1). They have no place in the cut
         // order: they are made with the part's first cut (CO9).
         if !std::mem::replace(&mut marked[i], true) {
-            let material = crate::cnc::MATERIALS.get(spec.material).copied().unwrap_or("");
+            let material = crate::engine::material::name_or(spec.material, "");
             for t in part.texts.iter().filter(|t| t.kind.machined()) {
-                let txt = t.resolved(part, material, spec.thickness, i + 1);
+                let txt = t.resolved(part, &material, spec.thickness, i + 1);
                 for pts in t.sheet_strokes(&txt, pl, crate::nest::TEXT_ANGLE_STEP) {
                     rapid_len += dist(pos, pts[0]);
                     let l: f64 = pts.windows(2).map(|w| dist(w[0], w[1])).sum();
@@ -1449,7 +1452,7 @@ fn program_mm(sheet_no: usize, parts: &[Part], placed: &[Placed], spec: &SheetSp
         spec.w,
         spec.h,
         spec.thickness,
-        MATERIALS[spec.material.min(2)].to_uppercase()
+        crate::engine::material::nearest_name(spec.material).to_uppercase()
     );
     let _ = writeln!(s, "( {} PARTS, {} PIERCES, CUT {:.0} MM )", placed.len(), plan.pierces, plan.cut_len);
     let _ = writeln!(s, "( MACHINE {} - TYPE {} )", spec.machine.label().to_uppercase(), spec.machine.family().code());

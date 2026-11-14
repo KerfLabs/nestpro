@@ -1158,7 +1158,7 @@ impl App {
 /// What a library record is, for its row: its material, thickness and size,
 /// and its products and sheets (a job) or its quantity (a part).
 fn record_info(e: &Entry, un: crate::units::LenUnit) -> String {
-    let mat = crate::cnc::MATERIALS.get(e.material).copied().unwrap_or("");
+    let mat = crate::engine::material::name_or(e.material, "");
     if e.kind == Kind::Job {
         format!("{mat} {} · {} · {} products · {} sheets", un.thickness(e.thickness), un.size(e.w, e.h, 0), e.count_a, e.count_b)
     } else {

@@ -89,7 +89,7 @@ impl App {
     }
 
     fn job_sheets(&self) -> stockflow::JobSheets<'_> {
-        stockflow::JobSheets { name: &self.job_name, parts: &self.parts, spec: &self.spec, sheets: &self.result.sheets, cut_lines: &self.cut_lines, material_name: stockflow::material_name(&self.cfg, self.spec.material) }
+        stockflow::JobSheets { name: &self.job_name, parts: &self.parts, spec: &self.spec, sheets: &self.result.sheets, cut_lines: &self.cut_lines, material_name: crate::engine::material::program_name_or_name(&self.cfg, self.spec.material) }
     }
 
     /// The Library folder as whoever works at this window, without setting
@@ -1003,8 +1003,8 @@ const CARD_DRAW_H: f32 = 60.0;
 /// The drawing at the start of each table row.
 const THUMB: egui::Vec2 = egui::vec2(48.0, 20.0);
 
-fn mat_name(m: usize) -> &'static str {
-    crate::cnc::MATERIALS[m.min(crate::cnc::MATERIALS.len() - 1)]
+fn mat_name(m: usize) -> String {
+    crate::engine::material::nearest_name(m)
 }
 
 /// The stock items the shelf picks, that the filters let through and whose
@@ -1117,11 +1117,11 @@ fn material_shelf(ui: &mut egui::Ui, su: &mut StockUi, job_m: usize, job_t: f64,
     if shelf_row(ui, shelf == Shelf::All, Some(all), "All materials", "", shown(&|_| true)).on_hover_text("Every sheet and remnant in stock").clicked() {
         pick = Some(Shelf::All);
     }
-    for m in 0..crate::cnc::MATERIALS.len() {
+    for m in crate::engine::material::ids() {
         let open = matches!(shelf, Shelf::Material(x) | Shelf::Thickness(x, _) if x == m);
         let sw: &dyn Fn(&egui::Painter, egui::Rect) = &move |p, r| stockpics::paint_swatch(p, r, m);
         let note = if m == job_m { "● job" } else { "" };
-        if shelf_row(ui, shelf == Shelf::Material(m), Some(sw), mat_name(m), note, shown(&|i| i.material == m)).on_hover_text("Every thickness of this material; pick one below it").clicked() {
+        if shelf_row(ui, shelf == Shelf::Material(m), Some(sw), &mat_name(m), note, shown(&|i| i.material == m)).on_hover_text("Every thickness of this material; pick one below it").clicked() {
             pick = Some(Shelf::Material(m));
         }
         if open {
@@ -1244,8 +1244,8 @@ fn new_sheet_form(ui: &mut egui::Ui, su: &mut StockUi, job_m: usize, job_t: f64,
             ui.set_width(500.0);
             label(ui, "Material");
             ui.horizontal(|ui| {
-                for m in 0..crate::cnc::MATERIALS.len() {
-                    if tile(ui, egui::vec2(112.0, 54.0), n.material == m, mat_name(m), |p, r| stockpics::paint_swatch(p, r, m)).clicked() {
+                for m in crate::engine::material::ids() {
+                    if tile(ui, egui::vec2(112.0, 54.0), n.material == m, &mat_name(m), |p, r| stockpics::paint_swatch(p, r, m)).clicked() {
                         n.material = m;
                     }
                 }

@@ -13,10 +13,6 @@ use egui::{Align2, Color32, CornerRadius, FontId, Pos2, Rect, RichText, Sense, S
 
 /// Placeholder for the active database name shown in the title and tree root.
 
-fn material_code(m: usize) -> &'static str {
-    ["ST", "SS", "AL"][m.min(2)]
-}
-
 /// Draw a small picture of a part inside `r`.
 fn part_thumb(p: &egui::Painter, part: &Part, r: Rect) {
     let (w, h) = part.bbox();
@@ -523,7 +519,7 @@ impl App {
                     ui.end_row();
                 };
                 row(ui, "Job", self.job_name.clone());
-                row(ui, "Material", format!("{} · {}", cnc::MATERIALS[self.spec.material], self.unit().thickness(self.spec.thickness)));
+                row(ui, "Material", format!("{} · {}", crate::engine::material::name_or(self.spec.material, "?"), self.unit().thickness(self.spec.thickness)));
                 row(ui, "Sheet", self.unit().size(self.spec.w, self.spec.h, 0));
                 row(ui, "Products", format!("{} / {} pcs", self.parts.len(), need));
                 row(ui, "Sheets", format!("{sheets}"));
@@ -573,7 +569,7 @@ impl App {
                             open_nest = true;
                         }
                         ui.label(&machine);
-                        ui.label(cnc::MATERIALS[self.spec.material]);
+                        ui.label(crate::engine::material::name_or(self.spec.material, "?"));
                         ui.label(&thk);
                         ui.label(format!("{}", p.qty));
                         ui.label(format!("{}", 101 + i));
@@ -743,9 +739,9 @@ impl App {
                             open = true;
                         }
                         let f = self.result.format(i, &self.spec);
-                        let sheet_ref = if f.stock_ref.is_empty() { format!("{}{}-{:.0}x{:.0}", material_code(self.spec.material), self.spec.thickness, f.w, f.h) } else { f.stock_ref.clone() };
+                        let sheet_ref = if f.stock_ref.is_empty() { format!("{}{}-{:.0}x{:.0}", crate::engine::material::short_code(self.spec.material), self.spec.thickness, f.w, f.h) } else { f.stock_ref.clone() };
                         ui.label(sheet_ref);
-                        ui.label(cnc::MATERIALS[self.spec.material]);
+                        ui.label(crate::engine::material::name_or(self.spec.material, "?"));
                         ui.label(un.num(self.spec.thickness));
                         ui.label(un.num_dp(f.w, 0));
                         ui.label(un.num_dp(f.h, 0));
@@ -772,7 +768,7 @@ impl App {
     pub fn selection_line(&self) -> String {
         // The thickness in the unit lengths are shown in (the original divides by its unit factor).
         let t = self.spec.thickness / self.unit().factor();
-        let mat = cnc::MATERIALS[self.spec.material];
+        let mat = crate::engine::material::name_or(self.spec.material, "?");
         let machine = self.machine_name();
         if self.jobs_pick_sheet {
             if self.cur_sheet >= self.result.sheets.len() {
@@ -781,7 +777,7 @@ impl App {
             let copies = self.sheet_groups().iter().find(|g| g.0 == self.cur_sheet).map_or(1, |g| g.1);
             let nest = format!("{}-{:02}", self.job_name, self.cur_sheet + 1);
             let f = self.result.format(self.cur_sheet, &self.spec);
-            let sheet = if f.stock_ref.is_empty() { format!("{}{}-{:.0}x{:.0}", material_code(self.spec.material), self.spec.thickness, f.w, f.h) } else { f.stock_ref };
+            let sheet = if f.stock_ref.is_empty() { format!("{}{}-{:.0}x{:.0}", crate::engine::material::short_code(self.spec.material), self.spec.thickness, f.w, f.h) } else { f.stock_ref };
             format!("{nest} / {copies} / {machine} ({mat}) / {sheet} / {t:.4}")
         } else if let Some(p) = self.sel_part.and_then(|i| self.parts.get(i).map(|p| (i, p))) {
             let (i, part) = p;
