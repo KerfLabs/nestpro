@@ -19,6 +19,10 @@ original (or a real job).
 
 **Reserved:** spec #122 (ByStar Fiber, sheet machines) holds MAC-75–MAC-84 and JOB-74 here, and BV1–BV72 and MS1–MS8 in `app/MECHANICS.md`.
 
+**Reserved:** spec #132 (Programming screen) holds JOB-77–JOB-84 here, and F24–F33 in `app/MECHANICS.md`.
+
+**Reserved:** spec #142 (the shop's own materials) holds JOB-85–JOB-94 here, and MA8–MA35 in `app/MECHANICS.md`.
+
 ## Sheets and stock (STK)
 
 | ID | What | Status | Pri | Notes / source |
@@ -179,12 +183,13 @@ original (or a real job).
 | MAC-72 | Lens, power and nozzle per job: the original asks them with the gas when the machine's technology tables show them; nestpro keeps none per job (the gas is per job from spec #100) | Missing | ★ | spec #100 |
 | MAC-73 | Verify Machining doesn't warn when the job's material, thickness and gas have no technology table record or no machine-file section: the speeds fall back to the machine's default (MAC-20) and nothing says so | Missing | ★★ | spec #100 |
 | MAC-74 | **Bystronic ByStar Fiber output** (the original's ByStar Fiber 3015 post: one `.ccp` cut program per sheet and a job file, zipped to `.bvc`): not built. Each contour's cut quality becomes the machine's technology column (cut, pulse, marking, process macros), with its pierce mode, leads, kerf side, micro-joints as markers and the remnant cut-off lines; the cutting values stay in the machine's own parameter sets. The format and the post's settings are studied, not built | Missing | ★★ | spec #122 (#126–#129) |
+| MAC-78 | ByStar Fiber post details the study left open or found outside the plan (MECHANICS BV46–BV55): (a) after a micro-joint on an arc the original writes the next `ArcTo`'s sweep from the gap's far end, not from the gap's middle where the path is (BV47), so the read-back sees a different arc and the writer must choose; (b) the original writes the cut program under a `utf-8` header but in a code page set by its screen language (the PC's Windows code page for its default languages, the language's own code page otherwise; BV53), while spec #122 writes UTF-8: the bytes match for ASCII and differ only for a non-ASCII subprogram prefix (C004); (c) a cut-off line without a compensation side may get `SetToolCorrection Right` right after its own `None` (BV31, BV38); (d) still estimated: what B024 is for, the B046/B048 cut-off geometry, where B035 (two-line mode) pierces the second and later cut-off lines of one subprogram and exactly how it measures the part of the first line that already sticks out past the sheet (BV39), how the post tells a new part from common-cut neighbours (BV51), the job file's byte encoding, and whether the machine accepts `Unknown` cut-outs, missing `PartRefIds` and whole-number call positions | Estimate | ★★ | spec #122 (#123); MECHANICS BV46–BV55 |
 
 ## Jobs, parts and data (JOB)
 
 | ID | What | Status | Pri | Notes / source |
 |---|---|---|---|---|
-| JOB-2 | Materials: thickness ranges and prices, norms, more than 3 materials, XML/cloud material files; consumables (gas, nozzles) | Partial | ★★ | MECHANICS "Materials in Expert" |
+| JOB-2 | Materials: thickness ranges and prices, norms, more than 3 materials, XML/cloud material files; consumables (gas, nozzles) | Partial | ★★ | MECHANICS "Materials in Expert"; the shop's own material list: spec #142 |
 | JOB-3 | Kits from database, Kit Explorer | Missing | ★★ | |
 | JOB-4 | Quotation (save quote, quotation jobs) | Missing | ★★ | |
 | JOB-5 | Element search (type, name, date, status) | Partial | ★ | simple search |
@@ -194,7 +199,7 @@ original (or a real job).
 | JOB-9 | Parametric editor, duct parts, processes | Missing | ★ | 8 built-in shapes |
 | JOB-10 | Flex3D unfolding / bending, 3D import | Missing | ★ | |
 | JOB-11 | ERP connectors (Masterlink, Oseon) | Missing | ★ | needs those systems |
-| JOB-12 | Fulcrum link not yet tried against the live API: every answer is read as the published API description states it | Estimate | ★★★ | MECHANICS F18–F23; needs a read-only token |
+| JOB-12 | Fulcrum link not yet proven live end to end: reading was checked against a live Fulcrum on 2026-11-14 (the waiting-work list, a work order's steps, a 103-part cut list, a DXF download all match what the app reads); sending a nest hasn't been tried live | Estimate | ★★★ | MECHANICS F18–F23; spec #132 (#139) |
 | JOB-13 | Fulcrum: sheet stock item matched automatically from material + sheet size (now typed per job) | Partial | ★★ | MECHANICS F13 |
 | JOB-14 | Fulcrum: a job opened from a work order switches the app-wide machine; jobs don't keep their own machine | Estimate | ★★ | MECHANICS F21 |
 | JOB-15 | Fulcrum: finding the planner's work order asks for every unfinished work order on the operation, one request each (slow with many open work orders) | Estimate | ★ | MECHANICS F22 |
@@ -242,6 +247,8 @@ original (or a real job).
 | JOB-71 | A Library folder moved or renamed during a save, between the save taking the write lock and writing its file: the write can make the folder again at the old place (with the record's sub-folders), so the lists then find an empty folder or an empty Library there instead of saying the Library can't be reached (LB11, LB12). The save itself stores nothing. A share that's down can't be written to at all, so this needs someone to move the folder in the middle of a save | Missing | ★ | MECHANICS LB11, LB12; PR #78 review S4 |
 | JOB-72 | A change a PC sent in time can still land after another PC took its write lock over, if the share holds it back for more than 60 s. A writer replaces files only within 30 s of taking the lock and checks just before each rename that the lock is still its own, and a takeover needs 90 s, but a lock made of files on a share can't stop a rename that's already on its way: the older save would then replace the newer one from the PC that took over. Whether a shop's share ever does this is what the two-PC test (`library-check`, #47) checks; ADR 0003's fallback is the answer if it fails | Estimate | ★ | MECHANICS LB2 (estimated); PR #62 review S2 |
 | JOB-74 | What an opened ByStar Fiber job (`.bvc`) doesn't carry over yet, each an estimate: the cutting gas is only named in the note (the job keeps no gas of its own, MAC-39); the leads' shape and length come from the machine's lead tables, only each contour's start is kept (8 per part); micro-joints keep their place (12 per part) but take the app's own joint width, and a joint at a contour's end sits on its lead point, which the cut plan refuses (MJ1); a mode other than 0–7 gets the machine's automatic quality; an open cut path on a part comes in as no-cut; a nest run less than once opens as one sheet; a nest's sheet margins aren't read. Mode → quality waits for BV32 | Estimate | ★★ | MECHANICS BV2, BV5, BV9, BV11, BV13, BV18 (estimated); #124 |
+| JOB-75 | **Programming screen**: a main screen listing the laser steps on the planner's work orders that wait for a nest (the programming queue), from the operations the shop chose to show, with Table, By material and Next up views, keep-separate work (e.g. AS9100) marked and never nested with other work, open as a job and send the nest back. The Fulcrum window does this one work order at a time | Missing | ★★★ | spec #132 (#133–#139) |
+| JOB-76 | Clock-in timers and finishing the programming step stay in Fulcrum: its API completes each job's operation but not a work order's step (tested 2026-11-14: the laser step becomes ready, the work-order step stays paused, and the step's timer keeps running until stopped). Needs a Fulcrum call that completes a work-order step | Missing | ★★ | spec #132 |
 
 ## Part drawing (DRW)
 

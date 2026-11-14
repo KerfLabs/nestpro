@@ -8,6 +8,10 @@ private research notes.
 
 **Reserved:** spec #122 (ByStar Fiber, sheet machines) holds rule IDs BV1–BV72 and MS1–MS8.
 
+**Reserved:** spec #132 (Programming screen) holds rule IDs F24–F33.
+
+**Reserved:** spec #142 (the shop's own materials) holds rule IDs MA8–MA35.
+
 **Jobs (CAM).** In the original, the Jobs manager keeps work orders, products and nested
 sheets in a database, and nesting runs in a separate nesting program. Part placement and the
 usage percentages come from that nesting side; in the rebuild they remain estimates (see the
@@ -1437,6 +1441,149 @@ edge and writes BL12–BL13 exactly (the example's FINAL_CUT is reproduced line 
 Estimated: the low-edge tolerance (0.5 mm — the original's value couldn't be confirmed; PS1 B005 "Tolerance out
 of the sheet" is 0.5).
 
+
+## ByStar Fiber laser — the original's post (BV21–BV55)
+
+The original writes ByStar Fiber programs with its own post: for every nested sheet it writes a
+`.ccp` cut program (the machine's XML cut program) and a job file, and zips them into a `.bvc`.
+Rules BV1–BV20 (spec #122) describe the format as the machine's own CAM (BySoft) writes it; the
+rules below are what the original's post writes. Unless a rule names a switch, it describes the
+post with its shipped switch values (the table after the rules). Observed = the original's
+behaviour is known; estimated = our best guess. None of it has been seen on a machine yet.
+
+### Files and the program frame
+
+| # | Rule | Source |
+|---|---|---|
+| BV21 | **Files per sheet program:** `<program>.ccp` and `JobInfo.xml` (fixed name, rewritten for each program) in the program folder, and the nesting picture copied to `<program>.png` when the original has one. The three are added in that order to `<program>.bvc` (a zip); each only if the one before was added. A palletising record writes a palletising line instead and no job file or zip. | observed; the picture is the original's own drawing (estimated) |
+| BV22 | **B010** on: the loose files are deleted once they are in the `.bvc`. **B017** on: every program of one run goes into the **first** program's `.bvc`; each later program adds its `.ccp` and picture and replaces `JobInfo.xml`, so the zip's job file describes the last sheet only. | observed; the replacement is estimated |
+| BV23 | **Cut program frame:** `<?xml version="1.0" encoding="utf-8"?>`, `<CuttingControlProgram MeasurementSystem="Metric" Thickness="t">` (`ToolArrangement="Vertical"` only with **B041**), an empty `<Technology />`, `<ApplicationFlat PlanWidth PlanHeight SheetWidth SheetHeight />`, `<SubPrograms>` … `</SubPrograms>`, then `<ControlCommands>` with `SetClamps Value="Off"` and one `CallSubProgram` per placed part, `</CuttingControlProgram>`. **PlanWidth / PlanHeight = the largest \|x\| and \|y\| of all cut end points** (arc extreme points count, rapids don't). No `PlanLoadingOffsetX/Y`, no `PartRefIds`, no `PartLink`. | observed |
+| BV24 | **Ids:** one counter from 1, +1 per command in writing order: every subprogram's commands first (the `SubProgram` element takes an Id too), then `SetClamps` and the calls. Vaporise copies (BV42) are numbered after the rest. Number form: BV52. | observed |
+| BV25 | **Units:** **B001** only changes the text to `MeasurementSystem="Imperial"`; the post never scales a coordinate. Inch numbers come from the post library's output unit (CF1 **A006** = 25.4), before the post sees them. The job file always says `Metric`. | observed; the A006 path is estimated |
+
+### Subprograms and calls
+
+| # | Rule | Source |
+|---|---|---|
+| BV26 | **SubProgram header:** opened at the first move of a subprogram (closing the previous one). `Name` = text **C004** + the running subprogram count (C004 empty: `1`, `2`, …); cut-off subprograms are all named `ResidualSheetCuts` (no number) unless **B016** or **B028**. A part's subprogram adds `PartNumber` (the part's place in the part list; **B016**: the subprogram name), `PartWidth`, `PartHeight` (the part's box). A cut-off subprogram adds the cut lines' extent (+B003 on the edge side); others get `PartHeight` only with **B027** (10 if under 0.5). | observed |
+| BV27 | **CallSubProgram:** X/Y = the CAM's subprogram origin, `Rotation` = its angle; cut-off subprogram calls are moved by B003 toward the edge they start from (minus the first overrun in two-line mode). Name as in BV26; vaporise copies `Vaporization_<n>`. For a CAM pattern repeat only the last grid position is kept. | observed; the grid loss is estimated |
+| BV28 | **B002** on: every cut, cut-off lines included, is put into subprograms before the post runs. **B032** on: a subprogram that ends inside an open cut-out gets `EndCutOut`. | observed; B002's effect on the CAM side is estimated |
+
+### Contours
+
+| # | Rule | Source |
+|---|---|---|
+| BV29 | **Order at each contour start:** `SetOperationMode` (only when it changes, BV51) → `SetSensingSensor` (BV37) → `SetToolCorrection Left/Right` (only when it is off; **B011** puts it after the move) → `MoveLineTo` → with a lead-in: `BeginLeadIn`, `SetPiercingMode`, `ExecPiercing`, the lead moves, `EndLeadIn`, `BeginCutOut` → the contour's `LineTo` / `ArcTo` → lead-out `BeginLeadOut` … `EndLeadOut` → `EndCutOut` → `SetToolCorrection None`. Without a lead-in: `BeginCutOut` right before the first move and **no pierce command at all**, unless **B044** (pierce before `BeginCutOut`), engraving with **B036**, or a point cut (**B050**). | observed |
+| BV30 | **`BeginCutOut Contour=`:** `Exterior` for a part's outer contour and for cut-off lines; `Interior` for an inner contour (BV50), a point cut, or engraving with **B036**; otherwise `Unknown` (engraving and marks by default). A contour in the marking quality **B026** never gets `Exterior`, and gets `Interior` only through B036. | observed |
+| BV31 | **SetToolCorrection side:** when it is off, side left → `Left`, any other side (no side included) → `Right`; a contour already compensated with the "other" side value → `Right` again. So by default **marks get `Right`**; **B031** leaves marks and point marks uncompensated. `None` comes after every `EndCutOut` (if not already off), when entering engraving with **B036**, and when leaving engraving with **B012**. **B040**: no compensation inside a lead-in, so it is written at the cut-out start (the machine CAM's order, BV7). | observed; the "other" side value is estimated |
+| BV32 | **Operation mode** (the machine's technology column): q = the contour's laser quality 1–12; **B042** replaces quality 7 and **B043** quality 3 by their own value; in a cut-off line **B045** replaces q. **B015 off:** q2→1, q3→3, q4→4, q5→5, q6→6, q7→7, anything else (q1, q8–q12) → **0**. **B015 on:** the technology table's per-quality operation-mode value (T419). Marking technology, or q = **B026**, → **2**. | observed |
+| BV33 | **Pierce mode** (`SetPiercingMode`): **B014 on** → the technology table's per-quality pierce text (T421; marks use the marking block's); empty → no pierce commands at all. **B014 off** → `Fine` for cutting, `Normal` for marking; then q = **B007** → `Normal`, q = **B008** → `Fine`, q = **B009** → `NoTime`; q = **B026** → `Normal`; a pierce on a partly cut common-cut contour → `NoTime` unless **B037**. A cut-off line's re-pierce is always `NoTime`. Engraving with B036: `Fine` (B036 = 2: `Normal`). | observed |
+| BV34 | **Leads:** lead elements come from the CAM; `BeginLeadIn` before the first lead-in element, `EndLeadIn` after the last; `BeginLeadOut` before the first lead-out element and `EndLeadOut` after the contour's last element, **both before** `EndCutOut`. **B006**: a contour without a lead-in has its first move split at B006 (at most half its length). **B024**: lead-in bracket and pierce at every contour start, even without a lead-in (and with B040 no compensation at the rapid). | observed; B024's purpose ("no piercing in common cut") is estimated |
+| BV35 | **Arcs:** `ArcTo X Y SweepAngle` (end point and signed sweep, no centre); which sweep is written: BV47. **B018** splits an arc into 180° pieces only when it turns **360° or more** (a full circle → two half circles); arcs of 180–360° stay whole. | observed |
+
+### Micro-joints, sensing, cut-offs, marks
+
+| # | Rule | Source |
+|---|---|---|
+| BV36 | **Micro-joints, overview (B038 off):** the cut before a joint gap is held back; at the gap the post writes that cut, a cut **to the middle of the gap**, and `ExecMicrojoint`, with no rapid and no new pierce: the path runs on through the gap and the machine leaves the joint (BV16). Details: BV46–BV48. | observed |
+| BV37 | **Height sensor (B039):** at every contour start, a pierce point inside the sheet by more than the machine tolerance with the sensor off → `SetSensingSensor On`; one at or outside an edge with the sensor on → `Off`. The sensor starts **off** in each program (not in each subprogram), so the first contour gets `On`. **B039 = 1**: no `On` for marks; **B039 = 2**: no switching at contour starts, only the cut-off sequence's own Off/On. | observed |
+| BV38 | **Cut-off line (one line edge to edge, B035 off):** `SetOperationMode` (always written), `SetToolCorrection None`, contour start at the pierce point (BV49) with the usual sensor and compensation rules, `BeginCutOut Contour="Exterior"`, pierce (BV33), `ExecPiercing`, cut B005 back toward the start edge, `SetSensingSensor Off`, cut out past the start edge, `SetSensingSensor On`, `EndCutOut`, **`ExecHighPositioning`**; then back at the pierce point: `MoveLineTo`, `BeginCutOut`, `SetPiercingMode NoTime`, `ExecPiercing`, cut B005 on, cut to the sensing-off point before the far edge, `SetSensingSensor Off`, cut out past the far edge, `SetSensingSensor On`, `EndCutOut`, `ExecHighPositioning`, `SetToolCorrection None`. **Where these fall on the sheet:** the cut-off subprogram is written with B003 added toward the far side, and its call is moved B003 outward from the start edge (BV27); together, for a line square to the edges, the pierce is **B004 + B005 inside the start edge**, sensing is off for the last **B004** before each edge, and the cut runs **B003 past each edge**. Inside the subprogram the same points read B003 + B004 + B005 from the start edge (BV49) and B004 + B003 back from the end of the far overrun. B003–B005 are whole units (BV54). A line shorter than B004 at its far end uses half its length there. With the shipped values (all 0) the line is pierced on the edge and has no overrun. | observed; the machine CAM's values are BV14 |
+| BV39 | **Cut-off options:** **B020** counts only lines the CAM marks as cut-off lines (BV50). **B025**: a cut-off line that doesn't start on an edge gets its own rapid, pierce and `BeginCutOut Exterior`. **B035**: two-line mode, with the same two pieces as BV38 (pierce, cut back, sensing off, out past the start edge, lift; re-pierce `NoTime`, cut on, sensing off, out past the far edge, lift, compensation off). The differences: the subprogram call is still moved outward from the start edge (BV27), by B003 less the length the subprogram's first cut-off line already sticks out past the sheet, and the line's points are written moved inward by the same amount, so the line keeps its place on the sheet; each end then runs out past the edge it lies on by B003 less the length that line already sticks out; a line too short for B004 + B005 at each end gets B005 = a quarter of its length; a line whose far end is inside the sheet just ends there. **B046**: pierce B004 inside without the B003 shift, state reset after each line. **B048** (with B035 and B046): per edge (the side a line ends on: bottom, left, top, right) inside distance **R000–R003** and outside distance **R004–R007** replace B004/B003, not rounded, and the last `SetSensingSensor On` is put off until later. **B045**: quality for cut-off lines. | observed; B046/B048 geometry estimated |
+| BV40 | **Point marks** (a point cycle): **B013** above the machine tolerance (shipped 0.2) → a circle of diameter B013 around the point: `SetOperationMode 3` (**B033**: 2), sensor, `MoveLineTo` centre, compensation, `BeginLeadIn`, pierce, `LineTo` (x + d/2, y), `EndLeadIn`, `BeginCutOut`, `ArcTo` (x − d/2, y) sweep 180, `ArcTo` (x + d/2, y) sweep 180, `EndCutOut`. **B034** above the tolerance → a cross of size B034 in mode 2 instead (each stroke led in from its end to the centre and out). **B013** at or below the tolerance → nothing, except a point cut with **B050** (BV55). | observed |
+| BV41 | **Auxiliary codes and texts:** CAM aux 4 → `ExecOptionalStop`, 8 → `ExecOptionalStopWithoutLifting`, 1008 → `ExecDwell`; the scrap-destroy macro texts only change the part bookkeeping (no command). `ExecHighPositioning` is written only in the cut-off sequence. | observed |
+| BV42 | **Vaporise all** (technology option 2): every subprogram is copied as `Vaporization_<name>`, each operation mode replaced by the technology's vaporise mode (T006) and each pierce by its vaporise pierce (T008; none if empty); the copies follow the last subprogram and each part call is written twice, the vaporise copy first. | observed; T006/T008 meaning estimated |
+
+### Job file and settings
+
+| # | Rule | Source |
+|---|---|---|
+| BV43 | **JobInfo.xml:** `JobInfo` with `Guid` (new, no braces), `Name`, `Material`, `Thickness`, `MeasurementSystem="Metric"`, `Parameter` = the technology's parameter-file name (T009) and **`ProcessGas` only when that name is set**. `PartInfos/PartInfo Id Name Quantity [OrderInfo]` — **no sizes, no shapes**. `MaterialInfos/MaterialInfo Id="1" Quantity SizeX SizeY FormatType="Sheet" ArticleInfo [ChargeInfo]` — no margins. `PlanInfos/PlanInfo Multiplicity Name MaterialId="1" EstimatedCuttingTime SizeX SizeY` (used extent) with `PlanPartInfos/PlanPartInfo PartId Quantity SubProgramName`, one per distinct subprogram; **B029** adds an empty `ResidualSheetInfos`, **B030** an empty `BigPartInfos`; then an empty `SortInfos` and `EstimatedCuttingTime` as a child. | observed |
+| BV44 | **PlanPartInfo PartId / Quantity** = the part's place in the part list and its quantity, matched by name; **B022**: a PartId under 0.5 becomes the subprogram number (at most the largest part id), a quantity under 0.5 becomes 1. | observed |
+| BV45 | **Settings with no effect on the files:** C001–C003 and C005–C013 (material, job and part user info, Guid, parameter, order info) feed only a second job file that is never written; B000 is unused. Only **C004** is live. | observed |
+
+### Finer details (ticket #123)
+
+| # | Rule | Source |
+|---|---|---|
+| BV46 | **Where a joint's gap lies.** The CAM leaves a joint as an uncut gap between two cuts: the gap starts where the first cut ends and ends where the next one starts. The cut before the gap is held back when the CAM marks it as a joint cut, except: a joint mark of the type the post skips (subtype 2), a cut that carries joint-lead data itself, a cut whose source element (the element it was split from) carries joint-lead data, and the contour's last two elements. At the gap the post writes: if the held cut and the gap lie on one straight line (within 0.01), one `LineTo` from the held cut's start straight to the **gap's middle**; otherwise `LineTo` the held cut's end, then `LineTo` the gap's middle. When the gap lies on an **arc**, its middle is taken **along that arc** (half the gap's arc length) and written as an `ArcTo`; a held arc and an arc gap become one `ArcTo`. **B049** treats every gap as straight (the chord). Then `ExecMicrojoint`. No rapid, no pierce, the cut-out stays open, and the next cut is written from the gap's middle. | observed |
+| BV47 | **Which sweep an `ArcTo` gets, and the arc after a joint.** Each `ArcTo` carries the sweep handed to it for that move when its size is above the machine tolerance (CF1 A005); otherwise the sweep is worked out again from the last point the post recorded to the arc's end. Joint half-arcs and B018's 180° pieces hand over their own sweep. For an ordinary arc both ways measure from the recorded point, and after a joint that point is the **gap's far end** (where the CAM resumes), not the gap's middle where the path actually is. So the arc after a joint on an arc gets a sweep short by half the gap's angle, and a reader that rebuilds the arc from the written point, end and sweep gets a slightly different arc. | observed; the machine's reading is estimated |
+| BV48 | **Joint switches.** **B019**: the `ExecMicrojoint` that goes before a joint's lead-in is written later, just before the next `MoveLineTo` or `EndCutOut` ("at the end"). **B023**: a joint's lead-in also gets `SetPiercingMode` + `ExecPiercing`. **B047**: a joint cut in the contour's second-to-last place (the very last element never) gets `ExecMicrojoint` before it, unless it carries joint-lead data or its joint mark is subtype 2. **B038** (new treatment): nothing is held; at the gap the cut-out is closed (`EndCutOut`, `SetToolCorrection None`) and the cut after the gap starts like a new contour (BV29: a rapid, and a pierce only with a lead-in or B044). | observed |
+| BV49 | **A cut-off line's pierce point (B035 and B046 off).** Let d = B003 + B004 + B005. A cut-off line whose start lies outside the sheet, or inside it but within d minus the machine tolerance of an edge, is pierced where it **crosses the sheet outline shrunk by d on every side** (in the subprogram's own coordinates; on the sheet see BV38). This is not a distance along the line. For example, a line that starts on an edge and meets it at an angle is pierced d / sin(angle) from its start. If it never crosses that outline, its start is moved onto it. If the line is shorter than d, B005 becomes a quarter of its length and the pierce is (that + B003) from the start. A cut-off line that starts further inside gets no pierce of its own (B025 gives it one). | observed; the "moved onto it" case is estimated |
+| BV50 | **Contour classes.** The CAM gives each contour a code; its last two digits are the class. **3** = inner contour (`Interior`, BV30). **4** = cut-off (remnant or skeleton) line. A cut that has no contour code at all also counts as a cut-off line, unless **B020** (then only class 4). A code above 99999 counts as neither. `Exterior` comes from the contour being a part's outer contour, not from its class. | observed; the meaning of 3 and 4 is estimated from how they are used |
+| BV51 | **When the operation mode is written again.** The post remembers the last mode and writes `SetOperationMode` only on a change, except: it forgets the mode at the start of each program, at each new subprogram, and when a **new part** starts (not right after a point cut); and it always writes it for **every cut-off line** and **every point mark** (3, 2 with B033 or a cross, 0 for a point cut), even when unchanged. | observed; how the post tells a new part from common-cut neighbours is estimated |
+| BV52 | **Numbers.** The decimal separator is always `.`; no `+` sign; leading `0` kept (`0.5`). Coordinates, sweep, thickness and sizes have **up to 9 decimals, trailing zeros dropped**, and no point at all when whole (`25`). Rounding is to the nearest, **halves toward zero** (in size). The minus sign comes from the value before rounding, so **−0.0 is written `0` but a tiny negative such as −0.0000000001 is written `-0`**. Ids, rotations and mode values are whole numbers; part call X/Y too (12.5 → `12`, 12.6 → `13`) unless **B021** (3 decimals). | observed |
+| BV53 | **File form.** The cut program is written as text, one command per line, two spaces of indent per level, no block numbers and no leading or trailing fill characters; line ends are **CRLF**; no BOM. The text is converted to a code page that depends on the original's screen language: for its default languages (English included), the PC's Windows code page (ANSI); for the others, the code page the original's language list gives that language. The header says `utf-8` either way; for plain ASCII the bytes are the same. The only free text in the cut program is the C004 name prefix. How the job file's bytes are encoded wasn't settled. | observed; the job file's encoding is estimated |
+| BV54 | **How the post reads its switches.** A switch missing from the file is 0, except B013 = 10. An on/off switch is on above 0.5 (a negative value is off). **B003–B009, B036, B039 are rounded** to whole numbers, nearest with halves **down** (0.5 → 0, 2.5 → 2, −0.5 → −1), so in an inch program B003–B006 are whole inches. B026, B042, B043 are cut to whole numbers (2.9 → 2). B010, B013 and B034 count only above the machine tolerance (CF1 A005, 0.005). B045 is used when above 0.5, cut to a whole quality. B039: 2 = no switching; any other non-zero value acts as 1. B036: 2 = Normal pierce, any other non-zero value = Fine. When B007, B008 and B009 name the same quality, Normal wins over Fine over NoTime. B042, B043 and B045 are **quality numbers**, not mode numbers. With B015 the table's value is written as it is. | observed |
+| BV55 | **Point-cut subtype.** A point cycle is either a punch-mark point (subtype 1) or an on/off point (subtype 2); the CAM gives the type, and the post library's default (CF1 A004) is 2 = on/off for this machine. **B050** (when B013 gives no circle) writes an **on/off point** as a tiny cut: mode 0, sensor rule, `MoveLineTo` the point, `BeginCutOut Contour="Interior"`, `SetPiercingMode Fine`, `ExecPiercing`, `LineTo` (x − 0.05, y), `EndCutOut`. A punch-mark point still gets nothing. | observed; how the CAM sets the type and the A004 default are estimated |
+
+### The post's switches
+
+The original has no screen of its own for this post: its machine settings edit the post's
+parameter file line by line (each line's own description is its label). The values below are
+the shipped file's; "whole units" means the post rounds the value (BV54). `0` means off unless
+said otherwise. Quality numbers are the machine's laser qualities 1–12.
+
+| Switch | What it does | Values | Default |
+|---|---|---|---|
+| `B001` | Measurement system text in the cut program (BV25) | 0 metric, 1 inch | 0 |
+| `B002` | Put every cut, cut-off lines too, into subprograms (BV28) | 0/1 | 0 |
+| `B003` | Cut-off lines: how far they run past each sheet edge (BV38) | length, whole units | 0 |
+| `B004` | Cut-off lines: height sensing off for this distance before each edge, measured on the sheet (BV38) | length, whole units | 0 |
+| `B005` | Cut-off lines: run-up between the pierce and the sensing-off point (BV38, BV49) | length, whole units | 0 |
+| `B006` | First move of a contour without a lead-in is split at this distance (BV34) | length, whole units | 0 |
+| `B007` | Quality that pierces `Normal` (BV33) | quality number | 0 |
+| `B008` | Quality that pierces `Fine` (BV33) | quality number | 0 |
+| `B009` | Quality that pierces `NoTime` (BV33) | quality number | 0 |
+| `B010` | Keep only the `.bvc`, delete the loose files (BV22) | 0/1 | 0 |
+| `B011` | Compensation after the rapid instead of before it (BV29) | 0/1 | 0 |
+| `B012` | Compensation off after a mark (BV31) | 0/1 | 0 |
+| `B013` | Point marks as circles of this diameter; at or below the machine tolerance, no circle (BV40) | length | 0.2 (10 if the line is missing) |
+| `B014` | Pierce mode from the technology table (BV33) | 0/1 | 0 |
+| `B015` | Operation mode from the technology table (BV32) | 0/1 | 0 |
+| `B016` | Subprogram name also as PartNumber; cut-off subprograms numbered (BV26) | 0/1 | 0 |
+| `B017` | All sheets of one run in one `.bvc` (BV22) | 0/1 | 0 |
+| `B018` | Split arcs of 360° or more into half circles (BV35) | 0/1 | 0 |
+| `B019` | Joint marker "at the end": before the next rapid or cut-out end (BV48) | 0/1 | 0 |
+| `B020` | Only lines marked as cut-off lines are treated as cut-offs (BV39, BV50) | 0/1 | 0 |
+| `B021` | Part call positions with 3 decimals instead of whole units (BV52) | 0/1 | 0 |
+| `B022` | Part id and quantity under 0.5 are fixed (BV44) | 0/1 | 0 |
+| `B023` | Pierce at a joint's lead-in (BV48) | 0/1 | 0 |
+| `B024` | Lead-in bracket and pierce at every contour start ("no piercing in common cut", BV34) | 0/1 | 0 |
+| `B025` | A cut-off line not starting on an edge gets its own rapid and pierce (BV39) | 0/1 | 0 |
+| `B026` | Quality used for marking: mode 2, `Normal` pierce (BV30, BV32, BV33) | quality number | 0 |
+| `B027` | PartHeight in every subprogram header (BV26) | 0/1 | 0 |
+| `B028` | Cut-off subprograms named like part subprograms (BV26) | 0/1 | 0 |
+| `B029` | Empty `ResidualSheetInfos` in the job file (BV43) | 0/1 | 0 |
+| `B030` | Empty `BigPartInfos` in the job file (BV43) | 0/1 | 0 |
+| `B031` | No compensation on marks and point marks (BV31) | 0/1 | 0 |
+| `B032` | Close an open cut-out at the end of a subprogram (BV28) | 0/1 | 0 |
+| `B033` | Point-mark circles in marking mode 2 (BV40) | 0/1 | 0 |
+| `B034` | Point marks as a cross of this size instead of a circle (BV40) | length | 0 |
+| `B035` | Two-line cut-off mode: each end runs B003 past its edge, less what the line already sticks out; the call shift stays (BV27, BV39) | 0/1 | 0 |
+| `B036` | New marking treatment: compensation off, `Interior`, pierce `Fine` (2: `Normal`) (BV29–BV33) | 0, 1, 2 | 0 |
+| `B037` | Never `NoTime` on partly cut common-cut contours (BV33) | 0/1 | 0 |
+| `B038` | New micro-joint treatment: stop at the gap and start again (BV48) | 0/1 | 0 |
+| `B039` | Height sensor: 1 not switched on for marks, 2 only in the cut-off sequence (BV37) | 0, 1, 2 | 0 |
+| `B040` | Compensation after the lead-in (BV31) | 0/1 | 0 |
+| `B041` | `ToolArrangement="Vertical"` in the header (BV23) | 0/1 | 0 |
+| `B042` | Quality that replaces quality 7 (BV32) | quality number | 0 |
+| `B043` | Quality that replaces quality 3 (BV32) | quality number | 0 |
+| `B044` | Pierce contours that have no lead-in (BV29) | 0/1 | 0 |
+| `B045` | Quality for cut-off lines (BV32, BV33) | quality number | 0 |
+| `B046` | New cut-off management (BV39) | 0/1 | 0 |
+| `B047` | Joint marker before a joint cut in the contour's second-to-last place, not on cuts with joint-lead data (BV48) | 0/1 | 0 |
+| `B048` | Per-edge cut-off distances R000–R007 (needs B035 and B046) (BV39) | 0/1 | 0 |
+| `B049` | Joints always straight (BV46) | 0/1 | 0 |
+| `B050` | On/off points cut as a tiny cut when no circle is made (BV55) | 0/1 | 0 |
+| `C001`–`C003` | Material user info 1–3 (no effect, BV45) | text | empty |
+| `C004` | Subprogram name prefix (BV26) | text | empty (names `1`, `2`, …) |
+| `C005` | Guid (no effect, BV45) | text | empty |
+| `C006` | Job file parameter (no effect, BV45) | text | empty |
+| `C007`–`C009` | Job user info 1–3 (no effect, BV45) | text | empty |
+| `C010`–`C012` | Part user info 1–3 (no effect, BV45) | text | empty |
+| `C013` | Part order info (no effect, BV45) | text | empty |
+| `R000`–`R003` | Cut-off distance inside the sheet at the bottom, left, top, right edge (with B048) | length, not rounded | 0 |
+| `R004`–`R007` | Cut-off distance outside the sheet at the bottom, left, top, right edge (with B048) | length, not rounded | 0 |
 
 ## Database tables (Expert's SQL Server database)
 
