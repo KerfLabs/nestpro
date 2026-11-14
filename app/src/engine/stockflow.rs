@@ -503,11 +503,6 @@ pub struct JobSheets<'a> {
     pub material_name: String,
 }
 
-/// The material's name from the settings (the built-in name when none is set).
-pub fn material_name(cfg: &crate::settings::AppSettings, m: usize) -> String {
-    cfg.materials.get(m).map(|x| x.0.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| crate::cnc::MATERIALS[m.min(crate::cnc::MATERIALS.len() - 1)].to_string())
-}
-
 /// What a reference format can use for a remnant of sheet `i` (RF4–RF5).
 fn ref_values(j: &JobSheets, f: &SheetFormat, i: usize, parent: Option<&Item>, o: &crate::stock::Outline) -> stock::RefValues {
     let (l, w) = o.size();

@@ -1353,7 +1353,7 @@ impl App {
             .join(safe(&self.job_name))
             .join("parts");
         let base = safe(&p.name);
-        let info = format!("{} / {} / {} mm", p.name, cnc::MATERIALS[self.spec.material], self.spec.thickness);
+        let info = format!("{} / {} / {} mm", p.name, crate::engine::material::name_or(self.spec.material, "?"), self.spec.thickness);
         let res = (|| -> std::io::Result<PathBuf> {
             std::fs::create_dir_all(&dir)?;
             let f = dir.join(format!("{base}.dxf"));
@@ -2110,7 +2110,7 @@ impl App {
 
     /// "Mild steel 3 mm" / "Mild steel 0.1875 in (3/16")".
     pub fn mat_thk(&self, material: usize, thickness: f64) -> String {
-        format!("{} {}", cnc::MATERIALS[material.min(cnc::MATERIALS.len() - 1)], self.unit().thickness(thickness))
+        format!("{} {}", crate::engine::material::nearest_name(material), self.unit().thickness(thickness))
     }
 
     /// Is a part inside sheet `i`: within its margin and, on a remnant, inside
@@ -3348,15 +3348,15 @@ fn main() -> eframe::Result {
                     l.outline = Some(stock::Outline { outer: vec![[0.0, 0.0], [2032.0, 0.0], [2032.0, 457.0], [1016.0, 457.0], [1016.0, 1067.0], [0.0, 1067.0]], holes: vec![] });
                     s.add_sheet(l, true)?;
                     s.add_sheet(stock::Item::sheet("DEMO-S3", m, 5.0, 3657.6, 1524.0, 3), true)?;
-                    s.add_sheet(stock::Item::sheet("DEMO-SS2", (m + 1) % cnc::MATERIALS.len(), 2.0, 2438.4, 1219.2, 4), true)?;
-                    s.add_sheet(stock::Item::sheet("DEMO-AL1", (m + 2) % cnc::MATERIALS.len(), 3.0, 3048.0, 1524.0, 1), true)
+                    s.add_sheet(stock::Item::sheet("DEMO-SS2", (m + 1) % crate::engine::material::count(), 2.0, 2438.4, 1219.2, 4), true)?;
+                    s.add_sheet(stock::Item::sheet("DEMO-AL1", (m + 2) % crate::engine::material::count(), 3.0, 3048.0, 1524.0, 1), true)
                 });
                 app.stockui.sel = Some("DEMO-R1".into());
             }
             // --stock-other (screenshots): a made-up sheet of another material,
             // picked, so the window offers to switch the job to it (ST16).
             if std::env::args().any(|a| a == "--stock-other") {
-                let (m, t) = ((app.spec.material + 1) % cnc::MATERIALS.len(), app.spec.thickness);
+                let (m, t) = ((app.spec.material + 1) % crate::engine::material::count(), app.spec.thickness);
                 let _ = stock::Stock::update(&app.library_at(), |s| s.add_sheet(stock::Item::sheet("DEMO-SS1", m, t, 1486.0, 724.0, 1), true));
                 app.stockui.sel = Some("DEMO-SS1".into());
                 app.stockui.shelf = Some(crate::stockui::Shelf::Thickness(m, t));

@@ -239,17 +239,9 @@ pub fn set_thread_active(t: Option<MachineTech>) {
     LOCAL.with(|l| *l.borrow_mut() = t);
 }
 
-/// Set the machine-file key of each app material: what the user typed in
-/// Settings → Materials (normalised by `material_key`), or the material's
-/// name in programs when that is empty (MTL2: an empty internal reference
-/// keeps the material's name).
-pub fn set_material_keys(refs: &[String], names: &[String]) {
-    let keys: Vec<String> = (0..refs.len().max(names.len()))
-        .map(|i| {
-            let r = refs.get(i).map(|s| material_key(s)).unwrap_or_default();
-            if r.is_empty() { names.get(i).map(|n| n.trim().to_string()).unwrap_or_default() } else { r }
-        })
-        .collect();
+/// Set the machine-file key of each app material, by id
+/// (`engine::material::machine_keys`).
+pub fn set_material_keys(keys: Vec<String>) {
     if let Ok(mut g) = KEYS.write() {
         if g.as_ref() != Some(&keys) {
             *g = Some(keys);
@@ -258,12 +250,12 @@ pub fn set_material_keys(refs: &[String], names: &[String]) {
     }
 }
 
-/// The machine-file key of app material `i` (index into `cnc::MATERIALS`).
+/// The machine-file key of app material `i` (its id).
 pub fn key_of_material(i: usize) -> String {
     if let Some(k) = KEYS.read().ok().and_then(|g| g.as_ref().and_then(|v| v.get(i).cloned())) {
         return k;
     }
-    crate::settings::default_material_refs().get(i).map(|r| material_key(r)).unwrap_or_default()
+    crate::engine::material::default_machine_key(i)
 }
 
 /// The active machine's values for a sheet: the first section of its file

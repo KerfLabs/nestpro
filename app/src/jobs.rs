@@ -523,7 +523,7 @@ impl App {
                     ui.end_row();
                 };
                 row(ui, "Job", self.job_name.clone());
-                row(ui, "Material", format!("{} · {}", cnc::MATERIALS[self.spec.material], self.unit().thickness(self.spec.thickness)));
+                row(ui, "Material", format!("{} · {}", crate::engine::material::name_or(self.spec.material, "?"), self.unit().thickness(self.spec.thickness)));
                 row(ui, "Sheet", self.unit().size(self.spec.w, self.spec.h, 0));
                 row(ui, "Products", format!("{} / {} pcs", self.parts.len(), need));
                 row(ui, "Sheets", format!("{sheets}"));
@@ -573,7 +573,7 @@ impl App {
                             open_nest = true;
                         }
                         ui.label(&machine);
-                        ui.label(cnc::MATERIALS[self.spec.material]);
+                        ui.label(crate::engine::material::name_or(self.spec.material, "?"));
                         ui.label(&thk);
                         ui.label(format!("{}", p.qty));
                         ui.label(format!("{}", 101 + i));
@@ -745,7 +745,7 @@ impl App {
                         let f = self.result.format(i, &self.spec);
                         let sheet_ref = if f.stock_ref.is_empty() { format!("{}{}-{:.0}x{:.0}", material_code(self.spec.material), self.spec.thickness, f.w, f.h) } else { f.stock_ref.clone() };
                         ui.label(sheet_ref);
-                        ui.label(cnc::MATERIALS[self.spec.material]);
+                        ui.label(crate::engine::material::name_or(self.spec.material, "?"));
                         ui.label(un.num(self.spec.thickness));
                         ui.label(un.num_dp(f.w, 0));
                         ui.label(un.num_dp(f.h, 0));
@@ -772,7 +772,7 @@ impl App {
     pub fn selection_line(&self) -> String {
         // The thickness in the unit lengths are shown in (the original divides by its unit factor).
         let t = self.spec.thickness / self.unit().factor();
-        let mat = cnc::MATERIALS[self.spec.material];
+        let mat = crate::engine::material::name_or(self.spec.material, "?");
         let machine = self.machine_name();
         if self.jobs_pick_sheet {
             if self.cur_sheet >= self.result.sheets.len() {

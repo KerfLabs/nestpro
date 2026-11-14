@@ -285,7 +285,7 @@ impl App {
         if let Some(m) = &im.info {
             match erp::pick_material(&self.cfg, m) {
                 Some(k) => spec.material = k,
-                None => notes.push(format!("Material \"{}\" isn't one of the app's — kept {}; add it as an alias in Settings → Materials", if m.material_name.is_empty() { &m.name } else { &m.material_name }, crate::cnc::MATERIALS.get(spec.material).copied().unwrap_or("?"))),
+                None => notes.push(format!("Material \"{}\" isn't one of the app's — kept {}; add it as an alias in Settings → Materials", if m.material_name.is_empty() { &m.name } else { &m.material_name }, crate::engine::material::name_or(spec.material, "?"))),
             }
             if let Some(t) = m.thickness_mm {
                 spec.thickness = (t * 1000.0).round() / 1000.0;
@@ -354,7 +354,7 @@ impl App {
         self.job_path = None;
         self.erp.picked.clear();
         let from = im.work_order.as_ref().map_or(String::new(), |w| format!(" from work order {}", w.name));
-        self.erp.msg = format!("Made job {}{from}: {n} part kind(s), {qty} parts, {} {} mm.{machine_note} Set the sheet size, then Nest all.", self.job_name, crate::cnc::MATERIALS.get(self.spec.material).copied().unwrap_or(""), self.spec.thickness);
+        self.erp.msg = format!("Made job {}{from}: {n} part kind(s), {qty} parts, {} {} mm.{machine_note} Set the sheet size, then Nest all.", self.job_name, crate::engine::material::name_or(self.spec.material, ""), self.spec.thickness);
         self.erp.msg_ok = true;
         self.erp.notes = notes;
         self.status = self.erp.msg.clone();

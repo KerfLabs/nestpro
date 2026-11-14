@@ -1091,22 +1091,13 @@ impl App {
                 );
                 ui.label(RichText::new("Also called (comma-separated)").strong());
                 ui.end_row();
-                for (i, m) in crate::cnc::MATERIALS.iter().enumerate() {
-                    if self.cfg.materials.len() <= i {
-                        self.cfg.materials.push(crate::settings::default_materials()[i].clone());
-                    }
-                    if self.cfg.material_aliases.len() <= i {
-                        self.cfg.material_aliases.push(crate::settings::default_material_aliases()[i].clone());
-                    }
-                    if self.cfg.material_refs.len() <= i {
-                        self.cfg.material_refs.push(crate::settings::default_material_refs()[i].clone());
-                    }
-                    ui.label(*m);
-                    let (n, id) = &mut self.cfg.materials[i];
-                    ui.add(egui::TextEdit::singleline(n).desired_width(160.0));
-                    ui.add(egui::TextEdit::singleline(id).desired_width(80.0));
-                    ui.add(egui::TextEdit::singleline(&mut self.cfg.material_refs[i]).desired_width(80.0).hint_text("name"));
-                    ui.add(egui::TextEdit::singleline(&mut self.cfg.material_aliases[i]).desired_width(320.0));
+                for i in crate::engine::material::ids() {
+                    ui.label(crate::engine::material::name_or(i, "?"));
+                    let row = crate::engine::material::pc_row(&mut self.cfg, i);
+                    ui.add(egui::TextEdit::singleline(row.program_name).desired_width(160.0));
+                    ui.add(egui::TextEdit::singleline(row.program_code).desired_width(80.0));
+                    ui.add(egui::TextEdit::singleline(row.machine_ref).desired_width(80.0).hint_text("name"));
+                    ui.add(egui::TextEdit::singleline(row.other_names).desired_width(320.0));
                     ui.end_row();
                 }
             });
@@ -1116,7 +1107,7 @@ impl App {
                 ui.add(egui::TextEdit::singleline(&mut self.setui.mat_probe).desired_width(140.0).hint_text("e.g. S355"));
                 if !self.setui.mat_probe.trim().is_empty() {
                     let t = match self.cfg.material_for(&self.setui.mat_probe) {
-                        Some(k) => format!("→ {}", crate::cnc::MATERIALS[k]),
+                        Some(k) => format!("→ {}", crate::engine::material::name_or(k, "?")),
                         None => "→ not a known material".into(),
                     };
                     ui.label(RichText::new(t).size(11.5));
@@ -1124,9 +1115,7 @@ impl App {
             });
             ui.add_space(6.0);
             if ui.button("Reset to defaults").clicked() {
-                self.cfg.materials = crate::settings::default_materials();
-                self.cfg.material_aliases = crate::settings::default_material_aliases();
-                self.cfg.material_refs = crate::settings::default_material_refs();
+                crate::engine::material::reset_pc(&mut self.cfg);
             }
         });
     }

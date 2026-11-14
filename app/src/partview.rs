@@ -1121,7 +1121,7 @@ impl App {
                         p.name,
                         p.qty,
                         self.machine_name(),
-                        cnc::MATERIALS[self.spec.material],
+                        crate::engine::material::name_or(self.spec.material, "?"),
                         self.spec.thickness / self.unit().factor()
                     ))
                     .monospace()

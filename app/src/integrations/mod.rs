@@ -706,7 +706,7 @@ fn due_key(s: &str) -> String {
     if s.is_empty() { "~".into() } else { s.to_string() }
 }
 
-/// The app's material (index into `cnc::MATERIALS`) for a system's material:
+/// The app's material (its id) for a system's material:
 /// grade, then material name, then shape name, through Settings → Materials
 /// and its aliases, then by common words.
 pub fn pick_material(cfg: &crate::settings::AppSettings, m: &MaterialInfo) -> Option<usize> {

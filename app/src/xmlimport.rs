@@ -193,19 +193,19 @@ pub fn parse(text: &str) -> Result<Vec<XmlProduct>, String> {
 
 /// The app's material for a name in the file: an exact name or code first
 /// (Settings → Materials), then a name that contains it or the other way round.
-pub fn material_index(name: &str, materials: &[&str], codes: &[(String, String)]) -> Option<usize> {
+pub fn material_index<S: AsRef<str>>(name: &str, materials: &[S], codes: &[(String, String)]) -> Option<usize> {
     let n = name.trim().to_lowercase();
     if n.is_empty() {
         return None;
     }
-    if let Some(i) = materials.iter().position(|m| m.to_lowercase() == n) {
+    if let Some(i) = materials.iter().position(|m| m.as_ref().to_lowercase() == n) {
         return Some(i);
     }
     if let Some(i) = codes.iter().position(|(a, b)| a.to_lowercase() == n || b.to_lowercase() == n) {
         return Some(i);
     }
     materials.iter().position(|m| {
-        let m = m.to_lowercase();
+        let m = m.as_ref().to_lowercase();
         m.contains(&n) || n.contains(&m)
     })
 }
@@ -239,7 +239,7 @@ impl crate::App {
             }
             match xj.material {
                 Some(m) => self.spec.material = m,
-                None if !xj.material_text.is_empty() => notes.push(format!("material '{}' isn't one of the app's — kept {}", xj.material_text, crate::cnc::MATERIALS[self.spec.material.min(2)])),
+                None if !xj.material_text.is_empty() => notes.push(format!("material '{}' isn't one of the app's — kept {}", xj.material_text, crate::engine::material::nearest_name(self.spec.material))),
                 None => {}
             }
             if xj.thickness > 0.0 {
@@ -315,7 +315,7 @@ mod xmlimport_tests {
 
     #[test]
     fn matches_materials_by_name_or_code() {
-        let mats = crate::cnc::MATERIALS;
+        let mats = crate::engine::material::names();
         let codes = vec![("STEEL".to_string(), "S235".to_string()), ("INOX".to_string(), "AISI304".to_string()), ("ALU".to_string(), "AL5754".to_string())];
         assert_eq!(material_index("mild steel", &mats, &codes), Some(0));
         assert_eq!(material_index("AISI304", &mats, &codes), Some(1));
