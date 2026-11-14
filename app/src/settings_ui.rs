@@ -283,8 +283,9 @@ impl App {
         }
     }
 
-    fn shot_mode_now(&self) -> bool {
-        std::env::args().any(|a| a == "--screenshot")
+    /// A screenshot run (--screenshot), which never saves the settings.
+    pub(crate) fn shot_mode_now(&self) -> bool {
+        self.shot.is_some() || std::env::args().any(|a| a == "--screenshot")
     }
 
     pub fn settings_window(&mut self, ctx: &egui::Context) {

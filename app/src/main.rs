@@ -983,7 +983,12 @@ impl App {
         self.cfg.recent_jobs.retain(|r| r != &p);
         self.cfg.recent_jobs.insert(0, p);
         self.cfg.recent_jobs.truncate(8);
-        let _ = self.cfg.save();
+        // A screenshot run keeps it in memory only: it never saves the
+        // settings (its flags, such as --machine-gas, change them for the
+        // picture alone).
+        if !self.shot_mode_now() {
+            let _ = self.cfg.save();
+        }
     }
 
     /// The Open job menu: recent job files, the library, or any file.
@@ -4281,5 +4286,50 @@ mod text_tests {
         assert_eq!(mark.kind, nest::TextKind::Mark);
         assert_eq!(mark.height, 6.0);
         assert_eq!(g.texts.iter().find(|t| t.text == "note").unwrap().kind, nest::TextKind::Note);
+    }
+}
+
+#[cfg(test)]
+mod screenshot_settings_tests {
+    use super::*;
+
+    /// A screenshot run (`--screenshot`) changes settings in memory only:
+    /// `--machine-gas` sets the machine's gas, and opening a job
+    /// (`--open-job`) puts it on the recent list, but the settings file stays
+    /// as it was (GS17). Without `--screenshot`, opening a job still saves
+    /// the recent list.
+    #[test]
+    fn a_screenshot_run_never_saves_the_settings() {
+        // Alone in a process of its own: every test of a run shares one
+        // settings file, and another test could write it meanwhile.
+        if std::env::var_os("NESTPRO_SHOT_SETTINGS_CHILD").is_none() {
+            let name = "screenshot_settings_tests::a_screenshot_run_never_saves_the_settings";
+            let out = std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact", name, "--test-threads=1"]).env("NESTPRO_SHOT_SETTINGS_CHILD", "1").output().unwrap();
+            let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+            assert!(out.status.success() && said.contains("1 passed"), "{said}");
+            return;
+        }
+        let file = settings::AppSettings::file();
+        settings::AppSettings::default().save_to(&file).unwrap();
+        let before = std::fs::read_to_string(&file).unwrap();
+        let dir = file.parent().unwrap().join("jobs");
+        std::fs::create_dir_all(&dir).unwrap();
+        let job = dir.join("DEMO-SHOT.snjob");
+        jobfile::save(&job, &jobfile::JobFile::new_job("DEMO-SHOT", engine::default_spec())).unwrap();
+        // A screenshot run: --machine-gas=2:Oxygen, then --open-job.
+        let mut a = App::new(Some(dir.join("shot.png")));
+        let m = &mut a.cfg.machines[a.cfg.active_machine];
+        m.gas_id = 2;
+        m.gas_name = "Oxygen".into();
+        a.apply_settings(true);
+        a.open_job_file(&job);
+        assert_eq!(a.cfg.recent_jobs.first(), Some(&job.display().to_string()), "the recent list changes in memory");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), before, "a screenshot run wrote the settings file");
+        // Launched for real, opening a job saves the recent list as before.
+        let mut b = App::new(None);
+        b.open_job_file(&job);
+        let now = settings::AppSettings::read_from(&file).unwrap();
+        assert_eq!(now.recent_jobs.first(), Some(&job.display().to_string()));
+        assert_eq!((now.machines[0].gas_id, now.machines[0].gas_name.as_str()), (1, "Nitrogen"), "the machine's gas as saved");
     }
 }
