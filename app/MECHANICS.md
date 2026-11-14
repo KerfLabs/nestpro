@@ -2228,6 +2228,7 @@ from Fulcrum's public API (swagger v1). **Estimates** are marked.
 | F21 | A job opened from the ERP gets the app machine of the equipment its step is scheduled on, else its operation's. The machine is app-wide: it becomes the active machine | design; app-wide machine is an **estimate** (FEATURES JOB-14) |
 | F22 | Planner mode, a job imported before its work order existed: Send nest looks at the unfinished work orders on the job's operation and uses the one step holding its job operations. None → nothing is sent ("the planner makes it"); several → nothing is sent, they are named | Fulcrum API `nestable-jobs/list` `workOrderOperations`, `work-orders/{id}/operations/list` |
 | F23 | Opening a work-order step takes the job operations the planner put on it (not the material group's); parts already nested on *another* step are left out | Fulcrum API `WorkOrderOperationDto.jobOperations` |
+| F24 | A reference the system sends empty (`null`), such as the sales order of a job that has none, is read as an empty name rather than refusing the whole answer; the job is still listed. Found on a live system, where a few waiting jobs had no sales order and the waiting-work list could not load. | observed (live read, 2026-11-14) |
 
 
 
