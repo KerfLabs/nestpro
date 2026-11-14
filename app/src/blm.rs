@@ -1074,7 +1074,7 @@ mod blm_tests {
     fn the_lc5_settings_name_the_jobs_gas_and_never_call_oxygen_2() {
         // GS10, GS11: the job's gas from the list; mild steel isn't oxygen by
         // itself any more (the old fallback numbered it 2).
-        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: Some(crate::gas::Gas::Oxygen) };
+        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: Some(crate::gas::Gas::Oxygen), pick: Default::default() };
         let s = BlmSettings::for_spec(&spec, "LC5", "J-1");
         assert_eq!((s.gas_id, s.gas_name.as_str()), (3, "Oxygen"));
         let s = BlmSettings::for_spec(&SheetSpec { gas: None, ..spec }, "LC5", "J-1");
