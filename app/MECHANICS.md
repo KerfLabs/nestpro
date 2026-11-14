@@ -2130,6 +2130,72 @@ What the original offers other programs:
 - Not built: per-material thickness ranges and prices (MA2), norms, cloud and XML material files, and any material beyond the three.
 
 
+### The material list
+
+What the original's materials window keeps and does, its starter materials and its material
+catalogue. Spec #142 builds the shop's own material list from these rules (values from the
+original; storage and sharing in the Library as the spec says).
+
+| # | Rule | Source |
+|---|------|--------|
+| MA8 | **What a material holds, and the materials window.** A material has a **name**, a **density** (kg/dm³), a tensile **strength**, a **price**, a **scrap price**, the date its price was last saved, a machining factor (kept as it is; the form doesn't show it), an optional **norm** (the standard it follows) and **catalogue number** (MA12), a picture used as its texture, and prices by thickness range, which may not overlap (MA2). **Only the name is required**: a name that is blank once spaces are trimmed is refused, and so is a name another material already has, ignoring case. Every number may be 0, and a new blank material starts with all of them at 0. Choosing a norm fills in the catalogue number and the standard's density, strength and price. Changing a density by more than 0.001 warns that parts, sheets and nestings already saved keep the weights they had. The window has two lists side by side: the **standard materials** of the catalogue, named after a naming standard picked above the list (MA12), and the shop's **materials** as a tree, with the main material of each catalogue number at the top and the other materials of that number under it. That main material is what the window calls a material's *alias*: materials of one catalogue number share its machine technology (MTL2). **Add** copies the standards picked in the left list: name, density, strength, price, norm and catalogue number. A standard whose name and number are already in the list adds nothing. When the list has a material of that catalogue number under another name, the window asks whether to replace that material (it takes the standard's name and values), add the standard beside it as another material of that number, or skip, and offers to give the same answer for the rest of the selection. **New** adds a blank material; **Edit** opens the same form for the selected one; **Details** shows it. | observed (which of the add prompt's answers adds a second material is estimated) |
+| MA9 | **Renaming a material.** The new name may not be blank or another material's name, ignoring case; changing only the case of the name is allowed. Everything that uses the material keeps it under the new name: jobs, parts, sheets, nestings and costs. A material without a catalogue number is also renamed inside every machine's technology table, material/thickness sections (MTL1) and cost file, because those files name it; a material with a catalogue number needs nothing rewritten there, because they name it by the number (MTL2). If saving the new name fails, the machine files get the old name back. | observed (which saved records the new name reaches is estimated: every record that names the material) |
+| MA10 | **Deleting a material.** Delete asks for confirmation, then is **refused while the material is used**, with a message saying what uses it: a sheet, a part, a nesting or a catalogue element. When nothing could be deleted the window says the material may be in use. Nothing that uses a material is changed or deleted with it. A material nothing uses is deleted; if it was the main material of its catalogue number, another material of that number becomes the main one, and the materials that were under it move to the top of the tree. No material is protected in itself: any material nothing uses can be deleted, starter materials too. | observed (that the in-use check covers exactly the four things its messages name is estimated) |
+| MA11 | **Starter materials, and what the posts write for them.** A blank database starts with **no materials**; the original's demo database ships the eight below, each the main material of its catalogue number, with machining factor −1 and no thickness ranges. Names and numbers are as shipped: "Cooper" is the original's spelling, and the film-covered stainless has density, strength and price 0. The kind is the catalogue's kind for the number (MA12); the catalogue gives none for 3060 (not in it), 0510 or 0590. The BLM LC5 post, set up as shipped, writes the material's **name** as its program name (`;NOMEMAT=`, and the job sheet's MatName) and its **catalogue number** as its code (`;IDMAT=`, MatId; empty for a material without one), and as `;ALIASMAT=` the material's alias (MA8) when that is another material, otherwise its name (BL16); the starter materials are all main materials, so they write their own name there. A LC5 post set to use its own material table instead takes the name, alias and code from the table's line for the material's name; the shipped table is a commented-out example (`Al 1050 A` 0200, `AlMg3` 0210, `X5CrNi + Film` 3060, `RST 37-2` 0010, `Galvanized` 0300, `Titanium` 0400, `Copper` 0510, `Brass` 0590, `X5CrNi` 0100). The ByStar Fiber post writes the material's name as the job file's `Material` (BV43). → In the rebuild, the old three materials (0 mild steel, 1 stainless steel, 2 aluminium) keep the program names and codes they have (STEEL 0010, STAINLESS 0100, ALUMINIUM 0200) so their programs don't change. | observed (the kinds marked estimated are estimated) |
+| MA12 | **The material catalogue.** The original ships a fixed catalogue of 34 standards (below): catalogue number, name, category (punching or waterjet), kind and density in kg/dm³ (most also have a strength and a price). The shop doesn't edit it. Names the file gives in Spanish are shown in English on screen (the "Shown" column). Besides its own names the catalogue holds 13 naming standards (general norms such as DIN, AISI/ASTM and ISO, the original's own, and machine makers' lists) that give each catalogue number another name, e.g. 0100 is "1.4301 - X5CrN 18-10" in DIN and "AISI 304" in AISI/ASTM, 0110 "316", 0210 "5754 - H111"; some of those lists use numbers the catalogue doesn't have. As shipped, the waterjet entries have no kind, eight have no density, and wood has 800 (in kg/m³ where the rest are kg/dm³). | observed (the English names are estimated) |
+
+Starter materials (MA11):
+
+| Name | Catalogue no. | Kind | Density | Strength | Price | LC5 program name | LC5 code |
+|---|---|---|---|---|---|---|---|
+| RST 37-2 | 0010 | Carbon Steel | 7.8 | 420 | 0.5 | RST 37-2 | 0010 |
+| X5CrNi | 0100 | Stainless steel | 8 | 586 | 2.4 | X5CrNi | 0100 |
+| X5CrNi + Film | 3060 | Stainless steel (estimated) | 0 | 0 | 0 | X5CrNi + Film | 3060 |
+| Al99 | 0200 | Alloy Alluminium | 2.7 | 285.4 | 2.4 | Al99 | 0200 |
+| AlMg3 | 0210 | Alloy Alluminium | 2.7 | 1835.12 | 2.4 | AlMg3 | 0210 |
+| Galvanized | 0300 | Steel | 7.9 | 366 | 0.5 | Galvanized | 0300 |
+| Cooper | 0510 | Copper (estimated) | 8.9 | 6 | 0 | Cooper | 0510 |
+| Brass | 0590 | Brass (estimated) | 8.5 | 3 | 0 | Brass | 0590 |
+
+The catalogue (MA12):
+
+| No. | Name in the file | Shown | Category | Kind | Density |
+|---|---|---|---|---|---|
+| 0010 | RST 37-2 | RST 37-2 | punching | Carbon Steel | 7.8 |
+| 0020 | ST 42 | ST 42 | punching | Carbon Steel | 7.9 |
+| 0030 | ST 44-2 | ST 44-2 | punching | Carbon Steel | 7.9 |
+| 0040 | ST 52-3 | ST 52-3 | punching | Carbon Steel | 7.9 |
+| 0050 | AP 12 | AP 12 | punching | Carbon Steel | 7.9 |
+| 0060 | DC04 | DC04 | punching | Carbon Steel | 7.9 |
+| 0070 | S 380 MC | S 380 MC | punching | Carbon Steel | 7.9 |
+| 0080 | S 460 MC | S 460 MC | punching | Carbon Steel | 7.9 |
+| 0100 | X5CrNi | X5CrNi | punching | Stainless steel | 8 |
+| 0110 | X3CrNiMo 17-13-3 | X3CrNiMo 17-13-3 | punching | Stainless steel | 8 |
+| 0200 | Al99 | Al99 | punching | Alloy Alluminium | 2.7 |
+| 0210 | AlMg3 | AlMg3 | punching | Alloy Alluminium | 2.7 |
+| 0300 | Galvanizado | Galvanized | punching | Steel | 7.9 |
+| 0310 | DC01+ZE | DC01+ZE | punching | Steel | 7.9 |
+| 0400 | Titanio | Titanium | waterjet | — | — |
+| 0410 | Inconel 600 | Inconel | waterjet | — | — |
+| 0500 | Absorbedor acustico | Acoustic Absorber | waterjet | — | 2.1 |
+| 0510 | Cobre | Copper | waterjet | — | 8.9 |
+| 0520 | Gres | Sandstone | waterjet | — | 1.9 |
+| 0530 | Nylon | Nylon | waterjet | — | 2.1 |
+| 0540 | Madera | Wood | waterjet | — | 800 |
+| 0550 | Marmol | Marble | waterjet | — | 2.8 |
+| 0560 | Cristal | Glass | waterjet | — | 2.6 |
+| 0570 | Alabastro | Alabaster | waterjet | — | 2.4 |
+| 0580 | Pizarra | Slate | waterjet | — | 2.8 |
+| 0590 | Laton | Brass | waterjet | — | 8.5 |
+| 0600 | Arenisca | Gritty | waterjet | — | 2.6 |
+| 0610 | Linoleo | linoleum | waterjet | — | 1.2 |
+| 0620 | Metacrilato | Plexiglas | waterjet | — | — |
+| 0630 | Goma | Rubber | waterjet | — | — |
+| 0640 | Grafito | Graphite | waterjet | — | — |
+| 0650 | Granito | Granite | waterjet | — | — |
+| 0660 | Papel | Paper | waterjet | — | — |
+| 0670 | PVC | PVC | waterjet | — | — |
+
 ## Window and taskbar icon
 
 | # | Rule |
