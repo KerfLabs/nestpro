@@ -6676,13 +6676,13 @@
  {
   "name": "cut-off line: pierce inside the start edge",
   "group": "ByStar Fiber post",
-  "value": "B003 + B004 + B005 (on the shrunk sheet outline)",
+  "value": "B004 + B005 on the sheet (B003 + B004 + B005 inside the subprogram, whose call is moved B003 outward)",
   "source": "MECHANICS BV38"
  },
  {
-  "name": "cut-off line: sensing off before the far edge",
+  "name": "cut-off line: sensing off before each edge",
   "group": "ByStar Fiber post",
-  "value": "B004",
+  "value": "B004 on the sheet (B004 + B003 back from the end of the overrun inside the subprogram)",
   "source": "MECHANICS BV38"
  },
  {
@@ -6778,7 +6778,7 @@
  {
   "name": "cut-off pierce point",
   "group": "ByStar Fiber post",
-  "value": "crossing of the sheet outline shrunk by B003+B004+B005",
+  "value": "crossing of the sheet outline shrunk by B003+B004+B005 (B035 and B046 off; start outside the sheet or within that distance minus the tolerance of an edge)",
   "source": "MECHANICS BV49"
  },
  {
@@ -6862,7 +6862,7 @@
  {
   "name": "cut program byte encoding",
   "group": "ByStar Fiber post",
-  "value": "Windows ANSI code page (header says utf-8)",
+  "value": "PC's Windows code page for the default screen languages, else the language's own code page (header says utf-8)",
   "source": "MECHANICS BV53"
  },
  {
@@ -6912,6 +6912,36 @@
   "group": "ByStar Fiber post",
   "value": "2 (on/off point)",
   "source": "MECHANICS BV55"
+ },
+ {
+  "name": "joint cut and gap counted as one straight line within",
+  "group": "ByStar Fiber post",
+  "value": 0.01,
+  "source": "MECHANICS BV46"
+ },
+ {
+  "name": "joint cut not held back when",
+  "group": "ByStar Fiber post",
+  "value": "joint mark subtype 2, joint-lead data on the cut or its source element, or one of the last two elements",
+  "source": "MECHANICS BV46"
+ },
+ {
+  "name": "ArcTo keeps the sweep handed to it when its size is above",
+  "group": "ByStar Fiber post",
+  "value": "machine tolerance (CF1 A005); otherwise recomputed from the last recorded point",
+  "source": "MECHANICS BV47"
+ },
+ {
+  "name": "B047 applies to",
+  "group": "ByStar Fiber post",
+  "value": "a joint cut in the contour's second-to-last place without joint-lead data",
+  "source": "MECHANICS BV48"
+ },
+ {
+  "name": "B035 overrun",
+  "group": "ByStar Fiber post",
+  "value": "on the line's own ends, less what already sticks out past the sheet",
+  "source": "MECHANICS BV39"
  }
 ]
 }
