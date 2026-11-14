@@ -6540,6 +6540,210 @@
   "group": "sheet stock",
   "value": "any size in stock",
   "source": "MECHANICS ST18"
+ },
+ {
+  "name": "container",
+  "group": "ByStar Fiber job (.bvc)",
+  "value": "zip: JobInfo.xml + <nest>.ccp per nest (+ preview)",
+  "source": "MECHANICS BV1"
+ },
+ {
+  "name": "entry names matched",
+  "group": "ByStar Fiber job (.bvc)",
+  "value": "leaf name, ignoring case",
+  "source": "MECHANICS BV1"
+ },
+ {
+  "name": "job file fields read",
+  "group": "ByStar Fiber job (.bvc)",
+  "value": "Name, Material, Thickness, MeasurementSystem, ProcessGas",
+  "source": "MECHANICS BV2"
+ },
+ {
+  "name": "gas kept in the job",
+  "group": "ByStar Fiber job (.bvc)",
+  "value": "no (named in the note)",
+  "source": "MECHANICS BV2"
+ },
+ {
+  "name": "placeholder part with no shape",
+  "group": "ByStar Fiber job (.bvc)",
+  "value": "not a part",
+  "source": "MECHANICS BV3"
+ },
+ {
+  "name": "sheet size from",
+  "group": "ByStar Fiber job (.bvc)",
+  "value": "cut program ApplicationFlat, else MaterialInfo",
+  "source": "MECHANICS BV4"
+ },
+ {
+  "name": "nest run count field",
+  "group": "ByStar Fiber job (.bvc)",
+  "value": "Multiplicity",
+  "source": "MECHANICS BV5"
+ },
+ {
+  "name": "nest run less than once",
+  "group": "ByStar Fiber job (.bvc)",
+  "value": "opens as one sheet",
+  "source": "MECHANICS BV5"
+ },
+ {
+  "name": "placement",
+  "group": "ByStar Fiber job (.bvc)",
+  "value": "rotate about subprogram origin (degrees CCW), then move to X, Y",
+  "source": "MECHANICS BV6"
+ },
+ {
+  "name": "subprogram names matched",
+  "group": "ByStar Fiber job (.bvc)",
+  "value": "ignoring case",
+  "source": "MECHANICS BV6"
+ },
+ {
+  "name": "contour shape",
+  "group": "ByStar Fiber job (.bvc)",
+  "value": "moves between BeginCutOut and EndCutOut",
+  "source": "MECHANICS BV7"
+ },
+ {
+  "name": "arc",
+  "group": "ByStar Fiber job (.bvc)",
+  "value": "end point + signed sweep in degrees, CCW positive",
+  "source": "MECHANICS BV7"
+ },
+ {
+  "name": "flat arc sweep limit (degrees)",
+  "group": "ByStar Fiber job (.bvc)",
+  "value": 1e-09,
+  "source": "MECHANICS BV7"
+ },
+ {
+  "name": "arc point step (degrees)",
+  "group": "ByStar Fiber job (.bvc)",
+  "value": 5.0,
+  "source": "MECHANICS BV7"
+ },
+ {
+  "name": "mm per inch",
+  "group": "ByStar Fiber job (.bvc)",
+  "value": 25.4,
+  "source": "MECHANICS BV8"
+ },
+ {
+  "name": "operation mode 0 → cut quality",
+  "group": "ByStar Fiber job (.bvc)",
+  "value": 1,
+  "source": "MECHANICS BV9"
+ },
+ {
+  "name": "operation mode 1 → cut quality",
+  "group": "ByStar Fiber job (.bvc)",
+  "value": 2,
+  "source": "MECHANICS BV9"
+ },
+ {
+  "name": "operation mode 2",
+  "group": "ByStar Fiber job (.bvc)",
+  "value": "Mark (engraving)",
+  "source": "MECHANICS BV9"
+ },
+ {
+  "name": "operation modes 3–7 → cut quality",
+  "group": "ByStar Fiber job (.bvc)",
+  "value": "3–7",
+  "source": "MECHANICS BV9"
+ },
+ {
+  "name": "other or no mode",
+  "group": "ByStar Fiber job (.bvc)",
+  "value": "machine's automatic quality",
+  "source": "MECHANICS BV9"
+ },
+ {
+  "name": "opened contour quality",
+  "group": "ByStar Fiber job (.bvc)",
+  "value": "set as the contour's own (by hand)",
+  "source": "MECHANICS BV10"
+ },
+ {
+  "name": "outline",
+  "group": "ByStar Fiber job (.bvc)",
+  "value": "exterior cut-out (biggest), else biggest closed cut",
+  "source": "MECHANICS BV11"
+ },
+ {
+  "name": "open cut path on a part",
+  "group": "ByStar Fiber job (.bvc)",
+  "value": "no-cut line",
+  "source": "MECHANICS BV11"
+ },
+ {
+  "name": "pierce modes",
+  "group": "ByStar Fiber job (.bvc)",
+  "value": "Normal, Fine, Drilled, NoTime",
+  "source": "MECHANICS BV12"
+ },
+ {
+  "name": "micro-joints kept per part",
+  "group": "ByStar Fiber job (.bvc)",
+  "value": 12,
+  "source": "MECHANICS BV13"
+ },
+ {
+  "name": "opened joint width",
+  "group": "ByStar Fiber job (.bvc)",
+  "value": "app's default joint width",
+  "source": "MECHANICS BV13"
+ },
+ {
+  "name": "cut-off",
+  "group": "ByStar Fiber job (.bvc)",
+  "value": "straight pieces joined, edge-to-edge remnant line",
+  "source": "MECHANICS BV14"
+ },
+ {
+  "name": "contour close tolerance (mm)",
+  "group": "ByStar Fiber job (.bvc)",
+  "value": 0.05,
+  "source": "MECHANICS BV16"
+ },
+ {
+  "name": "cut starts kept per part",
+  "group": "ByStar Fiber job (.bvc)",
+  "value": 8,
+  "source": "MECHANICS BV18"
+ },
+ {
+  "name": "opened lead shape and length",
+  "group": "ByStar Fiber job (.bvc)",
+  "value": "machine's lead tables",
+  "source": "MECHANICS BV18"
+ },
+ {
+  "name": "nest becomes",
+  "group": "ByStar Fiber job (.bvc)",
+  "value": "one sheet per run, identical",
+  "source": "MECHANICS BV20"
+ },
+ {
+  "name": "opened sheets go to",
+  "group": "ByStar Fiber job (.bvc)",
+  "value": "active machine",
+  "source": "MECHANICS BV20"
+ },
+ {
+  "name": "part quantity",
+  "group": "ByStar Fiber job (.bvc)",
+  "value": "job file's ordered quantity, else how many are placed",
+  "source": "MECHANICS BV20"
+ },
+ {
+  "name": "unknown command",
+  "group": "ByStar Fiber job (.bvc)",
+  "value": "skipped, counted by name in the note",
+  "source": "MECHANICS BV20"
  }
 ]
 }

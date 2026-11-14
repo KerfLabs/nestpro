@@ -159,8 +159,8 @@ pub static OPS: &[Op] = &[
     Op { name: "import-xml", group: "Job", kind: Kind::Global, help: "Import a Lantek import XML (DXF Import / Parts Import): one new job file per material and thickness, each product's drawing (Fich) or its library product, with its quantity and rotations.", args: &[
         r("path", Ty::Path, "The XML file"), a("dir", Ty::Path, "Folder for the new job files (default: next to the XML)"), a("force", Ty::Bool, "Overwrite job files that exist"),
     ] },
-    Op { name: "import-program", group: "Job", kind: Kind::Create, help: "Open a BLM LC5 machine program set (<NEST>.zip, its .XML, or a Lantek .nxp) as a new editable job: its parts, where they sit, the sheet, material and thickness, and the cut-off as a remnant line.", args: &[
-        r("path", Ty::Path, "The program set (.zip / .XML / .nxp)"), a("force", Ty::Bool, "Overwrite the job file if it exists"),
+    Op { name: "import-program", group: "Job", kind: Kind::Create, help: "Open machine programs as a new editable job: a BLM LC5 program set (<NEST>.zip, its .XML, or a Lantek .nxp) — its parts, where they sit, the sheet, material and thickness, and the cut-off as a remnant line — or a ByStar Fiber laser job (.bvc) — its parts with each contour's cut quality (from its operation mode; engraving as Mark), cut starts and micro-joints, the ordered quantities, material and thickness, and every nest as a sheet (a nest run N times as N sheets) with its parts at their positions and rotations and its cut-offs as remnant lines. Inch files open in mm. A file that isn't one is refused with the reason; commands the reader doesn't know are skipped and named in the message.", args: &[
+        r("path", Ty::Path, "The program set (.zip / .XML / .nxp) or ByStar Fiber job (.bvc)"), a("force", Ty::Bool, "Overwrite the job file if it exists"),
     ] },
     Op { name: "drawing-layers", group: "Parts", kind: Kind::Global, help: "List a part drawing's layers (DXF/DWG layers, IGES levels, DSTV blocks, ESSI cut/mark…) and how many objects each holds, before importing it. Objects the drawing hides (frozen or off layers, invisible) or draws in a centre / hidden / dashed line type get their own row, such as `0 [CENTER]`, that starts as left out. Each part's size, holes and contours (numbered as part-info numbers them, with the state each starts in) are given as the part comes in with `layers`, so import-drawing's `contours` can be chosen before importing. Also answers to dxf-layers.", args: &[
         r("path", Ty::Path, "The drawing file"), c("format", FORMATS, "Read the file as this format (default: by its extension and content)"),
@@ -1190,16 +1190,19 @@ pub fn create(ctx: &Ctx, op_name: &str, default_name: &str, args: &Value) -> Res
     if op.name == "import-program" {
         let path = PathBuf::from(a.need_str("path")?);
         let pj = imports::program_job(&ctx.cfg, &default_spec(), &path, 0)?;
+        let lines: usize = pj.cuts.iter().map(Vec::len).sum();
+        let on = match pj.sheets.len() {
+            1 => format!("on a {:.0} × {:.0} mm sheet", pj.spec.w, pj.spec.h),
+            n => format!("on {n} sheets from {} nest(s), the first {:.0} × {:.0} mm", pj.nests, pj.spec.w, pj.spec.h),
+        };
         let m = format!(
-            "Opened {}: {} placed part(s) of {} kind(s) on a {:.0} × {:.0} mm sheet, {} {} mm{}.{}",
+            "Opened {}: {} placed part(s) of {} kind(s) {on}, {} {} mm{}.{}",
             pj.name,
-            pj.sheet.len(),
+            pj.sheets.iter().map(Vec::len).sum::<usize>(),
             pj.parts.len(),
-            pj.spec.w,
-            pj.spec.h,
             cnc::MATERIALS.get(pj.spec.material).copied().unwrap_or("?"),
             pj.spec.thickness,
-            if pj.cuts.is_empty() { String::new() } else { format!(", {} cut line(s)", pj.cuts.len()) },
+            if lines == 0 { String::new() } else { format!(", {lines} cut line(s)") },
             if pj.notes.is_empty() { String::new() } else { format!(" ({})", pj.notes.join("; ")) }
         );
         return Ok((pj.into_jobfile(), m));

@@ -1,3 +1,4 @@
 # Reviewed images: "<sha256>  <path>". Add a line only after checking the image shows
 # no shop data, personal paths or screens of the original program (AGENTS.md).
 9e076c34e32a0b0ef35c62ebf6be8b5594a4601e7bcd478b681e9eff1f327973  app/assets/icon.png
+abc383e32d684c8f6e8176b48b1231675c116bcdf1fa106652343712ea6a11a1  app/shots/bvc-opened-sheet.png

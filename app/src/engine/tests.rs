@@ -5195,3 +5195,246 @@ fn an_agent_sees_another_pcs_save_at_once() {
     assert_eq!(jobfile::load(Path::new(jp)).unwrap().parts.iter().map(|p| p.qty).collect::<Vec<_>>(), [4], "opened as saved now");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+// ---------------------------------------------------------------------------
+// Opening a ByStar Fiber job (.bvc, BV1–BV20), built here as a made-up nest.
+// ---------------------------------------------------------------------------
+
+/// What to put in the made-up `.bvc`.
+#[derive(Clone, Copy, Default)]
+struct DemoBvc {
+    /// Lengths in inches (`English`) instead of mm.
+    inch: bool,
+    /// A command no reader knows, in the first nest.
+    unknown: bool,
+    /// The first nest places part id 9, which the job file doesn't list.
+    bad_part: bool,
+    /// The first nest calls a subprogram it doesn't have.
+    bad_call: bool,
+}
+
+/// A made-up ByStar Fiber job: part DEMO-001 (a 100 × 60 plate with a round
+/// hole in mode 3, a square one in mode 4 and an engraved label, leads and
+/// joints on it) and part DEMO-002 (a Ø40 disc drawn as one arc of nearly a
+/// full turn); nest DEMO-01 (run once: DEMO-001 at 0° and 90°, DEMO-002 at
+/// 13°, a remnant cut-off at x = 400) and nest DEMO-02 (run 3 times:
+/// DEMO-001 at 180°, DEMO-002 at 0°). Sheets 1000 × 500 mm, 3 mm.
+fn demo_bvc(o: DemoBvc) -> Vec<(String, String)> {
+    let u = if o.inch { 25.4 } else { 1.0 };
+    let f = |v: f64| format!("{}", v / u);
+    let xy = |x: f64, y: f64| format!("X=\"{}\" Y=\"{}\"", f(x), f(y));
+    let line = |x, y| format!("<LineTo {} />", xy(x, y));
+    let arc = |x, y, s: f64| format!("<ArcTo {} SweepAngle=\"{s}\" />", xy(x, y));
+    let mv = |x, y| format!("<MoveLineTo {} />", xy(x, y));
+    let mode = |m: i32| format!("<SetOperationMode Value=\"{m}\" /><SetToolCorrection Value=\"None\" />");
+    let pierce = |m: &str| format!("<SetPiercingMode Value=\"{m}\" /><ExecPiercing />");
+    let plate = |unknown: bool| {
+        [
+            // The engraved label: open, no leads.
+            mode(2), mv(10.0, 45.0), "<BeginCutOut />".into(), pierce("Normal"), line(10.0, 55.0), line(16.0, 55.0), "<EndCutOut />".into(),
+            // The round hole: straight + arc lead-in, joint at its end, lead-out.
+            mode(3), mv(30.0, 30.0), "<BeginLeadIn />".into(), pierce("Normal"), line(35.0, 30.0), arc(40.0, 30.0, -180.0), "<EndLeadIn />".into(),
+            "<BeginCutOut Contour=\"Interior\" /><SetToolCorrection Value=\"Right\" />".into(), arc(20.0, 30.0, 180.0), arc(40.0, 30.0, 180.0), "<ExecMicrojoint />".into(), "<EndCutOut />".into(),
+            "<BeginLeadOut />".into(), line(38.0, 31.0), "<EndLeadOut /><SetToolCorrection Value=\"None\" />".into(),
+            // The square hole: pierced on the path, no leads.
+            mode(4), mv(60.0, 20.0), "<BeginCutOut Contour=\"Interior\" />".into(), pierce("Normal"), "<SetToolCorrection Value=\"Right\" />".into(),
+            line(60.0, 40.0), line(80.0, 40.0), line(80.0, 20.0), line(60.0, 20.0), "<EndCutOut /><SetToolCorrection Value=\"None\" />".into(),
+            if unknown { "<FancyNewCommand Value=\"1\" />".into() } else { String::new() },
+            // The outline: lead-in from outside, a joint part-way, a top edge
+            // written as an arc of almost no sweep, a lead-out.
+            mode(0), mv(-4.0, 30.0), "<BeginLeadIn />".into(), pierce("Normal"), line(0.0, 30.0), "<EndLeadIn />".into(),
+            "<BeginCutOut Contour=\"Exterior\" /><SetToolCorrection Value=\"Right\" />".into(), line(0.0, 0.0), line(100.0, 0.0), "<ExecMicrojoint />".into(), line(100.0, 60.0),
+            arc(0.0, 60.0, 1e-12), line(0.0, 30.0), "<EndCutOut />".into(), "<BeginLeadOut />".into(), line(-2.0, 32.0), "<EndLeadOut /><SetToolCorrection Value=\"None\" />".into(),
+        ]
+        .concat()
+    };
+    let s = 359.999f64;
+    let disc = [
+        mode(0), mv(44.0, 20.0), "<BeginLeadIn />".into(), pierce("Normal"), line(40.0, 20.0), "<EndLeadIn />".into(),
+        "<BeginCutOut Contour=\"Exterior\" />".into(), arc(20.0 + 20.0 * s.to_radians().cos(), 20.0 + 20.0 * s.to_radians().sin(), s), line(40.0, 20.0), "<EndCutOut />".into(),
+    ]
+    .concat();
+    let cutoff = [
+        mode(0), mv(0.0, 40.0), "<BeginCutOut Contour=\"Exterior\" />".into(), pierce("Normal"), line(0.0, 20.0), "<SetSensingSensor Value=\"Off\" />".into(), line(0.0, -1.0),
+        "<SetSensingSensor Value=\"On\" /><EndCutOut /><ExecHighPositioning />".into(), mv(0.0, 40.0), "<BeginCutOut Contour=\"Exterior\" />".into(), pierce("NoTime"), line(0.0, 501.0),
+        "<EndCutOut /><ExecHighPositioning />".into(),
+    ]
+    .concat();
+    let sub = |name: &str, body: &str| format!("    <SubProgram Name=\"{name}\">\r\n      <ControlCommands>{body}</ControlCommands>\r\n    </SubProgram>\r\n");
+    let call = |x: f64, y: f64, r: &str, name: &str| format!("<CallSubProgram {} Rotation=\"{r}\" SubProgramName=\"{name}\" />", xy(x, y));
+    let ms = if o.inch { "English" } else { "Metric" };
+    let ccp = |subs: String, calls: String| {
+        format!(
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n<CuttingControlProgram MeasurementSystem=\"{ms}\" ToolArrangement=\"Vertical\" Thickness=\"{}\" PlanLoadingOffsetX=\"0\" PlanLoadingOffsetY=\"0\">\r\n  <Technology />\r\n  <ApplicationFlat PlanWidth=\"{}\" PlanHeight=\"{}\" SheetWidth=\"{}\" SheetHeight=\"{}\" />\r\n  <SubPrograms>\r\n{subs}  </SubPrograms>\r\n  <ControlCommands><SetClamps Value=\"Off\" />{calls}</ControlCommands>\r\n</CuttingControlProgram>\r\n",
+            f(3.0), f(400.0), f(240.0), f(1000.0), f(500.0)
+        )
+    };
+    let first_call = if o.bad_call { "Missing" } else { "Sub1" };
+    let nest1 = ccp(
+        [sub("Sub1", &plate(o.unknown)), sub("Sub2", &disc), sub("ResidualSheetCuts_1", &cutoff)].concat(),
+        [call(10.0, 10.0, "-0", first_call), call(200.0, 10.0, "90", "Sub1"), call(300.0, 200.0, "13", "Sub2"), call(400.0, 0.0, "0", "ResidualSheetCuts_1")].concat(),
+    );
+    // The second nest's subprogram for DEMO-001 has another name: the job
+    // file links it to the part.
+    let nest2 = ccp([sub("PartA", &plate(false)), sub("Sub2", &disc)].concat(), [call(110.0, 70.0, "180", "PartA"), call(150.0, 10.0, "-0", "Sub2")].concat());
+    let part1 = if o.bad_part { 9 } else { 1 };
+    let job = format!(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n<JobInfo Guid=\"00000000-0000-0000-0000-000000000000\" Name=\"DEMO-JOB\" Material=\"STAINLESS 304\" Thickness=\"{}\" MeasurementSystem=\"{ms}\" ProcessGas=\"N2\">\r\n  <PartInfos>\r\n    <PartInfo Id=\"0\" Name=\"Dummy\" Quantity=\"1\" />\r\n    <PartInfo Id=\"1\" Name=\"DEMO-001\" Quantity=\"3\" />\r\n    <PartInfo Id=\"2\" Name=\"DEMO-002\" Quantity=\"4\" />\r\n  </PartInfos>\r\n  <MaterialInfos>\r\n    <MaterialInfo Id=\"1\" Quantity=\"4\" SizeX=\"{}\" SizeY=\"{}\" FormatType=\"Sheet\" />\r\n  </MaterialInfos>\r\n  <PlanInfos>\r\n    <PlanInfo Multiplicity=\"1\" Name=\"DEMO-01\" MaterialId=\"1\"><PlanPartInfos><PlanPartInfo PartId=\"{part1}\" Quantity=\"2\" SubProgramName=\"Sub1\" /><PlanPartInfo PartId=\"2\" Quantity=\"1\" SubProgramName=\"Sub2\" /><PlanPartInfo PartId=\"0\" Quantity=\"1\" SubProgramName=\"ResidualSheetCuts_1\" /></PlanPartInfos></PlanInfo>\r\n    <PlanInfo Multiplicity=\"3\" Name=\"DEMO-02\" MaterialId=\"1\"><PlanPartInfos><PlanPartInfo PartId=\"1\" Quantity=\"1\" SubProgramName=\"PartA\" /><PlanPartInfo PartId=\"2\" Quantity=\"1\" SubProgramName=\"Sub2\" /></PlanPartInfos></PlanInfo>\r\n  </PlanInfos>\r\n  <SortInfos />\r\n  <EstimatedCuttingTime>0</EstimatedCuttingTime>\r\n</JobInfo>\r\n",
+        f(3.0), f(1000.0), f(500.0)
+    );
+    vec![("JobInfo.xml".into(), job), ("DEMO-01.ccp".into(), nest1), ("DEMO-02.ccp".into(), nest2)]
+}
+
+fn write_bvc(d: &Path, name: &str, files: &[(String, String)]) -> String {
+    let p = d.join(name);
+    std::fs::write(&p, crate::blm::zip(files)).unwrap();
+    p.to_str().unwrap().to_string()
+}
+
+/// Open `bvc` through `import-program` into `<d>/<job>.snjob`.
+fn open_bvc(d: &Path, job: &str, bvc: &str) -> (JobFile, String) {
+    let mut s = Session::new(Ctx::builtin());
+    let jp = d.join(format!("{job}.snjob"));
+    let r = call(&mut s, "import-program", Some(jp.to_str().unwrap()), json!({"path": bvc}));
+    (jobfile::load(&jp).unwrap(), r["message"].as_str().unwrap().to_string())
+}
+
+fn rot_deg(p: P, deg: f64) -> P {
+    let (s, c) = deg.to_radians().sin_cos();
+    [p[0] * c - p[1] * s, p[0] * s + p[1] * c]
+}
+
+#[test]
+fn a_bystar_fiber_job_opens_with_its_parts_qualities_and_sheets() {
+    let d = dir("bvc_open");
+    let bvc = write_bvc(&d, "DEMO-JOB.bvc", &demo_bvc(DemoBvc { unknown: true, ..Default::default() }));
+    let (j, m) = open_bvc(&d, "demo", &bvc);
+    // Parts: the two of the job file (not its placeholder), ordered quantities.
+    let names: Vec<(&str, u32)> = j.parts.iter().map(|p| (p.name.as_str(), p.qty)).collect();
+    assert_eq!(names, [("DEMO-001", 3), ("DEMO-002", 4)], "{m}");
+    let a = j.parts[0].custom.as_ref().unwrap();
+    assert!((a.w - 100.0).abs() < 1e-9 && (a.h - 60.0).abs() < 1e-9, "leads don't stretch the part: {} x {}", a.w, a.h);
+    assert_eq!((a.contours.len(), a.holes.len(), a.marks.len()), (4, 2, 1));
+    // Each contour's mode as its cut quality (BV9; 0 → 1, 3 → 3, 4 → 4), engraving as Mark.
+    let q = |c: &crate::dxf::Contour| (c.state, c.quality.map(crate::nest::CutQuality::number));
+    let got: Vec<_> = a.contours.iter().map(q).collect();
+    use crate::dxf::ContourState::{Cut, Mark};
+    assert_eq!(got, [(Cut, Some(3)), (Cut, Some(4)), (Cut, Some(1)), (Mark, None)], "holes, outline, then the label");
+    // The round hole is round: radius 10 about (30, 30).
+    assert!(a.contours[0].pts.iter().all(|p| ((p[0] - 30.0).hypot(p[1] - 30.0) - 10.0).abs() < 1e-6));
+    // Cut starts and joints come in as the part's leads and joints, not shape.
+    let t = j.parts[0].tech.unwrap();
+    assert_eq!(t.starts[..3], [Some((0, [40.0, 30.0])), Some((1, [60.0, 20.0])), Some((2, [0.0, 30.0]))]);
+    assert_eq!(t.joint_picks[..2], [Some((0, [40.0, 30.0])), Some((2, [100.0, 0.0]))]);
+    assert_eq!(t.lead_type, crate::nest::LeadType::Machine, "lead shapes come from the machine's tables (JOB-74)");
+    // The disc: one arc of 359.999° and a short line back.
+    let b = j.parts[1].custom.as_ref().unwrap();
+    assert!((b.w - 40.0).abs() < 0.01 && (b.h - 40.0).abs() < 0.01, "{} x {}", b.w, b.h);
+    // Sheets: nest 1 once, nest 2 three times.
+    assert_eq!(j.sheets.len(), 4, "{m}");
+    assert_eq!(j.sheets.iter().map(Vec::len).collect::<Vec<_>>(), [3, 2, 2, 2]);
+    assert_eq!(j.sheets[1], j.sheets[3], "identical sheets for a nest run 3 times");
+    assert!(j.formats.iter().all(|f| (f.w, f.h) == (1000.0, 500.0)));
+    assert_eq!((j.spec.w, j.spec.h, j.spec.thickness, j.spec.material), (1000.0, 500.0, 3.0, 1));
+    // Placements: every part where the call puts it, turned as it says.
+    let check = |pl: &Placed, x: f64, y: f64, r: f64, origin: P| {
+        let g = j.parts[pl.part].geometry();
+        for &p in g.outline.iter().step_by(7) {
+            let want = rot_deg([p[0] + origin[0], p[1] + origin[1]], r);
+            let got = pl.map(p);
+            assert!((got[0] - want[0] - x).abs() < 1e-6 && (got[1] - want[1] - y).abs() < 1e-6, "{pl:?}: {got:?} vs {want:?}");
+        }
+    };
+    let s1 = &j.sheets[0];
+    assert_eq!((s1[0].part, s1[0].turns, s1[0].x, s1[0].y), (0, 0, 10.0, 10.0));
+    check(&s1[0], 10.0, 10.0, 0.0, [0.0, 0.0]);
+    assert_eq!((s1[1].part, s1[1].turns), (0, 1));
+    assert!((s1[1].x - 140.0).abs() < 1e-9 && (s1[1].y - 10.0).abs() < 1e-9, "{:?}", s1[1]);
+    check(&s1[1], 200.0, 10.0, 90.0, [0.0, 0.0]);
+    assert_eq!(s1[2].part, 1);
+    assert!((s1[2].spin.deg - 13.0).abs() < 1e-9, "a free angle: {:?}", s1[2]);
+    // The disc's (0, 0) is its outline's lower-left corner in its subprogram.
+    let lo = |pl: &Placed| {
+        let (w, h) = j.parts[pl.part].bbox();
+        let c = [w / 2.0, h / 2.0];
+        let m = pl.map(c);
+        let want = rot_deg([20.0, 20.0], pl.angle());
+        [m[0] - want[0], m[1] - want[1]]
+    };
+    let at = lo(&s1[2]);
+    assert!((at[0] - 300.0).abs() < 0.01 && (at[1] - 200.0).abs() < 0.01, "disc centre where the call puts it: {at:?}");
+    let s2 = &j.sheets[1];
+    assert_eq!((s2[0].part, s2[0].turns), (0, 2));
+    check(&s2[0], 110.0, 70.0, 180.0, [0.0, 0.0]);
+    assert!((s2[0].x - 10.0).abs() < 1e-9 && (s2[0].y - 10.0).abs() < 1e-9);
+    // The unknown command is skipped and named; gas and material in the note.
+    assert!(m.contains("FancyNewCommand ×1") && m.contains("4 sheets from 2 nest(s)") && m.contains("gas N2"), "{m}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_inch_bystar_fiber_job_opens_at_the_same_size_in_mm() {
+    let d = dir("bvc_inch");
+    let (mm, _) = open_bvc(&d, "mm", &write_bvc(&d, "mm.bvc", &demo_bvc(DemoBvc::default())));
+    let (inch, m) = open_bvc(&d, "inch", &write_bvc(&d, "inch.bvc", &demo_bvc(DemoBvc { inch: true, ..Default::default() })));
+    assert!(m.contains("inch file"), "{m}");
+    let size = |j: &JobFile| j.parts.iter().map(|p| (p.w, p.h)).collect::<Vec<_>>();
+    for (a, b) in size(&mm).iter().zip(size(&inch)) {
+        assert!((a.0 - b.0).abs() < 1e-6 && (a.1 - b.1).abs() < 1e-6, "{a:?} vs {b:?}");
+    }
+    assert!((inch.parts[0].w - 100.0).abs() < 1e-6, "not 25.4 times too small: {}", inch.parts[0].w);
+    assert!((inch.spec.thickness - 3.0).abs() < 1e-9 && (inch.spec.w - 1000.0).abs() < 1e-9);
+    for (a, b) in mm.sheets.iter().flatten().zip(inch.sheets.iter().flatten()) {
+        assert!((a.x - b.x).abs() < 1e-6 && (a.y - b.y).abs() < 1e-6 && a.turns == b.turns, "{a:?} vs {b:?}");
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_bystar_fiber_remnant_cut_off_is_a_remnant_line() {
+    let d = dir("bvc_remnant");
+    let (j, _) = open_bvc(&d, "demo", &write_bvc(&d, "demo.bvc", &demo_bvc(DemoBvc::default())));
+    // The cut-off's two pieces (to the edge, then on past the far edge after
+    // a re-pierce) are one line from edge to edge at x = 400.
+    assert_eq!(j.cut_lines.len(), 4);
+    assert_eq!(j.cut_lines[0].len(), 1, "{:?}", j.cut_lines[0]);
+    let l = &j.cut_lines[0][0];
+    assert_eq!(l.kind, crate::cutoff::CutKind::Remnant);
+    let ends = [l.pts[0], l.pts[1]];
+    assert!(ends.iter().all(|p| (p[0] - 400.0).abs() < 1e-9), "{ends:?}");
+    let (y0, y1) = (ends[0][1].min(ends[1][1]), ends[0][1].max(ends[1][1]));
+    assert!(y0.abs() < 1e-9 && (y1 - 500.0).abs() < 1e-9, "edge to edge: {ends:?}");
+    assert!(j.cut_lines[1..].iter().all(Vec::is_empty), "nest 2 has no cut-off");
+    // And it isn't a part.
+    assert_eq!(j.parts.len(), 2);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_file_that_isnt_a_bystar_fiber_job_is_refused_with_its_reason() {
+    let d = dir("bvc_refused");
+    let mut s = Session::new(Ctx::builtin());
+    let mut refused = |path: &str| match s.call("import-program", Some(d.join("x.snjob").to_str().unwrap()), &json!({"path": path})) {
+        Ok(r) => panic!("{path} should be refused, gave {}", r.json),
+        Err(e) => e,
+    };
+    let p = d.join("text.bvc");
+    std::fs::write(&p, "not a zip at all").unwrap();
+    assert!(refused(p.to_str().unwrap()).contains("not a zip file"));
+    let files = demo_bvc(DemoBvc::default());
+    let e = refused(&write_bvc(&d, "nojob.bvc", &files[1..]));
+    assert!(e.contains("no job file (JobInfo.xml)"), "{e}");
+    let mut broken = files.clone();
+    broken[1].1 = "<?xml version=\"1.0\"?>\r\n<CuttingControlProgram><SubPrograms>\r\n".into();
+    let e = refused(&write_bvc(&d, "broken.bvc", &broken));
+    assert!(e.contains("DEMO-01.ccp doesn't read") && e.contains("ends inside"), "{e}");
+    let e = refused(&write_bvc(&d, "part.bvc", &demo_bvc(DemoBvc { bad_part: true, ..Default::default() })));
+    assert!(e.contains("places part id 9"), "{e}");
+    let e = refused(&write_bvc(&d, "call.bvc", &demo_bvc(DemoBvc { bad_call: true, ..Default::default() })));
+    assert!(e.contains("subprogram 'Missing'"), "{e}");
+    let e = refused(&write_bvc(&d, "nonest.bvc", &files[..2]));
+    assert!(e.contains("nest 'DEMO-02' has no cut program"), "{e}");
+    // None of them left a job file behind.
+    assert!(!d.join("x.snjob").exists());
+    let _ = std::fs::remove_dir_all(&d);
+}

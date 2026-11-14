@@ -177,21 +177,47 @@ pub fn clip_to_sheet(a: P, b: P, w: f64, h: f64) -> Option<(P, P)> {
     Some(([a[0] + d[0] * t0, a[1] + d[1] * t0], [a[0] + d[0] * t1, a[1] + d[1] * t1]))
 }
 
-/// A nesting read back from a machine program set.
+/// A nesting read back from machine programs: a BLM program set (one sheet)
+/// or a ByStar Fiber job (`.bvc`, a sheet or several per nest).
 pub struct ProgramJob {
     pub name: String,
     pub spec: SheetSpec,
     pub parts: Vec<Part>,
-    pub sheet: Vec<Placed>,
-    pub cuts: Vec<CutLine>,
+    /// Each sheet's placed parts, its size and its cut lines.
+    pub sheets: Vec<Vec<Placed>>,
+    pub formats: Vec<crate::nest::SheetFormat>,
+    pub cuts: Vec<Vec<CutLine>>,
+    /// How many nests the sheets come from (a nest run several times gives
+    /// that many identical sheets).
+    pub nests: usize,
     pub notes: Vec<String>,
 }
 
+/// A `.bvc`'s cut-offs on a `w` × `h` sheet as cut lines: a straight one
+/// (the reader joins a cut-off's pieces) as a remnant line from edge to edge,
+/// any other as a free cut.
+fn bvc_cut_lines(paths: &[Vec<P>], w: f64, h: f64) -> Vec<CutLine> {
+    paths
+        .iter()
+        .filter_map(|c| {
+            let (a, b) = (*c.first()?, *c.last()?);
+            Some(match clip_to_sheet(a, b, w, h).filter(|_| c.len() == 2) {
+                Some((p, q)) => CutLine { pts: vec![p, q], kind: CutKind::Remnant },
+                None => CutLine { pts: c.clone(), kind: CutKind::Free },
+            })
+        })
+        .collect()
+}
+
 /// Open a BLM LC5 program set (`<NEST>.zip`, its `.XML`, or a Lantek `.nxp`
-/// list) as an editable nesting: each part subprogram a part, each call a
-/// placed part, the header's sheet, material and thickness over `base`, and
-/// cut-offs back as remnant lines (edge to edge) or free cuts.
+/// list) or a ByStar Fiber job (`.bvc`) as an editable nesting: each part
+/// subprogram a part, each call a placed part, the file's sheet, material and
+/// thickness over `base`, and cut-offs back as remnant lines (edge to edge) or
+/// free cuts.
 pub fn program_job(cfg: &AppSettings, base: &SheetSpec, path: &Path, color0: usize) -> Result<ProgramJob, String> {
+    if is_bvc(path) {
+        return bvc_job(cfg, base, path, color0);
+    }
     let im = crate::progimport::open(path).map_err(|e| format!("Couldn't open {}: {e}", path.display()))?;
     let mut spec = base.clone();
     if im.sheet_w > 0.0 && im.sheet_h > 0.0 {
@@ -234,17 +260,73 @@ pub fn program_job(cfg: &AppSettings, base: &SheetSpec, path: &Path, color0: usi
             })
         })
         .collect();
-    Ok(ProgramJob { name: im.name, spec, parts, sheet, cuts, notes: im.notes })
+    // One sheet of the job's size: no sheet formats, as before (`JobFile::formats`).
+    Ok(ProgramJob { name: im.name, spec, parts, sheets: vec![sheet], formats: vec![], cuts: vec![cuts], nests: 1, notes: im.notes })
+}
+
+/// Is this file a ByStar Fiber job: a `.bvc`, or a zip holding a job file
+/// (`JobInfo.xml`) under another name?
+pub fn is_bvc(path: &Path) -> bool {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    ext == "bvc"
+        || ext == "zip"
+            && std::fs::read(path).ok().and_then(|b| crate::progimport::read_zip(&b).ok()).is_some_and(|f| f.iter().any(|(n, _)| n.rsplit(['/', '\\']).next().unwrap_or(n).eq_ignore_ascii_case("JobInfo.xml")))
+}
+
+/// Open a ByStar Fiber job (`.bvc`, BV1–BV20) as an editable nesting on the
+/// machine of `base`: its parts with their contours, cut qualities, marks,
+/// cut starts and joints, quantities, material and thickness, and every nest
+/// as a sheet (or as many identical sheets as it is run) with its parts where
+/// they sit and its cut-offs as remnant lines.
+pub fn bvc_job(cfg: &AppSettings, base: &SheetSpec, path: &Path, color0: usize) -> Result<ProgramJob, String> {
+    let fail = |e: String| format!("Couldn't open {}: {e}", path.display());
+    let bytes = std::fs::read(path).map_err(|e| fail(e.to_string()))?;
+    let b = crate::bvc::read(&bytes).map_err(fail)?;
+    let n = crate::bvc::nesting(&b, color0).map_err(fail)?;
+    let mut spec = base.clone();
+    if let Some(s) = n.sheets.first().filter(|s| s.w > 0.0 && s.h > 0.0) {
+        spec.w = s.w;
+        spec.h = s.h;
+    }
+    if n.thickness > 0.0 {
+        spec.thickness = n.thickness;
+    }
+    spec.material = program_material(cfg, &n.material);
+    let mut notes = vec![];
+    if !n.material.is_empty() && cfg.material_for(&n.material).is_none() {
+        notes.push(format!("material \"{}\" taken as {}", n.material, cnc::MATERIALS.get(spec.material).copied().unwrap_or("?")));
+    }
+    if !n.gas.is_empty() {
+        // JOB-74: the job keeps no gas of its own yet (MAC-39).
+        notes.push(format!("gas {} (the job's gas comes from the machine)", n.gas));
+    }
+    if n.inch {
+        notes.push("inch file, opened in mm".into());
+    }
+    notes.extend(n.notes);
+    let (mut sheets, mut formats, mut cuts) = (vec![], vec![], vec![]);
+    for s in &n.sheets {
+        let (w, h) = if s.w > 0.0 && s.h > 0.0 { (s.w, s.h) } else { (spec.w, spec.h) };
+        let lines = bvc_cut_lines(&s.cutoffs, w, h);
+        for _ in 0..s.count {
+            sheets.push(s.placed.clone());
+            formats.push(crate::nest::SheetFormat::rect(w, h));
+            cuts.push(lines.clone());
+        }
+    }
+    let name = if n.name.is_empty() { path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default() } else { n.name };
+    Ok(ProgramJob { name, spec, parts: n.parts, sheets, formats, cuts, nests: n.sheets.len(), notes })
 }
 
 impl ProgramJob {
-    /// As a job file (one sheet, the cut-offs on it).
+    /// As a job file: its sheets, each with its size and cut-offs.
     pub fn into_jobfile(self) -> JobFile {
         let mut j = JobFile::new_job(&self.name, self.spec);
         j.week = "Opened programs".into();
         j.parts = self.parts;
-        j.sheets = vec![self.sheet];
-        j.cut_lines = vec![self.cuts];
+        j.sheets = self.sheets;
+        j.formats = self.formats;
+        j.cut_lines = self.cuts;
         j.method = "opened from machine program".into();
         j
     }
