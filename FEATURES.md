@@ -21,6 +21,8 @@ original (or a real job).
 
 **Reserved:** spec #132 (Programming screen) holds JOB-77–JOB-84 here, and F24–F33 in `app/MECHANICS.md`.
 
+**Reserved:** spec #142 (the shop's own materials) holds JOB-85–JOB-94 here, and MA8–MA35 in `app/MECHANICS.md`.
+
 ## Sheets and stock (STK)
 
 | ID | What | Status | Pri | Notes / source |
@@ -186,7 +188,7 @@ original (or a real job).
 
 | ID | What | Status | Pri | Notes / source |
 |---|---|---|---|---|
-| JOB-2 | Materials: thickness ranges and prices, norms, more than 3 materials, XML/cloud material files; consumables (gas, nozzles) | Partial | ★★ | MECHANICS "Materials in Expert" |
+| JOB-2 | Materials: thickness ranges and prices, norms, more than 3 materials, XML/cloud material files; consumables (gas, nozzles) | Partial | ★★ | MECHANICS "Materials in Expert"; the shop's own material list: spec #142 |
 | JOB-3 | Kits from database, Kit Explorer | Missing | ★★ | |
 | JOB-4 | Quotation (save quote, quotation jobs) | Missing | ★★ | |
 | JOB-5 | Element search (type, name, date, status) | Partial | ★ | simple search |
