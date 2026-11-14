@@ -6540,6 +6540,204 @@
   "group": "sheet stock",
   "value": "any size in stock",
   "source": "MECHANICS ST18"
+ },
+ {
+  "name": "material fields",
+  "group": "materials",
+  "value": ["name", "density", "strength", "price", "scrap price", "price date", "machining factor", "norm", "catalogue number", "texture", "prices by thickness range"],
+  "source": "MA8"
+ },
+ {
+  "name": "material required fields",
+  "group": "materials",
+  "value": ["name"],
+  "source": "MA8"
+ },
+ {
+  "name": "material name unique ignoring case",
+  "group": "materials",
+  "value": true,
+  "source": "MA8"
+ },
+ {
+  "name": "new blank material numbers",
+  "group": "materials",
+  "value": 0,
+  "source": "MA8"
+ },
+ {
+  "name": "density change warning above",
+  "group": "materials",
+  "value": 0.001,
+  "unit": "kg/dm³",
+  "source": "MA8"
+ },
+ {
+  "name": "density unit",
+  "group": "materials",
+  "value": "kg/dm³",
+  "source": "MA8"
+ },
+ {
+  "name": "adding a standard whose catalogue number is in the list under another name",
+  "group": "materials",
+  "value": "ask: replace it, add beside it, or skip (answer can apply to the rest)",
+  "source": "MA8"
+ },
+ {
+  "name": "rename may change only the case",
+  "group": "materials",
+  "value": true,
+  "source": "MA9"
+ },
+ {
+  "name": "rename carried to everything that uses the material",
+  "group": "materials",
+  "value": true,
+  "source": "MA9",
+  "estimated": true
+ },
+ {
+  "name": "rename rewrites machine files only for a material without a catalogue number",
+  "group": "materials",
+  "value": true,
+  "source": "MA9"
+ },
+ {
+  "name": "delete refused while used by",
+  "group": "materials",
+  "value": ["sheet", "part", "nesting", "catalogue element"],
+  "source": "MA10"
+ },
+ {
+  "name": "delete asks for confirmation",
+  "group": "materials",
+  "value": true,
+  "source": "MA10"
+ },
+ {
+  "name": "materials protected from deletion",
+  "group": "materials",
+  "value": [],
+  "source": "MA10"
+ },
+ {
+  "name": "deleted main material passes main to",
+  "group": "materials",
+  "value": "another material of its catalogue number",
+  "source": "MA10"
+ },
+ {
+  "name": "materials in a blank database",
+  "group": "materials",
+  "value": 0,
+  "source": "MA11"
+ },
+ {
+  "name": "starter materials",
+  "group": "materials",
+  "value": [
+   {"name": "RST 37-2", "catalogue": "0010", "kind": "Carbon Steel", "density": 7.8, "strength": 420, "price": 0.5},
+   {"name": "X5CrNi", "catalogue": "0100", "kind": "Stainless steel", "density": 8.0, "strength": 586, "price": 2.4},
+   {"name": "X5CrNi + Film", "catalogue": "3060", "kind": "Stainless steel", "density": 0.0, "strength": 0, "price": 0},
+   {"name": "Al99", "catalogue": "0200", "kind": "Alloy Alluminium", "density": 2.7, "strength": 285.4, "price": 2.4},
+   {"name": "AlMg3", "catalogue": "0210", "kind": "Alloy Alluminium", "density": 2.7, "strength": 1835.12, "price": 2.4},
+   {"name": "Galvanized", "catalogue": "0300", "kind": "Steel", "density": 7.9, "strength": 366, "price": 0.5},
+   {"name": "Cooper", "catalogue": "0510", "kind": "Copper", "density": 8.9, "strength": 6, "price": 0},
+   {"name": "Brass", "catalogue": "0590", "kind": "Brass", "density": 8.5, "strength": 3, "price": 0}
+  ],
+  "source": "MA11"
+ },
+ {
+  "name": "starter material kinds the catalogue doesn't give",
+  "group": "materials",
+  "value": {"3060": "Stainless steel", "0510": "Copper", "0590": "Brass"},
+  "source": "MA11",
+  "estimated": true
+ },
+ {
+  "name": "LC5 material program name",
+  "group": "materials",
+  "value": "material name",
+  "source": "MA11"
+ },
+ {
+  "name": "LC5 material code",
+  "group": "materials",
+  "value": "catalogue number (empty without one)",
+  "source": "MA11"
+ },
+ {
+  "name": "LC5 material alias",
+  "group": "materials",
+  "value": "main material of its catalogue number when that is another material, else the material's name",
+  "source": "MA11"
+ },
+ {
+  "name": "ByStar Fiber material text",
+  "group": "materials",
+  "value": "material name",
+  "source": "MA11"
+ },
+ {
+  "name": "old three materials' program names and codes kept",
+  "group": "materials",
+  "value": [["STEEL", "0010"], ["STAINLESS", "0100"], ["ALUMINIUM", "0200"]],
+  "source": "MA11"
+ },
+ {
+  "name": "material catalogue",
+  "group": "materials",
+  "value": [
+   {"number": "0010", "name": "RST 37-2", "shown": "RST 37-2", "category": "punching", "kind": "Carbon Steel", "density": 7.8},
+   {"number": "0020", "name": "ST 42", "shown": "ST 42", "category": "punching", "kind": "Carbon Steel", "density": 7.9},
+   {"number": "0030", "name": "ST 44-2", "shown": "ST 44-2", "category": "punching", "kind": "Carbon Steel", "density": 7.9},
+   {"number": "0040", "name": "ST 52-3", "shown": "ST 52-3", "category": "punching", "kind": "Carbon Steel", "density": 7.9},
+   {"number": "0050", "name": "AP 12", "shown": "AP 12", "category": "punching", "kind": "Carbon Steel", "density": 7.9},
+   {"number": "0060", "name": "DC04", "shown": "DC04", "category": "punching", "kind": "Carbon Steel", "density": 7.9},
+   {"number": "0070", "name": "S 380 MC", "shown": "S 380 MC", "category": "punching", "kind": "Carbon Steel", "density": 7.9},
+   {"number": "0080", "name": "S 460 MC", "shown": "S 460 MC", "category": "punching", "kind": "Carbon Steel", "density": 7.9},
+   {"number": "0100", "name": "X5CrNi", "shown": "X5CrNi", "category": "punching", "kind": "Stainless steel", "density": 8.0},
+   {"number": "0110", "name": "X3CrNiMo 17-13-3", "shown": "X3CrNiMo 17-13-3", "category": "punching", "kind": "Stainless steel", "density": 8.0},
+   {"number": "0200", "name": "Al99", "shown": "Al99", "category": "punching", "kind": "Alloy Alluminium", "density": 2.7},
+   {"number": "0210", "name": "AlMg3", "shown": "AlMg3", "category": "punching", "kind": "Alloy Alluminium", "density": 2.7},
+   {"number": "0300", "name": "Galvanizado", "shown": "Galvanized", "category": "punching", "kind": "Steel", "density": 7.9},
+   {"number": "0310", "name": "DC01+ZE", "shown": "DC01+ZE", "category": "punching", "kind": "Steel", "density": 7.9},
+   {"number": "0400", "name": "Titanio", "shown": "Titanium", "category": "waterjet", "kind": "", "density": null},
+   {"number": "0410", "name": "Inconel 600", "shown": "Inconel", "category": "waterjet", "kind": "", "density": null},
+   {"number": "0500", "name": "Absorbedor acustico", "shown": "Acoustic Absorber", "category": "waterjet", "kind": "", "density": 2.1},
+   {"number": "0510", "name": "Cobre", "shown": "Copper", "category": "waterjet", "kind": "", "density": 8.9},
+   {"number": "0520", "name": "Gres", "shown": "Sandstone", "category": "waterjet", "kind": "", "density": 1.9},
+   {"number": "0530", "name": "Nylon", "shown": "Nylon", "category": "waterjet", "kind": "", "density": 2.1},
+   {"number": "0540", "name": "Madera", "shown": "Wood", "category": "waterjet", "kind": "", "density": 800.0},
+   {"number": "0550", "name": "Marmol", "shown": "Marble", "category": "waterjet", "kind": "", "density": 2.8},
+   {"number": "0560", "name": "Cristal", "shown": "Glass", "category": "waterjet", "kind": "", "density": 2.6},
+   {"number": "0570", "name": "Alabastro", "shown": "Alabaster", "category": "waterjet", "kind": "", "density": 2.4},
+   {"number": "0580", "name": "Pizarra", "shown": "Slate", "category": "waterjet", "kind": "", "density": 2.8},
+   {"number": "0590", "name": "Laton", "shown": "Brass", "category": "waterjet", "kind": "", "density": 8.5},
+   {"number": "0600", "name": "Arenisca", "shown": "Gritty", "category": "waterjet", "kind": "", "density": 2.6},
+   {"number": "0610", "name": "Linoleo", "shown": "linoleum", "category": "waterjet", "kind": "", "density": 1.2},
+   {"number": "0620", "name": "Metacrilato", "shown": "Plexiglas", "category": "waterjet", "kind": "", "density": null},
+   {"number": "0630", "name": "Goma", "shown": "Rubber", "category": "waterjet", "kind": "", "density": null},
+   {"number": "0640", "name": "Grafito", "shown": "Graphite", "category": "waterjet", "kind": "", "density": null},
+   {"number": "0650", "name": "Granito", "shown": "Granite", "category": "waterjet", "kind": "", "density": null},
+   {"number": "0660", "name": "Papel", "shown": "Paper", "category": "waterjet", "kind": "", "density": null},
+   {"number": "0670", "name": "PVC", "shown": "PVC", "category": "waterjet", "kind": "", "density": null}
+  ],
+  "source": "MA12"
+ },
+ {
+  "name": "material catalogue naming standards",
+  "group": "materials",
+  "value": 13,
+  "source": "MA12"
+ },
+ {
+  "name": "material catalogue English names on screen",
+  "group": "materials",
+  "value": true,
+  "source": "MA12",
+  "estimated": true
  }
 ]
 }
