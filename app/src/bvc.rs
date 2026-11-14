@@ -424,7 +424,11 @@ enum Bracket {
     Out,
     LeadIn,
     CutOut,
+    /// A lead-out after its cut-out (the machine's CAM, BV7).
     LeadOut,
+    /// A lead-out inside its cut-out, before `EndCutOut` (the original's
+    /// post, BV34).
+    LeadOutIn,
 }
 
 /// The commands of one subprogram as cuts (BV7): moves inside
@@ -462,6 +466,7 @@ fn read_cuts(cmds: &El, k: f64, p: &mut Program) -> Result<Vec<Cut>, String> {
         if let Some(s) = mv {
             match br {
                 Bracket::CutOut => cur.as_mut().unwrap().path.segs.push(s),
+                Bracket::LeadOutIn => cur.as_mut().unwrap().lead_out.get_or_insert(Path { start: pos, segs: vec![] }).segs.push(s),
                 Bracket::LeadIn => lead.get_or_insert(Path { start: pos, segs: vec![] }).segs.push(s),
                 Bracket::LeadOut => cuts.last_mut().unwrap().lead_out.get_or_insert(Path { start: pos, segs: vec![] }).segs.push(s),
                 Bracket::Out if after_cut => cuts.last_mut().unwrap().lead_out.get_or_insert(Path { start: pos, segs: vec![] }).segs.push(s),
@@ -510,7 +515,8 @@ fn read_cuts(cmds: &El, k: f64, p: &mut Program) -> Result<Vec<Cut>, String> {
                 after_cut = false;
                 lead = Some(Path { start: pos, segs: vec![] });
             }
-            "EndLeadIn" | "EndLeadOut" => br = Bracket::Out,
+            "EndLeadIn" => br = Bracket::Out,
+            "EndLeadOut" => br = if br == Bracket::LeadOutIn { Bracket::CutOut } else { Bracket::Out },
             "BeginCutOut" => {
                 if let Some(open) = cur.take() {
                     cuts.push(open);
@@ -533,14 +539,16 @@ fn read_cuts(cmds: &El, k: f64, p: &mut Program) -> Result<Vec<Cut>, String> {
                 br = Bracket::Out;
             }
             "BeginLeadOut" => {
-                if cuts.is_empty() || cur.is_some() {
-                    *p.unread.entry("lead-out without a cut-out".into()).or_default() += 1;
-                    br = Bracket::LeadIn;
+                br = if cur.is_some() {
+                    Bracket::LeadOutIn
+                } else if !cuts.is_empty() {
+                    Bracket::LeadOut
                 } else {
-                    br = Bracket::LeadOut;
-                }
+                    *p.unread.entry("lead-out without a cut-out".into()).or_default() += 1;
+                    Bracket::LeadIn
+                };
             }
-            "ExecMicrojoint" => match cur.as_mut() {
+            "ExecMicrojoint" => match cur.as_mut().filter(|_| br == Bracket::CutOut) {
                 Some(cut) => cut.joints.push(pos),
                 None => *p.unread.entry("micro-joint outside a cut-out".into()).or_default() += 1,
             },
@@ -577,7 +585,7 @@ pub fn parse_program(text: &str) -> Result<Program, String> {
     if root.name != "CuttingControlProgram" {
         return Err(format!("it isn't a cut program (its root is <{}>)", root.name));
     }
-    let inch = choice(&root, "MeasurementSystem", &["Metric", "English"], "Metric")? == "English";
+    let inch = choice(&root, "MeasurementSystem", &["Metric", "English", "Imperial"], "Metric")? != "Metric";
     let k = if inch { MM_PER_INCH } else { 1.0 };
     let mut p = Program { inch, thickness: num_or(&root, "Thickness", 0.0)? * k, ..Default::default() };
     if let Some(a) = root.kid("ApplicationFlat") {
@@ -692,7 +700,7 @@ pub fn parse_job_info(text: &str) -> Result<JobInfo, String> {
     if root.name != "JobInfo" {
         return Err(format!("it isn't a job file (its root is <{}>)", root.name));
     }
-    let inch = choice(&root, "MeasurementSystem", &["Metric", "English"], "Metric")? == "English";
+    let inch = choice(&root, "MeasurementSystem", &["Metric", "English", "Imperial"], "Metric")? != "Metric";
     let k = if inch { MM_PER_INCH } else { 1.0 };
     let mut j = JobInfo {
         name: root.attr("Name").unwrap_or("").to_string(),
@@ -770,6 +778,17 @@ pub fn read(bytes: &[u8]) -> Result<Bvc, String> {
         let want = format!("{}.ccp", plan.name).to_lowercase();
         let f = files.iter().find(|f| leaf(&f.0) == want).ok_or_else(|| format!("nest '{}' has no cut program ({}.ccp) in it", plan.name, plan.name))?;
         let program = parse_program(&text(&f.1)).map_err(|e| format!("the cut program {}.ccp doesn't read: {e}", plan.name))?;
+        // Each part the job file puts in this nest must be cut by a
+        // subprogram the nest's cut program has (names ignoring case, BV1b).
+        for pp in &plan.parts {
+            if !program.subs.iter().any(|s| s.name.eq_ignore_ascii_case(&pp.sub)) {
+                let part = job.parts.iter().find(|q| q.id == pp.part_id).map(|q| q.name.as_str()).unwrap_or("");
+                return Err(format!(
+                    "its job file says part '{part}' (id {}) is cut in nest '{}' by subprogram '{}', which that nest's cut program ({}.ccp) doesn't have, so the part's count and shape can't be trusted. Write the job again from the CAM",
+                    pp.part_id, plan.name, pp.sub, plan.name
+                ));
+            }
+        }
         nests.push(Nest { plan: plan.clone(), program });
     }
     let mut notes = vec![];
@@ -810,10 +829,10 @@ pub enum ModeAs {
     Unknown,
 }
 
-/// An operation mode as a cut quality: the other way round from the post's
-/// quality-to-mode rule. Estimated until that rule is published (BV32): mode
-/// 0 (cut) → quality 1, 1 (pulse) → 2, 3–7 (process macros 1–5) → 3–7; mode 2
-/// (engraving) → Mark (BV9).
+/// An operation mode as a cut quality: the post's quality-to-mode rule with
+/// its default switch (BV32, B015 off: quality 2 → mode 1, 3–7 → 3–7, the
+/// others → 0) taken the other way. Mode 0 → quality 1 (the lowest of those
+/// that give 0), 1 → 2, 3–7 → 3–7; mode 2 (engraving) → Mark (BV9).
 pub fn mode_as(mode: i64) -> ModeAs {
     match mode {
         2 => ModeAs::Mark,
@@ -920,6 +939,25 @@ pub fn sub_part(sub: &Sub) -> Option<SubPart> {
     Some(out)
 }
 
+/// Two subprograms of one part are the same version when their contours
+/// (shape, state, cut quality) and their cut starts and joints all agree
+/// within this (mm).
+pub const SAME_TOL: f64 = 0.01;
+
+/// Whether two subprograms cut a part the same way: the same contours in
+/// the same order, each with the same state and cut quality, and the same
+/// cut starts and joints, within `SAME_TOL`.
+pub fn same_version(a: &SubPart, b: &SubPart) -> bool {
+    let near = |p: &P, q: &P| (p[0] - q[0]).hypot(p[1] - q[1]) <= SAME_TOL;
+    let pts = |x: &[P], y: &[P]| x.len() == y.len() && x.iter().zip(y).all(|(p, q)| near(p, q));
+    let marks = |x: &[(usize, P)], y: &[(usize, P)]| x.len() == y.len() && x.iter().zip(y).all(|(p, q)| p.0 == q.0 && near(&p.1, &q.1));
+    let (ca, cb) = (&a.geo.contours, &b.geo.contours);
+    ca.len() == cb.len()
+        && ca.iter().zip(cb).all(|(x, y)| x.state == y.state && x.closed == y.closed && x.quality == y.quality && pts(&x.pts, &y.pts))
+        && marks(&a.starts, &b.starts)
+        && marks(&a.joints, &b.joints)
+}
+
 fn quality(c: &Cut, unknown: &mut Vec<i64>) -> Option<CutQuality> {
     match c.mode.map(mode_as) {
         Some(ModeAs::Quality(q)) => Some(q),
@@ -1003,8 +1041,9 @@ fn join_cutoffs(paths: Vec<Vec<P>>) -> Vec<Vec<P>> {
 /// Part colours start at `color0`.
 pub fn nesting(b: &Bvc, color0: usize) -> Result<Nesting, String> {
     let mut parts: Vec<Part> = vec![];
-    // (part id or subprogram key) → part index.
-    let mut known: Vec<(String, usize)> = vec![];
+    // Each part made: its key (part id, or subprogram for one the job file
+    // doesn't list), the subprogram it was made from, its index.
+    let mut known: Vec<(String, SubPart, usize)> = vec![];
     let mut notes = b.notes.clone();
     let mut sheets = vec![];
     let (mut open_cuts, mut unknown_modes, mut dropped_starts, mut dropped_joints) = (0usize, BTreeMap::<i64, usize>::new(), 0usize, 0usize);
@@ -1037,11 +1076,14 @@ pub fn nesting(b: &Bvc, color0: usize) -> Result<Nesting, String> {
                 Some(l) => format!("id:{}", l.part_id),
                 None => format!("sub:{}:{}", n.plan.name, sub.name),
             };
-            let idx = match known.iter().find(|k| k.0 == key) {
-                Some(k) => k.1,
+            // A part cut the same way again is the same part; one whose shape
+            // or cut settings differ in this nest is another version of it.
+            let idx = match known.iter().find(|k| k.0 == key && same_version(&k.1, sp)) {
+                Some(k) => k.2,
                 None => {
                     let info = link.and_then(|l| b.job.parts.iter().find(|q| q.id == l.part_id));
-                    let name = info.map(|i| i.name.clone()).filter(|s| !s.is_empty()).unwrap_or_else(|| sub.name.clone());
+                    let base = info.map(|i| i.name.clone()).filter(|s| !s.is_empty()).unwrap_or_else(|| sub.name.clone());
+                    let name = if known.iter().any(|k| k.0 == key) { format!("{base} ({})", n.plan.name) } else { base.clone() };
                     if info.is_none() {
                         notes.push(format!("subprogram {} of nest {} has no part in the job file: opened as part {name}", sub.name, n.plan.name));
                     }
@@ -1083,7 +1125,7 @@ pub fn nesting(b: &Bvc, color0: usize) -> Result<Nesting, String> {
                         group: String::new(),
                         erp: vec![],
                     });
-                    known.push((key, parts.len() - 1));
+                    known.push((key, sp.clone(), parts.len() - 1));
                     parts.len() - 1
                 }
             };
@@ -1098,8 +1140,26 @@ pub fn nesting(b: &Bvc, color0: usize) -> Result<Nesting, String> {
         }
         sheets.push(sheet);
     }
-    // A part with no ordered quantity: as many as the nests place.
+    // A part with no ordered quantity, or cut in more than one version: as
+    // many of each as the nests place (JOB-74).
     let placed = |k: usize| sheets.iter().map(|s| s.count * s.placed.iter().filter(|p| p.part == k).count()).sum::<usize>() as u32;
+    let mut keys: Vec<&String> = vec![];
+    for k in &known {
+        if !keys.contains(&&k.0) {
+            keys.push(&k.0);
+        }
+    }
+    for key in keys {
+        let versions: Vec<usize> = known.iter().filter(|k| &k.0 == key).map(|k| k.2).collect();
+        if versions.len() > 1 {
+            let ordered = parts[versions[0]].qty;
+            for &k in &versions {
+                parts[k].qty = placed(k);
+            }
+            let names = versions.iter().map(|&k| format!("{} ×{}", parts[k].name, parts[k].qty)).collect::<Vec<_>>().join(", ");
+            notes.push(format!("{} is cut {} different ways (shape or cut settings) in different nests: opened as {} parts with the quantities their nests place, {names} (ordered {ordered})", parts[versions[0]].name, versions.len(), versions.len()));
+        }
+    }
     for k in 0..parts.len() {
         if parts[k].qty == 0 {
             parts[k].qty = placed(k);
@@ -1222,10 +1282,31 @@ mod bvc_tests {
     }
 
     #[test]
+    fn a_lead_out_inside_the_cut_out_stays_off_the_shape_and_imperial_is_inch() {
+        // The original's post writes the lead-out brackets before EndCutOut
+        // (BV34) and labels inch programs "Imperial" (BV25).
+        let text = r#"<CuttingControlProgram MeasurementSystem="Imperial" Thickness="0.125"><SubPrograms><SubProgram Name="S"><ControlCommands>
+<SetOperationMode Value="0" /><MoveLineTo X="-0.2" Y="0" /><BeginLeadIn /><SetPiercingMode Value="Fine" /><ExecPiercing /><LineTo X="0" Y="0" /><EndLeadIn />
+<BeginCutOut Contour="Exterior" /><SetToolCorrection Value="Right" /><LineTo X="2" Y="0" /><LineTo X="2" Y="1" /><LineTo X="0" Y="1" /><LineTo X="0" Y="0" />
+<BeginLeadOut /><LineTo X="-0.1" Y="-0.1" /><EndLeadOut /><EndCutOut /><SetToolCorrection Value="None" />
+<SetOperationMode Value="3" /><MoveLineTo X="0.5" Y="0.5" /><BeginCutOut Contour="Interior" /><LineTo X="0.75" Y="0.5" /><LineTo X="0.75" Y="0.75" /><LineTo X="0.5" Y="0.5" /><EndCutOut />
+</ControlCommands></SubProgram></SubPrograms><ControlCommands><CallSubProgram X="1" Y="1" Rotation="0" SubProgramName="S" /></ControlCommands></CuttingControlProgram>"#;
+        let p = parse_program(text).unwrap();
+        assert!(p.inch && (p.thickness - 3.175).abs() < 1e-9 && (p.calls[0].x - 25.4).abs() < 1e-9);
+        let cuts = &p.subs[0].cuts;
+        assert_eq!(cuts.len(), 2, "the lead-out doesn't become a cut or the next lead-in");
+        assert!(cuts[0].closed(), "the outline still closes");
+        assert_eq!(cuts[0].lead_out.as_ref().unwrap().segs, vec![Seg::Line([-2.54, -2.54])]);
+        assert!(cuts[1].lead_in.is_none());
+        let sp = sub_part(&p.subs[0]).unwrap();
+        assert!((sp.geo.w - 50.8).abs() < 1e-9 && (sp.geo.h - 25.4).abs() < 1e-9, "{} x {}", sp.geo.w, sp.geo.h);
+    }
+
+    #[test]
     fn refuses_a_call_to_a_missing_subprogram_and_a_tube() {
         let e = parse_program(r#"<CuttingControlProgram><SubPrograms /><ControlCommands><CallSubProgram X="0" Y="0" Rotation="0" SubProgramName="Gone" /></ControlCommands></CuttingControlProgram>"#).unwrap_err();
         assert!(e.contains("'Gone'"), "{e}");
         assert!(parse_program("<JobInfo />").unwrap_err().contains("isn't a cut program"));
-        assert!(parse_program(r#"<CuttingControlProgram MeasurementSystem="Imperial" />"#).unwrap_err().contains("MeasurementSystem"));
+        assert!(parse_program(r#"<CuttingControlProgram MeasurementSystem="Furlongs" />"#).unwrap_err().contains("MeasurementSystem"));
     }
 }

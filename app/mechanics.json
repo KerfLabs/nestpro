@@ -7146,6 +7146,36 @@
   "group": "ByStar Fiber job (.bvc)",
   "value": "skipped, counted by name in the note",
   "source": "MECHANICS BV20"
+ },
+ {
+  "name": "part link to a missing subprogram",
+  "group": "ByStar Fiber job (.bvc)",
+  "value": "refused, naming the part and the subprogram",
+  "source": "MECHANICS BV5"
+ },
+ {
+  "name": "lead-out inside the cut-out (before EndCutOut)",
+  "group": "ByStar Fiber job (.bvc)",
+  "value": "read as the lead-out, not shape",
+  "source": "MECHANICS BV7"
+ },
+ {
+  "name": "Imperial measurement system",
+  "group": "ByStar Fiber job (.bvc)",
+  "value": "inch",
+  "source": "MECHANICS BV8"
+ },
+ {
+  "name": "same part, different subprograms in two nests",
+  "group": "ByStar Fiber job (.bvc)",
+  "value": "one part per version, named <part> (<nest>), quantity as placed",
+  "source": "MECHANICS BV20"
+ },
+ {
+  "name": "part version tolerance (mm)",
+  "group": "ByStar Fiber job (.bvc)",
+  "value": 0.01,
+  "source": "MECHANICS BV20"
  }
 ]
 }

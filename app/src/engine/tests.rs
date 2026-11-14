@@ -5211,6 +5211,12 @@ struct DemoBvc {
     bad_part: bool,
     /// The first nest calls a subprogram it doesn't have.
     bad_call: bool,
+    /// The job file says DEMO-001 is cut in the first nest by a subprogram
+    /// that nest's cut program doesn't have.
+    bad_link: bool,
+    /// The second nest cuts DEMO-001 another way: its round hole in mode 5,
+    /// its square hole started at another corner.
+    variant: bool,
 }
 
 /// A made-up ByStar Fiber job: part DEMO-001 (a 100 × 60 plate with a round
@@ -5228,17 +5234,18 @@ fn demo_bvc(o: DemoBvc) -> Vec<(String, String)> {
     let mv = |x, y| format!("<MoveLineTo {} />", xy(x, y));
     let mode = |m: i32| format!("<SetOperationMode Value=\"{m}\" /><SetToolCorrection Value=\"None\" />");
     let pierce = |m: &str| format!("<SetPiercingMode Value=\"{m}\" /><ExecPiercing />");
-    let plate = |unknown: bool| {
+    let plate = |unknown: bool, variant: bool| {
+        let (hole_mode, sq) = if variant { (5, [(60.0, 40.0), (80.0, 40.0), (80.0, 20.0), (60.0, 20.0), (60.0, 40.0)]) } else { (3, [(60.0, 20.0), (60.0, 40.0), (80.0, 40.0), (80.0, 20.0), (60.0, 20.0)]) };
         [
             // The engraved label: open, no leads.
             mode(2), mv(10.0, 45.0), "<BeginCutOut />".into(), pierce("Normal"), line(10.0, 55.0), line(16.0, 55.0), "<EndCutOut />".into(),
             // The round hole: straight + arc lead-in, joint at its end, lead-out.
-            mode(3), mv(30.0, 30.0), "<BeginLeadIn />".into(), pierce("Normal"), line(35.0, 30.0), arc(40.0, 30.0, -180.0), "<EndLeadIn />".into(),
+            mode(hole_mode), mv(30.0, 30.0), "<BeginLeadIn />".into(), pierce("Normal"), line(35.0, 30.0), arc(40.0, 30.0, -180.0), "<EndLeadIn />".into(),
             "<BeginCutOut Contour=\"Interior\" /><SetToolCorrection Value=\"Right\" />".into(), arc(20.0, 30.0, 180.0), arc(40.0, 30.0, 180.0), "<ExecMicrojoint />".into(), "<EndCutOut />".into(),
             "<BeginLeadOut />".into(), line(38.0, 31.0), "<EndLeadOut /><SetToolCorrection Value=\"None\" />".into(),
             // The square hole: pierced on the path, no leads.
-            mode(4), mv(60.0, 20.0), "<BeginCutOut Contour=\"Interior\" />".into(), pierce("Normal"), "<SetToolCorrection Value=\"Right\" />".into(),
-            line(60.0, 40.0), line(80.0, 40.0), line(80.0, 20.0), line(60.0, 20.0), "<EndCutOut /><SetToolCorrection Value=\"None\" />".into(),
+            mode(4), mv(sq[0].0, sq[0].1), "<BeginCutOut Contour=\"Interior\" />".into(), pierce("Normal"), "<SetToolCorrection Value=\"Right\" />".into(),
+            line(sq[1].0, sq[1].1), line(sq[2].0, sq[2].1), line(sq[3].0, sq[3].1), line(sq[4].0, sq[4].1), "<EndCutOut /><SetToolCorrection Value=\"None\" />".into(),
             if unknown { "<FancyNewCommand Value=\"1\" />".into() } else { String::new() },
             // The outline: lead-in from outside, a joint part-way, a top edge
             // written as an arc of almost no sweep, a lead-out.
@@ -5271,15 +5278,16 @@ fn demo_bvc(o: DemoBvc) -> Vec<(String, String)> {
     };
     let first_call = if o.bad_call { "Missing" } else { "Sub1" };
     let nest1 = ccp(
-        [sub("Sub1", &plate(o.unknown)), sub("Sub2", &disc), sub("ResidualSheetCuts_1", &cutoff)].concat(),
+        [sub("Sub1", &plate(o.unknown, false)), sub("Sub2", &disc), sub("ResidualSheetCuts_1", &cutoff)].concat(),
         [call(10.0, 10.0, "-0", first_call), call(200.0, 10.0, "90", "Sub1"), call(300.0, 200.0, "13", "Sub2"), call(400.0, 0.0, "0", "ResidualSheetCuts_1")].concat(),
     );
     // The second nest's subprogram for DEMO-001 has another name: the job
     // file links it to the part.
-    let nest2 = ccp([sub("PartA", &plate(false)), sub("Sub2", &disc)].concat(), [call(110.0, 70.0, "180", "PartA"), call(150.0, 10.0, "-0", "Sub2")].concat());
+    let nest2 = ccp([sub("PartA", &plate(false, o.variant)), sub("Sub2", &disc)].concat(), [call(110.0, 70.0, "180", "PartA"), call(150.0, 10.0, "-0", "Sub2")].concat());
     let part1 = if o.bad_part { 9 } else { 1 };
+    let link1 = if o.bad_link { "Missing" } else { "Sub1" };
     let job = format!(
-        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n<JobInfo Guid=\"00000000-0000-0000-0000-000000000000\" Name=\"DEMO-JOB\" Material=\"STAINLESS 304\" Thickness=\"{}\" MeasurementSystem=\"{ms}\" ProcessGas=\"N2\">\r\n  <PartInfos>\r\n    <PartInfo Id=\"0\" Name=\"Dummy\" Quantity=\"1\" />\r\n    <PartInfo Id=\"1\" Name=\"DEMO-001\" Quantity=\"3\" />\r\n    <PartInfo Id=\"2\" Name=\"DEMO-002\" Quantity=\"4\" />\r\n  </PartInfos>\r\n  <MaterialInfos>\r\n    <MaterialInfo Id=\"1\" Quantity=\"4\" SizeX=\"{}\" SizeY=\"{}\" FormatType=\"Sheet\" />\r\n  </MaterialInfos>\r\n  <PlanInfos>\r\n    <PlanInfo Multiplicity=\"1\" Name=\"DEMO-01\" MaterialId=\"1\"><PlanPartInfos><PlanPartInfo PartId=\"{part1}\" Quantity=\"2\" SubProgramName=\"Sub1\" /><PlanPartInfo PartId=\"2\" Quantity=\"1\" SubProgramName=\"Sub2\" /><PlanPartInfo PartId=\"0\" Quantity=\"1\" SubProgramName=\"ResidualSheetCuts_1\" /></PlanPartInfos></PlanInfo>\r\n    <PlanInfo Multiplicity=\"3\" Name=\"DEMO-02\" MaterialId=\"1\"><PlanPartInfos><PlanPartInfo PartId=\"1\" Quantity=\"1\" SubProgramName=\"PartA\" /><PlanPartInfo PartId=\"2\" Quantity=\"1\" SubProgramName=\"Sub2\" /></PlanPartInfos></PlanInfo>\r\n  </PlanInfos>\r\n  <SortInfos />\r\n  <EstimatedCuttingTime>0</EstimatedCuttingTime>\r\n</JobInfo>\r\n",
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n<JobInfo Guid=\"00000000-0000-0000-0000-000000000000\" Name=\"DEMO-JOB\" Material=\"STAINLESS 304\" Thickness=\"{}\" MeasurementSystem=\"{ms}\" ProcessGas=\"N2\">\r\n  <PartInfos>\r\n    <PartInfo Id=\"0\" Name=\"Dummy\" Quantity=\"1\" />\r\n    <PartInfo Id=\"1\" Name=\"DEMO-001\" Quantity=\"3\" />\r\n    <PartInfo Id=\"2\" Name=\"DEMO-002\" Quantity=\"4\" />\r\n  </PartInfos>\r\n  <MaterialInfos>\r\n    <MaterialInfo Id=\"1\" Quantity=\"4\" SizeX=\"{}\" SizeY=\"{}\" FormatType=\"Sheet\" />\r\n  </MaterialInfos>\r\n  <PlanInfos>\r\n    <PlanInfo Multiplicity=\"1\" Name=\"DEMO-01\" MaterialId=\"1\"><PlanPartInfos><PlanPartInfo PartId=\"{part1}\" Quantity=\"2\" SubProgramName=\"{link1}\" /><PlanPartInfo PartId=\"2\" Quantity=\"1\" SubProgramName=\"Sub2\" /><PlanPartInfo PartId=\"0\" Quantity=\"1\" SubProgramName=\"ResidualSheetCuts_1\" /></PlanPartInfos></PlanInfo>\r\n    <PlanInfo Multiplicity=\"3\" Name=\"DEMO-02\" MaterialId=\"1\"><PlanPartInfos><PlanPartInfo PartId=\"1\" Quantity=\"1\" SubProgramName=\"PartA\" /><PlanPartInfo PartId=\"2\" Quantity=\"1\" SubProgramName=\"Sub2\" /></PlanPartInfos></PlanInfo>\r\n  </PlanInfos>\r\n  <SortInfos />\r\n  <EstimatedCuttingTime>0</EstimatedCuttingTime>\r\n</JobInfo>\r\n",
         f(3.0), f(1000.0), f(500.0)
     );
     vec![("JobInfo.xml".into(), job), ("DEMO-01.ccp".into(), nest1), ("DEMO-02.ccp".into(), nest2)]
@@ -5432,9 +5440,38 @@ fn a_file_that_isnt_a_bystar_fiber_job_is_refused_with_its_reason() {
     assert!(e.contains("places part id 9"), "{e}");
     let e = refused(&write_bvc(&d, "call.bvc", &demo_bvc(DemoBvc { bad_call: true, ..Default::default() })));
     assert!(e.contains("subprogram 'Missing'"), "{e}");
+    // The job file links DEMO-001 to a subprogram its nest doesn't have:
+    // refused, rather than opening the nest's other subprogram as a part.
+    let e = refused(&write_bvc(&d, "link.bvc", &demo_bvc(DemoBvc { bad_link: true, ..Default::default() })));
+    assert!(e.contains("part 'DEMO-001' (id 1)") && e.contains("subprogram 'Missing'") && e.contains("DEMO-01.ccp") && e.contains("Write the job again"), "{e}");
     let e = refused(&write_bvc(&d, "nonest.bvc", &files[..2]));
     assert!(e.contains("nest 'DEMO-02' has no cut program"), "{e}");
     // None of them left a job file behind.
     assert!(!d.join("x.snjob").exists());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_part_cut_two_ways_in_two_nests_opens_as_two_parts() {
+    let d = dir("bvc_versions");
+    let (j, m) = open_bvc(&d, "demo", &write_bvc(&d, "demo.bvc", &demo_bvc(DemoBvc { variant: true, ..Default::default() })));
+    // Nest DEMO-02 cuts DEMO-001's round hole in mode 5 (quality 5) and
+    // starts its square hole at another corner: kept as its own part, each
+    // with the quantity its nests place (1 on nest 1's sheet ×2 placements,
+    // 1 per sheet on nest 2's 3 sheets).
+    let names: Vec<(&str, u32)> = j.parts.iter().map(|p| (p.name.as_str(), p.qty)).collect();
+    assert_eq!(names, [("DEMO-001", 2), ("DEMO-002", 4), ("DEMO-001 (DEMO-02)", 3)], "{m}");
+    let qual = |k: usize| j.parts[k].custom.as_ref().unwrap().contours.iter().map(|c| c.quality.map(crate::nest::CutQuality::number)).collect::<Vec<_>>();
+    assert_eq!(qual(0), [Some(3), Some(4), Some(1), None]);
+    assert_eq!(qual(2), [Some(5), Some(4), Some(1), None]);
+    assert_eq!(j.parts[0].tech.unwrap().starts[1], Some((1, [60.0, 20.0])));
+    assert_eq!(j.parts[2].tech.unwrap().starts[1], Some((1, [60.0, 40.0])));
+    // Each sheet places its own version.
+    assert_eq!(j.sheets[0].iter().filter(|p| p.part == 0).count(), 2);
+    assert!(j.sheets[1..].iter().all(|s| s.iter().any(|p| p.part == 2) && !s.iter().any(|p| p.part == 0)));
+    assert!(m.contains("DEMO-001 is cut 2 different ways") && m.contains("(ordered 3)"), "{m}");
+    // The same part cut the same way in both nests stays one part.
+    let (j, _) = open_bvc(&d, "same", &write_bvc(&d, "same.bvc", &demo_bvc(DemoBvc::default())));
+    assert_eq!(j.parts.iter().map(|p| (p.name.as_str(), p.qty)).collect::<Vec<_>>(), [("DEMO-001", 3), ("DEMO-002", 4)]);
     let _ = std::fs::remove_dir_all(&d);
 }
