@@ -35,6 +35,10 @@ original (or a real job).
 | STK-13 | Remnants stored from a sheet stay in stock when that sheet is re-nested or deleted (only `stock-book release` takes them out) | Estimate | ★ | MECHANICS SA3; the original's behaviour not traced |
 | STK-18 | Booking a sheet the moment it's put on a nesting, as the original does (its stock goes down when a sheet is assigned, under a lock). The rebuild books a job's sheets when the job is saved, so two PCs can both plan on the last sheet until one saves | Missing | ★★ | MECHANICS SV7; shared Library plan 2026-11-09 |
 | STK-19 | A sheet deleted from stock altogether (Reduce stock to 0, Delete sheet, agents' `stock remove`/`delete`) while another PC's job is nested on it: that PC's save says the sheet isn't in stock, but not who deleted it or when (only a sheet taken down to 0 keeps who took it, SV10) | Missing | ★ | MECHANICS SV9, SV10; STK-9 build 2026-11-11 |
+| STK-20 | Sheet stock from an ERP's inventory: a shop setting for where stock comes from (none / this program's stock / the ERP), a read-only copy of the ERP's sheets fetched in the background with its age shown (offline: the last copy, never counted as zero), each ERP item mapped once to material, thickness and size, unmatched items listed as needing mapping. The ERP connectors have no inventory call yet | Missing | ★★ | council 2026-11-13; `integrations::Connector`; JOB-17 |
+| STK-21 | Stock counts in the Sheet tab's thickness list (which thicknesses of this material are in stock, and how many) | Missing | ★ | council 2026-11-13; the size list already shows stocked sizes |
+| STK-22 | Choosing on the Sheet tab, or per job, whether Nest all uses the stock first, the stock only or this size only. Today it's the shop's Do All options (Sheet stock → Options); agents have `nest stock=` | Missing | ★ | council 2026-11-13; would need a `JobFile` field |
+| STK-23 | Stock matches a thickness within 0.01 mm, so gauge stock (11 ga = 0.1196 in) isn't found for a job typed as 0.12 in or 3 mm | Estimate | ★★ | `stock::TOL`; council 2026-11-13 |
 
 ## Remnants (REM)
 

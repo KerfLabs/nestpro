@@ -415,6 +415,73 @@ fn do_all_takes_sheets_from_stock_and_booking_stores_the_remnants() {
 }
 
 #[test]
+fn info_says_what_nest_will_nest_on_before_nesting() {
+    // The window's "Nest on" line, for agents: the stock first (what it holds
+    // for the job's material and thickness), else the job's sheet size and why.
+    let d = dir("nest_on");
+    let jp = d.join("demo.snjob");
+    let jp = jp.to_str().unwrap();
+    let ctx = stock_ctx(&d);
+    let lib = ctx.library_dir.clone();
+    let mut s = Session::new(ctx);
+    call(&mut s, "new", Some(jp), json!({"w": 2000, "h": 1000, "thickness": 3}));
+    let on = |s: &mut Session| call(s, "info", None, json!({}))["data"]["nest_on"].clone();
+    let n = on(&mut s);
+    assert_eq!((n["mode"].as_str(), n["from_stock"].as_bool()), (Some("size-none-in-stock"), Some(false)), "{n}");
+    assert_eq!(n["line"], "2000 × 1000 mm (none in stock)", "{n}");
+
+    // 3 mm: two sheets of one size, one larger, a locked one and a remnant;
+    // 5 mm sheets aren't this job's.
+    let mut st = crate::stock::Stock::default();
+    st.add_sheet(crate::stock::Item::sheet("S1", 0, 3.0, 1500.0, 750.0, 2), true).unwrap();
+    st.add_sheet(crate::stock::Item::sheet("S2", 0, 3.0, 1500.0, 750.0, 1), true).unwrap();
+    st.add_sheet(crate::stock::Item::sheet("BIG", 0, 3.0, 3000.0, 1500.0, 1), true).unwrap();
+    let mut locked = crate::stock::Item::sheet("NO", 0, 3.0, 4000.0, 2000.0, 5);
+    locked.locked = true;
+    st.add_sheet(locked, true).unwrap();
+    st.add_sheet(crate::stock::Item::sheet("T5", 0, 5.0, 4000.0, 2000.0, 9), true).unwrap();
+    let rect = crate::stock::Outline { outer: vec![[0.0, 0.0], [800.0, 0.0], [800.0, 600.0], [0.0, 600.0]], holes: vec![] };
+    let parent = st.get("BIG").unwrap().clone();
+    st.add_remnant(rect, &parent, 1, Some("BIG-1".into()), "old");
+    st.save(&lib).unwrap();
+    let n = on(&mut s);
+    assert_eq!(n["mode"], "stock-then-size", "{n}");
+    assert_eq!((n["sheets"].as_i64(), n["remnants"].as_i64()), (Some(4), Some(1)), "locked and 5 mm not counted: {n}");
+    assert_eq!(n["stock_sizes"], json!([{"w": 3000.0, "h": 1500.0, "qty": 1}, {"w": 1500.0, "h": 750.0, "qty": 3}]), "largest first, one size once: {n}");
+    assert_eq!(n["line"], "Stock first (4 sheets · 1 remnant), then 2000 × 1000 mm", "{n}");
+
+    // No fall-back to the job's size: stock only; with nothing in stock, nothing.
+    s.ctx.cfg.stock.fallback_job_size = false;
+    assert_eq!(on(&mut s)["mode"], "stock-only");
+    call(&mut s, "set-sheet", None, json!({"thickness": 4}));
+    let n = on(&mut s);
+    assert_eq!(n["mode"], "nothing", "{n}");
+    assert!(n["why"].as_str().unwrap().contains("add sheets to stock"), "{n}");
+    s.ctx.cfg.stock.fallback_job_size = true;
+    call(&mut s, "set-sheet", None, json!({"thickness": 3}));
+
+    // Stock off in the options, or the Library out of reach: the job's size.
+    s.ctx.cfg.stock.use_stock = false;
+    assert_eq!(on(&mut s)["mode"], "size-stock-off");
+    s.ctx.cfg.stock.use_stock = true;
+    s.ctx.library_dir = d.join("gone");
+    let n = on(&mut s);
+    assert_eq!(n["mode"], "size-stock-unreachable", "{n}");
+    assert!(n["why"].as_str().unwrap().contains("can't be reached"), "{n}");
+    // A PC that never made its Library: no stock yet, not a warning.
+    s.ctx.library_dir = crate::library::default_dir();
+    assert_eq!(on(&mut s)["mode"], "size-no-library");
+
+    // Part groups in zones never take stock (STK-11).
+    s.ctx.library_dir = lib.clone();
+    let j = jobfile::load(Path::new(jp)).unwrap();
+    let grouped = stockflow::nest_on(&j.spec, &s.ctx.stock_use(&j), true);
+    assert_eq!(grouped.mode, stockflow::NestOnMode::Grouped);
+    assert_eq!(grouped.short("2000 × 1000 mm"), "2000 × 1000 mm sheet");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn undoing_a_booked_sheet_renest_brings_its_remnant_back() {
     // RN4, RN6: book → re-nest (its remnant is replaced) → undo.
     let d = dir("renest_book");
