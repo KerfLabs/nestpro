@@ -13,6 +13,10 @@ _Avoid_: user, engineer
 The person at the cutting machine who loads sheets, runs programs and unloads parts.
 _Avoid_: user
 
+**Planner**:
+The person who groups orders into work orders in the ERP and schedules them.
+_Avoid_: scheduler, nester
+
 ## Parts and drawings
 
 **Drawing**:
@@ -59,6 +63,20 @@ _Avoid_: ignore, delete
 
 **Bend line**:
 A no-cut line showing where the part is bent later, shown in its own colour. The programmer may mark it instead.
+
+## Materials
+
+**Material**:
+One kind of sheet the shop cuts, named by the shop, e.g. "304 Stainless", "316 Stainless", "A36" or "5052 Aluminium". Each grade is its own material: a job, a part and a stock sheet each have exactly one, and a 316 job never takes 304 sheets.
+_Avoid_: grade, family, alloy (as a separate thing from the material)
+
+**Standard**:
+An entry of the standard material catalogue (e.g. mild steel, stainless steel, aluminium-magnesium) that a material is based on. It gives the material its kind, its weight per volume and, unless the shop sets its own, its key in the machine file, so grades on one standard share cutting technology.
+_Avoid_: norm, base material, catalogue number
+
+**Material list**:
+The shop's materials, kept in the Library so every programming PC sees the same ones.
+_Avoid_: material table, material master
 
 ## How a part is cut
 
@@ -115,3 +133,37 @@ _Avoid_: lock (the Library's write lock is a different thing: a moment's turn to
 **Take over**:
 Moving a job's hold to this PC from whoever has it, after a warning; the PC that had it is told and keeps its changes only as a copy.
 _Avoid_: steal, force open
+
+## Work from the ERP
+
+**ERP**:
+The shop's order system (Fulcrum), where orders, work orders and time are kept.
+_Avoid_: MES, Fulcrum (in rules that should hold for any system)
+
+**Order job**:
+One order line in the ERP: one item to make, in a quantity, through its routing of operations. Not the same as a job in this program.
+_Avoid_: job (that word is this program's nesting job)
+
+**Work order**:
+The planner's group of order jobs that run through the shop together, one step after another.
+_Avoid_: WO, nest, batch
+
+**Step**:
+One operation of a work order (programming, laser cutting, bending…), covering every order job on it.
+_Avoid_: work-order operation, op
+
+**Programming step**:
+The step where a programmer nests and programs the work order's parts; finishing it readies the laser step after it.
+_Avoid_: programming job, engineering
+
+**Laser step**:
+The step after the programming step where the work order's sheets are cut, and where its nest is stored.
+_Avoid_: cutting op, nestable op
+
+**Programming queue**:
+The work a programmer can pick up: every laser step on a planner's work order, from the operations the shop chose to show, that is waiting for a nest. One entry per work order and material.
+_Avoid_: backlog, work list
+
+**Keep separate**:
+Said of an ERP operation whose work must never share a nesting job with work from any other operation, such as aerospace work kept apart from commercial work. It limits only which parts go together, not which sheets or remnants are used.
+_Avoid_: AS-only, segregated
