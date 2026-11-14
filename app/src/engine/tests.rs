@@ -5519,3 +5519,150 @@ fn a_job_saved_with_a_gas_opens_with_it_on_another_pc_sharing_the_library() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
+
+// ---------------------------------------------------------------------------
+// The job's gas on screen (MAC-39, GS15–GS17).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn picking_oxygen_on_the_sheet_tab_gives_the_same_job_as_set_sheet_gas_oxygen() {
+    // GS15: the Sheet tab's pick and set-sheet gas= change the job through
+    // one engine function. A nested job with a lead moved by hand.
+    let d = dir("gas_pick");
+    let (mut s, _on) = gas_session(&d, true, (1, "Nitrogen"));
+    let job = gas_job(&d, &mut s);
+    let as_saved = jobfile::load(&job).unwrap();
+    // The agent.
+    let r = call(&mut s, "set-sheet", None, json!({"gas": "oxygen"}));
+    let by_agent = jobfile::load(&job).unwrap();
+    // The Sheet tab: the window's copy of the job, picked Oxygen.
+    let mut spec = as_saved.spec.clone();
+    let pick = crate::engine::pick_job_gas(&mut spec, crate::gas::Gas::Oxygen, &as_saved.parts, &as_saved.sheets, &as_saved.formats, &as_saved.manual_cuts, &s.ctx.blm);
+    assert!(pick.changed);
+    assert_eq!(spec, by_agent.spec, "the same sheet settings");
+    assert_eq!(spec.gas, Some(crate::gas::Gas::Oxygen));
+    // Nothing else of the job changes: sheets, parts, leads, not marked changed.
+    assert_eq!((&by_agent.sheets, by_agent.stale), (&as_saved.sheets, as_saved.stale));
+    assert_eq!(serde_json::to_string(&by_agent.parts).unwrap(), serde_json::to_string(&as_saved.parts).unwrap());
+    // The same words on screen as in the agent's reply.
+    assert!(pick.note.starts_with("Gas: Nitrogen (1) → Oxygen (3)"), "{}", pick.note);
+    assert!(r["message"].as_str().unwrap().ends_with(&pick.note), "{r}\n{}", pick.note);
+    // Picking the gas it has: no change, so the window adds no undo step.
+    let again = crate::engine::pick_job_gas(&mut spec, crate::gas::Gas::Oxygen, &by_agent.parts, &by_agent.sheets, &by_agent.formats, &by_agent.manual_cuts, &s.ctx.blm);
+    assert!(!again.changed);
+    assert_eq!(again.note, "Gas: already Oxygen (3).");
+    assert_eq!(spec, by_agent.spec);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn the_library_list_shows_each_jobs_gas_and_listing_rewrites_nothing() {
+    // GS16: jobs of several gases, and one saved before jobs carried a gas,
+    // which shows the machine's (as saved in Settings → Machines).
+    let d = dir("gas_lib_list");
+    let (mut s, _on) = gas_session(&d, true, (1, "Nitrogen"));
+    let lib = d.join("Library");
+    crate::library::create(&lib).unwrap();
+    s.ctx.library_dir = lib.clone();
+    for (name, gas) in [("DEMO-OX", Some("oxygen")), ("DEMO-WATER", Some("H2O")), ("DEMO-AIR", Some("2")), ("DEMO-OLD", None)] {
+        let jp = d.join(format!("{name}.snjob"));
+        call(&mut s, "new", Some(jp.to_str().unwrap()), json!({"name": name, "material": "mild steel", "thickness": 3, "gas": gas.unwrap_or("nitrogen")}));
+        call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 200, "h": 100, "qty": 1, "name": format!("{name}-P1")}));
+        if gas.is_none() {
+            // As saved before jobs carried a gas.
+            let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&jp).unwrap()).unwrap();
+            v["spec"].as_object_mut().unwrap().remove("gas");
+            std::fs::write(&jp, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+            call(&mut s, "info", Some(jp.to_str().unwrap()), json!({}));
+        }
+        call(&mut s, "library", None, json!({"mode": "save-job"}));
+    }
+    call(&mut s, "library", None, json!({"mode": "save-part", "parts": "1"}));
+    let files: Vec<(PathBuf, Vec<u8>)> = walk(&lib).into_iter().map(|f| (f.clone(), std::fs::read(&f).unwrap())).collect();
+    let l = call(&mut s, "library", None, json!({"mode": "list"}));
+    let rows = l["data"].as_array().unwrap();
+    let job = |name: &str| rows.iter().find(|r| r["kind"] == "job" && r["name"] == name).unwrap_or_else(|| panic!("{name}: {l}"));
+    let gas = |name: &str| {
+        let r = job(name);
+        (r["gas"].as_str().unwrap().to_string(), r["gas_no"].as_u64().unwrap(), r["gas_from"].as_str().unwrap().to_string())
+    };
+    assert_eq!(gas("DEMO-OX"), ("Oxygen".into(), 3, "job".into()));
+    assert_eq!(gas("DEMO-WATER"), ("Water".into(), 5, "job".into()));
+    assert_eq!(gas("DEMO-AIR"), ("Air".into(), 2, "job".into()));
+    assert_eq!(gas("DEMO-OLD"), ("Nitrogen".into(), 1, "machine".into()));
+    assert_eq!((job("DEMO-OX")["material"].as_str(), job("DEMO-OX")["thickness"].as_f64()), (Some("Mild steel"), Some(3.0)));
+    // A library part never carries a gas.
+    let part = rows.iter().find(|r| r["kind"] == "product").unwrap_or_else(|| panic!("{l}"));
+    assert!(part.get("gas").is_none() && part.get("gas_no").is_none(), "{part}");
+    // Listing reads; it writes no record and no list.
+    for (f, bytes) in &files {
+        assert_eq!(&std::fs::read(f).unwrap(), bytes, "{} was rewritten by listing", f.display());
+    }
+    // The machine saved as 2 named Oxygen: the old job shows it as saved.
+    s.ctx.cfg.machines[0].gas_id = 2;
+    s.ctx.cfg.machines[0].gas_name = "Oxygen".into();
+    let _on2 = apply_machine(&mut s);
+    let l = call(&mut s, "library", None, json!({"mode": "list"}));
+    let old = l["data"].as_array().unwrap().iter().find(|r| r["name"] == "DEMO-OLD").unwrap().clone();
+    assert_eq!((old["gas"].as_str(), old["gas_no"].as_u64(), old["gas_from"].as_str()), (Some("Oxygen"), Some(2), Some("machine")), "{old}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn the_message_after_programs_are_written_names_the_material_thickness_and_gas() {
+    // GS16: "3 programs written: Mild steel 12.7 mm, Oxygen".
+    for blm in [true, false] {
+        let d = dir(&format!("gas_written_{blm}"));
+        let (mut s, _on) = gas_session(&d, blm, (1, "Nitrogen"));
+        let job = d.join("DEMO-WRITTEN.snjob");
+        call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "mild steel", "thickness": 12.7, "gas": "oxygen"}));
+        call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 200, "h": 100, "qty": 3}));
+        // One piece on each of three sheets.
+        call(&mut s, "place", None, json!({"part": 1, "x": 50, "y": 50}));
+        for _ in 0..2 {
+            call(&mut s, "place", None, json!({"part": 1, "x": 50, "y": 50, "sheet": "new"}));
+        }
+        let out = d.join("cnc");
+        let e = call(&mut s, "export", None, json!({"dir": out.to_str().unwrap()}));
+        let m = e["message"].as_str().unwrap();
+        assert!(m.starts_with("3 programs written: Mild steel 12.7 mm, Oxygen. "), "{m}");
+        assert!(m.contains("a parts report") && m.contains(&out.join("DEMO-WRITTEN").display().to_string()), "{m}");
+        // A job saved before jobs carried a gas names the machine's, as such.
+        let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&job).unwrap()).unwrap();
+        v["spec"].as_object_mut().unwrap().remove("gas");
+        std::fs::write(&job, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+        let e = call(&mut s, "export", Some(job.to_str().unwrap()), json!({"dir": out.to_str().unwrap()}));
+        let m = e["message"].as_str().unwrap();
+        assert!(m.starts_with("3 programs written: Mild steel 12.7 mm, Nitrogen (the machine's). "), "{m}");
+        // ... and a machine saved as 2 named Oxygen, as saved, with its number.
+        s.ctx.cfg.machines[0].gas_id = 2;
+        s.ctx.cfg.machines[0].gas_name = "Oxygen".into();
+        let _on2 = apply_machine(&mut s);
+        let e = call(&mut s, "export", None, json!({"dir": out.to_str().unwrap()}));
+        let m = e["message"].as_str().unwrap();
+        assert!(m.starts_with("3 programs written: Mild steel 12.7 mm, Oxygen (gas 2, the machine's as saved). "), "{m}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+    // One program, and the thickness in inches as the window shows it.
+    let spec = SheetSpec { thickness: 12.7, gas: Some(crate::gas::Gas::Water), ..crate::engine::default_spec() };
+    let base = crate::blm::BlmSettings::for_machine("Demo laser");
+    assert_eq!(crate::engine::programs_written(1, &spec, &base, crate::units::LenUnit::Mm), "1 program written: Mild steel 12.7 mm, Water");
+    assert_eq!(crate::engine::programs_written(2, &spec, &base, crate::units::LenUnit::Inch), "2 programs written: Mild steel 0.5 in (1/2\"), Water");
+}
+
+#[test]
+fn the_machines_report_flags_a_saved_gas_that_isnt_on_the_list() {
+    // GS17: as Settings → Machines shows it.
+    for (gas, flagged) in [((2, "Oxygen"), true), ((5, "Water"), true), ((5, "H2O"), false), ((3, "Oxygen"), false)] {
+        let d = dir(&format!("gas_machines_{}_{}", gas.0, gas.1));
+        let (mut s, _on) = gas_session(&d, true, gas);
+        let r = call(&mut s, "machines", None, json!({}));
+        let m = &r["data"]["machines"][0];
+        assert_eq!((m["gas"].as_str(), m["gas_no"].as_u64()), (Some(gas.1), Some(gas.0 as u64)), "{m}");
+        assert_eq!(m.get("gas_note").is_some(), flagged, "{m}");
+        if flagged {
+            assert!(m["gas_note"].as_str().unwrap().contains("until you pick a gas"), "{m}");
+        }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}

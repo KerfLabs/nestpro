@@ -3,7 +3,7 @@
 
 use crate::nest::{Part, Shape, P};
 use crate::theme::{is_dark, th};
-use crate::{cnc, App, BottomTab, Tab};
+use crate::{cnc, engine, App, BottomTab, Tab};
 use eframe::egui;
 use egui::{Align2, Color32, CornerRadius, FontId, Pos2, Rect, RichText, Sense, Shape as EShape, Stroke, Vec2};
 
@@ -171,6 +171,18 @@ pub fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
 
 pub fn with_alpha(c: Color32, a: u8) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a)
+}
+
+/// A job's gas where room is short (the gas pick, Home's material button):
+/// "Oxygen"; the machine's, for a job without a gas of its own, marked so:
+/// "Nitrogen · machine's", with its number when the machine's saved number
+/// and name aren't the list's pair: "Oxygen (2) · machine's" (GS15).
+fn gas_short(g: &crate::gas::JobGas) -> String {
+    match (g.own, g.listed()) {
+        (true, _) => g.name.clone(),
+        (false, Some(l)) => format!("{} · machine's", l.name()),
+        (false, None) => format!("{} ({}) · machine's", g.name, g.number),
+    }
 }
 
 /// A selection window while it is dragged (SW4), as CAD programs draw it: a
@@ -1868,8 +1880,8 @@ impl App {
             // What Nest all will nest in, in view before nesting.
             ui.vertical(|ui| {
                 ui.add_space(8.0);
-                let mat = format!("{} · {}  ▾", cnc::MATERIALS[self.spec.material.min(cnc::MATERIALS.len() - 1)], self.unit().thickness(self.spec.thickness));
-                let resp = ui.add(egui::Button::new(RichText::new(mat).strong()).min_size(Vec2::new(120.0, 26.0))).on_hover_text("The job's material and thickness — click to change them");
+                let mat = format!("{} · {} · {}  ▾", cnc::MATERIALS[self.spec.material.min(cnc::MATERIALS.len() - 1)], self.unit().thickness(self.spec.thickness), gas_short(&engine::job_gas(&self.spec, &self.blm)));
+                let resp = ui.add(egui::Button::new(RichText::new(mat).strong()).min_size(Vec2::new(120.0, 26.0))).on_hover_text("The job's material, thickness and gas — click to change them");
                 // Change them in place; the rest of the sheet set-up is on the Sheet tab.
                 egui::Popup::from_toggle_button_response(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
                     let before = self.spec.clone();
@@ -1883,6 +1895,16 @@ impl App {
                     ui.add_space(4.0);
                     ui.label(RichText::new("Thickness").strong());
                     crate::units::thickness_inline(ui, &mut self.spec.thickness, self.cfg.nesting.units);
+                    ui.add_space(4.0);
+                    ui.label(RichText::new("Gas").strong()).on_hover_text(self.gas_tip());
+                    let picked = ui.horizontal_wrapped(|ui| self.gas_choices(ui)).inner;
+                    if let Some(g) = picked {
+                        self.pick_gas(g);
+                    }
+                    let g = engine::job_gas(&self.spec, &self.blm);
+                    if !g.own {
+                        ui.label(RichText::new(format!("No gas of its own: cut with the machine's, {}.", gas_short(&g).trim_end_matches(" · machine's"))).size(11.5).color(th().text_dim));
+                    }
                     ui.add_space(4.0);
                     ui.separator();
                     if ui.link("Sheet size, machine and spacing — Sheet tab").clicked() {
@@ -1992,6 +2014,66 @@ impl App {
         ribbon_group(ui, "Move", |ui| self.move_group(ui, has));
     }
 
+    /// GS15: the job's gas pick, the five gases by name. A job without a gas
+    /// of its own shows the machine's, marked so. Picking changes the job as
+    /// the agents' `set-sheet gas=` does (`pick_job_gas`).
+    pub(crate) fn gas_combo(&mut self, ui: &mut egui::Ui, id: &str, width: f32) {
+        let shown = gas_short(&engine::job_gas(&self.spec, &self.blm));
+        let mut picked = None;
+        egui::ComboBox::from_id_salt(id)
+            .width(width)
+            .selected_text(shown)
+            .show_ui(ui, |ui| picked = self.gas_choices(ui))
+            .response
+            .on_hover_text(self.gas_tip());
+        if let Some(gas) = picked {
+            self.pick_gas(gas);
+        }
+    }
+
+    /// The five gases to pick from, the job's own marked; the one clicked.
+    fn gas_choices(&self, ui: &mut egui::Ui) -> Option<crate::gas::Gas> {
+        let g = engine::job_gas(&self.spec, &self.blm);
+        let own = g.own.then(|| g.listed()).flatten();
+        let mut picked = None;
+        for gas in crate::gas::Gas::ALL {
+            let what = if gas.program_name() == gas.name() { format!("{}: gas {} in the LC5 program", gas.name(), gas.number()) } else { format!("{}: gas {} in the LC5 program, written {}", gas.name(), gas.number(), gas.program_name()) };
+            if ui.selectable_label(own == Some(gas), gas.name()).on_hover_text(what).clicked() {
+                picked = Some(gas);
+            }
+        }
+        picked
+    }
+
+    /// What the gas pick's hover says: the job's gas and what follows it, or
+    /// that the job has none of its own.
+    fn gas_tip(&self) -> String {
+        let g = engine::job_gas(&self.spec, &self.blm);
+        if g.own {
+            format!("The gas this job is cut with: {}. Its LC5 programs name it, and it picks the machine table section and the technology record, so leads, speeds and times follow it. Changing it keeps the nested sheets.", g.label())
+        } else {
+            format!(
+                "This job has no gas of its own: it was saved before jobs carried one, so it is cut with the machine's gas from Settings → Machines, {} (gas {}). Pick a gas to give the job its own; the nested sheets stay.",
+                g.listed().map_or(g.name.as_str(), |l| l.name()),
+                g.number
+            )
+        }
+    }
+
+    /// GS15: give the job the gas `gas`, as `set-sheet gas=` does: the nested
+    /// sheets and leads moved by hand stay, the technology follows, and the
+    /// status line says what changed. Picking the gas it has adds no undo step.
+    pub(crate) fn pick_gas(&mut self, gas: crate::gas::Gas) {
+        let mut spec = self.spec.clone();
+        let p = engine::pick_job_gas(&mut spec, gas, &self.parts, &self.result.sheets, &self.result.formats, &self.manual_cuts, &self.blm);
+        if p.changed {
+            self.checkpoint();
+            self.spec = spec;
+            self.refresh();
+        }
+        self.status = p.note;
+    }
+
     /// After the material or thickness was changed outside the Sheet tab:
     /// with parts nested, ask first (PT4) as the Sheet tab does; else refresh.
     pub(crate) fn after_material_edit(&mut self, before: crate::nest::SheetSpec) {
@@ -2014,7 +2096,7 @@ impl App {
         let mut cost_changed = false;
         let spec_before = self.spec.clone();
         ribbon_group(ui, "Material", |ui| {
-            egui::Grid::new("mat_grid").num_columns(2).spacing([6.0, 5.0]).show(ui, |ui| {
+            egui::Grid::new("mat_grid").num_columns(4).spacing([6.0, 5.0]).show(ui, |ui| {
                 ui.label("Material");
                 egui::ComboBox::from_id_salt("mat").width(130.0).selected_text(cnc::MATERIALS[self.spec.material]).show_ui(ui, |ui| {
                     for (k, m) in cnc::MATERIALS.iter().enumerate() {
@@ -2024,6 +2106,9 @@ impl App {
                 ui.end_row();
                 ui.label("Thickness").on_hover_text("Type it (0.25, 3/16, 10ga, 6mm…) or pick a common one with ▾");
                 cost_changed |= crate::units::thickness_box(ui, "thk", &mut self.spec.thickness, self.cfg.nesting.units);
+                // GS15: the job's gas, beside the thickness.
+                ui.label("Gas").on_hover_text("The gas the job is cut with");
+                self.gas_combo(ui, "gas", 150.0);
                 ui.end_row();
             });
             // Which section of the machine file applies (MTL1–MTL6).

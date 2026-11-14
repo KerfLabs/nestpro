@@ -143,8 +143,7 @@ pub fn job_gas(spec: &SheetSpec, base: &crate::blm::BlmSettings) -> crate::gas::
 /// otherwise none of its own, so the job is cut with the machine's as saved
 /// (GS11; our choice, FEATURES MAC-69).
 pub fn new_job_gas(cfg: &AppSettings) -> Option<crate::gas::Gas> {
-    let m = cfg.machine();
-    crate::gas::Gas::listed(m.gas_id, &m.gas_name)
+    cfg.machine().gas()
 }
 
 /// What picking a job's gas changed, in words (GS14): the gas, the machine
@@ -193,6 +192,43 @@ pub fn gas_change_note(parts: &[Part], sheets: &[Vec<Placed>], formats: &[SheetF
         said.push(format!("{} nested sheet(s) kept; cut time {:.1} s → {:.1} s", sheets.len(), time(before), time(after)));
     }
     format!("{}.", said.join("; "))
+}
+
+/// A gas picked for a job (GS14, GS15).
+#[derive(Clone, Debug, PartialEq)]
+pub struct GasPick {
+    /// The job's gas changed. Picking the gas it already has changes nothing:
+    /// nothing to save, back up or undo.
+    pub changed: bool,
+    /// What changed, in words (`gas_change_note`).
+    pub note: String,
+}
+
+/// Pick a job's gas (GS14, GS15): `spec`, the job's sheet settings, takes
+/// `gas` as the job's own. The nested sheets, parts and leads moved by hand
+/// stay, and the sheets aren't marked changed; the machine file's section
+/// and the technology record follow the new gas. The Sheet tab's gas pick
+/// and the agents' `set-sheet gas=` both change the job through this.
+pub fn pick_job_gas(spec: &mut SheetSpec, gas: crate::gas::Gas, parts: &[Part], sheets: &[Vec<Placed>], formats: &[SheetFormat], manual: &[Vec<ManualCut>], base: &crate::blm::BlmSettings) -> GasPick {
+    let before = spec.clone();
+    spec.gas = Some(gas);
+    GasPick { changed: before.gas != spec.gas, note: gas_change_note(parts, sheets, formats, manual, &before, spec, base) }
+}
+
+/// GS16: what the message after a job's programs are written starts with:
+/// how many, and the material, thickness and gas they're for ("3 programs
+/// written: Mild steel 12.7 mm, Oxygen"), the thickness in `unit`.
+pub fn programs_written(n: usize, spec: &SheetSpec, base: &crate::blm::BlmSettings, unit: crate::units::LenUnit) -> String {
+    let mat = cnc::MATERIALS.get(spec.material).copied().unwrap_or("?");
+    format!("{n} program{} written: {mat} {}, {}", if n == 1 { "" } else { "s" }, unit.thickness(spec.thickness), job_gas(spec, base).shown())
+}
+
+/// The whole message after an export (GS16): `programs_written`, then what
+/// was written where, and the export's warning.
+pub fn export_note(ex: &Exported, n: usize, spec: &SheetSpec, base: &crate::blm::BlmSettings, unit: crate::units::LenUnit) -> String {
+    let what = if base.on { "BLM LC5 program sets (.zip + .XML)" } else { "The programs" };
+    let warn = ex.warning.as_ref().map_or(String::new(), |w| format!(" But {w}."));
+    format!("{}. {what} and a parts report are in {}.{warn}", programs_written(n, spec, base, unit), ex.dir.display())
 }
 
 impl Ctx {

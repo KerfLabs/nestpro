@@ -70,6 +70,42 @@ pub struct Machine {
     pub order: crate::ct1::OrderChanges,
 }
 
+impl Machine {
+    /// GS17: the gas of the list this machine is saved with, when its saved
+    /// number and name are one of the list's pairs as the LC5 writes them
+    /// (GS2, GS12). None for a pair that isn't (2 named Oxygen, 5 named
+    /// Water): it is kept and written as saved until someone picks a gas.
+    pub fn gas(&self) -> Option<crate::gas::Gas> {
+        crate::gas::Gas::listed(self.gas_id, &self.gas_name)
+    }
+
+    /// GS17: pick the machine's gas from the list. It writes both the number
+    /// and the name the LC5 program writes (Water: 5 named H2O). Picking the
+    /// gas it already has changes nothing (false).
+    pub fn pick_gas(&mut self, g: crate::gas::Gas) -> bool {
+        let (id, name) = (g.number(), g.program_name());
+        let changed = self.gas_id != id || self.gas_name != name;
+        self.gas_id = id;
+        self.gas_name = name.to_string();
+        changed
+    }
+
+    /// GS17: what Settings → Machines says about a saved gas number and name
+    /// that aren't one of the list's pairs; None when they are.
+    pub fn gas_mismatch(&self) -> Option<String> {
+        self.gas().is_none().then(|| {
+            format!(
+                "Saved as gas {} named \"{}\", which isn't one of the list's gases ({}, as programs write them). Jobs without a gas of their own keep being written with {} \"{}\", and new jobs start without one, until you pick a gas here.",
+                self.gas_id,
+                self.gas_name,
+                crate::gas::program_words(),
+                self.gas_id,
+                self.gas_name
+            )
+        })
+    }
+}
+
 impl Default for Machine {
     fn default() -> Self {
         Machine { name: "Laser 01".into(), output: Output::Iso, post_lib: String::new(), blm_ps1: String::new(), blm_cf1: String::new(), gas_id: 1, gas_name: "Nitrogen".into(), kind: Default::default(), order: Default::default() }
@@ -876,6 +912,33 @@ mod settings_tests {
         let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
         assert!(out.status.success() && said.contains("1 passed"), "{said}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_machines_gas_is_picked_from_the_list_and_an_odd_saved_pair_stays_as_saved() {
+        use crate::gas::Gas;
+        // GS17: settings saved before the gas was a pick: 2 named Oxygen and 5
+        // named Water aren't pairs the LC5 list writes (3 Oxygen, 5 H2O).
+        let text = "[machine]\nname = LC5\noutput = blm\ngas_id = 2\ngas_name = Oxygen\nkind = laser\n[machine]\nname = Waterjet\noutput = blm\ngas_id = 5\ngas_name = Water\nkind = laser\n";
+        let s = AppSettings::parse(text);
+        let lc5 = s.machines.iter().find(|m| m.name == "LC5").unwrap();
+        assert_eq!((lc5.gas_id, lc5.gas_name.as_str(), lc5.gas()), (2, "Oxygen", None));
+        let note = lc5.gas_mismatch().unwrap();
+        assert!(note.contains("gas 2 named \"Oxygen\"") && note.contains("1 Nitrogen, 2 Air, 3 Oxygen, 4 Argon, 5 H2O") && note.contains("until you pick a gas"), "{note}");
+        let water = s.machines.iter().find(|m| m.name == "Waterjet").unwrap();
+        assert_eq!((water.gas(), water.gas_mismatch().is_some()), (None, true));
+        // Read and written back, they stay exactly as saved.
+        assert!(s.to_text().contains("gas_id = 2\ngas_name = Oxygen\n") && s.to_text().contains("gas_id = 5\ngas_name = Water\n"), "{}", s.to_text());
+        assert_eq!(AppSettings::parse(&s.to_text()), s);
+        // Picking writes the number and the name programs write.
+        let mut m = lc5.clone();
+        assert!(m.pick_gas(Gas::Oxygen));
+        assert_eq!((m.gas_id, m.gas_name.as_str(), m.gas(), m.gas_mismatch()), (3, "Oxygen", Some(Gas::Oxygen), None));
+        assert!(!m.pick_gas(Gas::Oxygen), "picking the gas it has is no change");
+        assert!(m.pick_gas(Gas::Water));
+        assert_eq!((m.gas_id, m.gas_name.as_str(), m.gas()), (5, "H2O", Some(Gas::Water)));
+        // The built-in machine is on the list: nitrogen.
+        assert_eq!((Machine::default().gas(), Machine::default().gas_mismatch()), (Some(Gas::Nitrogen), None));
     }
 
     #[test]
