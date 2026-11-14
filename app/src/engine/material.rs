@@ -35,12 +35,14 @@ struct Builtin {
     machine_ref: &'static str,
     /// Other names it goes by (MA6; common grades and shop names, estimated).
     other_names: &'static str,
+    /// Short code in made-up sheet references ("ST3-2000x1000").
+    short_code: &'static str,
 }
 
 const OLD_THREE: [Builtin; 3] = [
-    Builtin { name: "Mild steel", kind: Kind::MildSteel, density: 7.85, program: ("STEEL", "0010"), machine_ref: "0010", other_names: "Mild steel, S235, S235JR, S275, S355, DC01, CR, HR, MS" },
-    Builtin { name: "Stainless steel", kind: Kind::Stainless, density: 8.0, program: ("STAINLESS", "0100"), machine_ref: "0100", other_names: "Stainless, 304, 304L, 316, 316L, AISI304, AISI316, 1.4301, INOX, SS" },
-    Builtin { name: "Aluminium", kind: Kind::Aluminium, density: 2.70, program: ("ALUMINIUM", "0200"), machine_ref: "0210", other_names: "Aluminum, AL, 5052, 5754, 6061, AlMg3" },
+    Builtin { name: "Mild steel", kind: Kind::MildSteel, density: 7.85, program: ("STEEL", "0010"), machine_ref: "0010", other_names: "Mild steel, S235, S235JR, S275, S355, DC01, CR, HR, MS", short_code: "ST" },
+    Builtin { name: "Stainless steel", kind: Kind::Stainless, density: 8.0, program: ("STAINLESS", "0100"), machine_ref: "0100", other_names: "Stainless, 304, 304L, 316, 316L, AISI304, AISI316, 1.4301, INOX, SS", short_code: "SS" },
+    Builtin { name: "Aluminium", kind: Kind::Aluminium, density: 2.70, program: ("ALUMINIUM", "0200"), machine_ref: "0210", other_names: "Aluminum, AL, 5052, 5754, 6061, AlMg3", short_code: "AL" },
 ];
 
 fn builtin(id: Id) -> Option<&'static Builtin> {
@@ -91,6 +93,12 @@ pub fn names() -> Vec<String> {
 
 pub fn kind(id: Id) -> Kind {
     nearest(id).kind
+}
+
+/// Short code for a sheet reference made up from material, thickness and
+/// size; an id past the list gives the last material's.
+pub fn short_code(id: Id) -> &'static str {
+    nearest(id).short_code
 }
 
 /// Weight per volume, g/cm³.
@@ -271,6 +279,7 @@ mod tests {
         assert_eq!(default_program(0), ("STEEL".to_string(), "0010".to_string()));
         assert_eq!(default_program(2), ("ALUMINIUM".to_string(), "0200".to_string()));
         assert_eq!(default_machine_key(2), "##MATEXP0210##");
+        assert_eq!((short_code(0), short_code(1), short_code(2)), ("ST", "SS", "AL"));
     }
 
     #[test]
@@ -283,6 +292,7 @@ mod tests {
         assert_eq!(name_or(7, "?"), "?");
         assert_eq!(nearest_name(7), "Aluminium");
         assert_eq!((density(7), kind(7)), (2.70, Kind::Aluminium));
+        assert_eq!(short_code(7), "AL");
         assert_eq!(default_program(7), ("STEEL".to_string(), "0010".to_string()));
         assert_eq!(program(&AppSettings::default(), 7), ("STEEL".to_string(), "0010".to_string()));
         assert_eq!(default_machine_key(7), "");

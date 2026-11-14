@@ -13,10 +13,6 @@ use egui::{Align2, Color32, CornerRadius, FontId, Pos2, Rect, RichText, Sense, S
 
 /// Placeholder for the active database name shown in the title and tree root.
 
-fn material_code(m: usize) -> &'static str {
-    ["ST", "SS", "AL"][m.min(2)]
-}
-
 /// Draw a small picture of a part inside `r`.
 fn part_thumb(p: &egui::Painter, part: &Part, r: Rect) {
     let (w, h) = part.bbox();
@@ -743,7 +739,7 @@ impl App {
                             open = true;
                         }
                         let f = self.result.format(i, &self.spec);
-                        let sheet_ref = if f.stock_ref.is_empty() { format!("{}{}-{:.0}x{:.0}", material_code(self.spec.material), self.spec.thickness, f.w, f.h) } else { f.stock_ref.clone() };
+                        let sheet_ref = if f.stock_ref.is_empty() { format!("{}{}-{:.0}x{:.0}", crate::engine::material::short_code(self.spec.material), self.spec.thickness, f.w, f.h) } else { f.stock_ref.clone() };
                         ui.label(sheet_ref);
                         ui.label(crate::engine::material::name_or(self.spec.material, "?"));
                         ui.label(un.num(self.spec.thickness));
@@ -781,7 +777,7 @@ impl App {
             let copies = self.sheet_groups().iter().find(|g| g.0 == self.cur_sheet).map_or(1, |g| g.1);
             let nest = format!("{}-{:02}", self.job_name, self.cur_sheet + 1);
             let f = self.result.format(self.cur_sheet, &self.spec);
-            let sheet = if f.stock_ref.is_empty() { format!("{}{}-{:.0}x{:.0}", material_code(self.spec.material), self.spec.thickness, f.w, f.h) } else { f.stock_ref };
+            let sheet = if f.stock_ref.is_empty() { format!("{}{}-{:.0}x{:.0}", crate::engine::material::short_code(self.spec.material), self.spec.thickness, f.w, f.h) } else { f.stock_ref };
             format!("{nest} / {copies} / {machine} ({mat}) / {sheet} / {t:.4}")
         } else if let Some(p) = self.sel_part.and_then(|i| self.parts.get(i).map(|p| (i, p))) {
             let (i, part) = p;
