@@ -6702,6 +6702,62 @@
   "group": "gas",
   "value": false,
   "source": "MECHANICS GS14"
+ },
+ {
+  "name": "gas pick on the Sheet tab",
+  "group": "gas",
+  "value": "beside the thickness: the five gases by name; a pick changes the job as set-sheet gas= does",
+  "source": "MECHANICS GS15"
+ },
+ {
+  "name": "gas pick on Home's material button",
+  "group": "gas",
+  "value": true,
+  "source": "MECHANICS GS15",
+  "estimated": true
+ },
+ {
+  "name": "picking the gas a job has",
+  "group": "gas",
+  "value": "no change: nothing to save, no undo step",
+  "source": "MECHANICS GS15"
+ },
+ {
+  "name": "where a job's gas shows",
+  "group": "gas",
+  "value": "Sheet tab, job list, Library window, job summary, library list, info, the message after programs are written",
+  "source": "MECHANICS GS16"
+ },
+ {
+  "name": "message after programs are written",
+  "group": "gas",
+  "value": "3 programs written: Mild steel 12.7 mm, Oxygen",
+  "source": "MECHANICS GS16"
+ },
+ {
+  "name": "machine's gas shown for a job without one",
+  "group": "gas",
+  "value": "Nitrogen (the machine's); off the list: Oxygen (gas 2, the machine's as saved)",
+  "source": "MECHANICS GS16",
+  "estimated": true
+ },
+ {
+  "name": "library part gas",
+  "group": "gas",
+  "value": false,
+  "source": "MECHANICS GS16"
+ },
+ {
+  "name": "machine gas in Settings",
+  "group": "gas",
+  "value": "a pick from the list; writes the number and the name the LC5 writes (5 H2O)",
+  "source": "MECHANICS GS17"
+ },
+ {
+  "name": "machine gas off the list in Settings",
+  "group": "gas",
+  "value": "shown as saved and flagged; written as saved until a gas is picked; opening Settings rewrites nothing",
+  "source": "MECHANICS GS17"
  }
 ]
 }

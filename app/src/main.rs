@@ -236,9 +236,10 @@ pub struct App {
     /// Pairs of parts on the shown sheet that touch or overlap (QR6), worked
     /// out on every change.
     pub overlaps: Vec<(usize, usize)>,
-    /// The last export (folder, file names, warning), shown on the sheet
-    /// until closed so the files can be found.
-    pub last_export: Option<(PathBuf, Vec<String>, Option<String>)>,
+    /// The last export (folder, file names, warning, and what the programs
+    /// are for, GS16: "3 programs written: Mild steel 12.7 mm, Oxygen"),
+    /// shown on the sheet until closed so the files can be found.
+    pub last_export: Option<(PathBuf, Vec<String>, Option<String>, String)>,
     /// A placed part to bring to the middle of the view (Show next problem).
     pub focus_placed: Option<usize>,
     /// Which problem part "Show next" shows next.
@@ -982,7 +983,12 @@ impl App {
         self.cfg.recent_jobs.retain(|r| r != &p);
         self.cfg.recent_jobs.insert(0, p);
         self.cfg.recent_jobs.truncate(8);
-        let _ = self.cfg.save();
+        // A screenshot run keeps it in memory only: it never saves the
+        // settings (its flags, such as --machine-gas, change them for the
+        // picture alone).
+        if !self.shot_mode_now() {
+            let _ = self.cfg.save();
+        }
     }
 
     /// The Open job menu: recent job files, the library, or any file.
@@ -1798,18 +1804,20 @@ impl App {
         let blm = self.blm_now();
         let marks: Vec<Vec<Vec<nest::P>>> = (0..self.result.sheets.len()).map(|k| self.remnant_marks(k)).collect();
         let res = engine::export(&base, &self.job_name, &self.parts, &self.result.sheets, &self.result.formats, &self.plans, &self.spec, &self.cut_lines, &marks, &self.post, Some(&blm), self.cfg.stock.line.edge_offset);
-        if let Ok(ex) = &res {
-            let names = ex.files.iter().filter_map(|f| f.file_name().map(|n| n.to_string_lossy().to_string())).collect();
-            self.last_export = Some((ex.dir.clone(), names, ex.warning.clone()));
-        } else {
-            // A refused export takes the job's programs with it (BL39).
-            self.last_export = None;
-        }
+        let n = self.result.sheets.len();
         self.status = match res {
-            Ok(ex) if ex.warning.is_some() => format!("Exported, but {}.", ex.warning.unwrap_or_default()),
-            Ok(ex) if self.blm.on => format!("Exported {} BLM LC5 program set(s) (.zip + .XML) and a parts report to {}", self.result.sheets.len(), ex.dir.display()),
-            Ok(ex) => format!("Exported {} program(s) and a parts report to {}", self.result.sheets.len(), ex.dir.display()),
-            Err(e) => e,
+            Ok(ex) => {
+                // GS16: the message names the material, thickness and gas.
+                let names = ex.files.iter().filter_map(|f| f.file_name().map(|n| n.to_string_lossy().to_string())).collect();
+                let what = engine::programs_written(n, &self.spec, &self.blm, self.unit());
+                self.last_export = Some((ex.dir.clone(), names, ex.warning.clone(), what));
+                engine::export_note(&ex, n, &self.spec, &self.blm, self.unit())
+            }
+            Err(e) => {
+                // A refused export takes the job's programs with it (BL39).
+                self.last_export = None;
+                e
+            }
         };
     }
 
@@ -2630,7 +2638,7 @@ impl App {
         }
 
         // --- the last export: where the files went, until closed ---
-        if let Some((dir, files, warning)) = self.last_export.clone() {
+        if let Some((dir, files, warning, what)) = self.last_export.clone() {
             let mut close = false;
             egui::Area::new(egui::Id::unique("last_export")).order(egui::Order::Foreground).fixed_pos(rect.left_top() + Vec2::new(12.0, 12.0 + tech_card_h)).show(ui.ctx(), |ui| {
                 egui::Frame::new().fill(th().card).stroke(Stroke::new(1.0, th().border)).corner_radius(CornerRadius::same(10)).inner_margin(egui::Margin::same(12)).show(ui, |ui| {
@@ -2644,6 +2652,8 @@ impl App {
                             }
                         });
                     });
+                    // What they're for: the material, thickness and gas (GS16).
+                    ui.label(RichText::new(&what).strong()).on_hover_text("The programs are cut in this material and thickness, with this gas. A gas marked \"the machine's\" is the machine's gas from Settings → Machines: this job has no gas of its own.");
                     let shown: Vec<&String> = files.iter().take(4).collect();
                     for f in &shown {
                         ui.label(RichText::new(f.as_str()).monospace().size(12.0));
@@ -3107,6 +3117,19 @@ fn main() -> eframe::Result {
             }
             if std::env::args().any(|a| a == "--options") {
                 app.options_open = true;
+            }
+            // --machine-gas=<number>:<name>: the active machine saved with
+            // that gas number and name, as settings from before the gas was
+            // a pick may hold (screenshots of GS17's flag). Only with
+            // --screenshot, which never saves the settings: launched by hand
+            // it's ignored, so the real machine's gas is never overwritten.
+            let machine_gas = app.shot.as_ref().and_then(|_| std::env::args().find_map(|a| a.strip_prefix("--machine-gas=").and_then(|v| v.split_once(':').map(|(n, s)| (n.parse::<u32>().ok(), s.to_string())))));
+            if let Some((n, name)) = machine_gas {
+                if let (Some(n), Some(m)) = (n, app.cfg.machines.get_mut(app.cfg.active_machine)) {
+                    m.gas_id = n;
+                    m.gas_name = name;
+                    app.apply_settings(true);
+                }
             }
             if let Some(s) = std::env::args().find_map(|a| a.strip_prefix("--settings=").map(str::to_string)) {
                 use settings_ui::Section::*;
@@ -4263,5 +4286,50 @@ mod text_tests {
         assert_eq!(mark.kind, nest::TextKind::Mark);
         assert_eq!(mark.height, 6.0);
         assert_eq!(g.texts.iter().find(|t| t.text == "note").unwrap().kind, nest::TextKind::Note);
+    }
+}
+
+#[cfg(test)]
+mod screenshot_settings_tests {
+    use super::*;
+
+    /// A screenshot run (`--screenshot`) changes settings in memory only:
+    /// `--machine-gas` sets the machine's gas, and opening a job
+    /// (`--open-job`) puts it on the recent list, but the settings file stays
+    /// as it was (GS17). Without `--screenshot`, opening a job still saves
+    /// the recent list.
+    #[test]
+    fn a_screenshot_run_never_saves_the_settings() {
+        // Alone in a process of its own: every test of a run shares one
+        // settings file, and another test could write it meanwhile.
+        if std::env::var_os("NESTPRO_SHOT_SETTINGS_CHILD").is_none() {
+            let name = "screenshot_settings_tests::a_screenshot_run_never_saves_the_settings";
+            let out = std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact", name, "--test-threads=1"]).env("NESTPRO_SHOT_SETTINGS_CHILD", "1").output().unwrap();
+            let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+            assert!(out.status.success() && said.contains("1 passed"), "{said}");
+            return;
+        }
+        let file = settings::AppSettings::file();
+        settings::AppSettings::default().save_to(&file).unwrap();
+        let before = std::fs::read_to_string(&file).unwrap();
+        let dir = file.parent().unwrap().join("jobs");
+        std::fs::create_dir_all(&dir).unwrap();
+        let job = dir.join("DEMO-SHOT.snjob");
+        jobfile::save(&job, &jobfile::JobFile::new_job("DEMO-SHOT", engine::default_spec())).unwrap();
+        // A screenshot run: --machine-gas=2:Oxygen, then --open-job.
+        let mut a = App::new(Some(dir.join("shot.png")));
+        let m = &mut a.cfg.machines[a.cfg.active_machine];
+        m.gas_id = 2;
+        m.gas_name = "Oxygen".into();
+        a.apply_settings(true);
+        a.open_job_file(&job);
+        assert_eq!(a.cfg.recent_jobs.first(), Some(&job.display().to_string()), "the recent list changes in memory");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), before, "a screenshot run wrote the settings file");
+        // Launched for real, opening a job saves the recent list as before.
+        let mut b = App::new(None);
+        b.open_job_file(&job);
+        let now = settings::AppSettings::read_from(&file).unwrap();
+        assert_eq!(now.recent_jobs.first(), Some(&job.display().to_string()));
+        assert_eq!((now.machines[0].gas_id, now.machines[0].gas_name.as_str()), (1, "Nitrogen"), "the machine's gas as saved");
     }
 }

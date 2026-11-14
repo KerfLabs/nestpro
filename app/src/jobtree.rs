@@ -369,10 +369,12 @@ impl App {
         let qty: u32 = parts.iter().map(|p| p.qty).sum();
         let cam = if i == self.cur_job { self.cam_changed } else { j.cam_changed };
         format!(
-            "{name}\nFolder: {}\n{} product(s), {qty} piece(s)\n{sheets} nesting(s) · {} · {}\nLast nesting change: {}\nRight-click: open, add nesting, rename, delete",
+            "{name}\nFolder: {}\n{} product(s), {qty} piece(s)\n{sheets} nesting(s) · {} · {} · {}\nLast nesting change: {}\nRight-click: open, add nesting, rename, delete",
             j.week,
             parts.len(),
             self.mat_thk(spec.material, spec.thickness),
+            // GS16: the job's gas beside its material and thickness.
+            crate::engine::job_gas(spec, &self.blm).shown(),
             self.unit().size(spec.w, spec.h, 0),
             cam_date_label(cam)
         )

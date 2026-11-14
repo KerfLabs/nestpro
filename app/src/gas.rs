@@ -127,6 +127,19 @@ impl JobGas {
     pub fn listed(&self) -> Option<Gas> {
         Gas::listed(self.number, &self.program_name)
     }
+
+    /// GS16: the gas beside a job's material and thickness (job lists, the
+    /// job report, the message after programs are written): "Oxygen"; for a
+    /// job without a gas of its own, "Nitrogen (the machine's)", and a
+    /// machine's number and name that aren't the list's pair as saved, with
+    /// the number: "Oxygen (gas 2, the machine's as saved)".
+    pub fn shown(&self) -> String {
+        match (self.own, self.listed()) {
+            (true, _) => self.name.clone(),
+            (false, Some(g)) => format!("{} (the machine's)", g.name()),
+            (false, None) => format!("{} (gas {}, the machine's as saved)", self.name, self.number),
+        }
+    }
 }
 
 /// GS13: the gas number the machine file's material × thickness section is

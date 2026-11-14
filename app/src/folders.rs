@@ -535,7 +535,7 @@ mod folders_tests {
     use super::*;
 
     fn entry(id: u64, name: &str, folder: &str) -> Entry {
-        Entry { kind: Kind::Job, id, name: name.into(), folder: folder.into(), material: 0, thickness: 3.0, w: 2000.0, h: 1000.0, count_a: 1, count_b: 1, updated: 0, tech: false, saved_by: None }
+        Entry { kind: Kind::Job, id, name: name.into(), folder: folder.into(), material: 0, thickness: 3.0, w: 2000.0, h: 1000.0, count_a: 1, count_b: 1, updated: 0, tech: false, saved_by: None, gas: None }
     }
 
     #[test]
