@@ -191,7 +191,7 @@ original (or a real job).
 | JOB-9 | Parametric editor, duct parts, processes | Missing | ★ | 8 built-in shapes |
 | JOB-10 | Flex3D unfolding / bending, 3D import | Missing | ★ | |
 | JOB-11 | ERP connectors (Masterlink, Oseon) | Missing | ★ | needs those systems |
-| JOB-12 | Fulcrum link: Send nest (making a work order, storing the nest on its step) not yet tried against the live API. The reading side was tried live on 2026-11-14 (sign-in, operations, waiting work, a work package and a drawing download all read correctly once a job with no sales order was allowed, F24); `cargo test live_read_only -- --ignored` with `FULCRUM_API_TOKEN` repeats it | Estimate | ★★★ | MECHANICS F18–F24; a test work order to send to |
+| JOB-12 | Fulcrum link: Send nest (making a work order, storing the nest on its step) not yet tried against the live API. The reading side was tried live on 2026-11-14 (sign-in, operations, waiting work, a work package and a drawing download all read correctly once a job with no sales order was allowed, F34); `cargo test live_read_only -- --ignored` with `FULCRUM_API_TOKEN` repeats it | Estimate | ★★★ | MECHANICS F18–F23, F34; a test work order to send to |
 | JOB-13 | Fulcrum: sheet stock item matched automatically from material + sheet size (now typed per job) | Partial | ★★ | MECHANICS F13 |
 | JOB-14 | Fulcrum: a job opened from a work order switches the app-wide machine; jobs don't keep their own machine | Estimate | ★★ | MECHANICS F21 |
 | JOB-15 | Fulcrum: finding the planner's work order asks for every unfinished work order on the operation, one request each (slow with many open work orders) | Estimate | ★ | MECHANICS F22 |

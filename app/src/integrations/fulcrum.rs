@@ -57,7 +57,7 @@ pub struct RefDto {
 
 /// A reference Fulcrum may send as `null` (a job with no sales order, a step
 /// with no scheduled equipment): read as an empty one instead of refusing the
-/// whole answer (F24).
+/// whole answer (F34).
 fn ref_or_null<'de, D: serde::Deserializer<'de>>(d: D) -> Result<RefDto, D::Error> {
     Ok(Option::<RefDto>::deserialize(d)?.unwrap_or_default())
 }

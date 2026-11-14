@@ -3518,7 +3518,7 @@
   "name": "ERP reference sent as null",
   "group": "erp (fulcrum)",
   "value": "read as empty (the item is still listed)",
-  "source": "MECHANICS F24; observed on a live system"
+  "source": "MECHANICS F34; observed on a live system"
  },
  {
   "name": "ERP units sent",
