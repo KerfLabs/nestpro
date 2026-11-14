@@ -485,7 +485,7 @@ mod refreshui_tests {
     /// PC 1 (sam on PROG-1) saves job `name` into the Library as a new job
     /// with one part.
     fn save_new_job(dir: &Path, clock: &Clock, name: &str) -> u64 {
-        let mut j = crate::jobfile::JobFile::new_job(name, crate::nest::SheetSpec { w: 3000.0, h: 1500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 10.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None });
+        let mut j = crate::jobfile::JobFile::new_job(name, crate::nest::SheetSpec { w: 3000.0, h: 1500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 10.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() });
         j.parts = vec![crate::nest::Part { name: "DEMO-P1".into(), shape: crate::nest::Shape::Rectangle, w: 600.0, h: 400.0, qty: 2, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
         Library::open(dir, &Who::new("sam", "PROG-1"), clock).unwrap().save_job(&j, SaveTo::New).unwrap().id
     }

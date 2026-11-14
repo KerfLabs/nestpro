@@ -6518,6 +6518,30 @@
   "source": "MECHANICS ST17"
  },
  {
+  "name": "picked sheet size is what Nest all nests on",
+  "group": "sheet stock",
+  "value": true,
+  "source": "MECHANICS ST18"
+ },
+ {
+  "name": "Nest all on a picked size also uses other sizes and remnants",
+  "group": "sheet stock",
+  "value": false,
+  "source": "MECHANICS ST18"
+ },
+ {
+  "name": "remnant put on a sheet picks the job's sheet",
+  "group": "sheet stock",
+  "value": false,
+  "source": "MECHANICS ST18"
+ },
+ {
+  "name": "new job's sheet pick",
+  "group": "sheet stock",
+  "value": "any size in stock",
+  "source": "MECHANICS ST18"
+ },
+ {
   "name": "gas list",
   "group": "gas",
   "value": "per machine: its post settings' G lines in order (gas n = the n-th line), each with a name and on/off; without them 1 Nitrogen, 2 Compressed air, 3 Oxygen, all on",

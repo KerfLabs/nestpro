@@ -793,7 +793,7 @@ mod cutoff_tests {
     use crate::nest::Shape;
 
     fn spec() -> SheetSpec {
-        SheetSpec { w: 2000.0, h: 1000.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None }
+        SheetSpec { w: 2000.0, h: 1000.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() }
     }
     fn rect_part() -> Part {
         Part { name: "R".into(), shape: Shape::Rectangle, w: 500.0, h: 300.0, qty: 1, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }
@@ -830,7 +830,7 @@ mod cutoff_tests {
     #[test]
     fn remnant_lines_are_cut_last_in_the_program() {
         let lines = vec![CutLine { pts: vec![[600.0, 0.0], [600.0, 1000.0]], kind: CutKind::Remnant }, CutLine { pts: vec![[50.0, 900.0], [300.0, 900.0]], kind: CutKind::Free }];
-        let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None };
+        let spec = SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
         let g = gcode_lines(&lines, &spec, 0.0);
         assert_eq!(g[0].0, "CUT LINE");
         assert_eq!(g[1].0, "REMNANT LINE");

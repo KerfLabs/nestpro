@@ -503,7 +503,7 @@ mod progimport_tests {
         use crate::nest::{Part, Placed, Shape, SheetSpec};
         let parts = vec![Part { name: "BLANK".into(), shape: Shape::PlateHole, w: 100.0, h: 60.0, qty: 2, rotate: false, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
         let sheet = vec![Placed { part: 0, x: 10.0, y: 10.0, w: 100.0, h: 60.0, turns: 0, mirror: false, spin: Default::default() }, Placed { part: 0, x: 10.0, y: 80.0, w: 100.0, h: 60.0, turns: 0, mirror: false, spin: Default::default() }];
-        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 10.0, material: 1, thickness: 6.35, level: 3, machine: Default::default(), kerf: Default::default(), gas: None };
+        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 10.0, material: 1, thickness: 6.35, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
         let plan = crate::cnc::plan(&parts, &sheet, &spec);
         let cut = crate::cutoff::CutLine { pts: vec![[200.0, 0.0], [200.0, 500.0]], kind: crate::cutoff::CutKind::Remnant };
         let set = crate::blm::sheet_set(1, &parts, &sheet, &spec, &plan, &[cut], &crate::blm::BlmSettings::for_spec(&spec, "LC5", "J-1"));

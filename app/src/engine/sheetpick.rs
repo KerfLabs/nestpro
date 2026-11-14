@@ -230,7 +230,7 @@ mod tests {
     }
 
     fn spec() -> SheetSpec {
-        SheetSpec { w: 1000.0, h: 800.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None }
+        SheetSpec { w: 1000.0, h: 800.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() }
     }
 
     /// Three 100 × 50 plates in a row, #1 at the right, #2 at the left, #3

@@ -1784,7 +1784,7 @@ mod joint_tests {
     fn plan_for(tech: PartTech) -> SheetPlan {
         let parts = vec![Part { name: "S".into(), shape: Shape::Rectangle, w: 200.0, h: 100.0, qty: 1, rotate: false, color: 0, tech: Some(tech), custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
         let pl = Placed { part: 0, x: 50.0, y: 50.0, w: 200.0, h: 100.0, turns: 0, mirror: false, spin: Default::default() };
-        let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None };
+        let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
         plan(&parts, &[pl], &spec)
     }
 
@@ -1848,7 +1848,7 @@ mod joint_tests {
         assert!(p.cut_len > plain.cut_len);
         let parts = vec![Part { name: "S".into(), shape: Shape::Rectangle, w: 200.0, h: 100.0, qty: 1, rotate: false, color: 0, tech: Some(t), custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
         let pl = Placed { part: 0, x: 50.0, y: 50.0, w: 200.0, h: 100.0, turns: 0, mirror: false, spin: Default::default() };
-        let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None };
+        let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
         let prog = program(1, &parts, &[pl], &spec, &p);
         assert_eq!(prog.matches("JOINT LEAD-OUT").count(), 4);
         assert_eq!(prog.matches("PIERCE JOINT").count(), 3);
@@ -1863,7 +1863,7 @@ mod joint_tests {
         assert_eq!(ov.contours[0].overlap, 0.5);
         let parts = vec![Part { name: "S".into(), shape: Shape::Rectangle, w: 200.0, h: 100.0, qty: 1, rotate: false, color: 0, tech: Some(PartTech { overlap: 0.5, ..PartTech::default() }), custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
         let pl = Placed { part: 0, x: 50.0, y: 50.0, w: 200.0, h: 100.0, turns: 0, mirror: false, spin: Default::default() };
-        let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None };
+        let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
         assert!(program(1, &parts, &[pl], &spec, &plan(&parts, &[pl], &spec)).contains("( OVERLAP )"));
         // 600 mm round at one per 100 mm (CT1 F150): 6 joints.
         let every = plan_for(PartTech { joint_every: 100.0, micro_joints: 0, ..PartTech::default() });
@@ -1934,7 +1934,7 @@ mod joint_tests {
         // the outside (800 mm): 8. A fixed count stays on the outside only.
         let parts = vec![Part { name: "H".into(), shape: Shape::PlateHole, w: 200.0, h: 200.0, qty: 1, rotate: false, color: 0, tech: Some(PartTech { joint_every: 100.0, ..PartTech::default() }), custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
         let pl = Placed { part: 0, x: 50.0, y: 50.0, w: 200.0, h: 200.0, turns: 0, mirror: false, spin: Default::default() };
-        let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None };
+        let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
         let p = plan(&parts, &[pl], &spec);
         let hole = p.contours.iter().find(|c| c.inner).unwrap();
         let outer = p.contours.iter().find(|c| !c.inner).unwrap();
@@ -1951,7 +1951,7 @@ mod joint_tests {
         // 7 mm corner lead extending its first side (laser template B209/B232).
         let r = |x: f64| Placed { part: 0, x, y: 20.0, w: 100.0, h: 50.0, turns: 0, mirror: false, spin: Default::default() };
         let parts = vec![Part { name: "R".into(), shape: Shape::Rectangle, w: 100.0, h: 50.0, qty: 2, rotate: false, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
-        let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 3.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None };
+        let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 3.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
         let alone = plan(&parts, &[r(200.0)], &spec);
         let c = &alone.contours[0];
         assert_eq!(c.points[0], [200.0, 20.0]);
@@ -1995,7 +1995,7 @@ mod manual_tests {
             Placed { part: 0, x: 10.0, y: 10.0, w: 200.0, h: 200.0, turns: 0, mirror: false, spin: Default::default() },
             Placed { part: 1, x: 300.0, y: 10.0, w: 100.0, h: 50.0, turns: 0, mirror: false, spin: Default::default() },
         ];
-        (parts, placed, SheetSpec { w: 1000.0, h: 500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None })
+        (parts, placed, SheetSpec { w: 1000.0, h: 500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() })
     }
 
     #[test]
@@ -2092,7 +2092,7 @@ mod kerf_plan_tests {
         Placed { part: 0, x, y, w, h, turns: 0, mirror, spin: Default::default() }
     }
     fn spec() -> SheetSpec {
-        SheetSpec { w: 1000.0, h: 500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None }
+        SheetSpec { w: 1000.0, h: 500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() }
     }
     /// A drawing part from outline and holes as drawn (direction kept).
     fn drawn(outline: Vec<P>, holes: Vec<Vec<P>>) -> Part {
@@ -2245,7 +2245,7 @@ mod kerf_plan_tests {
         part.custom = Some(std::sync::Arc::new(crate::dxf::CustomGeo { outline: vec![[0.0, 0.0], [200.0, 0.0], [200.0, 100.0], [0.0, 100.0]], holes: vec![hole], fills: vec![], hole_fills: vec![], marks: vec![], texts: vec![], w: 200.0, h: 100.0, contours: vec![], hand_order: vec![] }));
         part.shape = Shape::Custom;
         let pl = Placed { part: 0, x: 50.0, y: 50.0, w: 200.0, h: 100.0, turns: 0, mirror: false, spin: Default::default() };
-        let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material, thickness, level: 3, machine: Default::default(), kerf: Default::default(), gas: None };
+        let spec = SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material, thickness, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
         (vec![part], vec![pl], spec)
     }
 
@@ -2405,7 +2405,7 @@ mod edge_lead_tests {
     #[test]
     fn a_lead_that_would_leave_the_sheet_moves_or_shortens() {
         // VP3: the sheet's edge is an obstacle for leads, like another part.
-        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 0.0, gap: 5.0, material: 0, thickness: 5.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None };
+        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 0.0, gap: 5.0, material: 0, thickness: 5.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
         let on = |q: &P| q[0] >= -0.01 && q[1] >= -0.01 && q[0] <= spec.w + 0.01 && q[1] <= spec.h + 0.01;
         // Flush in the sheet's corner, an automatic lead moves to a free side.
         let flush = vec![Placed { part: 0, x: 0.0, y: 0.0, w: 100.0, h: 100.0, turns: 0, mirror: false, spin: Default::default() }];
@@ -2433,7 +2433,7 @@ mod hand_lead_tests {
     }
 
     fn spec() -> SheetSpec {
-        SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None }
+        SheetSpec { w: 1000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() }
     }
 
     fn with_edit(e: LeadEdit) -> PartTech {

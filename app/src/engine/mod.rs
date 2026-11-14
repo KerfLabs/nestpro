@@ -1643,9 +1643,11 @@ impl JobFile {
 }
 
 /// A new job's sheet with the part gap and edge margin from Settings →
-/// Nesting (HM12) and the active machine's gas (GS12). Every way a job is
-/// made starts from it: New job, the agents' `new`, the XML import, a job
-/// opened from programs, the ERP link (`with_prefs_for`).
+/// Nesting (HM12) and the active machine's gas (GS12). It keeps the size it
+/// was made from, but Nest all starts with any size in stock: a size picked
+/// for another job isn't picked for this one (ST18). Every way a job is made
+/// starts from it: New job, the agents' `new`, the XML import, a job opened
+/// from programs, the ERP link (`with_prefs_for`).
 pub fn with_prefs(spec: &SheetSpec, cfg: &AppSettings) -> SheetSpec {
     with_prefs_for(spec, cfg, &cfg.machine())
 }
@@ -1654,12 +1656,12 @@ pub fn with_prefs(spec: &SheetSpec, cfg: &AppSettings) -> SheetSpec {
 /// once the job is made: the ERP link's work runs on the machine its step is
 /// scheduled on (F21), and the job starts with that machine's gas (GS12).
 pub fn with_prefs_for(spec: &SheetSpec, cfg: &AppSettings, m: &settings::Machine) -> SheetSpec {
-    SheetSpec { gap: cfg.nesting.part_gap, margin: cfg.nesting.edge_margin, gas: new_job_gas(m), ..spec.clone() }
+    SheetSpec { gap: cfg.nesting.part_gap, margin: cfg.nesting.edge_margin, gas: new_job_gas(m), pick: crate::nest::SheetPick::Stock, ..spec.clone() }
 }
 
 /// The default sheet of a new job: 2000 × 1000 mm, 3 mm mild steel, level 3.
 pub fn default_spec() -> SheetSpec {
-    SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None }
+    SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() }
 }
 
 #[cfg(test)]

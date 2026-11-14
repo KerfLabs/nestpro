@@ -444,7 +444,7 @@ mod tests {
     use crate::nest::{Part, Placed, Shape, SheetSpec};
 
     fn spec() -> SheetSpec {
-        SheetSpec { w: 1000.0, h: 500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None }
+        SheetSpec { w: 1000.0, h: 500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() }
     }
 
     fn job() -> (Vec<Part>, Vec<Placed>, SheetPlan, BlmSet) {

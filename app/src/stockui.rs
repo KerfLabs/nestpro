@@ -159,8 +159,31 @@ impl App {
         }
         Ok(m.count)
     }
+    /// Pick a sheet size for the job (ST18: the size list ▾ or a size typed):
+    /// every Nest all after it nests only on that size, the stock's sheets of
+    /// it first.
+    pub fn pick_sheet_size(&mut self, w: f64, h: f64) {
+        self.spec.pick_size(w, h);
+        self.after_sheet_pick();
+    }
+
+    /// *Any size in stock* (ST18): Nest all takes the stock in its order
+    /// again, then the job's size.
+    pub fn pick_any_stock_size(&mut self) {
+        self.spec.pick = crate::nest::SheetPick::Stock;
+        self.after_sheet_pick();
+    }
+
+    fn after_sheet_pick(&mut self) {
+        if !self.result.sheets.is_empty() {
+            self.stale = true;
+        }
+        self.refresh();
+    }
+
     /// Put a stock item on the current sheet (Nesting → Sheets → New). The
-    /// parts on it stay if they fit.
+    /// parts on it stay if they fit. A whole sheet (not a remnant) becomes
+    /// the job's sheet too: Nest all nests on its size from then on (ST18).
     pub fn use_stock_item_on_sheet(&mut self, reference: &str) {
         let Some(it) = Stock::load(&self.library_dir()).ok().and_then(|s| s.get(reference).cloned()) else {
             self.status = format!("Sheet {reference} isn't in stock.");
@@ -171,20 +194,27 @@ impl App {
             return;
         }
         self.checkpoint();
+        let f = SheetFormat::from_stock(&it);
+        let was = (self.spec.w, self.spec.h, self.spec.pick);
+        let picked = self.spec.pick_format(&f) && (self.spec.w, self.spec.h, self.spec.pick) != was;
         if self.result.sheets.is_empty() {
-            self.result.push_sheet(SheetFormat::from_stock(&it));
+            self.result.push_sheet(f);
             self.cur_sheet = 0;
             // Kept while empty (as Add nesting keeps one), so parts can be put on it.
             self.empty_sheet_kept = Some(0);
         } else {
             self.result.normalise(&self.spec);
-            self.result.formats[self.cur_sheet] = SheetFormat::from_stock(&it);
+            self.result.formats[self.cur_sheet] = f;
         }
         let i = self.cur_sheet;
         let misfits = self.result.sheets[i].iter().filter(|p| !self.fits_sheet(p, i)).count();
         self.mark_cam_changed();
         self.refresh();
         self.status = if misfits > 0 { format!("Sheet {i1} is now {reference}; {misfits} part(s) no longer fit — move them or nest again.", i1 = i + 1) } else { format!("Sheet {} is now {reference}.", i + 1) };
+        if picked {
+            let size = self.unit().size(self.spec.w, self.spec.h, 0);
+            self.status += &format!(" Nest all now nests on {size} sheets (to let it take any size in stock again: Sheet tab, size list ▾ → Any size in stock).");
+        }
         self.stockui.note = Some((self.status.clone(), misfits == 0));
     }
 
@@ -599,7 +629,7 @@ impl App {
                         let r = su.sel.clone().unwrap_or_default();
                         let primary = |t: String| egui::Button::new(RichText::new(t).color(Color32::WHITE).strong()).fill(th().accent);
                         if off == 0 {
-                            if ui.add(primary(format!("Use on sheet {}", cur + 1))).on_hover_text("Put the selected sheet or remnant on the sheet you're looking at (Ctrl + Z undoes it)").clicked() {
+                            if ui.add(primary(format!("Use on sheet {}", cur + 1))).on_hover_text("Put the selected sheet or remnant on the sheet you're looking at. A whole sheet also becomes the job's sheet: Nest all nests on its size from then on (Ctrl + Z undoes it)").clicked() {
                                 action = Some(Box::new(move |app: &mut App| app.use_stock_item_on_sheet(&r)));
                             }
                             let ok = if placed_n == 0 { "The sheet is empty — drag parts onto it from Parts View.".to_string() } else { format!("✔ All {placed_n} parts on sheet {} still fit on it.", cur + 1) };
@@ -1392,6 +1422,67 @@ mod tests {
         a.use_stock_and_renest("BIG");
         assert_eq!(a.result.formats[0].stock_ref, "BIG");
         assert!(a.result.sheets[0].iter().all(|p| a.fits_sheet(p, 0)));
+    }
+
+    #[test]
+    fn a_stock_sheet_picked_for_the_job_is_what_nest_all_nests_on_again() {
+        // The bug: a smaller stock sheet put on the job, then Nest all at
+        // another level went back to the stock's largest sheet.
+        let (mut a, _dir) = app_with_stock("pick-stock");
+        Stock::update(&a.library_at(), |s| s.add_sheet(Item::sheet("SMALL", 0, 10.0, 2000.0, 1000.0, 9), true)).unwrap();
+        a.run_nesting();
+        assert_ne!(a.result.formats[0].stock_ref, "SMALL", "untouched, Nest all takes the stock in its order");
+        a.use_stock_default("SMALL");
+        assert_eq!(a.result.formats[0].stock_ref, "SMALL");
+        for level in [1, 3, 5] {
+            a.spec.level = level;
+            a.run_nesting();
+            assert!(!a.result.sheets.is_empty());
+            for f in &a.result.formats {
+                assert_eq!((f.w, f.h, f.stock_ref.as_str()), (2000.0, 1000.0, "SMALL"), "level {level}: every sheet is the picked one");
+            }
+        }
+    }
+
+    #[test]
+    fn a_size_picked_from_the_list_or_typed_is_what_nest_all_nests_on() {
+        let (mut a, _dir) = app_with_stock("pick-size");
+        Stock::update(&a.library_at(), |s| s.add_sheet(Item::sheet("SMALL", 0, 10.0, 2000.0, 1000.0, 1), true)).unwrap();
+        a.parts[0].qty = 50; // more than one 2000 × 1000 sheet holds
+        a.run_nesting();
+        // From the ▾ list's stocked sizes: its one sheet in stock first, then
+        // more of that size (the job's size when the stock runs out).
+        a.pick_sheet_size(2000.0, 1000.0);
+        a.spec.level = 1;
+        a.run_nesting();
+        assert_eq!(a.result.formats[0].stock_ref, "SMALL");
+        assert!(a.result.sheets.len() > 1);
+        assert!(a.result.formats[1..].iter().all(|f| f.stock_ref.is_empty()), "the stock has one: the rest are the job's size");
+        assert!(a.result.formats.iter().all(|f| (f.w, f.h) == (2000.0, 1000.0) && !f.remnant), "{:?}", a.result.formats);
+        assert_eq!(a.total_placed(), 50);
+        // A size not in stock: every sheet that size, none from stock.
+        a.pick_sheet_size(2500.0, 1250.0);
+        a.run_nesting();
+        assert!(a.result.formats.iter().all(|f| (f.w, f.h) == (2500.0, 1250.0) && f.stock_ref.is_empty()), "{:?}", a.result.formats);
+        // Any size in stock again: the stock in its order (remnant first).
+        a.pick_any_stock_size();
+        a.run_nesting();
+        assert_eq!(a.result.formats[0].stock_ref, "1-1");
+        // A remnant put on a sheet is a one-off: it doesn't set the job's sheet.
+        a.pick_sheet_size(2000.0, 1000.0);
+        a.use_stock_default("1-1");
+        assert_eq!(a.spec.pick, crate::nest::SheetPick::Size);
+        assert_eq!((a.spec.w, a.spec.h), (2000.0, 1000.0));
+        // Undo takes the pick back with the sheet.
+        a.pick_any_stock_size();
+        a.use_stock_default("SMALL");
+        assert_eq!(a.spec.pick, crate::nest::SheetPick::Size);
+        a.undo();
+        assert_eq!(a.spec.pick, crate::nest::SheetPick::Stock);
+        // A new job keeps the size but starts with any size in stock.
+        a.pick_sheet_size(2000.0, 1000.0);
+        a.new_job();
+        assert_eq!((a.spec.w, a.spec.h, a.spec.pick), (2000.0, 1000.0, crate::nest::SheetPick::Stock));
     }
 
     #[test]

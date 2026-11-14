@@ -951,7 +951,7 @@ mod tests {
         // Two identical sheets (2× BRK-1 + 1× shop part each) and one with 1× PLT-2.
         let sheets = vec![vec![at(0, 5.0), at(0, 110.0), at(1, 220.0)], vec![at(0, 5.0), at(0, 110.0), at(1, 220.0)], vec![at(2, 5.0)]];
         let groups = [(0, 2), (2, 1)];
-        let spec = SheetSpec { w: 3048.0, h: 1524.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None };
+        let spec = SheetSpec { w: 3048.0, h: 1524.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
         let r = nest_report(Provider::Fulcrum, "W45", "Laser", &parts, &sheets, &[], &groups, &[120.0, 120.0, 60.0], &spec);
         assert_eq!(r.parts.len(), 2);
         assert_eq!((r.parts[0].number.as_str(), r.parts[0].qty), ("BRK-1", 4));
@@ -970,7 +970,7 @@ mod tests {
     fn duplicate_part_names_get_numbered() {
         let parts = vec![part("A", vec![demand("j", "o1", 1, "")]), part("A", vec![demand("j", "o2", 1, "")])];
         let sheets = vec![vec![at(0, 5.0), at(1, 110.0)]];
-        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None };
+        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), gas: None, pick: Default::default() };
         let r = nest_report(Provider::Fulcrum, "J", "", &parts, &sheets, &[], &[(0, 1)], &[10.0], &spec);
         assert_eq!(r.parts.iter().map(|p| p.number.as_str()).collect::<Vec<_>>(), vec!["A", "A #2"]);
         assert_eq!(r.sheets[0].parts, vec![("A".into(), 1), ("A #2".into(), 1)]);
