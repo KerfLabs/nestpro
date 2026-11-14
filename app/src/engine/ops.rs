@@ -147,7 +147,7 @@ pub static OPS: &[Op] = &[
         a("level", Ty::Int, "Automatic nesting level 1-5 (default 3)"), c("machine", MACHINES, "Machine type (default laser)"),
         a("force", Ty::Bool, "Overwrite an existing file"),
     ] },
-    Op { name: "info", group: "Job", kind: Kind::Read, help: "Job report: sheet, what nest will nest on (nest_on: the stock first, with its sheets and remnants for the job, or the job's sheet size, and why), parts (ordered / nested / missing, technology), sheets (usage, cut length, pierces, time, remnant). With sheet=N, also every placed part on that sheet.", args: &[a("sheet", Ty::Int, "Also list the parts placed on this sheet")] },
+    Op { name: "info", group: "Job", kind: Kind::Read, help: "Job report: sheet, what nest will nest on (nest_on: the stock first, with its sheets and remnants for the job, or the job's sheet size, and why; stock_thicknesses: every thickness of the job's material in stock, in mm, with its sheets and remnants; near_stock: when none is in stock at the job's thickness, a stocked one within 2 %, e.g. 11 ga for 3 mm), parts (ordered / nested / missing, technology), sheets (usage, cut length, pierces, time, remnant). With sheet=N, also every placed part on that sheet.", args: &[a("sheet", Ty::Int, "Also list the parts placed on this sheet")] },
     Op { name: "rename", group: "Job", kind: Kind::Write, help: "Rename the job or move it to another week/folder.", args: &[a("name", Ty::Str, "New job name"), a("week", Ty::Str, "New week/folder")] },
     Op { name: "undo", group: "Job", kind: Kind::Write, help: "Undo the last change (the MCP session keeps every step; the command line keeps one, in <job>.snjob~).", args: &[] },
     // --- parts ---
@@ -727,8 +727,16 @@ fn nest_on_json(job: &JobFile, ctx: &Ctx) -> Value {
     let grouped = crate::ct1::active().group_parts && nest::part_groups(&job.parts).len() > 1;
     let on = stockflow::nest_on(&job.spec, &ctx.stock_use(job), grouped);
     let sizes: Vec<Value> = on.sizes.iter().map(|s| json!({"w": r1(s.length), "h": r1(s.width), "qty": s.qty})).collect();
+    // STK-21: every thickness of this material in stock, as the thickness ▾ list shows them.
+    let thicknesses: Vec<Value> = stockflow::stock_thicknesses(&job.spec, &ctx.stock_use(job))
+        .iter()
+        .map(|t| json!({"thickness": (t.thickness * 1000.0).round() / 1000.0, "sheets": t.sheets, "remnants": t.remnants}))
+        .collect();
+    // ST19: none in stock at this thickness, but close to one that is.
+    let near = stockflow::near_stock(&job.spec, &ctx.stock_use(job))
+        .map(|t| json!({"thickness": (t.thickness * 1000.0).round() / 1000.0, "sheets": t.sheets, "remnants": t.remnants, "hint": format!("set-sheet thickness={} to nest on it", (t.thickness * 1000.0).round() / 1000.0)}));
     json!({
-        "mode": on.key(), "from_stock": on.from_stock(), "picked": on.picked, "sheets": on.sheets, "remnants": on.remnants, "stock_sizes": sizes,
+        "mode": on.key(), "from_stock": on.from_stock(), "picked": on.picked, "sheets": on.sheets, "remnants": on.remnants, "stock_sizes": sizes, "stock_thicknesses": thicknesses, "near_stock": near,
         "line": on.line(&format!("{:.0} × {:.0} mm", job.spec.w, job.spec.h)), "why": on.explain(),
     })
 }
@@ -1488,7 +1496,7 @@ fn stock_json(s: &crate::stock::Item, clock: &crate::shared::Clock) -> Value {
 
 fn rules_json(st: &crate::stock::StockSettings) -> Value {
     json!({
-        "use_stock": st.use_stock, "order": st.order.label(), "remnants_first": st.remnants_first,
+        "nest_on": st.mode().key(), "use_stock": st.use_stock, "order": st.order.label(), "remnants_first": st.remnants_first,
         "job_sheet_when_out": st.fallback_job_size, "allow_no_stock": st.allow_no_stock,
         "min_efficiency": st.min_efficiency, "efficiency_by": st.eff_mode.label(), "with_references": st.with_references,
         "remnants_on_save": st.remnants_on_save, "keep_completed_sheets": st.keep_completed, "min_remnant_m2": st.min_remnant_m2,

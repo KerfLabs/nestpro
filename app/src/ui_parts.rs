@@ -2072,6 +2072,8 @@ impl App {
         let mut cost_changed = false;
         let spec_before = self.spec.clone();
         let u = self.cfg.nesting.units;
+        // The stock's thicknesses of this material (STK-21, ST19).
+        let stocked = self.stock_thicknesses(ui.ctx());
         // The set-up groups are one grid: each field has its name above it,
         // and every group's two rows line up across the ribbon.
         ribbon_group(ui, "Material & machine", |ui| {
@@ -2092,7 +2094,21 @@ impl App {
                             ui.spacing_mut().interact_size.x = 74.0;
                             let thk = &mut self.spec.thickness;
                             cost_changed |= crate::units::drag_len_in(ui, thk, u, crate::units::MIN_THICKNESS, crate::units::MAX_THICKNESS).changed();
-                            drop_list(ui, "Common thicknesses", |ui| {
+                            drop_list(ui, "Thicknesses: the ones in stock for this material, then common ones", |ui| {
+                                // STK-21: what the stock holds of this material,
+                                // picked at the stock's own thickness so it matches.
+                                if !stocked.is_empty() {
+                                    ui.label(RichText::new("In stock").size(11.0).color(th().text_dim));
+                                    for t in &stocked {
+                                        let cur = (t.thickness - *thk).abs() <= crate::stock::TOL;
+                                        if ui.selectable_label(cur, format!("{}   ·  {}", u.show(t.thickness), t.counts())).clicked() {
+                                            *thk = t.thickness;
+                                            cost_changed = true;
+                                        }
+                                    }
+                                    ui.separator();
+                                    ui.label(RichText::new("Common thicknesses").size(11.0).color(th().text_dim));
+                                }
                                 for (t, name) in u.thickness_presets() {
                                     if ui.selectable_label((t - *thk).abs() < 1e-6, name).clicked() {
                                         *thk = t;
@@ -2143,14 +2159,57 @@ impl App {
                 form_row(ui, |ui| {
                     let size = u.dims(self.spec.w, self.spec.h, 0);
                     let colour = if on.warn() { th().warn_fg } else { th().text };
-                    let resp = form_field(ui, "Nest on", |ui| {
-                        ui.add(egui::Label::new(RichText::new(on.line(&size)).size(12.0).color(colour)).sense(Sense::click()))
+                    // ST19: none at this thickness, but a stocked one close by.
+                    let near = crate::engine::stockflow::nearest_stocked(&stocked, self.spec.thickness).filter(|_| !on.from_stock());
+                    // Where the sheets come from is a list (STK-22: the shop's
+                    // Do All choice), showing what it means for this job; the
+                    // stock itself opens from its own button.
+                    form_field(ui, "Nest on", |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            let text = RichText::new(on.line(&size)).size(12.0).color(colour);
+                            let w = ui.painter().layout_no_wrap(text.text().to_string(), FontId::proportional(12.0), colour).size().x;
+                            let mut mode = self.cfg.stock.mode();
+                            egui::ComboBox::from_id_salt("nest_on_mode")
+                                .width(w + 28.0)
+                                .selected_text(text)
+                                .show_ui(ui, |ui| {
+                                    for m in crate::stock::StockMode::ALL {
+                                        ui.selectable_value(&mut mode, m, m.label()).on_hover_text(m.help());
+                                    }
+                                })
+                                .response
+                                .on_hover_text(format!("{}\n\nThe ▾ list changes it for every job on this PC (also in Sheet stock → Options).", on.explain()));
+                            if mode != self.cfg.stock.mode() {
+                                self.cfg.stock.set_mode(mode);
+                                let _ = self.cfg.save();
+                                self.status = format!("Nest all: {}", mode.label().to_lowercase());
+                            }
+                            if let Some(t) = &near {
+                                if ui
+                                    .small_button(RichText::new(format!("Use {}", u.show(t.thickness))).size(12.0))
+                                    .on_hover_text(format!(
+                                        "None in stock at {}, but {} is ({}). Use the stock's thickness for this job; check the technology still fits.",
+                                        u.show(self.spec.thickness),
+                                        u.show(t.thickness),
+                                        t.counts()
+                                    ))
+                                    .clicked()
+                                {
+                                    self.spec.thickness = t.thickness;
+                                    cost_changed = true;
+                                }
+                            }
+                            if ui
+                                .small_button(RichText::new("Stock…").size(12.0))
+                                .on_hover_text("Open the sheet stock: the sheets and remnants Nest all takes first, and its options")
+                                .clicked()
+                            {
+                                self.stockui.open = true;
+                                self.stockui.loaded = false;
+                            }
+                        });
                     });
-                    let line = resp.inner.on_hover_text(format!("{}\n\nClick for the sheet stock.", on.explain()));
-                    if line.clicked() {
-                        self.stockui.open = true;
-                        self.stockui.loaded = false;
-                    }
                 });
             });
         });
@@ -2308,6 +2367,24 @@ impl App {
         let on = crate::engine::stockflow::nest_on(&self.spec, &self.stock_use(), grouped);
         ctx.data_mut(|d| d.insert_temp(id, Memo(key, now, on.clone())));
         on
+    }
+
+    /// The thicknesses of this material in stock, with counts (STK-21), for
+    /// the ▾ thickness list. Read again when the material or the Do All
+    /// options change, or every few seconds, like `nest_on`.
+    fn stock_thicknesses(&self, ctx: &egui::Context) -> Vec<crate::engine::stockflow::StockThickness> {
+        type Key = (usize, bool, usize);
+        #[derive(Clone)]
+        struct Memo(Key, f64, Vec<crate::engine::stockflow::StockThickness>);
+        let key: Key = (self.spec.material, self.cfg.stock.use_stock, self.held.len());
+        let now = ctx.input(|i| i.time);
+        let id = egui::Id::unique("stock_thicknesses_memo");
+        if let Some(m) = ctx.data(|d| d.get_temp::<Memo>(id)).filter(|m| m.0 == key && now - m.1 < 3.0) {
+            return m.2;
+        }
+        let v = crate::engine::stockflow::stock_thicknesses(&self.spec, &self.stock_use());
+        ctx.data_mut(|d| d.insert_temp(id, Memo(key, now, v.clone())));
+        v
     }
 
     /// The ▾ list beside the sheet size: *Any size in stock* when the stock

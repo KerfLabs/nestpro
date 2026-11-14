@@ -504,6 +504,69 @@ pub struct StockSettings {
     pub lines_after_nesting: bool,
 }
 
+/// Where Nest all takes its sheets (STK-22): the Do All options "Nest on
+/// sheets from stock" and "When stock runs out, use the job's sheet size",
+/// read as one shop-wide choice (the Sheet tab and Sheet stock → Options
+/// change the same two settings).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StockMode {
+    /// The stock first, then the job's sheet size when it runs out.
+    First,
+    /// The stock only: what doesn't fit stays unnested.
+    Only,
+    /// The job's sheet size only; the stock isn't used.
+    Off,
+}
+
+impl StockMode {
+    pub const ALL: [StockMode; 3] = [StockMode::First, StockMode::Only, StockMode::Off];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            StockMode::First => "Stock first, then this size",
+            StockMode::Only => "Stock only",
+            StockMode::Off => "This size only",
+        }
+    }
+
+    pub fn help(self) -> &'static str {
+        match self {
+            StockMode::First => "Nest all takes the sheets and remnants in stock for this material and thickness, then this job's sheet size when they run out.",
+            StockMode::Only => "Nest all takes only sheets and remnants from stock; parts that don't fit stay unnested.",
+            StockMode::Off => "Nest all uses this job's sheet size and never takes sheets from stock.",
+        }
+    }
+
+    /// The name agents use (`nest stock=`: auto is the shop's choice).
+    pub fn key(self) -> &'static str {
+        match self {
+            StockMode::First => "first",
+            StockMode::Only => "only",
+            StockMode::Off => "off",
+        }
+    }
+}
+
+impl StockSettings {
+    pub fn mode(&self) -> StockMode {
+        match (self.use_stock, self.fallback_job_size) {
+            (false, _) => StockMode::Off,
+            (true, true) => StockMode::First,
+            (true, false) => StockMode::Only,
+        }
+    }
+
+    /// Off leaves the run-out choice as it was, for when the stock is
+    /// turned back on in Sheet stock → Options.
+    pub fn set_mode(&mut self, m: StockMode) {
+        match m {
+            StockMode::First => (self.use_stock, self.fallback_job_size) = (true, true),
+            StockMode::Only => (self.use_stock, self.fallback_job_size) = (true, false),
+            StockMode::Off => self.use_stock = false,
+        }
+    }
+}
+
 impl Default for StockSettings {
     fn default() -> Self {
         StockSettings {

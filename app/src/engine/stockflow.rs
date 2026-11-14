@@ -180,12 +180,7 @@ impl NestOn {
         if self.picked {
             return format!("{} in stock", self.sheets);
         }
-        let n = |k: i32, one: &str, many: &str| format!("{k} {}", if k == 1 { one } else { many });
-        match (self.sheets, self.remnants) {
-            (s, 0) => n(s, "sheet", "sheets"),
-            (0, r) => n(r, "remnant", "remnants"),
-            (s, r) => format!("{} · {}", n(s, "sheet", "sheets"), n(r, "remnant", "remnants")),
-        }
+        counts_text(self.sheets, self.remnants)
     }
 
     /// One short line: where the sheets come from; `size` is the job's
@@ -313,6 +308,79 @@ pub fn nest_on(spec: &SheetSpec, u: &StockUse, grouped: bool) -> NestOn {
         sizes,
         picked,
     }
+}
+
+/// One thickness of the job's material that the stock holds (STK-21), with
+/// the sheets and remnants Do All may take at that thickness.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StockThickness {
+    pub thickness: f64,
+    pub sheets: i32,
+    pub remnants: i32,
+}
+
+impl StockThickness {
+    /// "3 sheets · 1 remnant".
+    pub fn counts(&self) -> String {
+        counts_text(self.sheets, self.remnants)
+    }
+}
+
+/// "14 sheets · 2 remnants", "1 sheet", "2 remnants".
+fn counts_text(sheets: i32, remnants: i32) -> String {
+    let n = |k: i32, one: &str, many: &str| format!("{k} {}", if k == 1 { one } else { many });
+    match (sheets, remnants) {
+        (s, 0) => n(s, "sheet", "sheets"),
+        (0, r) => n(r, "remnant", "remnants"),
+        (s, r) => format!("{} · {}", n(s, "sheet", "sheets"), n(r, "remnant", "remnants")),
+    }
+}
+
+/// The thicknesses of the job's material in stock, thinnest first, each
+/// counted as `nest_on` counts it (locked items and what the criteria leave
+/// out aren't counted; what this job holds is). Empty when the Do All options
+/// don't use the stock or it can't be read.
+pub fn stock_thicknesses(spec: &SheetSpec, u: &StockUse) -> Vec<StockThickness> {
+    if !u.st.use_stock || crate::library::usable(&u.dir).is_err() {
+        return vec![];
+    }
+    let Ok(stock) = Stock::load(&u.dir) else { return vec![] };
+    let mut ts: Vec<f64> = vec![];
+    for it in stock.items.iter().filter(|i| i.material == spec.material) {
+        if !ts.iter().any(|t| (t - it.thickness).abs() <= stock::TOL) {
+            ts.push(it.thickness);
+        }
+    }
+    ts.sort_by(f64::total_cmp);
+    ts.into_iter()
+        .filter_map(|t| {
+            let items = usable_items(&stock, &SheetSpec { thickness: t, ..spec.clone() }, u, &[]);
+            if items.is_empty() {
+                return None;
+            }
+            let count = |rem: bool| items.iter().filter(|i| i.kind.is_remnant() == rem).map(|i| i.qty.max(0)).sum::<i32>();
+            Some(StockThickness { thickness: t, sheets: count(false), remnants: count(true) })
+        })
+        .collect()
+}
+
+/// The stock thickness nearest the job's when the stock has none at the
+/// job's own thickness but one within 2 % of it (at least 0.05 mm), e.g.
+/// 11 ga (3.04 mm) for a job typed as 3 mm or 0.12 in (ST19). Offered, never
+/// taken by itself: the thickness also picks the cutting technology.
+pub fn near_stock(spec: &SheetSpec, u: &StockUse) -> Option<StockThickness> {
+    nearest_stocked(&stock_thicknesses(spec, u), spec.thickness)
+}
+
+/// `near_stock` over a list `stock_thicknesses` already gave (the window
+/// keeps one for the thickness list).
+pub fn nearest_stocked(ts: &[StockThickness], thickness: f64) -> Option<StockThickness> {
+    let off = |t: &StockThickness| (t.thickness - thickness).abs();
+    if ts.iter().any(|t| off(t) <= stock::TOL) {
+        return None;
+    }
+    let near = (thickness * 0.02).max(0.05);
+    ts.iter().filter(|t| off(t) <= near).min_by(|a, b| off(a).total_cmp(&off(b))).cloned()
 }
 
 /// Said after Do All when it would have nested from the sheet stock but the
