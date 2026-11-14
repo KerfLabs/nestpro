@@ -63,12 +63,12 @@ A no-cut line showing where the part is bent later, shown in its own colour. The
 ## How a part is cut
 
 **Machine**:
-A cutting machine set-up the program writes programs for: its post, technology tables and settings. One machine can stand for several physical cutters of the same kind, e.g. two lasers of different power.
+A cutting machine set-up the program writes programs for: its post, technology tables and settings. One machine can stand for several physical cutters of the same kind, e.g. two lasers of different power. Each sheet is cut on one machine; the sheets of one job can go to different machines.
 _Avoid_: laser, cutter (for the set-up)
 
 **Cut quality**:
 One of the machine's 12 numbered sets of cutting settings (speed, pierce, gas pressure, power), named and coloured by its technology table, e.g. Slow, Medium, Fast, Marking. Every cut contour has one.
-_Avoid_: technology, quality level
+_Avoid_: technology, quality level, colour, operation mode (a ByStar Fiber's words for its cut qualities)
 
 **Gas**:
 The gas blown through the nozzle with the beam (nitrogen, air, oxygen, argon or water), numbered the way the machine knows it. A job is cut with one gas, like its one material and thickness; the machine's gas is only the starting choice for a new job.
