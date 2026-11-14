@@ -5757,3 +5757,177 @@ fn a_new_gas_with_a_new_thickness_and_nestings_removed_says_no_sheet_was_kept() 
     assert!(m.contains("Kept the nested sheets") && m.contains("2 nested sheet(s) kept; cut time"), "{m}");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+// ---------------------------------------------------------------------------
+// A new job's gas, on every path a job is made (MAC-39, #104: GS12, GS18).
+// ---------------------------------------------------------------------------
+
+/// A made-up LC5 program set in `d` as the LC5 post writes it: `<name>.zip`
+/// with the sheet program (3 mm STEEL on a 1000 × 500 sheet, a 100 × 50
+/// plate placed twice) and `<name>.XML` beside it. `gas` is the sheet
+/// program's `;IDGAS=` / `;NOMEGAS=` pair (None: no gas lines), `xml_gas`
+/// the job sheet's `GasId` / `GasName` (None: no gas tags).
+fn lc5_set(d: &Path, name: &str, gas: Option<(&str, &str)>, xml_gas: Option<(&str, &str)>) -> PathBuf {
+    let sub = format!("{name}701");
+    let gas_lines = gas.map_or(String::new(), |(n, g)| format!(";IDGAS={n}\r\n;NOMEGAS={g}\r\n"));
+    let call_at = |k: usize, x: u32| format!("ORIG({x},10,0)\r\nN{k} CALL\"/_n_wks_dir/_n_sheet_wpd/_n_{sub}_spf\"\r\n");
+    let sheet = format!(
+        ";ADILAS\r\n;STEEL,1000,500,3\r\n;IDMAT=0010\r\n;NOMEMAT=STEEL\r\n;ALIASMAT=STEEL\r\n{gas_lines};Postprocessor version 2.0.0\r\nR12=3\r\nR21=1000\r\nR22=500\r\nINITNEST\r\n{}{}ENDNEST\r\nRET\r\n",
+        call_at(1, 10),
+        call_at(2, 200)
+    );
+    let part = "INITPART(1)\r\nNEXT_L(0,0,0,1,3)\r\nPROFILE\r\nG01 X100. Y0.\r\nG01 X100. Y50.\r\nG01 X0. Y50.\r\nLASTLINE(0,0,0,1,0.,50.,0.,0.,0,0)\r\nENDGEO\r\n";
+    let files = vec![(format!("{name}.SPF"), sheet), (format!("{sub}.SPF"), part.to_string())];
+    let zip = d.join(format!("{name}.zip"));
+    std::fs::write(&zip, crate::blm::zip(&files)).unwrap();
+    let gas_tags = xml_gas.map_or(String::new(), |(n, g)| format!("\t<GasId>{n}</GasId>\r\n\t<GasName>{g}</GasName>\r\n"));
+    let xml = format!(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n<General>\r\n\t<NestingName>{name}</NestingName>\r\n\t<JobName>DEMO-SET</JobName>\r\n\t<MatName>STEEL</MatName>\r\n\t<Thickness>3</Thickness>\r\n{gas_tags}\t<Files>\r\n\t\t<SubPrg>\r\n\t\t\t<CNCSub>{sub}</CNCSub>\r\n\t\t\t<PartRef>DEMO-PLATE</PartRef>\r\n\t\t</SubPrg>\r\n\t</Files>\r\n</General>\r\n"
+    );
+    std::fs::write(d.join(format!("{name}.XML")), xml).unwrap();
+    zip
+}
+
+#[test]
+fn a_job_opened_from_an_lc5_set_written_with_oxygen_is_an_oxygen_job() {
+    // GS18: the set names its gas, and the job takes it, whatever the
+    // machine's gas (here nitrogen).
+    let d = dir("gas_set_oxygen");
+    let (mut s, _on) = gas_session(&d, true, (1, "Nitrogen"));
+    let set = lc5_set(&d, "DEMOOXY", Some(("3", "Oxygen")), Some(("3", "Oxygen")));
+    let job = d.join("DEMO-OXY.snjob");
+    let r = call(&mut s, "import-program", Some(job.to_str().unwrap()), json!({"path": set.to_str().unwrap()}));
+    assert!(r["message"].as_str().unwrap().contains("Oxygen (3)"), "{r}");
+    assert_eq!(info_gas(&mut s), ("Oxygen".into(), 3, "job".into()));
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(&job).unwrap()).unwrap();
+    assert_eq!(v["spec"]["gas"].as_u64(), Some(3), "kept in the job file");
+    // Its programs name oxygen again.
+    assert!(programs(&mut s)[0].contains(";IDGAS=3\r\n;NOMEGAS=Oxygen\r\n"));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Open the made-up set `set` as job `name` in `d`: the reply's message, and
+/// the job's gas as `info` shows it.
+fn open_set(s: &mut Session, d: &Path, name: &str, set: &Path) -> (String, (String, u64, String)) {
+    let job = d.join(format!("{name}.snjob"));
+    let r = call(s, "import-program", Some(job.to_str().unwrap()), json!({"path": set.to_str().unwrap()}));
+    (r["message"].as_str().unwrap().to_string(), info_gas(s))
+}
+
+#[test]
+fn a_set_that_names_no_gas_of_the_list_starts_the_job_with_the_machines() {
+    // GS18 with GS2: the LC5 writes 5 as H2O, so a set naming 5 H2O is a
+    // water job. A set naming no gas (empty, GS2), none at all, or a pair
+    // the LC5 list doesn't write gives the job a new job's gas (GS12), and
+    // the reply says what the set named.
+    let d = dir("gas_set_awkward");
+    let (mut s, _on) = gas_session(&d, true, (1, "Nitrogen"));
+    let (m, g) = open_set(&mut s, &d, "DEMO-H2O", &lc5_set(&d, "DEMOH2O", Some(("5", "H2O")), Some(("5", "H2O"))));
+    assert_eq!(g, ("Water".into(), 5, "job".into()), "{m}");
+    assert!(m.contains("Water (5)") && !m.contains("name"), "{m}");
+    assert!(programs(&mut s)[0].contains(";IDGAS=5\r\n;NOMEGAS=H2O\r\n"));
+    for (name, gas, said) in [
+        ("DEMOEMPTY", Some(("", "")), "the programs name no gas, so the job starts with the machine's gas, Nitrogen"),
+        ("DEMONONE", None, "the programs name no gas, so the job starts with the machine's gas, Nitrogen"),
+        ("DEMOOFF", Some(("7", "Helium")), "the programs name gas 7 \"Helium\", which isn't one of the LC5's gases (1 Nitrogen, 2 Air, 3 Oxygen, 4 Argon, 5 H2O), so the job starts with the machine's gas, Nitrogen"),
+        ("DEMOZERO", Some(("0", "")), "the programs name gas 0 \"\", which isn't one of the LC5's gases"),
+        ("DEMOWATER", Some(("5", "Water")), "the programs name gas 5 \"Water\", which isn't one of the LC5's gases"),
+    ] {
+        let (m, g) = open_set(&mut s, &d, name, &lc5_set(&d, name, gas, gas));
+        assert_eq!(g, ("Nitrogen".into(), 1, "job".into()), "{name}: {m}");
+        assert!(m.contains(said), "{name}: {m}");
+    }
+    // On a machine saved as 2 named Oxygen (not the list's pair), a set
+    // naming no gas gives a job without one of its own, cut with the
+    // machine's as saved, as a new job would be.
+    let (mut s, _on) = gas_session(&d, true, (2, "Oxygen"));
+    let (m, g) = open_set(&mut s, &d, "DEMO-EMPTY-2", &lc5_set(&d, "DEMOEMPTY2", Some(("", "")), Some(("", ""))));
+    assert_eq!(g, ("Oxygen".into(), 2, "machine".into()), "{m}");
+    assert!(m.contains("so the job has none of its own and is cut with the machine's: Oxygen (gas 2, the machine's as saved)"), "{m}");
+    assert!(programs(&mut s)[0].contains(";IDGAS=2\r\n;NOMEGAS=Oxygen\r\n"));
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(d.join("DEMO-EMPTY-2.snjob")).unwrap()).unwrap();
+    assert!(v["spec"].get("gas").is_none(), "{}", v["spec"]);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn when_the_sheet_program_and_its_xml_name_different_gases_the_program_wins() {
+    // One gas per job: the sheet program is what the LC5 runs, so its gas
+    // decides, and the reply says the XML named another (MAC-71). Without
+    // gas lines in the program, the XML's gas decides.
+    let d = dir("gas_set_disagree");
+    let (mut s, _on) = gas_session(&d, true, (1, "Nitrogen"));
+    let (m, g) = open_set(&mut s, &d, "DEMO-MIX", &lc5_set(&d, "DEMOMIX", Some(("3", "Oxygen")), Some(("1", "Nitrogen"))));
+    assert_eq!(g, ("Oxygen".into(), 3, "job".into()), "{m}");
+    assert!(m.contains("the sheet program names Oxygen (3) and its XML job sheet Nitrogen (1): the job takes the sheet program's"), "{m}");
+    let (m, g) = open_set(&mut s, &d, "DEMO-XML", &lc5_set(&d, "DEMOXML", None, Some(("4", "Argon"))));
+    assert_eq!(g, ("Argon".into(), 4, "job".into()), "{m}");
+    assert!(!m.contains("name"), "{m}");
+    // A folder with two sheets' programs naming different gases: only the
+    // sheet picked is opened, so each job takes its own sheet's gas.
+    let folder = d.join("two-sheets");
+    std::fs::create_dir_all(&folder).unwrap();
+    for (n, gas) in [("DEMOA", "3\r\n;NOMEGAS=Oxygen"), ("DEMOB", "1\r\n;NOMEGAS=Nitrogen")] {
+        std::fs::write(folder.join(format!("{n}.SPF")), format!(";ADILAS\r\n;STEEL,1000,500,3\r\n;IDGAS={gas}\r\nINITNEST\r\nORIG(10,10,0)\r\nN1 CALL\"/_n_wks_dir/_n_sheet_wpd/_n_{n}701_spf\"\r\nENDNEST\r\n")).unwrap();
+        std::fs::write(folder.join(format!("{n}701.SPF")), "NEXT_L(0,0,0,1,3)\r\nPROFILE\r\nG01 X100. Y0.\r\nG01 X100. Y50.\r\nG01 X0. Y50.\r\nLASTLINE(0,0,0,1,0.,50.,0.,0.,0,0)\r\nENDGEO\r\n").unwrap();
+    }
+    let (m, g) = open_set(&mut s, &d, "DEMO-A", &folder.join("DEMOA.SPF"));
+    assert_eq!(g, ("Oxygen".into(), 3, "job".into()), "{m}");
+    let (m, g) = open_set(&mut s, &d, "DEMO-B", &folder.join("DEMOB.SPF"));
+    assert_eq!(g, ("Nitrogen".into(), 1, "job".into()), "{m}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn every_way_an_agent_makes_a_job_gives_it_the_machines_gas() {
+    // GS12: `new`, a job per material from `import-xml`, and a job opened
+    // from programs that name no gas (GS18), on a machine saved with oxygen:
+    // the same machine, material and thickness give the same gas, kept in
+    // each job's file.
+    let d = dir("gas_paths");
+    let (mut s, _on) = gas_session(&d, true, (3, "Oxygen"));
+    let job = d.join("DEMO-NEW.snjob");
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"material": "mild steel", "thickness": 3}));
+    let xml = d.join("DEMO-ORDER.xml");
+    std::fs::write(&xml, "<Import>\n<Product Reference=\"DEMO-1\" Material=\"Mild steel\" Thickness=\"3\" Quantity=\"2\"/>\n<Product Reference=\"DEMO-2\" Material=\"AISI304\" Thickness=\"1.5\" Quantity=\"1\"/>\n</Import>\n").unwrap();
+    let r = call(&mut s, "import-xml", None, json!({"path": xml.to_str().unwrap(), "dir": d.join("xml").to_str().unwrap()}));
+    let from_xml: Vec<PathBuf> = r["files"].as_array().unwrap().iter().map(|f| PathBuf::from(f.as_str().unwrap())).collect();
+    assert_eq!(from_xml.len(), 2, "one job per material: {r}");
+    let set = lc5_set(&d, "DEMONOGAS", Some(("", "")), Some(("", "")));
+    let opened = d.join("DEMO-OPENED.snjob");
+    call(&mut s, "import-program", Some(opened.to_str().unwrap()), json!({"path": set.to_str().unwrap()}));
+    for f in [job.clone(), from_xml[0].clone(), from_xml[1].clone(), opened.clone()] {
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&f).unwrap()).unwrap();
+        assert_eq!(v["spec"]["gas"].as_u64(), Some(3), "{}", f.display());
+        call(&mut s, "info", Some(f.to_str().unwrap()), json!({}));
+        assert_eq!(info_gas(&mut s), ("Oxygen".into(), 3, "job".into()), "{}", f.display());
+    }
+    // The ones for mild steel 3 mm (new, the XML's first, the programs): one gas.
+    for f in [&job, &from_xml[0], &opened] {
+        let j = jobfile::load(f).unwrap();
+        assert_eq!((j.spec.material, j.spec.thickness, j.spec.gas), (0, 3.0, Some(crate::gas::Gas::Oxygen)), "{}", f.display());
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_job_saved_with_its_gas_keeps_it_when_the_machines_gas_changes() {
+    // A new job keeps the gas it started with (GS12): opened again after the
+    // machine's gas changed in Settings → Machines, it is still an oxygen
+    // job, writes oxygen, and opening it rewrites nothing.
+    let d = dir("gas_kept");
+    let (mut s, _on) = gas_session(&d, true, (3, "Oxygen"));
+    let job = d.join("DEMO-KEPT.snjob");
+    call(&mut s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "mild steel", "thickness": 3}));
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 200, "h": 100, "qty": 1}));
+    call(&mut s, "place", None, json!({"part": 1, "x": 50, "y": 50}));
+    let saved = std::fs::read(&job).unwrap();
+    drop(_on);
+    // The next day, the machine is saved with nitrogen.
+    let (mut s, _on) = gas_session(&d, true, (1, "Nitrogen"));
+    call(&mut s, "info", Some(job.to_str().unwrap()), json!({}));
+    assert_eq!(info_gas(&mut s), ("Oxygen".into(), 3, "job".into()));
+    assert!(programs(&mut s)[0].contains(";IDGAS=3\r\n;NOMEGAS=Oxygen\r\n"));
+    assert_eq!(std::fs::read(&job).unwrap(), saved, "opening the job rewrote it");
+    let _ = std::fs::remove_dir_all(&d);
+}

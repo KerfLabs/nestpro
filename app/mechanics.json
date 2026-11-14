@@ -6675,7 +6675,7 @@
  {
   "name": "new job gas",
   "group": "gas",
-  "value": "the active machine's when its number and name are a pair the LC5 list writes (5 is H2O), else none of its own",
+  "value": "the gas of the machine the job is made for (the active one; for the ERP link, the machine its work runs on) when its number and name are a pair the LC5 list writes (5 is H2O), else none of its own; every path a job is made takes it the same way",
   "source": "MECHANICS GS12"
  },
  {
@@ -6758,6 +6758,18 @@
   "group": "gas",
   "value": "shown as saved and flagged; written as saved until a gas is picked; opening Settings rewrites nothing",
   "source": "MECHANICS GS17"
+ },
+ {
+  "name": "gas of a job opened from LC5 programs",
+  "group": "gas",
+  "value": "the sheet program's ;IDGAS= and ;NOMEGAS= (else the XML's GasId and GasName) when they are a pair the LC5 list writes; else a new job's gas, and the reply says what the set named",
+  "source": "MECHANICS GS18"
+ },
+ {
+  "name": "sheet program and XML naming different gases",
+  "group": "gas",
+  "value": "the sheet program's gas, and the reply says the XML named another",
+  "source": "MECHANICS GS18"
  }
 ]
 }

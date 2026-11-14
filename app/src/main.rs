@@ -3940,6 +3940,62 @@ mod job_tests {
         assert!(a.parts.is_empty());
         assert_eq!(a.cur_job, a.jobs.len() - 1);
     }
+
+    /// The window on one made-up machine saved with gas `gas` (number,
+    /// name), its Library in a folder that isn't there.
+    fn app_on_gas(tag: &str, gas: (u32, &str)) -> (App, PathBuf) {
+        let d = std::env::temp_dir().join(format!("nestpro_newjob_gas_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let mut a = App::new(None);
+        a.cfg.library_dir = d.join("no-library").display().to_string();
+        a.cfg.machines = vec![settings::Machine { name: "Demo laser".into(), gas_id: gas.0, gas_name: gas.1.into(), ..Default::default() }];
+        a.cfg.active_machine = 0;
+        (a, d)
+    }
+
+    #[test]
+    fn every_job_made_on_screen_starts_with_the_machines_gas() {
+        use gas::Gas;
+        // GS12: New job (both commands), a job per material from an XML
+        // import, and a job opened from programs that name no gas (GS18), on
+        // a machine saved with oxygen: each is an oxygen job of its own.
+        let (mut a, d) = app_on_gas("oxygen", (3, "Oxygen"));
+        a.spec.gas = Some(Gas::Air);
+        a.new_job_in_week("W12".into());
+        assert_eq!(a.spec.gas, Some(Gas::Oxygen), "New job");
+        a.spec.gas = Some(Gas::Air);
+        a.new_job();
+        assert_eq!(a.spec.gas, Some(Gas::Oxygen), "New job (Home)");
+        let xml = d.join("DEMO-ORDER.xml");
+        std::fs::write(&xml, "<Import>\n<Product Reference=\"DEMO-1\" Material=\"Mild steel\" Thickness=\"3\" Quantity=\"2\"/>\n<Product Reference=\"DEMO-2\" Material=\"AISI304\" Thickness=\"1.5\" Quantity=\"1\"/>\n</Import>\n").unwrap();
+        let n = a.jobs.len();
+        a.spec.gas = Some(Gas::Air);
+        a.import_xml(&xml);
+        a.store_job();
+        assert_eq!(a.jobs.len(), n + 2, "one job per material: {}", a.status);
+        assert_eq!(a.jobs[n..].iter().map(|j| (j.spec.material, j.spec.gas)).collect::<Vec<_>>(), [(0, Some(Gas::Oxygen)), (1, Some(Gas::Oxygen))], "XML import");
+        let set = d.join("DEMONOGAS.SPF");
+        std::fs::write(&set, ";ADILAS\r\n;STEEL,1000,500,3\r\n;IDGAS=\r\n;NOMEGAS=\r\nINITNEST\r\nORIG(10,10,0)\r\nN1 CALL\"/_n_wks_dir/_n_sheet_wpd/_n_DEMONOGAS701_spf\"\r\nENDNEST\r\n").unwrap();
+        std::fs::write(d.join("DEMONOGAS701.SPF"), "NEXT_L(0,0,0,1,3)\r\nPROFILE\r\nG01 X100. Y0.\r\nG01 X100. Y50.\r\nG01 X0. Y50.\r\nLASTLINE(0,0,0,1,0.,50.,0.,0.,0,0)\r\nENDGEO\r\n").unwrap();
+        a.spec.gas = Some(Gas::Air);
+        a.open_nesting_file(&set);
+        assert_eq!(a.spec.gas, Some(Gas::Oxygen), "programs naming no gas: {}", a.status);
+        assert!(a.status.contains("the programs name no gas, so the job starts with the machine's gas, Oxygen"), "{}", a.status);
+        // A set that names its gas gives the job that gas, whatever the machine's.
+        std::fs::write(&set, ";ADILAS\r\n;STEEL,1000,500,3\r\n;IDGAS=5\r\n;NOMEGAS=H2O\r\nINITNEST\r\nORIG(10,10,0)\r\nN1 CALL\"/_n_wks_dir/_n_sheet_wpd/_n_DEMONOGAS701_spf\"\r\nENDNEST\r\n").unwrap();
+        a.open_nesting_file(&set);
+        assert_eq!(a.spec.gas, Some(Gas::Water), "programs naming 5 H2O: {}", a.status);
+        let _ = std::fs::remove_dir_all(&d);
+
+        // A machine saved as 2 named Oxygen (not the list's pair): new jobs
+        // have no gas of their own, and are cut with the machine's as saved.
+        let (mut a, d) = app_on_gas("off_list", (2, "Oxygen"));
+        a.spec.gas = Some(Gas::Air);
+        a.new_job_in_week("W12".into());
+        assert_eq!(a.spec.gas, None, "New job");
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }
 
 #[cfg(test)]
