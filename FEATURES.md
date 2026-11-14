@@ -289,6 +289,7 @@ original (or a real job).
 | APP-5 | The same machine, material and technology settings on every programming PC. Each PC keeps its own today, so a job opened on another PC can give a different program. The original can keep its machine settings files on the network | Missing | ★★★ | shared Library plan 2026-11-09 |
 | APP-6 | Shop set-up: a first-run choice of a local or shared Library, a shop name, joining a shop from another PC, backups and version upgrades, the installer | Missing | ★★ | shared Library plan 2026-11-09; ADR 0003 |
 | APP-7 | Users and logins: a users list (reference, employee, user name, password) and settings only an administrator may change. The rebuild names people by their Windows user and PC name, with no login | Missing | ★ | shared Library plan 2026-11-09 |
+| APP-8 | **Undo steps for the sheet's settings**: changing the Sheet tab's size (Length X, Width Y, the size list), material, thickness, edge margin or part gap adds no undo step of its own, so Undo after one also takes back the step before it, for example a gas picked just before (Gas pick, then a size, then Undo: the job is back on the old gas). Each change, or one run of typing in a field, should be its own step | Missing | ★★ | final review of spec #100 (PR #119); which sheet changes the original keeps as undo steps isn't studied |
 
 ## Done
 
