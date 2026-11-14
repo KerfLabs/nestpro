@@ -1493,14 +1493,16 @@ impl JobFile {
     }
 }
 
-/// A new job's sheet with the part gap and edge margin from Settings → Nesting (HM12).
+/// A new job's sheet with the part gap and edge margin from Settings → Nesting
+/// (HM12). It keeps the size it was made from, but Nest all starts with any
+/// size in stock: a size picked for another job isn't picked for this one (ST18).
 pub fn with_prefs(spec: &SheetSpec, cfg: &AppSettings) -> SheetSpec {
-    SheetSpec { gap: cfg.nesting.part_gap, margin: cfg.nesting.edge_margin, ..spec.clone() }
+    SheetSpec { gap: cfg.nesting.part_gap, margin: cfg.nesting.edge_margin, pick: crate::nest::SheetPick::Stock, ..spec.clone() }
 }
 
 /// The default sheet of a new job: 2000 × 1000 mm, 3 mm mild steel, level 3.
 pub fn default_spec() -> SheetSpec {
-    SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() }
+    SheetSpec { w: 2000.0, h: 1000.0, margin: 5.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), pick: Default::default() }
 }
 
 #[cfg(test)]

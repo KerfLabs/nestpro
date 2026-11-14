@@ -6,7 +6,7 @@
 
 use crate::cutoff::{CutKind, CutLine};
 use crate::library::Library;
-use crate::nest::{self, FormatSlot, NestResult, Part, Placed, SheetFormat, SheetSpec};
+use crate::nest::{self, FormatSlot, NestResult, Part, Placed, SheetFormat, SheetPick, SheetSpec};
 use crate::stock::{self, EffMode, Item, Stock, StockSettings};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -27,7 +27,8 @@ pub struct StockUse<'a> {
 /// The sheets nesting may use, in the order it takes them (SS4–SS6, SS12):
 /// stock items of the job's material and thickness — remnants first if set,
 /// then by the chosen order — each with what's in stock plus what this job
-/// already holds; then the job's sheet size when stock may run out.
+/// already holds; then the job's sheet size when stock may run out. With a
+/// size picked for the job, only the stock's sheets of that size (ST18).
 /// None when stock isn't used or has nothing for this job.
 pub fn stock_plan(spec: &SheetSpec, u: &StockUse, exclude: &[String]) -> Option<Vec<FormatSlot>> {
     let st = u.st;
@@ -35,7 +36,7 @@ pub fn stock_plan(spec: &SheetSpec, u: &StockUse, exclude: &[String]) -> Option<
         return None;
     }
     let stock = Stock::load(&u.dir).ok()?;
-    let items = usable_items(&stock, spec, u, exclude);
+    let items = only_picked(usable_items(&stock, spec, u, exclude), spec);
     if items.is_empty() {
         // Nothing in stock for this job: the job's sheet size only when the
         // options allow it, else no sheets (never a sheet that isn't there).
@@ -58,6 +59,15 @@ pub fn stock_plan(spec: &SheetSpec, u: &StockUse, exclude: &[String]) -> Option<
         plan.push(FormatSlot { format: SheetFormat::rect(spec.w, spec.h), qty: None });
     }
     Some(plan)
+}
+
+/// The items Nest all may take when a size was picked for the job (ST18):
+/// whole sheets of that size only; otherwise all of them.
+fn only_picked(items: Vec<Item>, spec: &SheetSpec) -> Vec<Item> {
+    if spec.pick != SheetPick::Size {
+        return items;
+    }
+    items.into_iter().filter(|i| !i.kind.is_remnant() && spec.is_size(i.length, i.width)).collect()
 }
 
 /// The stock items Do All may take for this job, in the order it takes them
@@ -132,8 +142,12 @@ pub struct NestOn {
     /// what the criteria leave out aren't counted).
     pub sheets: i32,
     pub remnants: i32,
-    /// The stocked sheet sizes (not remnants), largest first.
+    /// The stocked sheet sizes (not remnants), largest first — every size,
+    /// also when one was picked, for the size list.
     pub sizes: Vec<StockSize>,
+    /// A size was picked for the job (ST18): Nest all nests only on it, and
+    /// `sheets` counts the stock's sheets of that size.
+    pub picked: bool,
 }
 
 impl NestOn {
@@ -163,6 +177,9 @@ impl NestOn {
 
     /// "14 sheets · 2 remnants" (what's in stock for the job).
     pub fn counts(&self) -> String {
+        if self.picked {
+            return format!("{} in stock", self.sheets);
+        }
         let n = |k: i32, one: &str, many: &str| format!("{k} {}", if k == 1 { one } else { many });
         match (self.sheets, self.remnants) {
             (s, 0) => n(s, "sheet", "sheets"),
@@ -174,6 +191,15 @@ impl NestOn {
     /// One short line: where the sheets come from; `size` is the job's
     /// sheet size as shown ("78.74 × 39.37").
     pub fn line(&self, size: &str) -> String {
+        if self.picked {
+            match &self.mode {
+                NestOnMode::StockThenSize => return format!("{size} only: {} first, then more", self.counts()),
+                NestOnMode::StockOnly => return format!("{size} only, from stock ({})", self.counts()),
+                NestOnMode::NoneInStock => return format!("{size} only (none in stock)"),
+                NestOnMode::NoSheets => return format!("Nothing: no {size} in stock"),
+                _ => {}
+            }
+        }
         match &self.mode {
             NestOnMode::StockThenSize => format!("Stock first ({}), then {size}", self.counts()),
             NestOnMode::StockOnly => format!("Stock only ({})", self.counts()),
@@ -188,6 +214,13 @@ impl NestOn {
 
     /// Shorter, for the Home tab: "From stock: 14 sheets", or "78.74 × 39.37 in sheet".
     pub fn short(&self, size: &str) -> String {
+        if self.picked {
+            match &self.mode {
+                NestOnMode::StockThenSize | NestOnMode::StockOnly => return format!("{size} sheet · {}", self.counts()),
+                NestOnMode::NoSheets => return format!("No {size} in stock"),
+                _ => {}
+            }
+        }
         match &self.mode {
             NestOnMode::StockThenSize | NestOnMode::StockOnly => format!("From stock: {}", self.counts()),
             NestOnMode::NoSheets => "None in stock".into(),
@@ -198,6 +231,22 @@ impl NestOn {
 
     /// Why, and what to change, in a sentence or two.
     pub fn explain(&self) -> String {
+        if self.picked {
+            let back = "Pick \"Any size in stock\" in the size list ▾ on the Sheet tab to let Nest all take any size in stock again.";
+            match &self.mode {
+                NestOnMode::StockThenSize => {
+                    return format!("This size was picked for the job, so Nest all nests only on it: the {} for this material and thickness first, then more of this size when they run out. {back}", self.counts());
+                }
+                NestOnMode::StockOnly => {
+                    return format!("This size was picked for the job, so Nest all nests only on it, and only on the {} (the Do All options don't go on to sheets that aren't in stock): parts that don't fit stay unnested. {back}", self.counts());
+                }
+                NestOnMode::NoneInStock => return format!("This size was picked for the job, so Nest all nests only on it. None of it is in stock for this material and thickness. {back}"),
+                NestOnMode::NoSheets => {
+                    return format!("This size was picked for the job, but none of it is in stock for this material and thickness, and the Do All options don't go on to sheets that aren't in stock: add it to stock, pick a size that is, or turn that option on (Sheet stock → Options). {back}");
+                }
+                _ => {}
+            }
+        }
         match &self.mode {
             NestOnMode::StockThenSize => format!(
                 "Nest all takes the sheets and remnants in stock for this material and thickness first ({}), then this job's sheet size when they run out. Change it in Sheet stock → Options.",
@@ -221,7 +270,8 @@ impl NestOn {
 /// by attribute is on and the parts have several groups. Reads the stock
 /// file, so the window asks only when something changed.
 pub fn nest_on(spec: &SheetSpec, u: &StockUse, grouped: bool) -> NestOn {
-    let none = |mode| NestOn { mode, sheets: 0, remnants: 0, sizes: vec![] };
+    let picked = spec.pick == SheetPick::Size;
+    let none = |mode| NestOn { mode, sheets: 0, remnants: 0, sizes: vec![], picked };
     if grouped {
         return none(NestOnMode::Grouped);
     }
@@ -240,26 +290,28 @@ pub fn nest_on(spec: &SheetSpec, u: &StockUse, grouped: bool) -> NestOn {
         Ok(s) => s,
         Err(e) => return none(NestOnMode::Unreachable(format!("The stock file can't be read: {e}"))),
     };
-    let items = usable_items(&stock, spec, u, &[]);
-    if items.is_empty() {
-        return none(if u.st.fallback_job_size { NestOnMode::NoneInStock } else { NestOnMode::NoSheets });
-    }
-    let (rem, sht): (Vec<&Item>, Vec<&Item>) = items.iter().partition(|i| i.kind.is_remnant());
-    let count = |v: &[&Item]| v.iter().map(|i| i.qty.max(0)).sum::<i32>();
+    let all = usable_items(&stock, spec, u, &[]);
     let mut sizes: Vec<StockSize> = vec![];
-    for it in &sht {
+    for it in all.iter().filter(|i| !i.kind.is_remnant()) {
         let (l, w) = (it.length, it.width);
-        match sizes.iter_mut().find(|s| (s.length - l).abs() < 0.05 && (s.width - w).abs() < 0.05) {
+        match sizes.iter_mut().find(|s| (s.length - l).abs() < nest::SIZE_TOL && (s.width - w).abs() < nest::SIZE_TOL) {
             Some(s) => s.qty += it.qty.max(0),
             None => sizes.push(StockSize { length: l, width: w, qty: it.qty.max(0) }),
         }
     }
     sizes.sort_by(|a, b| (b.length * b.width).total_cmp(&(a.length * a.width)));
+    let items = only_picked(all, spec);
+    if items.is_empty() {
+        return NestOn { sizes, ..none(if u.st.fallback_job_size { NestOnMode::NoneInStock } else { NestOnMode::NoSheets }) };
+    }
+    let (rem, sht): (Vec<&Item>, Vec<&Item>) = items.iter().partition(|i| i.kind.is_remnant());
+    let count = |v: &[&Item]| v.iter().map(|i| i.qty.max(0)).sum::<i32>();
     NestOn {
         mode: if u.st.fallback_job_size { NestOnMode::StockThenSize } else { NestOnMode::StockOnly },
         sheets: count(&sht),
         remnants: count(&rem),
         sizes,
+        picked,
     }
 }
 
@@ -1051,7 +1103,7 @@ mod tests {
         crate::library::create(&dir).unwrap();
         Stock::default().save(&dir).unwrap();
         let part = Part { name: "P".into(), shape: nest::Shape::Rectangle, w: 100.0, h: 50.0, qty: 1, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
-        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
+        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), pick: Default::default() };
         let st = StockSettings { keep_completed: true, auto_remnant_ref: true, remnant_ref_format: "R".into(), ..Default::default() };
         let parts = [part];
         let store = |sheet: Placed, formats: &mut Vec<SheetFormat>| {
@@ -1096,7 +1148,7 @@ mod tests {
         crate::library::create(&dir).unwrap();
         Stock::default().save(&dir).unwrap();
         let part = Part { name: "P".into(), shape: nest::Shape::Rectangle, w: 100.0, h: 50.0, qty: 1, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
-        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
+        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), pick: Default::default() };
         let st = StockSettings { remnants_on_save: true, auto_remnant_ref: true, remnant_ref_format: "R".into(), ..Default::default() };
         let parts = [part];
         let line = |x: f64| vec![CutLine { pts: vec![[x, 0.0], [x, 500.0]], kind: CutKind::Remnant }];
@@ -1131,7 +1183,7 @@ mod tests {
         crate::library::create(&dir).unwrap();
         Stock::default().save(&dir).unwrap();
         let part = Part { name: "P".into(), shape: nest::Shape::Rectangle, w: 100.0, h: 50.0, qty: 2, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
-        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
+        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), pick: Default::default() };
         let st = StockSettings { remnants_on_save: true, ..Default::default() };
         let parts = [part];
         let line = |x: f64| vec![CutLine { pts: vec![[x, 0.0], [x, 500.0]], kind: CutKind::Remnant }];
@@ -1167,7 +1219,7 @@ mod tests {
         let line = [CutLine { pts: vec![[900.0, 0.0], [900.0, 500.0]], kind: CutKind::Remnant }];
         assert_eq!(sheet_fingerprint(&line, &[p]), sheet_fingerprint(&line, &[moved]), "a remnant line alone decides");
         let part = Part { name: "R".into(), shape: nest::Shape::Rectangle, w: 100.0, h: 50.0, qty: 1, rotate: true, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] };
-        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
+        let spec = SheetSpec { w: 1000.0, h: 500.0, margin: 10.0, gap: 5.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), pick: Default::default() };
         let st = StockSettings { keep_completed: true, ..Default::default() };
         let stock = Stock::default();
         let parts = [part];

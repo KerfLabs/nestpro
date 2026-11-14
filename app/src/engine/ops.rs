@@ -203,20 +203,21 @@ pub static OPS: &[Op] = &[
         a("copy", Ty::Bool, "save-job: save as a new job under the first free name (\"DEMO-7 (1)\") instead of over its record; the copy holds no stock of the original (default false)"),
     ] },
     // --- sheet and nesting ---
-    Op { name: "set-sheet", group: "Nesting", kind: Kind::Write, help: "Change the sheet: size, margin, gap, material, thickness, nesting level, machine. A new material or thickness with nested sheets needs nestings=keep or nestings=remove.", args: &[
+    Op { name: "set-sheet", group: "Nesting", kind: Kind::Write, help: "Change the sheet: size, margin, gap, material, thickness, nesting level, machine. A size given (w or h) is picked for the job, as typing it in the window does: nest then nests only on that size, the stock's sheets of it first, then more of it (ST18; pick=stock goes back to any size in stock). A new material or thickness with nested sheets needs nestings=keep or nestings=remove.", args: &[
         a("w", Ty::Num, "Length X, mm"), a("h", Ty::Num, "Width Y, mm"), a("margin", Ty::Num, "Margin, mm"), a("gap", Ty::Num, "Gap between parts, mm"),
         a("material", Ty::Str, "Material name or number"), a("thickness", Ty::Num, "Thickness, mm"), a("level", Ty::Int, "Nesting level 1-5"), c("machine", MACHINES, "Machine type"),
         c("nestings", &["keep", "remove"], "What happens to nested sheets on a material/thickness change"),
         a("machine_spacing", Ty::Bool, "true = take the part gap and margin from the machine file for the (new) material and thickness (see machine-tech); gap/margin given here still win"),
+        c("pick", &["size", "stock"], "What nest nests on: size = only this sheet size, the stock's sheets of it first (the default when w or h is given); stock = any size in stock, in the stock's order, then this size"),
     ] },
     Op { name: "nest", group: "Nesting", kind: Kind::Write, help: "Nest all parts automatically (Do All; replaces the sheets, cut lines and hand-picked cut order). When the sheet stock has sheets or remnants for the job's material and thickness, they are taken in the stock's order (remnants first, then by size or priority; locked ones never), one sheet at a time, each filled by the best method; stock sheets below the minimum efficiency are dropped; with the window's options on, the best sheet combination and the best sheet format are searched within the maximum time (Sheet stock → Options; see stock mode=rules).", args: &[
         a("group", Ty::Bool, "Nest each part group in its own zone (default: the machine's CT1 setting)"), a("level", Ty::Int, "Nesting level 1-5 for this run (kept)"),
         c("stock", &["auto", "only", "off"], "auto (default): the window's Do All options (use the stock, then the job's own sheet when it runs out if that option is on); only: stock sheets only; off: every sheet the job's size"),
     ] },
-    Op { name: "sheet-add", group: "Nesting", kind: Kind::Write, help: "Add an empty sheet to place parts on (Sheets → New): a stock sheet or remnant by reference, a size of its own, or the job's sheet.", args: &[
+    Op { name: "sheet-add", group: "Nesting", kind: Kind::Write, help: "Add an empty sheet to place parts on (Sheets → New): a stock sheet or remnant by reference, a size of its own, or the job's sheet. A whole stock sheet also becomes the job's sheet, as in the window: nest then nests on its size (ST18).", args: &[
         a("ref", Ty::Str, "Stock reference (see stock mode=list)"), a("w", Ty::Num, "Or: length X, mm"), a("h", Ty::Num, "Width Y, mm"),
     ] },
-    Op { name: "sheet-change", group: "Nesting", kind: Kind::Write, help: "Change which sheet a nested sheet is (Sheets → Change data): another stock sheet or remnant, a size, or back to the job's sheet. Refused when a placed part would end up outside it.", args: &[
+    Op { name: "sheet-change", group: "Nesting", kind: Kind::Write, help: "Change which sheet a nested sheet is (Sheets → Change data): another stock sheet or remnant, a size, or back to the job's sheet. Refused when a placed part would end up outside it. A whole stock sheet also becomes the job's sheet, as in the window: nest then nests on its size (ST18).", args: &[
         SHEET, a("ref", Ty::Str, "Stock reference"), a("w", Ty::Num, "Or: length X, mm"), a("h", Ty::Num, "Width Y, mm"), a("job_sheet", Ty::Bool, "true = back to the job's own sheet"),
     ] },
     Op { name: "sheet-delete", group: "Nesting", kind: Kind::Write, help: "Delete a nested sheet; its parts are no longer nested.", args: &[r("sheet", Ty::Int, "Sheet number, from 1")] },
@@ -716,6 +717,7 @@ fn spec_json(spec: &SheetSpec) -> Value {
         "w": spec.w, "h": spec.h, "margin": spec.margin, "gap": spec.gap,
         "material": cnc::MATERIALS.get(spec.material).copied().unwrap_or("?"), "material_no": spec.material, "thickness": spec.thickness,
         "level": spec.nest_level().name, "machine": spec.machine.label(),
+        "pick": spec.pick,
     })
 }
 
@@ -726,7 +728,7 @@ fn nest_on_json(job: &JobFile, ctx: &Ctx) -> Value {
     let on = stockflow::nest_on(&job.spec, &ctx.stock_use(job), grouped);
     let sizes: Vec<Value> = on.sizes.iter().map(|s| json!({"w": r1(s.length), "h": r1(s.width), "qty": s.qty})).collect();
     json!({
-        "mode": on.key(), "from_stock": on.from_stock(), "sheets": on.sheets, "remnants": on.remnants, "stock_sizes": sizes,
+        "mode": on.key(), "from_stock": on.from_stock(), "picked": on.picked, "sheets": on.sheets, "remnants": on.remnants, "stock_sizes": sizes,
         "line": on.line(&format!("{:.0} × {:.0} mm", job.spec.w, job.spec.h)), "why": on.explain(),
     })
 }
@@ -1255,6 +1257,16 @@ fn import_xml(ctx: &Ctx, a: &Args) -> Result<Outcome, String> {
     );
     o.files = files;
     Ok(o)
+}
+
+/// A whole stock sheet put on a sheet by hand becomes the job's sheet, as in
+/// the window (ST18); the note says so ("" when nothing changed).
+fn picks_job_sheet(job: &mut JobFile, f: &SheetFormat) -> String {
+    let was = (job.spec.w, job.spec.h, job.spec.pick);
+    if !job.spec.pick_format(f) || (job.spec.w, job.spec.h, job.spec.pick) == was {
+        return String::new();
+    }
+    format!(" The job's sheet is now {:.0} × {:.0} mm: nest nests only on that size (set-sheet pick=stock for any size in stock).", f.w, f.h)
 }
 
 fn set_spec_fields(spec: &mut SheetSpec, a: &Args, ctx: &Ctx) -> Result<(), String> {
@@ -2110,6 +2122,15 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
         "set-sheet" => {
             let mut spec = job.spec.clone();
             set_spec_fields(&mut spec, &a, ctx)?;
+            // A size given is picked for the job, as typed in the window (ST18).
+            if a.num("w")?.is_some() || a.num("h")?.is_some() {
+                spec.pick = nest::SheetPick::Size;
+            }
+            match a.str("pick").as_deref() {
+                Some("size") => spec.pick = nest::SheetPick::Size,
+                Some("stock") => spec.pick = nest::SheetPick::Stock,
+                _ => {}
+            }
             // "Use machine values" (MTL9): only the fields not given here.
             let spacing = if a.bool("machine_spacing")? == Some(true) {
                 Some(use_machine_spacing(&mut spec, a.num("gap")?.is_none(), a.num("margin")?.is_none())?)
@@ -2133,7 +2154,10 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                     _ => return Err(format!("{} sheet(s) are nested in the old material/thickness. Say nestings=keep or nestings=remove.", job.sheets.len())),
                 }
             }
-            let changed = spec.w != job.spec.w || spec.h != job.spec.h || spec.margin != job.spec.margin || spec.gap != job.spec.gap || mat_change || spec.machine != job.spec.machine;
+            if spec.pick == nest::SheetPick::Size {
+                m.push_str(" Nest nests only on this size (the stock's sheets of it first).");
+            }
+            let changed = spec.w != job.spec.w || spec.h != job.spec.h || spec.margin != job.spec.margin || spec.gap != job.spec.gap || mat_change || spec.machine != job.spec.machine || spec.pick != job.spec.pick;
             job.spec = spec;
             if changed && !job.sheets.is_empty() {
                 job.stale = true;
@@ -2203,8 +2227,9 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
         "sheet-add" => {
             let f = sheet_source(job, ctx, &a, None)?;
             let what = describe_format(&f);
+            let picked = picks_job_sheet(job, &f);
             let k = job.push_sheet(f);
-            Ok(Outcome::msg(format!("Sheet {} added: {what}. Place parts on it with place sheet={}.", k + 1, k + 1)))
+            Ok(Outcome::msg(format!("Sheet {} added: {what}. Place parts on it with place sheet={}.{picked}", k + 1, k + 1)))
         }
         "sheet-change" => {
             let s = sheet_idx(job, &a)?;
@@ -2217,10 +2242,11 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             if had_cut {
                 job.cuts_mut(s).retain(|l| l.kind != CutKind::Remnant);
             }
+            let picked = picks_job_sheet(job, &f);
             job.normalise_formats();
             job.formats[s] = f;
             job.sheet_changed(s);
-            Ok(Outcome::msg(format!("Sheet {} is now {what}{}.", s + 1, if had_cut { " — its remnant line was removed, add a new one" } else { "" })))
+            Ok(Outcome::msg(format!("Sheet {} is now {what}{}.{picked}", s + 1, if had_cut { " — its remnant line was removed, add a new one" } else { "" })))
         }
         "sheet-delete" => {
             let s = sheet_idx(job, &a)?;

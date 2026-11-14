@@ -2121,13 +2121,20 @@ impl App {
             form(ui, |ui| {
                 let on = self.nest_on(ui.ctx());
                 form_row(ui, |ui| {
+                    // A size typed is picked for the job (ST18).
                     form_field(ui, "Length X", |ui| {
                         ui.spacing_mut().interact_size.x = 82.0;
-                        changed |= crate::units::drag_len_in(ui, &mut self.spec.w, u, 200.0, 12000.0).changed();
+                        if crate::units::drag_len_in(ui, &mut self.spec.w, u, 200.0, 12000.0).changed() {
+                            self.spec.pick = crate::nest::SheetPick::Size;
+                            changed = true;
+                        }
                     });
                     form_field(ui, "Width Y", |ui| {
                         ui.spacing_mut().interact_size.x = 82.0;
-                        changed |= crate::units::drag_len_in(ui, &mut self.spec.h, u, 200.0, 3000.0).changed();
+                        if crate::units::drag_len_in(ui, &mut self.spec.h, u, 200.0, 3000.0).changed() {
+                            self.spec.pick = crate::nest::SheetPick::Size;
+                            changed = true;
+                        }
                     });
                     form_field(ui, " ", |ui| {
                         changed |= self.sheet_size_list(ui, &on);
@@ -2284,14 +2291,15 @@ impl App {
     }
 
     /// What Nest all will nest on (`engine::stockflow::nest_on`). It reads
-    /// the stock file, so it is asked again only when the material, thickness
-    /// or grouping change, or every few seconds (another PC may take sheets).
+    /// the stock file, so it is asked again only when the material,
+    /// thickness, grouping or picked size change, or every few seconds
+    /// (another PC may take sheets).
     pub(crate) fn nest_on(&self, ctx: &egui::Context) -> crate::engine::stockflow::NestOn {
-        type Key = (usize, u64, bool, bool, bool, usize);
+        type Key = (usize, u64, bool, bool, bool, usize, u64, u64, crate::nest::SheetPick);
         #[derive(Clone)]
         struct Memo(Key, f64, crate::engine::stockflow::NestOn);
         let grouped = self.group_nest && crate::nest::part_groups(&self.parts).len() > 1;
-        let key: Key = (self.spec.material, self.spec.thickness.to_bits(), grouped, self.cfg.stock.use_stock, self.cfg.stock.fallback_job_size, self.held.len());
+        let key: Key = (self.spec.material, self.spec.thickness.to_bits(), grouped, self.cfg.stock.use_stock, self.cfg.stock.fallback_job_size, self.held.len(), self.spec.w.to_bits(), self.spec.h.to_bits(), self.spec.pick);
         let now = ctx.input(|i| i.time);
         let id = egui::Id::unique("nest_on_memo");
         if let Some(m) = ctx.data(|d| d.get_temp::<Memo>(id)).filter(|m| m.0 == key && now - m.1 < 3.0) {
@@ -2302,36 +2310,52 @@ impl App {
         on
     }
 
-    /// The ▾ list beside the sheet size: the sizes in stock for this
-    /// material and thickness, with how many, then the standard sizes.
-    /// Picking one sets the job's sheet size. True when it changed.
+    /// The ▾ list beside the sheet size: *Any size in stock* when the stock
+    /// is used, the sizes in stock for this material and thickness with how
+    /// many, then the standard sizes. Picking a size makes it the one Nest
+    /// all nests on (ST18). True when it changed.
     fn sheet_size_list(&mut self, ui: &mut egui::Ui, on: &crate::engine::stockflow::NestOn) -> bool {
+        use crate::nest::SheetPick;
         let u = self.cfg.nesting.units;
-        let spec = &mut self.spec;
-        let mut changed = false;
-        let mut pick = |ui: &mut egui::Ui, w: f64, h: f64, text: String| {
-            let cur = (spec.w - w).abs() < 1e-6 && (spec.h - h).abs() < 1e-6;
-            if ui.selectable_label(cur, text).clicked() {
-                spec.w = w;
-                spec.h = h;
-                changed = true;
-            }
+        let use_stock = self.cfg.stock.use_stock;
+        let spec = self.spec.clone();
+        // None = Any size in stock; Some = that size.
+        let mut chosen: Option<Option<(f64, f64)>> = None;
+        let row = |ui: &mut egui::Ui, w: f64, h: f64, text: String| {
+            // With the stock used, a size is Nest all's only once picked.
+            let cur = spec.is_size(w, h) && (spec.pick == SheetPick::Size || !use_stock);
+            ui.selectable_label(cur, text).clicked().then_some(Some((w, h)))
         };
-        drop_list(ui, "Sheet sizes: the ones in stock for this material and thickness, then standard ones", |ui| {
+        drop_list(ui, "Sheet sizes: any size in stock, the ones in stock for this material and thickness, then standard ones. The size you pick is the one Nest all nests on.", |ui| {
             ui.set_min_width(220.0);
+            if use_stock {
+                let any = ui
+                    .selectable_label(spec.pick == SheetPick::Stock, "Any size in stock")
+                    .on_hover_text("Nest all takes the sheets and remnants in stock for this material and thickness in the stock's order (Sheet stock → Options), then this size when they run out.");
+                if any.clicked() {
+                    chosen = Some(None);
+                }
+                ui.separator();
+            }
             if !on.sizes.is_empty() {
                 ui.label(RichText::new("In stock").size(11.0).color(th().text_dim));
                 for s in &on.sizes {
-                    pick(ui, s.length, s.width, format!("{}   ·  {} on hand", u.size(s.length, s.width, 0), s.qty));
+                    chosen = row(ui, s.length, s.width, format!("{}   ·  {} on hand", u.size(s.length, s.width, 0), s.qty)).or(chosen);
                 }
                 ui.separator();
                 ui.label(RichText::new("Standard sizes").size(11.0).color(th().text_dim));
             }
             for &(w, h) in u.sheet_presets() {
-                pick(ui, w, h, u.size(w, h, 0));
+                chosen = row(ui, w, h, u.size(w, h, 0)).or(chosen);
             }
         });
-        changed
+        let before = (self.spec.w, self.spec.h, self.spec.pick);
+        match chosen {
+            Some(Some((w, h))) => self.spec.pick_size(w, h),
+            Some(None) => self.spec.pick = SheetPick::Stock,
+            None => {}
+        }
+        (self.spec.w, self.spec.h, self.spec.pick) != before
     }
 
     fn ribbon_view(&mut self, ui: &mut egui::Ui) {

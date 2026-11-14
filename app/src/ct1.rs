@@ -1045,7 +1045,7 @@ mod ct1_tests {
         let parts = vec![Part { name: "S".into(), shape: Shape::Rectangle, w: 1180.0, h: 73.2, qty: 14, rotate: false, color: 0, tech: None, custom: None, rots: Default::default(), texts: vec![], group: String::new(), erp: vec![] }];
         let mut placed: Vec<Placed> = (0..14).map(|k| Placed { part: 0, x: 10.0, y: 10.0 + 83.2 * k as f64, w: 1180.0, h: 73.2, turns: 0, mirror: false, spin: Default::default() }).collect();
         placed.reverse();
-        let spec = SheetSpec { w: 1200.15, h: 1219.2, margin: 10.0, gap: 10.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default() };
+        let spec = SheetSpec { w: 1200.15, h: 1219.2, margin: 10.0, gap: 10.0, material: 0, thickness: 3.0, level: 3, machine: Default::default(), kerf: Default::default(), pick: Default::default() };
         let plan = crate::cnc::plan(&parts, &placed, &spec);
         let ys: Vec<f64> = plan.contours.iter().map(|c| placed[c.part_no - 1].y).collect();
         assert!(ys.windows(2).all(|w| w[0] <= w[1]), "{ys:?}");
