@@ -55,6 +55,13 @@ pub struct RefDto {
     pub name: Option<String>,
 }
 
+/// A reference Fulcrum may send as `null` (a job with no sales order, a step
+/// with no scheduled equipment): read as an empty one instead of refusing the
+/// whole answer (F34).
+fn ref_or_null<'de, D: serde::Deserializer<'de>>(d: D) -> Result<RefDto, D::Error> {
+    Ok(Option::<RefDto>::deserialize(d)?.unwrap_or_default())
+}
+
 impl RefDto {
     fn to_ref(&self) -> Ref {
         Ref { id: self.id.clone().unwrap_or_default(), name: self.name.clone().unwrap_or_default() }
@@ -80,7 +87,9 @@ pub struct ValidateDto {
 #[derive(Deserialize, Default, Debug)]
 #[serde(rename_all = "camelCase", default)]
 pub struct GroupDto {
+    #[serde(deserialize_with = "ref_or_null")]
     pub material: RefDto,
+    #[serde(deserialize_with = "ref_or_null")]
     pub operation: RefDto,
     pub earliest_scheduled_start_utc: Option<String>,
     pub job_operations: Vec<GroupJobOpDto>,
@@ -91,11 +100,14 @@ pub struct GroupDto {
 #[serde(rename_all = "camelCase", default)]
 pub struct GroupJobOpDto {
     pub job_operation_id: String,
+    #[serde(deserialize_with = "ref_or_null")]
     pub job: RefDto,
+    #[serde(deserialize_with = "ref_or_null")]
     pub item: RefDto,
     pub item_to_make_id: Option<String>,
     pub quantity_to_make: f64,
     pub customer_name: Option<String>,
+    #[serde(deserialize_with = "ref_or_null")]
     pub sales_order: RefDto,
     pub production_due_date_utc: Option<String>,
     pub scheduled_start_utc: Option<String>,
@@ -107,6 +119,7 @@ pub struct GroupJobOpDto {
 #[serde(rename_all = "camelCase", default)]
 pub struct GroupWoOpDto {
     pub work_order_operation_id: String,
+    #[serde(deserialize_with = "ref_or_null")]
     pub work_order: RefDto,
     pub status: Option<String>,
     pub operation_status: Option<String>,
@@ -127,9 +140,11 @@ pub struct ManifestDto {
 #[serde(rename_all = "camelCase", default)]
 pub struct ManifestPartDto {
     pub job_operation_id: String,
+    #[serde(deserialize_with = "ref_or_null")]
     pub job: RefDto,
     pub customer_name: Option<String>,
     pub production_due_date_utc: Option<String>,
+    #[serde(deserialize_with = "ref_or_null")]
     pub item: RefDto,
     pub item_number: Option<String>,
     pub item_revision: Option<String>,
@@ -184,7 +199,9 @@ pub struct WoOpDto {
     pub id: String,
     pub order: i32,
     pub status: Option<String>,
+    #[serde(deserialize_with = "ref_or_null")]
     pub operation: RefDto,
+    #[serde(deserialize_with = "ref_or_null")]
     pub scheduled_equipment: RefDto,
     pub scheduled_start_utc: Option<String>,
     pub is_nested: bool,
@@ -770,5 +787,51 @@ pub(crate) mod tests {
         let f = Fulcrum::new(&url, "bad".into(), Units::Inch, false, "unknown");
         let e = f.check().unwrap_err();
         assert!(e.contains("refused the API token"), "{e}");
+    }
+
+    #[test]
+    fn a_null_reference_reads_as_empty() {
+        // Live answers carry `"salesOrder": null` on jobs without a sales order.
+        let g: GroupJobOpDto = serde_json::from_str(r#"{"job":{"id":"j","name":"J-1"},"item":null,"salesOrder":null,"customerName":null}"#).unwrap();
+        assert_eq!((g.job.to_ref().name.as_str(), g.sales_order.to_ref().name.as_str(), g.item.to_ref().id.as_str()), ("J-1", "", ""));
+    }
+
+    /// JOB-12: the connector against a live Fulcrum, reading only (sign-in,
+    /// operations, waiting work, one work package and one drawing; never a
+    /// nest or a work order). Skipped unless run by hand with a token:
+    /// `FULCRUM_API_TOKEN=… cargo test live_read_only -- --ignored --nocapture`.
+    /// Prints counts and shapes only, so its output holds no shop data.
+    #[test]
+    #[ignore]
+    fn live_read_only() {
+        let Ok(token) = std::env::var("FULCRUM_API_TOKEN") else { return };
+        let base = std::env::var("FULCRUM_API_URL").unwrap_or_else(|_| DEFAULT_URL.into());
+        let f = Fulcrum::new(&base, token.trim().into(), Units::Inch, false, "unknown");
+        let who = f.check().expect("sign-in");
+        println!("check: ok ({} chars of message)", who.len());
+
+        let st = f.stations().expect("operations");
+        println!("operations: {} ({} nestable)", st.len(), st.iter().filter(|s| s.nestable).count());
+
+        let groups = f.groups(&GroupFilter { need_nesting: false, flat_only: true, search: String::new() }).expect("waiting work");
+        let open: usize = groups.iter().map(|g| g.open.len()).sum();
+        let nests: usize = groups.iter().map(|g| g.nests.len()).sum();
+        println!("groups: {} (open job operations {open}, nests {nests})", groups.len());
+
+        let Some(g) = groups.iter().find(|g| !g.open.is_empty()) else {
+            println!("no open job operation to fetch a work package for");
+            return;
+        };
+        let ops: Vec<(String, String, String)> = g.open.iter().take(3).map(|o| (o.job.id.clone(), o.op_id.clone(), o.item_to_make_id.clone())).collect();
+        let wp = f.work_package(&ops).expect("work package");
+        let with_mat = wp.parts.iter().filter(|p| p.material.as_ref().is_some_and(|m| m.thickness_mm.is_some())).count();
+        let with_dxf = wp.parts.iter().filter(|p| p.dxf().is_some()).count();
+        println!("work package: {} part(s), {with_mat} with a thickness, {with_dxf} with a DXF, {} skipped", wp.parts.len(), wp.skipped.len());
+
+        if let Some(d) = wp.parts.iter().find_map(|p| p.dxf()) {
+            let bytes = f.download(d).expect("drawing");
+            let dxf_like = String::from_utf8_lossy(&bytes[..bytes.len().min(400)]).contains("SECTION");
+            println!("drawing: {} bytes, looks like DXF: {dxf_like}", bytes.len());
+        }
     }
 }
