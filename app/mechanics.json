@@ -6704,6 +6704,19 @@
   "source": "MECHANICS GS14"
  },
  {
+  "name": "gas change and automatic micro-joints",
+  "group": "gas",
+  "value": "a joint gap or spacing a part took from the machine with Automatic micro-joints takes the machine's for the new gas (the section's; the spacing for the part's quality); a gap or spacing set by the programmer stays",
+  "source": "MECHANICS GS14"
+ },
+ {
+  "name": "gas change and micro-joints, open cases",
+  "group": "gas",
+  "value": "no section for the new gas: the machine's own joint values; joints placed on an element keep their place with the part's gap; automatic joints a job got before nestpro remembered which values came from the machine stay",
+  "source": "MECHANICS GS14",
+  "estimated": true
+ },
+ {
   "name": "gas pick on the Sheet tab",
   "group": "gas",
   "value": "beside the thickness: the five gases by name; a pick changes the job as set-sheet gas= does",

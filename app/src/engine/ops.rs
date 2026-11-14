@@ -204,7 +204,7 @@ pub static OPS: &[Op] = &[
         a("copy", Ty::Bool, "save-job: save as a new job under the first free name (\"DEMO-7 (1)\") instead of over its record; the copy holds no stock of the original (default false)"),
     ] },
     // --- sheet and nesting ---
-    Op { name: "set-sheet", group: "Nesting", kind: Kind::Write, help: "Change the sheet: size, margin, gap, material, thickness, gas, nesting level, machine. A new material or thickness with nested sheets needs nestings=keep or nestings=remove. A new gas keeps the nested sheets and picks the machine file's section and the technology record again (leads, speeds, times follow it); the reply says what changed.", args: &[
+    Op { name: "set-sheet", group: "Nesting", kind: Kind::Write, help: "Change the sheet: size, margin, gap, material, thickness, gas, nesting level, machine. A new material or thickness with nested sheets needs nestings=keep or nestings=remove. A new gas keeps the nested sheets and picks the machine file's section and the technology record again (leads, the micro-joint gaps and spacings Automatic took from the machine, speeds and times follow it; values set by hand stay); the reply says what changed.", args: &[
         a("w", Ty::Num, "Length X, mm"), a("h", Ty::Num, "Width Y, mm"), a("margin", Ty::Num, "Margin, mm"), a("gap", Ty::Num, "Gap between parts, mm"),
         a("material", Ty::Str, "Material name or number"), a("thickness", Ty::Num, "Thickness, mm"), a("gas", Ty::Str, "Gas the job is cut with: its name or number (1 Nitrogen, 2 Air, 3 Oxygen, 4 Argon, 5 Water)"), a("level", Ty::Int, "Nesting level 1-5"), c("machine", MACHINES, "Machine type"),
         c("nestings", &["keep", "remove"], "What happens to nested sheets on a material/thickness change"),
@@ -2165,7 +2165,7 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
             let removing = nested && mat_change && a.str("nestings").as_deref() == Some("remove");
             let gas_note = gas.map(|g| {
                 let (sheets, formats, manual) = if removing { (&[][..], &[][..], &[][..]) } else { (&job.sheets[..], &job.formats[..], &job.manual_cuts[..]) };
-                pick_job_gas(&mut spec, g, &job.parts, sheets, formats, manual, &ctx.blm).note
+                pick_job_gas(&mut spec, g, &mut job.parts, sheets, formats, manual, &ctx.blm).note
             });
             // "Use machine values" (MTL9): only the fields not given here.
             let spacing = if a.bool("machine_spacing")? == Some(true) {
@@ -2859,6 +2859,10 @@ pub fn run(job: &mut JobFile, ctx: &Ctx, name: &str, args: &Value) -> Result<Out
                 set!(joint_lead, jl);
                 set!(joint_angle, ja);
                 set!(joint_every, je);
+                // A gap or spacing given here is the programmer's: a gas
+                // change leaves it (GS14).
+                set!(joint_width_machine, jw.map(|_| None));
+                set!(joint_every_machine, je.map(|_| None));
                 set!(joint_lead_out, jlo.map(Some));
                 set!(loops, lp);
                 set!(loop_size, ls);

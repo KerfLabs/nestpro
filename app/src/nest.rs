@@ -350,6 +350,15 @@ pub struct PartTech {
     /// Leads whose free end was moved by hand, one per contour (LE1–LE7).
     #[serde(default)]
     pub lead_edits: [Option<LeadEdit>; LEAD_EDITS],
+    /// The joint gap Automatic micro-joints took from the machine (BN4):
+    /// while `joint_width` is still this, a gas change gives the part the
+    /// machine's gap for the new gas (GS14). None = the part's own: set by
+    /// the programmer, or given before nestpro kept this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub joint_width_machine: Option<f64>,
+    /// The same for the spacing, `joint_every`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub joint_every_machine: Option<f64>,
 }
 
 /// How many contours of one part can have a lead moved by hand.
@@ -504,6 +513,8 @@ impl Default for PartTech {
             joint_every: 0.0,
             joint_lead_out: None,
             lead_edits: [None; LEAD_EDITS],
+            joint_width_machine: None,
+            joint_every_machine: None,
         }
     }
 }
@@ -795,6 +806,18 @@ impl PartTech {
             + self.starts.iter().flatten().count() as u32
             + self.joint_picks.iter().flatten().count() as u32
             + self.lead_edits.iter().flatten().count() as u32
+    }
+
+    /// Is the joint gap still the one Automatic micro-joints took from the
+    /// machine (GS14)?
+    pub fn joint_width_is_machines(&self) -> bool {
+        self.joint_width_machine.is_some_and(|w| (w - self.joint_width).abs() < 1e-9)
+    }
+
+    /// Is the joint spacing still the one Automatic micro-joints took from
+    /// the machine (GS14)?
+    pub fn joint_every_is_machines(&self) -> bool {
+        self.joint_every_machine.is_some_and(|e| (e - self.joint_every).abs() < 1e-9)
     }
 }
 

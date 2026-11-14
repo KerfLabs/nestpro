@@ -2108,7 +2108,7 @@ impl App {
     fn gas_tip(&self) -> String {
         let g = engine::job_gas(&self.spec, &self.blm);
         if g.own {
-            format!("The gas this job is cut with: {}. Its LC5 programs name it, and it picks the machine table section and the technology record, so leads, speeds and times follow it. Changing it keeps the nested sheets.", g.label())
+            format!("The gas this job is cut with: {}. Its LC5 programs name it, and it picks the machine table section and the technology record, so leads, automatic micro-joints, speeds and times follow it. Changing it keeps the nested sheets.", g.label())
         } else {
             format!(
                 "This job has no gas of its own: it was saved before jobs carried one, so it is cut with the machine's gas from Settings → Machines, {} (gas {}). Pick a gas to give the job its own; the nested sheets stay.",
@@ -2122,11 +2122,12 @@ impl App {
     /// sheets and leads moved by hand stay, the technology follows, and the
     /// status line says what changed. Picking the gas it has adds no undo step.
     pub(crate) fn pick_gas(&mut self, gas: crate::gas::Gas) {
-        let mut spec = self.spec.clone();
-        let p = engine::pick_job_gas(&mut spec, gas, &self.parts, &self.result.sheets, &self.result.formats, &self.manual_cuts, &self.blm);
+        let (mut spec, mut parts) = (self.spec.clone(), self.parts.clone());
+        let p = engine::pick_job_gas(&mut spec, gas, &mut parts, &self.result.sheets, &self.result.formats, &self.manual_cuts, &self.blm);
         if p.changed {
             self.checkpoint();
             self.spec = spec;
+            self.parts = parts;
             self.refresh();
         }
         self.status = p.note;
@@ -2651,7 +2652,11 @@ impl App {
                 changed |= ui.add(egui::DragValue::new(&mut t.micro_joints).range(0..=12).clamp_existing_to_range(false)).changed();
                 ui.end_row();
                 ui.label("Joint width");
-                changed |= crate::units::drag_len_in(ui, &mut t.joint_width, u, 0.1, 5.0).changed();
+                if crate::units::drag_len_in(ui, &mut t.joint_width, u, 0.1, 5.0).changed() {
+                    // The programmer's own gap: a gas change leaves it (GS14).
+                    t.joint_width_machine = None;
+                    changed = true;
+                }
                 ui.end_row();
                 ui.label("Cut quality").on_hover_text("The machine's quality for every contour the size ranges don't set; Auto lets the machine's size bands decide, so small holes are cut slower");
                 let shown: egui::WidgetText = match t.quality {

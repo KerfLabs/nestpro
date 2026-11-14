@@ -484,6 +484,9 @@ impl App {
         }
         if edit != cur && !targets.is_empty() {
             let (jt, w, l, a, every) = (edit.joint_type, edit.joint_width, edit.joint_lead, edit.joint_angle, edit.joint_every);
+            // A gap or spacing set here is the programmer's: a gas change
+            // leaves it (GS14).
+            let (own_w, own_every) = (w != cur.joint_width, every != cur.joint_every);
             self.edit_tech(&format!("Micro-joints: {}", jt.label().to_lowercase()), |t, _| {
                 let mut x = t.unwrap_or_default();
                 x.joint_type = jt;
@@ -491,6 +494,12 @@ impl App {
                 x.joint_lead = l;
                 x.joint_angle = a;
                 x.joint_every = every;
+                if own_w {
+                    x.joint_width_machine = None;
+                }
+                if own_every {
+                    x.joint_every_machine = None;
+                }
                 *t = Some(x);
             });
         }

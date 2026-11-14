@@ -148,10 +148,11 @@ pub fn new_job_gas(m: &settings::Machine) -> Option<crate::gas::Gas> {
 
 /// What picking a job's gas changed, in words (GS14): the gas, the machine
 /// file's section and the technology table's record picked again for it,
-/// whether the automatic lead tables changed, and the job's cut time. The
-/// nested sheets stay as they are; `before` and `after` are the job's sheet
-/// settings, the sheets those of the job.
-pub fn gas_change_note(parts: &[Part], sheets: &[Vec<Placed>], formats: &[SheetFormat], manual: &[Vec<ManualCut>], before: &SheetSpec, after: &SheetSpec, base: &crate::blm::BlmSettings) -> String {
+/// whether the automatic lead tables changed, on how many parts the
+/// automatic micro-joints followed, and the job's cut time. The nested
+/// sheets stay as they are; `before` and `after` are the job's sheet
+/// settings, `old` and `parts` its parts, the sheets those of the job.
+pub fn gas_change_note(old: &[Part], parts: &[Part], sheets: &[Vec<Placed>], formats: &[SheetFormat], manual: &[Vec<ManualCut>], before: &SheetSpec, after: &SheetSpec, base: &crate::blm::BlmSettings) -> String {
     let (g0, g1) = (job_gas(before, base), job_gas(after, base));
     if before.gas == after.gas {
         return format!("Gas: already {}.", g1.label());
@@ -185,11 +186,19 @@ pub fn gas_change_note(parts: &[Part], sheets: &[Vec<Placed>], formats: &[SheetF
     } else {
         "automatic leads follow the new section's lead tables (leads moved by hand stay)".to_string()
     });
+    // Parts that have micro-joints and whose gap or spacing changed.
+    let joints = |t: &Option<PartTech>| t.map(|t| (t.joint_width, t.joint_every));
+    let has_joints = |t: &Option<PartTech>| t.is_some_and(|t| t.joint_every > 0.0 || t.micro_joints > 0 || t.joint_picks.iter().any(Option::is_some));
+    let followed = old.iter().zip(parts).filter(|(a, b)| (has_joints(&a.tech) || has_joints(&b.tech)) && joints(&a.tech) != joints(&b.tech)).count();
+    said.push(match followed {
+        0 => "automatic micro-joints unchanged".to_string(),
+        n => format!("automatic micro-joints follow the new gas on {n} part{} (a joint gap or spacing set by hand stays)", if n == 1 { "" } else { "s" }),
+    });
     if sheets.is_empty() {
         said.push("no nested sheets".to_string());
     } else {
-        let time = |spec: &SheetSpec| plans(parts, sheets, formats, spec, manual).iter().map(|p| p.seconds).sum::<f64>();
-        said.push(format!("{} nested sheet(s) kept; cut time {:.1} s → {:.1} s", sheets.len(), time(before), time(after)));
+        let time = |parts: &[Part], spec: &SheetSpec| plans(parts, sheets, formats, spec, manual).iter().map(|p| p.seconds).sum::<f64>();
+        said.push(format!("{} nested sheet(s) kept; cut time {:.1} s → {:.1} s", sheets.len(), time(old, before), time(parts, after)));
     }
     format!("{}.", said.join("; "))
 }
@@ -207,12 +216,22 @@ pub struct GasPick {
 /// Pick a job's gas (GS14, GS15): `spec`, the job's sheet settings, takes
 /// `gas` as the job's own. The nested sheets, parts and leads moved by hand
 /// stay, and the sheets aren't marked changed; the machine file's section
-/// and the technology record follow the new gas. The Sheet tab's gas pick
-/// and the agents' `set-sheet gas=` both change the job through this.
-pub fn pick_job_gas(spec: &mut SheetSpec, gas: crate::gas::Gas, parts: &[Part], sheets: &[Vec<Placed>], formats: &[SheetFormat], manual: &[Vec<ManualCut>], base: &crate::blm::BlmSettings) -> GasPick {
+/// and the technology record follow the new gas, and so do the parts'
+/// micro-joint gaps and spacings taken from the machine
+/// (`joints_follow_machine`). The Sheet tab's gas pick and the agents'
+/// `set-sheet gas=` both change the job through this.
+pub fn pick_job_gas(spec: &mut SheetSpec, gas: crate::gas::Gas, parts: &mut [Part], sheets: &[Vec<Placed>], formats: &[SheetFormat], manual: &[Vec<ManualCut>], base: &crate::blm::BlmSettings) -> GasPick {
     let before = spec.clone();
     spec.gas = Some(gas);
-    GasPick { changed: before.gas != spec.gas, note: gas_change_note(parts, sheets, formats, manual, &before, spec, base) }
+    let changed = before.gas != spec.gas;
+    let old = parts.to_vec();
+    if changed {
+        let mt = crate::ct1::for_spec(spec);
+        for t in parts.iter_mut().filter_map(|p| p.tech.as_mut()) {
+            joints_follow_machine(t, &mt);
+        }
+    }
+    GasPick { changed, note: gas_change_note(&old, parts, sheets, formats, manual, &before, spec, base) }
 }
 
 /// GS16: what the message after a job's programs are written starts with:
@@ -707,16 +726,19 @@ impl TechEdit {
             }
             TechEdit::AutoJoints { dist, gap, every, gap_wins } => {
                 let mut x = t.unwrap_or_default();
+                // What it takes from the machine is kept as the machine's,
+                // so a gas change can bring it up to date (GS14).
                 if let Some(e) = every {
                     x.joint_every = e.max(0.0);
+                    x.joint_every_machine = None;
                 } else if x.joint_every <= 0.0 {
-                    // The part's own quality, else the outline's usual one (CQ1).
-                    let q = x.quality.unwrap_or(crate::nest::CutQuality::FALLBACK).number();
-                    x.joint_every = dist[q - 1][0];
+                    x.joint_every = auto_joint_every(&x, dist);
+                    x.joint_every_machine = Some(x.joint_every);
                 }
                 x.micro_joints = 0;
                 if x.joint_width <= 0.0 || (*gap_wins && *gap > 0.0) {
                     x.joint_width = *gap;
+                    x.joint_width_machine = Some(*gap);
                 }
                 *t = Some(x);
             }
@@ -725,6 +747,7 @@ impl TechEdit {
                     x.micro_joints = 0;
                     // Automatic joints are spaced by distance: that goes too.
                     x.joint_every = 0.0;
+                    x.joint_every_machine = None;
                     x.joint_picks = [None; 12];
                 }
             }
@@ -744,6 +767,31 @@ impl TechEdit {
             }
             TechEdit::Delete => *t = None,
         }
+    }
+}
+
+/// The spacing Automatic micro-joints give a part (BN4): the machine's
+/// distance `dist` for the part's own quality, else the outline's usual one
+/// (CQ1).
+fn auto_joint_every(t: &PartTech, dist: &[[f64; 4]; 12]) -> f64 {
+    let q = t.quality.unwrap_or(crate::nest::CutQuality::FALLBACK).number();
+    dist[q - 1][0]
+}
+
+/// GS14: after a gas change, a part's micro-joint gap and spacing that
+/// Automatic micro-joints took from the machine take what the machine gives
+/// for the new gas, `mt` (the section the gas picks, else the machine's own
+/// values, MTL6/MTL7): the gap, and the spacing for the part's quality, as
+/// Automatic picks them. A gap or spacing the programmer set, and the
+/// places of joints placed on an element, stay.
+pub fn joints_follow_machine(t: &mut PartTech, mt: &crate::ct1::MachineTech) {
+    if t.joint_every_is_machines() {
+        t.joint_every = auto_joint_every(t, &mt.joint_dist);
+        t.joint_every_machine = Some(t.joint_every);
+    }
+    if t.joint_width_is_machines() && mt.joint_gap > 0.0 {
+        t.joint_width = mt.joint_gap;
+        t.joint_width_machine = Some(mt.joint_gap);
     }
 }
 

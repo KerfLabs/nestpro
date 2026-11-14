@@ -5168,9 +5168,14 @@ const GAS_TIMES: &str = "D014 3\nD017 2\nD018 2\nH006 0.7\nP001 0 999999 10000 1
 /// machine on the LC5 (`blm`) or the G-code post, saved in Settings →
 /// Machines with gas number and name `gas`.
 fn gas_session(d: &Path, blm: bool, gas: (u32, &str)) -> (Session, OnMachine) {
+    gas_session_on(d, blm, gas, &gas_machine_file())
+}
+
+/// `gas_session` with the machine file `file`.
+fn gas_session_on(d: &Path, blm: bool, gas: (u32, &str), file: &str) -> (Session, OnMachine) {
     let root = d.join("Lantek");
     let m = crate::settings::Machine { gas_id: gas.0, gas_name: gas.1.into(), ..demo_machine_with("Demo laser", blm, Default::default()) };
-    let cfg = shop_settings(&root, &gas_machine_file(), vec![m]);
+    let cfg = shop_settings(&root, file, vec![m]);
     std::fs::write(root.join("MchFiles").join("PstAdi06.TT1"), GAS_TABLE).unwrap();
     std::fs::write(root.join("MchFiles").join("PstAdi06.TM1"), GAS_TIMES).unwrap();
     let mut s = Session::new(Ctx::builtin());
@@ -5604,7 +5609,7 @@ fn picking_oxygen_on_the_sheet_tab_gives_the_same_job_as_set_sheet_gas_oxygen() 
     let by_agent = jobfile::load(&job).unwrap();
     // The Sheet tab: the window's copy of the job, picked Oxygen.
     let mut spec = as_saved.spec.clone();
-    let pick = crate::engine::pick_job_gas(&mut spec, crate::gas::Gas::Oxygen, &as_saved.parts, &as_saved.sheets, &as_saved.formats, &as_saved.manual_cuts, &s.ctx.blm);
+    let pick = crate::engine::pick_job_gas(&mut spec, crate::gas::Gas::Oxygen, &mut as_saved.parts.clone(), &as_saved.sheets, &as_saved.formats, &as_saved.manual_cuts, &s.ctx.blm);
     assert!(pick.changed);
     assert_eq!(spec, by_agent.spec, "the same sheet settings");
     assert_eq!(spec.gas, Some(crate::gas::Gas::Oxygen));
@@ -5615,7 +5620,7 @@ fn picking_oxygen_on_the_sheet_tab_gives_the_same_job_as_set_sheet_gas_oxygen() 
     assert!(pick.note.starts_with("Gas: Nitrogen (1) → Oxygen (3)"), "{}", pick.note);
     assert!(r["message"].as_str().unwrap().ends_with(&pick.note), "{r}\n{}", pick.note);
     // Picking the gas it has: no change, so the window adds no undo step.
-    let again = crate::engine::pick_job_gas(&mut spec, crate::gas::Gas::Oxygen, &by_agent.parts, &by_agent.sheets, &by_agent.formats, &by_agent.manual_cuts, &s.ctx.blm);
+    let again = crate::engine::pick_job_gas(&mut spec, crate::gas::Gas::Oxygen, &mut by_agent.parts.clone(), &by_agent.sheets, &by_agent.formats, &by_agent.manual_cuts, &s.ctx.blm);
     assert!(!again.changed);
     assert_eq!(again.note, "Gas: already Oxygen (3).");
     assert_eq!(spec, by_agent.spec);
@@ -5929,5 +5934,233 @@ fn a_job_saved_with_its_gas_keeps_it_when_the_machines_gas_changes() {
     assert_eq!(info_gas(&mut s), ("Oxygen".into(), 3, "job".into()));
     assert!(programs(&mut s)[0].contains(";IDGAS=3\r\n;NOMEGAS=Oxygen\r\n"));
     assert_eq!(std::fs::read(&job).unwrap(), saved, "opening the job rewrote it");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+// ---------------------------------------------------------------------------
+// Automatic micro-joints follow the job's gas (GS14).
+// ---------------------------------------------------------------------------
+
+/// The made-up laser of `gas_machine_file` with micro-joints in its 2.2–3.2
+/// mm mild steel sections: oxygen 2 mm joints, one every 40 mm at quality 1
+/// and 60 mm at quality 3; nitrogen 0.5 mm joints every 150 and 200 mm; an
+/// air section that gives no joint values (the built-in table's then, MTL7);
+/// no section for argon or water (the machine's own: 0.8 mm, every 90 and
+/// 120 mm).
+fn gas_joints_machine_file() -> String {
+    let leads = |d: f64| (0..8).map(|k| format!("Z{:03} {d}\nZ{:03} {d}\nZ{:03} {}\nZ{:03} {}\n", 68 + 6 * k, 69 + 6 * k, 72 + 6 * k, d + 0.5, 73 + 6 * k, d + 0.5)).collect::<String>();
+    let section = |gas: u32, lead: f64, joints: &str| format!("Z000 \"##MATEXP0010##\"\nZ001 2.2\nZ002 3.2\nZ343 {gas}\nZ006 6\n{}{joints}Z999 0\n", leads(lead));
+    format!(
+        "# Demo laser\nA051 40000\nA058 3000\nA093 OFF\nB056 6.0\nF005 0.8\nF150 90\nF158 120\n{}{}{}",
+        section(3, 5.0, "X005 2.0\nX150 40\nX158 60\n"),
+        section(1, 2.0, "X005 0.5\nX150 150\nX158 200\n"),
+        section(2, 3.0, "")
+    )
+}
+
+/// A nitrogen job on that laser: a 300 × 200 mm plate on the sheet.
+fn joints_job(d: &Path, s: &mut Session) -> PathBuf {
+    let job = d.join("DEMO-JOINTS.snjob");
+    call(s, "new", Some(job.to_str().unwrap()), json!({"w": 1000, "h": 500, "material": "mild steel", "thickness": 3, "gas": "nitrogen", "force": true}));
+    call(s, "add-shape", None, json!({"shape": "rectangle", "w": 300, "h": 200, "qty": 1}));
+    call(s, "place", None, json!({"part": 1, "x": 50, "y": 50}));
+    job
+}
+
+/// Piece `item` (from 1) of sheet 1 as cut: how many micro-joints its outline
+/// gets, and their gaps in mm (to 0.01 mm).
+fn outline_joints(job: &Path, item: usize) -> (usize, Vec<f64>) {
+    let plan = jobfile::load(job).unwrap().plans().remove(0);
+    let c = plan.contours.iter().find(|c| c.part_no == item && !c.inner).unwrap_or_else(|| panic!("no outline for #{item}"));
+    let mut gaps: Vec<f64> = c.joints.iter().map(|(a, b)| ((b - a) * 100.0).round() / 100.0).collect();
+    gaps.dedup();
+    (c.joints.len(), gaps)
+}
+
+#[test]
+fn automatic_micro_joints_follow_the_gas_to_the_new_sections_gap_and_spacing() {
+    let d = dir("gas_joints_follow");
+    let (mut s, _on) = gas_session_on(&d, false, (1, "Nitrogen"), &gas_joints_machine_file());
+    let job = joints_job(&d, &mut s);
+    call(&mut s, "joints", None, json!({"mode": "auto"}));
+    // Nitrogen: 0.5 mm joints, one per 200 mm of the 1000 mm outline, made even (AM1).
+    assert_eq!(outline_joints(&job, 1), (6, vec![0.5]));
+    let r = call(&mut s, "set-sheet", None, json!({"gas": "oxygen"}));
+    let m = r["message"].as_str().unwrap();
+    assert!(m.contains("automatic micro-joints follow the new gas on 1 part"), "{m}");
+    // Oxygen: 2 mm joints, one per 60 mm (17, made even).
+    assert_eq!(outline_joints(&job, 1), (18, vec![2.0]));
+    let t = &call(&mut s, "part-info", None, json!({"part": 1}))["data"]["technology"];
+    assert_eq!((t["joint_width"].as_f64(), t["joint_every"].as_f64()), (Some(2.0), Some(60.0)), "{t}");
+    // The program is the one an oxygen job given Automatic joints writes.
+    let oxygen = programs(&mut s);
+    let d2 = dir("gas_joints_fresh");
+    let (mut s2, _on2) = gas_session_on(&d2, false, (1, "Nitrogen"), &gas_joints_machine_file());
+    let fresh = joints_job(&d2, &mut s2);
+    call(&mut s2, "set-sheet", None, json!({"gas": "oxygen"}));
+    call(&mut s2, "joints", None, json!({"mode": "auto"}));
+    assert_eq!(outline_joints(&fresh, 1), (18, vec![2.0]));
+    assert_eq!(oxygen, programs(&mut s2));
+    // Automatic again: the oxygen spacing it has now stays.
+    call(&mut s, "joints", None, json!({"mode": "auto"}));
+    assert_eq!(outline_joints(&job, 1), (18, vec![2.0]));
+    // Oxygen again: nothing changes, nothing is saved.
+    let file = std::fs::read(&job).unwrap();
+    let r = call(&mut s, "set-sheet", None, json!({"gas": "oxygen"}));
+    assert!(r["message"].as_str().unwrap().contains("Gas: already Oxygen (3)."), "{r}");
+    assert_eq!(std::fs::read(&job).unwrap(), file);
+    // Back to nitrogen: its joints again.
+    call(&mut s, "set-sheet", None, json!({"gas": "nitrogen"}));
+    assert_eq!(outline_joints(&job, 1), (6, vec![0.5]));
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&d2);
+}
+
+#[test]
+fn each_part_takes_the_joint_spacing_of_its_own_cut_quality_for_the_new_gas() {
+    let d = dir("gas_joints_quality");
+    let (mut s, _on) = gas_session_on(&d, false, (1, "Nitrogen"), &gas_joints_machine_file());
+    let job = joints_job(&d, &mut s);
+    // A second plate, cut at quality 1; the first is cut at the machine's.
+    call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 300, "h": 200, "qty": 1}));
+    call(&mut s, "place", None, json!({"part": 2, "x": 450, "y": 50}));
+    call(&mut s, "tech-set", None, json!({"parts": 2, "quality": 1}));
+    call(&mut s, "joints", None, json!({"mode": "auto"}));
+    // Nitrogen: quality 3 one per 200 mm, quality 1 one per 150 mm (7, made even).
+    assert_eq!((outline_joints(&job, 1), outline_joints(&job, 2)), ((6, vec![0.5]), (8, vec![0.5])));
+    let r = call(&mut s, "set-sheet", None, json!({"gas": "oxygen"}));
+    assert!(r["message"].as_str().unwrap().contains("automatic micro-joints follow the new gas on 2 parts"), "{r}");
+    // Oxygen: one per 60 mm and one per 40 mm (25, made even).
+    assert_eq!((outline_joints(&job, 1), outline_joints(&job, 2)), ((18, vec![2.0]), (26, vec![2.0])));
+    let every = |s: &mut Session, p: usize| call(s, "part-info", None, json!({"part": p}))["data"]["technology"]["joint_every"].as_f64();
+    assert_eq!((every(&mut s, 1), every(&mut s, 2)), (Some(60.0), Some(40.0)));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_joint_gap_or_spacing_set_by_hand_stays_when_the_gas_changes() {
+    let d = dir("gas_joints_hand");
+    let (mut s, _on) = gas_session_on(&d, false, (1, "Nitrogen"), &gas_joints_machine_file());
+    let job = joints_job(&d, &mut s);
+    for (k, (x, y)) in [(450, 50), (50, 280), (450, 280)].into_iter().enumerate() {
+        call(&mut s, "add-shape", None, json!({"shape": "rectangle", "w": 300, "h": 200, "qty": 1}));
+        call(&mut s, "place", None, json!({"part": k + 2, "x": x, "y": y}));
+    }
+    // 1: Automatic, one per 100 mm given. 2: Automatic, then a 1 mm gap set.
+    // 3: Automatic, then a spacing set: the nitrogen one, 200 mm.
+    // 4: two joints placed on its lines, no Automatic: its own 0.5 mm gap.
+    call(&mut s, "joints", None, json!({"mode": "auto", "parts": 1, "every": 100}));
+    call(&mut s, "joints", None, json!({"mode": "auto", "parts": "2,3"}));
+    call(&mut s, "tech-set", None, json!({"parts": 2, "joint_width": 1.0}));
+    call(&mut s, "tech-set", None, json!({"parts": 3, "joint_every": 200}));
+    call(&mut s, "joint-at", None, json!({"part": 4, "elements": "1,3"}));
+    let all = |job: &Path| (1..=4).map(|k| outline_joints(job, k)).collect::<Vec<_>>();
+    assert_eq!(all(&job), vec![(10, vec![0.5]), (6, vec![1.0]), (6, vec![0.5]), (2, vec![0.5])]);
+    let program = programs(&mut s);
+    let r = call(&mut s, "set-sheet", None, json!({"gas": "oxygen"}));
+    assert!(r["message"].as_str().unwrap().contains("automatic micro-joints follow the new gas on 3 parts"), "{r}");
+    // 1 keeps its spacing and takes oxygen's gap; 2 keeps its gap and takes
+    // oxygen's spacing; 3 keeps its spacing; 4 keeps its joints as they were.
+    assert_eq!(all(&job), vec![(10, vec![2.0]), (18, vec![1.0]), (6, vec![2.0]), (2, vec![0.5])]);
+    // And back: the same joints as before, so the same program.
+    call(&mut s, "set-sheet", None, json!({"gas": "nitrogen"}));
+    assert_eq!(programs(&mut s), program);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// Take `keys` out of every part's technology in the job file at `job`, and
+/// the gas out of its sheet with `gas`, as a job saved before them reads.
+fn saved_before(job: &Path, keys: &[&str], gas: bool) {
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(job).unwrap()).unwrap();
+    if gas {
+        v["spec"].as_object_mut().unwrap().remove("gas");
+    }
+    for p in v["parts"].as_array_mut().unwrap() {
+        if let Some(t) = p["tech"].as_object_mut() {
+            for k in keys {
+                t.remove(*k);
+            }
+        }
+    }
+    std::fs::write(job, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+}
+
+#[test]
+fn a_job_saved_before_with_automatic_joints_writes_the_same_program_and_keeps_its_joints() {
+    let d = dir("gas_joints_old");
+    let (mut s, _on) = gas_session_on(&d, false, (1, "Nitrogen"), &gas_joints_machine_file());
+    let job = joints_job(&d, &mut s);
+    // Saved before jobs carried a gas: its section is the first for the
+    // material and thickness, oxygen's, so Automatic gave oxygen's joints.
+    saved_before(&job, &[], true);
+    call(&mut s, "joints", Some(job.to_str().unwrap()), json!({"mode": "auto"}));
+    assert_eq!(outline_joints(&job, 1), (18, vec![2.0]));
+    let program = programs(&mut s);
+    // Saved before nestpro kept which joint values were the machine's.
+    saved_before(&job, &["joint_width_machine", "joint_every_machine"], false);
+    let saved = std::fs::read(&job).unwrap();
+    let (mut s, _on) = gas_session_on(&d, false, (1, "Nitrogen"), &gas_joints_machine_file());
+    call(&mut s, "info", Some(job.to_str().unwrap()), json!({}));
+    assert_eq!(programs(&mut s), program, "the same program as before");
+    assert_eq!(std::fs::read(&job).unwrap(), saved, "opening the job rewrote it");
+    // A change that isn't about joints writes its parts as they were.
+    call(&mut s, "set-sheet", None, json!({"margin": 6}));
+    let parts = |b: &[u8]| serde_json::from_slice::<Value>(b).unwrap()["parts"].clone();
+    assert_eq!(parts(&std::fs::read(&job).unwrap()), parts(&saved));
+    // A gas picked: its joints aren't known to be the machine's, so they stay.
+    let r = call(&mut s, "set-sheet", None, json!({"gas": "nitrogen"}));
+    assert!(r["message"].as_str().unwrap().contains("automatic micro-joints unchanged"), "{r}");
+    assert_eq!(outline_joints(&job, 1), (18, vec![2.0]));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn joints_take_the_built_in_values_or_the_machines_own_when_the_gas_has_none_of_its_own() {
+    let d = dir("gas_joints_none");
+    let (mut s, _on) = gas_session_on(&d, false, (1, "Nitrogen"), &gas_joints_machine_file());
+    let job = joints_job(&d, &mut s);
+    call(&mut s, "joints", None, json!({"mode": "auto"}));
+    assert_eq!(outline_joints(&job, 1), (6, vec![0.5]));
+    // What the machine gives for the job's gas now: (gap, spacing at quality 3).
+    let machine = |s: &mut Session| {
+        let j = &call(s, "machine-tech", None, json!({}))["data"]["joints"];
+        (j["gap"].as_f64().unwrap(), call(s, "part-info", None, json!({"part": 1}))["data"]["technology"]["joint_every"].as_f64().unwrap())
+    };
+    // Air: a section that gives no joint values, so the built-in table's
+    // (MTL7), as Automatic gives there: 5 mm, one per 100 mm.
+    let r = call(&mut s, "set-sheet", None, json!({"gas": "air"}));
+    assert!(r["message"].as_str().unwrap().contains("automatic micro-joints follow the new gas on 1 part"), "{r}");
+    assert_eq!(outline_joints(&job, 1), (10, vec![5.0]));
+    assert_eq!(machine(&mut s), (5.0, 100.0));
+    // Argon: no section, so the machine's own (MTL6): 0.8 mm, one per 120 mm (9, made even).
+    let r = call(&mut s, "set-sheet", None, json!({"gas": "argon"}));
+    assert!(r["message"].as_str().unwrap().contains("machine table section 0010 mild steel 2.2–3.2 mm, Air (2) → none"), "{r}");
+    assert!(r["message"].as_str().unwrap().contains("automatic micro-joints follow the new gas on 1 part"), "{r}");
+    assert_eq!(outline_joints(&job, 1), (10, vec![0.8]));
+    assert_eq!(machine(&mut s), (0.8, 120.0));
+    // Back to nitrogen: its own joints again.
+    call(&mut s, "set-sheet", None, json!({"gas": "nitrogen"}));
+    assert_eq!(outline_joints(&job, 1), (6, vec![0.5]));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn picking_the_gas_on_the_sheet_tab_moves_the_joints_as_set_sheet_does() {
+    // GS15: the Sheet tab's pick and set-sheet gas= change the joints
+    // through one engine function.
+    let d = dir("gas_joints_pick");
+    let (mut s, _on) = gas_session_on(&d, true, (1, "Nitrogen"), &gas_joints_machine_file());
+    let job = joints_job(&d, &mut s);
+    call(&mut s, "joints", None, json!({"mode": "auto"}));
+    let as_saved = jobfile::load(&job).unwrap();
+    let r = call(&mut s, "set-sheet", None, json!({"gas": "oxygen"}));
+    let by_agent = jobfile::load(&job).unwrap();
+    let (mut spec, mut parts) = (as_saved.spec.clone(), as_saved.parts.clone());
+    let pick = crate::engine::pick_job_gas(&mut spec, crate::gas::Gas::Oxygen, &mut parts, &as_saved.sheets, &as_saved.formats, &as_saved.manual_cuts, &s.ctx.blm);
+    assert!(pick.changed);
+    assert_eq!(spec, by_agent.spec);
+    assert_eq!(serde_json::to_string(&parts).unwrap(), serde_json::to_string(&by_agent.parts).unwrap());
+    assert_ne!(serde_json::to_string(&parts).unwrap(), serde_json::to_string(&as_saved.parts).unwrap(), "the joints didn't follow");
+    assert!(r["message"].as_str().unwrap().ends_with(&pick.note), "{r}\n{}", pick.note);
     let _ = std::fs::remove_dir_all(&d);
 }
