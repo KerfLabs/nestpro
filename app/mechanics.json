@@ -6540,6 +6540,408 @@
   "group": "sheet stock",
   "value": "any size in stock",
   "source": "MECHANICS ST18"
+ },
+ {
+  "name": "files per sheet program",
+  "group": "ByStar Fiber post",
+  "value": "ccp, JobInfo.xml, png zipped into one .bvc in that order",
+  "source": "MECHANICS BV21"
+ },
+ {
+  "name": "B017: one .bvc for all sheets of a run, job file of the last sheet",
+  "group": "ByStar Fiber post",
+  "value": true,
+  "source": "MECHANICS BV22"
+ },
+ {
+  "name": "plan width/height",
+  "group": "ByStar Fiber post",
+  "value": "largest |x| and |y| of cut end points (arc extremes in, rapids out)",
+  "source": "MECHANICS BV23"
+ },
+ {
+  "name": "ToolArrangement in the header",
+  "group": "ByStar Fiber post",
+  "value": "only with B041",
+  "source": "MECHANICS BV23"
+ },
+ {
+  "name": "command ids",
+  "group": "ByStar Fiber post",
+  "value": "one counter from 1 in writing order, subprograms first",
+  "source": "MECHANICS BV24"
+ },
+ {
+  "name": "B001 scales coordinates",
+  "group": "ByStar Fiber post",
+  "value": false,
+  "source": "MECHANICS BV25"
+ },
+ {
+  "name": "job file measurement system",
+  "group": "ByStar Fiber post",
+  "value": "Metric",
+  "source": "MECHANICS BV25"
+ },
+ {
+  "name": "subprogram name",
+  "group": "ByStar Fiber post",
+  "value": "C004 + running count; cut-off subprograms ResidualSheetCuts",
+  "source": "MECHANICS BV26"
+ },
+ {
+  "name": "cut-off subprogram call moved toward its start edge by",
+  "group": "ByStar Fiber post",
+  "value": "B003",
+  "source": "MECHANICS BV27"
+ },
+ {
+  "name": "B002: cut-off lines in subprograms too",
+  "group": "ByStar Fiber post",
+  "value": true,
+  "source": "MECHANICS BV28"
+ },
+ {
+  "name": "contour start order",
+  "group": "ByStar Fiber post",
+  "value": "mode, sensor, compensation, MoveLineTo, lead-in + pierce, BeginCutOut",
+  "source": "MECHANICS BV29"
+ },
+ {
+  "name": "pierce on a contour without lead-in (B044 off)",
+  "group": "ByStar Fiber post",
+  "value": false,
+  "source": "MECHANICS BV29"
+ },
+ {
+  "name": "BeginCutOut Contour for marks by default",
+  "group": "ByStar Fiber post",
+  "value": "Unknown",
+  "source": "MECHANICS BV30"
+ },
+ {
+  "name": "compensation side when the contour has no side",
+  "group": "ByStar Fiber post",
+  "value": "Right",
+  "source": "MECHANICS BV31"
+ },
+ {
+  "name": "operation mode by quality (B015 off)",
+  "group": "ByStar Fiber post",
+  "value": {"2": 1, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "other": 0, "marking": 2},
+  "source": "MECHANICS BV32"
+ },
+ {
+  "name": "pierce mode by default",
+  "group": "ByStar Fiber post",
+  "value": "Fine for cutting, Normal for marking",
+  "source": "MECHANICS BV33"
+ },
+ {
+  "name": "cut-off re-pierce",
+  "group": "ByStar Fiber post",
+  "value": "NoTime",
+  "source": "MECHANICS BV33"
+ },
+ {
+  "name": "lead-out written before EndCutOut",
+  "group": "ByStar Fiber post",
+  "value": true,
+  "source": "MECHANICS BV34"
+ },
+ {
+  "name": "B018 splits arcs from",
+  "group": "ByStar Fiber post",
+  "value": "360 degrees",
+  "source": "MECHANICS BV35"
+ },
+ {
+  "name": "micro-joint (B038 off)",
+  "group": "ByStar Fiber post",
+  "value": "cut to the gap middle, ExecMicrojoint, no rapid or pierce",
+  "source": "MECHANICS BV36"
+ },
+ {
+  "name": "height sensor at program start",
+  "group": "ByStar Fiber post",
+  "value": "off (first contour gets On)",
+  "source": "MECHANICS BV37"
+ },
+ {
+  "name": "height sensor reset per subprogram",
+  "group": "ByStar Fiber post",
+  "value": false,
+  "source": "MECHANICS BV37"
+ },
+ {
+  "name": "cut-off line: pierce inside the start edge",
+  "group": "ByStar Fiber post",
+  "value": "B004 + B005 on the sheet (B003 + B004 + B005 inside the subprogram, whose call is moved B003 outward)",
+  "source": "MECHANICS BV38"
+ },
+ {
+  "name": "cut-off line: sensing off before each edge",
+  "group": "ByStar Fiber post",
+  "value": "B004 on the sheet (B004 + B003 back from the end of the overrun inside the subprogram)",
+  "source": "MECHANICS BV38"
+ },
+ {
+  "name": "cut-off line: overrun past each edge",
+  "group": "ByStar Fiber post",
+  "value": "B003",
+  "source": "MECHANICS BV38"
+ },
+ {
+  "name": "cut-off line: lift after each piece",
+  "group": "ByStar Fiber post",
+  "value": "ExecHighPositioning",
+  "source": "MECHANICS BV38"
+ },
+ {
+  "name": "B048 per-edge distances rounded",
+  "group": "ByStar Fiber post",
+  "value": false,
+  "source": "MECHANICS BV39"
+ },
+ {
+  "name": "point mark circle mode",
+  "group": "ByStar Fiber post",
+  "value": "3 (2 with B033)",
+  "source": "MECHANICS BV40"
+ },
+ {
+  "name": "point mark cross mode",
+  "group": "ByStar Fiber post",
+  "value": "2",
+  "source": "MECHANICS BV40"
+ },
+ {
+  "name": "CAM aux codes",
+  "group": "ByStar Fiber post",
+  "value": {"4": "ExecOptionalStop", "8": "ExecOptionalStopWithoutLifting", "1008": "ExecDwell"},
+  "source": "MECHANICS BV41"
+ },
+ {
+  "name": "vaporise copies",
+  "group": "ByStar Fiber post",
+  "value": "Vaporization_<name>, written before each part call",
+  "source": "MECHANICS BV42"
+ },
+ {
+  "name": "job file ProcessGas only with a parameter-file name",
+  "group": "ByStar Fiber post",
+  "value": true,
+  "source": "MECHANICS BV43"
+ },
+ {
+  "name": "job file part sizes and shapes",
+  "group": "ByStar Fiber post",
+  "value": false,
+  "source": "MECHANICS BV43"
+ },
+ {
+  "name": "B022: part quantity under 0.5 becomes",
+  "group": "ByStar Fiber post",
+  "value": "1",
+  "source": "MECHANICS BV44"
+ },
+ {
+  "name": "live text settings",
+  "group": "ByStar Fiber post",
+  "value": "C004 only",
+  "source": "MECHANICS BV45"
+ },
+ {
+  "name": "joint gap marker position",
+  "group": "ByStar Fiber post",
+  "value": "middle of the gap",
+  "source": "MECHANICS BV46"
+ },
+ {
+  "name": "joint gap on an arc followed",
+  "group": "ByStar Fiber post",
+  "value": "along the arc (B049: straight)",
+  "source": "MECHANICS BV46"
+ },
+ {
+  "name": "arc after a joint: sweep measured from",
+  "group": "ByStar Fiber post",
+  "value": "the gap's far end",
+  "source": "MECHANICS BV47"
+ },
+ {
+  "name": "B038: new piece after a joint gap",
+  "group": "ByStar Fiber post",
+  "value": "EndCutOut, compensation off, new contour start",
+  "source": "MECHANICS BV48"
+ },
+ {
+  "name": "cut-off pierce point",
+  "group": "ByStar Fiber post",
+  "value": "crossing of the sheet outline shrunk by B003+B004+B005 (B035 and B046 off; start outside the sheet or within that distance minus the tolerance of an edge)",
+  "source": "MECHANICS BV49"
+ },
+ {
+  "name": "short cut-off line: B005 becomes",
+  "group": "ByStar Fiber post",
+  "value": "a quarter of the line's length",
+  "source": "MECHANICS BV49"
+ },
+ {
+  "name": "contour class",
+  "group": "ByStar Fiber post",
+  "value": "last two digits of the CAM's contour code",
+  "source": "MECHANICS BV50"
+ },
+ {
+  "name": "contour class: inner",
+  "group": "ByStar Fiber post",
+  "value": 3,
+  "source": "MECHANICS BV50"
+ },
+ {
+  "name": "contour class: cut-off line",
+  "group": "ByStar Fiber post",
+  "value": 4,
+  "source": "MECHANICS BV50"
+ },
+ {
+  "name": "cut without a contour code counts as a cut-off line (B020 off)",
+  "group": "ByStar Fiber post",
+  "value": true,
+  "source": "MECHANICS BV50"
+ },
+ {
+  "name": "operation mode always written for",
+  "group": "ByStar Fiber post",
+  "value": "every cut-off line and point mark",
+  "source": "MECHANICS BV51"
+ },
+ {
+  "name": "operation mode forgotten at",
+  "group": "ByStar Fiber post",
+  "value": "program start, each new subprogram, each new part",
+  "source": "MECHANICS BV51"
+ },
+ {
+  "name": "coordinate decimals",
+  "group": "ByStar Fiber post",
+  "value": "up to 9, trailing zeros dropped",
+  "source": "MECHANICS BV52"
+ },
+ {
+  "name": "number rounding",
+  "group": "ByStar Fiber post",
+  "value": "nearest, halves toward zero",
+  "source": "MECHANICS BV52"
+ },
+ {
+  "name": "tiny negative number written as",
+  "group": "ByStar Fiber post",
+  "value": "-0",
+  "source": "MECHANICS BV52"
+ },
+ {
+  "name": "decimal separator",
+  "group": "ByStar Fiber post",
+  "value": ".",
+  "source": "MECHANICS BV52"
+ },
+ {
+  "name": "part call X/Y decimals",
+  "group": "ByStar Fiber post",
+  "value": "0 (3 with B021)",
+  "source": "MECHANICS BV52"
+ },
+ {
+  "name": "cut program line ends",
+  "group": "ByStar Fiber post",
+  "value": "CRLF",
+  "source": "MECHANICS BV53"
+ },
+ {
+  "name": "cut program byte encoding",
+  "group": "ByStar Fiber post",
+  "value": "PC's Windows code page for the default screen languages, else the language's own code page (header says utf-8)",
+  "source": "MECHANICS BV53"
+ },
+ {
+  "name": "cut program BOM",
+  "group": "ByStar Fiber post",
+  "value": false,
+  "source": "MECHANICS BV53"
+ },
+ {
+  "name": "cut program block numbers",
+  "group": "ByStar Fiber post",
+  "value": false,
+  "source": "MECHANICS BV53"
+ },
+ {
+  "name": "switch on above",
+  "group": "ByStar Fiber post",
+  "value": 0.5,
+  "source": "MECHANICS BV54"
+ },
+ {
+  "name": "switch rounding (B003-B009, B036, B039)",
+  "group": "ByStar Fiber post",
+  "value": "nearest, halves down",
+  "source": "MECHANICS BV54"
+ },
+ {
+  "name": "B013 when its line is missing",
+  "group": "ByStar Fiber post",
+  "value": 10.0,
+  "source": "MECHANICS BV54"
+ },
+ {
+  "name": "shipped switch values",
+  "group": "ByStar Fiber post",
+  "value": "all 0 except B013 = 0.2; C texts empty; R000-R007 0",
+  "source": "MECHANICS BV54"
+ },
+ {
+  "name": "B050 point cut length",
+  "group": "ByStar Fiber post",
+  "value": 0.05,
+  "source": "MECHANICS BV55"
+ },
+ {
+  "name": "point cut subtype B050 applies to",
+  "group": "ByStar Fiber post",
+  "value": "2 (on/off point)",
+  "source": "MECHANICS BV55"
+ },
+ {
+  "name": "joint cut and gap counted as one straight line within",
+  "group": "ByStar Fiber post",
+  "value": 0.01,
+  "source": "MECHANICS BV46"
+ },
+ {
+  "name": "joint cut not held back when",
+  "group": "ByStar Fiber post",
+  "value": "joint mark subtype 2, joint-lead data on the cut or its source element, or one of the last two elements",
+  "source": "MECHANICS BV46"
+ },
+ {
+  "name": "ArcTo keeps the sweep handed to it when its size is above",
+  "group": "ByStar Fiber post",
+  "value": "machine tolerance (CF1 A005); otherwise recomputed from the last recorded point",
+  "source": "MECHANICS BV47"
+ },
+ {
+  "name": "B047 applies to",
+  "group": "ByStar Fiber post",
+  "value": "a joint cut in the contour's second-to-last place without joint-lead data, and the joint mark's subtype is not 2",
+  "source": "MECHANICS BV48"
+ },
+ {
+  "name": "B035 overrun",
+  "group": "ByStar Fiber post",
+  "value": "B003 past each end's edge, less what the line already sticks out past the sheet; the call is still moved outward by B003 less the first line's stick-out, the line's points inward by the same",
+  "source": "MECHANICS BV39"
  }
 ]
 }
