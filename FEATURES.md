@@ -17,6 +17,8 @@ original (or a real job).
 - Ribbon commands an agent can't reach yet are `todo: [ID] …` in `GUI_MAP`
   (`app/src/engine/ops.rs`); the test `todo_entries_name_a_feature` fails if that ID isn't here.
 
+**Reserved:** spec #122 (ByStar Fiber, sheet machines) holds MAC-75–MAC-84 and JOB-74 here, and BV1–BV72 and MS1–MS8 in `app/MECHANICS.md`.
+
 ## Sheets and stock (STK)
 
 | ID | What | Status | Pri | Notes / source |
@@ -176,6 +178,7 @@ original (or a real job).
 | MAC-67 | Picks on a sheet that split a part around other parts, on the LC5 (MECHANICS CO2, CO10, MM8): the LC5 calls each part once, where its outline is cut, so a contour clicked ahead of another part is cut with the rest of its own part, after that other part, while the G-code keeps the picked order. The sheet's M1, M2… badges, its time and Verify Machining show the picked order, not the LC5's. Either the plan follows the one-call rule when the post is the LC5, or the LC5 splits such a part over several calls (wants a program from the real machine first) | Missing | ★★ | spec #70 final review |
 | MAC-72 | Lens, power and nozzle per job: the original asks them with the gas when the machine's technology tables show them; nestpro keeps none per job (the gas is per job from spec #100) | Missing | ★ | spec #100 |
 | MAC-73 | Verify Machining doesn't warn when the job's material, thickness and gas have no technology table record or no machine-file section: the speeds fall back to the machine's default (MAC-20) and nothing says so | Missing | ★★ | spec #100 |
+| MAC-74 | **Bystronic ByStar Fiber output** (the original's ByStar Fiber 3015 post: one `.ccp` cut program per sheet and a job file, zipped to `.bvc`): not built. Each contour's cut quality becomes the machine's technology column (cut, pulse, marking, process macros), with its pierce mode, leads, kerf side, micro-joints as markers and the remnant cut-off lines; the cutting values stay in the machine's own parameter sets. The format and the post's settings are studied, not built | Missing | ★★ | spec #122 (#126–#129) |
 
 ## Jobs, parts and data (JOB)
 
@@ -238,6 +241,7 @@ original (or a real job).
 | JOB-70 | Save to library takes the job's sheets from stock and then stores the job, both in one hold of the write lock. If the save runs past the lock's 30 s writing time (LB2) after the stock was written (remnants that slow to work out, or a slow share), the job isn't stored but its sheets stay taken from stock. Remnants normally take far less than that | Missing | ★ | MECHANICS JX16, LB2, LB8; PR #67 review S1 |
 | JOB-71 | A Library folder moved or renamed during a save, between the save taking the write lock and writing its file: the write can make the folder again at the old place (with the record's sub-folders), so the lists then find an empty folder or an empty Library there instead of saying the Library can't be reached (LB11, LB12). The save itself stores nothing. A share that's down can't be written to at all, so this needs someone to move the folder in the middle of a save | Missing | ★ | MECHANICS LB11, LB12; PR #78 review S4 |
 | JOB-72 | A change a PC sent in time can still land after another PC took its write lock over, if the share holds it back for more than 60 s. A writer replaces files only within 30 s of taking the lock and checks just before each rename that the lock is still its own, and a takeover needs 90 s, but a lock made of files on a share can't stop a rename that's already on its way: the older save would then replace the newer one from the PC that took over. Whether a shop's share ever does this is what the two-PC test (`library-check`, #47) checks; ADR 0003's fallback is the answer if it fails | Estimate | ★ | MECHANICS LB2 (estimated); PR #62 review S2 |
+| JOB-73 | Bystronic BySoft CAM nests (`.bvc`, a zip of the job's part and sheet list plus one cut program per nest) can't be imported: their parts (outline, holes and etched marks, with each contour's cut technology), quantities, sheet sizes, nests as placed and remnants are left out. The format is read and understood (study only) | Missing | ★★ | spec #122 (#124) |
 
 ## Part drawing (DRW)
 
