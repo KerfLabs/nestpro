@@ -2278,7 +2278,7 @@ pub(crate) mod libui_tests {
 
     /// A job kim saved on PROG-3 into the Library, in `folder`.
     fn saved_elsewhere(dir: &Path, name: &str, folder: &str) -> u64 {
-        let mut j = JobFile::new_job(name, crate::nest::SheetSpec { w: 3000.0, h: 1500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 10.0, level: 3, machine: Default::default(), kerf: Default::default() });
+        let mut j = JobFile::new_job(name, crate::nest::SheetSpec { w: 3000.0, h: 1500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 10.0, level: 3, machine: Default::default(), kerf: Default::default(), pick: Default::default() });
         j.week = folder.into();
         Library::open(dir, &Who::new("kim", "PROG-3"), &Clock::at(NOV_9_0920)).unwrap().save_job(&j, crate::library::SaveTo::New).unwrap().id
     }

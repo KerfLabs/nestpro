@@ -627,7 +627,7 @@ mod inuse_tests {
 
     /// Library job `name`, saved by kim on PROG-3.
     fn job(dir: &Path, name: &str) -> u64 {
-        let spec = crate::nest::SheetSpec { w: 3000.0, h: 1500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 10.0, level: 3, machine: Default::default(), kerf: Default::default() };
+        let spec = crate::nest::SheetSpec { w: 3000.0, h: 1500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 10.0, level: 3, machine: Default::default(), kerf: Default::default(), pick: Default::default() };
         let mut j = crate::jobfile::JobFile::new_job(name, spec);
         j.week = "Acme".into();
         Library::open(dir, &Who::new("kim", "PROG-3"), &Clock::at(NOV_9_0914)).unwrap().save_job(&j, SaveTo::New).unwrap().id

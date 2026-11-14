@@ -6516,6 +6516,30 @@
   "group": "sheet stock",
   "value": true,
   "source": "MECHANICS ST17"
+ },
+ {
+  "name": "picked sheet size is what Nest all nests on",
+  "group": "sheet stock",
+  "value": true,
+  "source": "MECHANICS ST18"
+ },
+ {
+  "name": "Nest all on a picked size also uses other sizes and remnants",
+  "group": "sheet stock",
+  "value": false,
+  "source": "MECHANICS ST18"
+ },
+ {
+  "name": "remnant put on a sheet picks the job's sheet",
+  "group": "sheet stock",
+  "value": false,
+  "source": "MECHANICS ST18"
+ },
+ {
+  "name": "new job's sheet pick",
+  "group": "sheet stock",
+  "value": "any size in stock",
+  "source": "MECHANICS ST18"
  }
 ]
 }

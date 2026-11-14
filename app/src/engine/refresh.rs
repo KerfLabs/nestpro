@@ -214,7 +214,7 @@ mod refresh_tests {
         let clock = Clock::at(1_794_216_000);
         let lib = crate::library::Library::open(&dir, &crate::shared::Who::new("sam", "PROG-1"), &clock).unwrap();
         let b = stamp(&dir).unwrap();
-        let j = crate::jobfile::JobFile::new_job("DEMO-7", crate::nest::SheetSpec { w: 3000.0, h: 1500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 10.0, level: 3, machine: Default::default(), kerf: Default::default() });
+        let j = crate::jobfile::JobFile::new_job("DEMO-7", crate::nest::SheetSpec { w: 3000.0, h: 1500.0, margin: 5.0, gap: 5.0, material: 0, thickness: 10.0, level: 3, machine: Default::default(), kerf: Default::default(), pick: Default::default() });
         lib.save_job(&j, crate::library::SaveTo::New).unwrap();
         let c = stamp(&dir).unwrap();
         assert!(c.lists != b.lists && c.stock == b.stock, "a save changes the lists' stamp");
