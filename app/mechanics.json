@@ -6934,13 +6934,13 @@
  {
   "name": "B047 applies to",
   "group": "ByStar Fiber post",
-  "value": "a joint cut in the contour's second-to-last place without joint-lead data",
+  "value": "a joint cut in the contour's second-to-last place without joint-lead data, and the joint mark's subtype is not 2",
   "source": "MECHANICS BV48"
  },
  {
   "name": "B035 overrun",
   "group": "ByStar Fiber post",
-  "value": "on the line's own ends, less what already sticks out past the sheet",
+  "value": "B003 past each end's edge, less what the line already sticks out past the sheet; the call is still moved outward by B003 less the first line's stick-out, the line's points inward by the same",
   "source": "MECHANICS BV39"
  }
 ]
