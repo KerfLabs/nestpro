@@ -415,6 +415,28 @@ fn do_all_takes_sheets_from_stock_and_booking_stores_the_remnants() {
 }
 
 #[test]
+fn the_sheet_tabs_stock_choice_is_the_two_do_all_options() {
+    // STK-22: stock first / stock only / this size only, read from and
+    // written to the shop's Do All options; agents see it in the rules.
+    use crate::stock::{StockMode, StockSettings};
+    let mut st = StockSettings::default();
+    assert_eq!(st.mode(), StockMode::First);
+    st.set_mode(StockMode::Only);
+    assert_eq!((st.use_stock, st.fallback_job_size), (true, false));
+    st.set_mode(StockMode::Off);
+    assert_eq!((st.use_stock, st.fallback_job_size, st.mode()), (false, false, StockMode::Off), "off keeps the run-out choice");
+    st.set_mode(StockMode::First);
+    assert_eq!((st.use_stock, st.fallback_job_size), (true, true));
+
+    let d = dir("stock_mode");
+    let mut s = Session::new(stock_ctx(&d));
+    s.ctx.cfg.stock.set_mode(StockMode::Only);
+    let r = call(&mut s, "stock", None, json!({"mode": "rules"}));
+    assert_eq!(r["data"]["nest_on"], "only", "{r}");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
 fn info_says_what_nest_will_nest_on_before_nesting() {
     // The window's "Nest on" line, for agents: the stock first (what it holds
     // for the job's material and thickness), else the job's sheet size and why.
@@ -450,6 +472,30 @@ fn info_says_what_nest_will_nest_on_before_nesting() {
     assert_eq!(n["stock_sizes"], json!([{"w": 3000.0, "h": 1500.0, "qty": 1}, {"w": 1500.0, "h": 750.0, "qty": 3}]), "largest first, one size once: {n}");
     assert_eq!(n["line"], "Stock first (4 sheets · 1 remnant), then 2000 × 1000 mm", "{n}");
 
+    // STK-21: every thickness of this material in stock, thinnest first; the
+    // locked 3 mm sheet isn't counted, other materials aren't listed.
+    let mut st = crate::stock::Stock::load(&lib).unwrap();
+    st.add_sheet(crate::stock::Item::sheet("SS", 1, 2.0, 2000.0, 1000.0, 4), true).unwrap();
+    st.save(&lib).unwrap();
+    let n = on(&mut s);
+    assert_eq!(
+        n["stock_thicknesses"],
+        json!([{"thickness": 3.0, "sheets": 4, "remnants": 1}, {"thickness": 5.0, "sheets": 9, "remnants": 0}]),
+        "{n}"
+    );
+
+    assert_eq!(n["near_stock"], Value::Null, "3 mm is in stock: nothing to offer {n}");
+
+    // ST19: 3.04 mm (11 ga) typed, only 3 mm in stock: offered, not taken.
+    call(&mut s, "set-sheet", None, json!({"thickness": 3.04}));
+    let n = on(&mut s);
+    assert_eq!(n["mode"], "size-none-in-stock", "{n}");
+    assert_eq!((n["near_stock"]["thickness"].as_f64(), n["near_stock"]["sheets"].as_i64()), (Some(3.0), Some(4)), "{n}");
+    // 1/8 in (3.175 mm) is too far from 3 mm to be the same sheet.
+    call(&mut s, "set-sheet", None, json!({"thickness": 3.175}));
+    assert_eq!(on(&mut s)["near_stock"], Value::Null);
+    call(&mut s, "set-sheet", None, json!({"thickness": 3}));
+
     // No fall-back to the job's size: stock only; with nothing in stock, nothing.
     s.ctx.cfg.stock.fallback_job_size = false;
     assert_eq!(on(&mut s)["mode"], "stock-only");
@@ -462,7 +508,9 @@ fn info_says_what_nest_will_nest_on_before_nesting() {
 
     // Stock off in the options, or the Library out of reach: the job's size.
     s.ctx.cfg.stock.use_stock = false;
-    assert_eq!(on(&mut s)["mode"], "size-stock-off");
+    let n = on(&mut s);
+    assert_eq!(n["mode"], "size-stock-off");
+    assert_eq!(n["stock_thicknesses"], json!([]), "stock off: no counts {n}");
     s.ctx.cfg.stock.use_stock = true;
     s.ctx.library_dir = d.join("gone");
     let n = on(&mut s);
