@@ -8,6 +8,8 @@ private research notes.
 
 **Reserved:** spec #122 (ByStar Fiber, sheet machines) holds rule IDs BV1–BV72 and MS1–MS8.
 
+**Reserved:** spec #132 (Programming screen) holds rule IDs F24–F33.
+
 **Jobs (CAM).** In the original, the Jobs manager keeps work orders, products and nested
 sheets in a database, and nesting runs in a separate nesting program. Part placement and the
 usage percentages come from that nesting side; in the rebuild they remain estimates (see the
